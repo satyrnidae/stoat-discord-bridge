@@ -59,6 +59,17 @@ class IrcConnectorConfig:
     nick: str
     nickserv_password: str | None
     default_channel_modes: str | None
+    # RFC1459 ident (the "user" field of the USER command / left half of the
+    # hostmask) - distinct from `nick` and from `oper_account` below. Most
+    # ircds still enforce the historical ident-daemon length cap.
+    ident: str | None
+    # Login name for the OPER command - deliberately a separate field from
+    # `ident` (an oper block's name is commonly *not* the connection ident,
+    # and networks generally prefer they differ).
+    oper_account: str | None
+    oper_password: str | None
+    client_cert_file: str | None
+    client_key_file: str | None
 
 
 @dataclass(frozen=True)
@@ -200,6 +211,9 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
         )
         port = _resolve(entry, section="irc", index=index, field="port") or 6697
         nick = _resolve(entry, section="irc", index=index, field="nick") or "StoatDiscordBridge"
+        ident = _resolve(entry, section="irc", index=index, field="ident")
+        if ident is not None and not (1 <= len(ident) <= 9):
+            raise ConfigError(f"connector '{connector_id}': ident must be 1-9 characters, got {len(ident)!r}")
         irc.append(
             IrcConnectorConfig(
                 id=connector_id,
@@ -210,6 +224,11 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 nick=nick,
                 nickserv_password=_resolve(entry, section="irc", index=index, field="nickserv_password"),
                 default_channel_modes=_resolve(entry, section="irc", index=index, field="default_channel_modes"),
+                ident=ident,
+                oper_account=_resolve(entry, section="irc", index=index, field="oper_account"),
+                oper_password=_resolve(entry, section="irc", index=index, field="oper_password"),
+                client_cert_file=_resolve(entry, section="irc", index=index, field="client_cert_file"),
+                client_key_file=_resolve(entry, section="irc", index=index, field="client_key_file"),
             )
         )
 

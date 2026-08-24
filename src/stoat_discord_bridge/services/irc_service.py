@@ -42,10 +42,15 @@ _LINE_LIMIT = 400
 _LINK_CHANNEL_PREFIX = "!link-channel"
 
 
-def _tls_wrap(sock, *, server_hostname: str):
+def _tls_wrap(sock, *, server_hostname: str, client_cert_file: str | None, client_key_file: str | None):
     # ssl.SSLContext.wrap_socket() defaults to check_hostname=True, which
     # raises ValueError unless server_hostname is supplied.
-    return ssl.create_default_context().wrap_socket(sock, server_hostname=server_hostname)
+    context = ssl.create_default_context()
+    if client_cert_file:
+        # client_key_file may be None if client_cert_file is a combined
+        # cert+key PEM - load_cert_chain accepts that.
+        context.load_cert_chain(certfile=client_cert_file, keyfile=client_key_file)
+    return context.wrap_socket(sock, server_hostname=server_hostname)
 
 
 class _IrcClient(irc.bot.SingleServerIRCBot):
@@ -57,15 +62,30 @@ class _IrcClient(irc.bot.SingleServerIRCBot):
 
     def __init__(self, owner: IrcSenderService, config: IrcConnectorConfig) -> None:
         connect_factory = (
-            irc.connection.Factory(wrapper=functools.partial(_tls_wrap, server_hostname=config.host))
+            irc.connection.Factory(
+                wrapper=functools.partial(
+                    _tls_wrap,
+                    server_hostname=config.host,
+                    client_cert_file=config.client_cert_file,
+                    client_key_file=config.client_key_file,
+                )
+            )
             if config.use_tls
             else irc.connection.Factory()
         )
+        # `username` (the ident/USER-command field) is forwarded straight
+        # through to ServerConnection.connect() the same way connect_factory
+        # is, per SingleServerIRCBot's **connect_params passthrough - falls
+        # back to its own default (the nickname) if we don't set it.
+        # TODO: unverified against the installed `irc` library version, same
+        # caveat as the rest of this module's irc.bot usage.
+        username_kwarg = {"username": config.ident} if config.ident else {}
         super().__init__(
             server_list=[(config.host, config.port)],
             nickname=config.nick,
             realname=config.nick,
             connect_factory=connect_factory,
+            **username_kwarg,
         )
         self._owner = owner
 
@@ -108,6 +128,10 @@ class IrcSenderService(SenderService):
         self._health.mark_connected(self.connector_id)
         if self._config.nickserv_password:
             connection.privmsg("NickServ", f"IDENTIFY {self._config.nickserv_password}")
+        if self._config.oper_account and self._config.oper_password:
+            # OPER's login name is deliberately not required to match `ident`
+            # or `nick` - see IrcConnectorConfig.oper_account.
+            connection.oper(self._config.oper_account, self._config.oper_password)
         for channel in self._channels:
             connection.join(channel)
 
