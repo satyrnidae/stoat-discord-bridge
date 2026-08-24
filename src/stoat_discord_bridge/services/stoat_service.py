@@ -132,6 +132,18 @@ class StoatSenderService(SenderService):
             return None
         return getattr(channel, "name", None)
 
+    async def ensure_channel(self, name: str) -> str:
+        """Idempotent get-or-create by name, for `/mirror-channel`'s
+        `ConnectorInfo.ensure_channel` hook - same "match existing by name,
+        else create" logic `_mirror_guild_structure` already uses in bulk,
+        just for a single channel outside that flow."""
+        server = self._client.get_server(self.server_id, partial=True)
+        for channel in server.channels:
+            if channel.name == name:
+                return channel.id
+        channel = await server.create_channel(name=name)
+        return channel.id
+
     async def _handle_ready(self, event) -> None:
         self._health.mark_connected(self.connector_id)
         self._self_id = str(event.me.id)

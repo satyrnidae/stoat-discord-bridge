@@ -35,6 +35,13 @@ class ConnectorInfo:
     # connectors set this, to JOIN the channel immediately instead of
     # waiting for a restart to pick up the new mapping.
     on_channel_linked: Callable[[str], Awaitable[None]] | None = None
+    # Idempotent get-or-create: ensures a channel named `name` exists on
+    # this connector, returning its native id (existing or newly created).
+    # None if this connector kind doesn't support channel creation (e.g.
+    # Discord has no channel-creation capability in this codebase at all -
+    # /mirror-channel then reports that connector as unsupported rather than
+    # calling this).
+    ensure_channel: Callable[[str], Awaitable[str]] | None = None
 
 
 class ChannelLinker:
@@ -104,6 +111,49 @@ class ChannelLinker:
             f"Linked {source_label} channel '{source_name}' ({source_id}) to "
             f"{local_label} channel '{destination_name}' ({destination_channel_id})."
         )
+
+    async def mirror_channel(
+        self, *, local_connector: str, local_channel_id: str, local_channel_name: str, destination: str
+    ) -> str:
+        """Ensure `local_channel_id` (on `local_connector`) has a linked
+        counterpart on `destination`: reuses an existing same-name channel
+        there if `destination`'s ensure_channel() finds/creates one and
+        `link_channel` doesn't hit a group conflict, skips outright if
+        already synced there, and reports (rather than raises for) a
+        destination that can't create channels or a link conflict - the
+        caller (a bulk "mirror to every connector" loop) shouldn't have one
+        bad destination abort the rest."""
+        if destination not in self._connectors:
+            raise LinkError(f"'{destination}' isn't a known connector.")
+        if destination == local_connector:
+            raise LinkError("can't mirror a channel to its own connector.")
+
+        bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
+        if bridge_group is not None:
+            existing = await self._channel_mappings.get_mapped_channels(bridge_group)
+            if any(m.connector_id == destination for m in existing):
+                return f"{self._connectors[destination].label}: already synced - skipped."
+
+        dest_info = self._connectors[destination]
+        if dest_info.ensure_channel is None:
+            return f"{dest_info.label}: doesn't support channel creation - link it manually with /link-channel."
+
+        try:
+            destination_channel_id = await dest_info.ensure_channel(local_channel_name)
+        except Exception as exc:
+            return f"{dest_info.label}: failed to create/find a channel: {exc}"
+
+        try:
+            return await self.link_channel(
+                local_connector=destination,
+                local_channel_id=destination_channel_id,
+                local_channel_name=local_channel_name,
+                source=local_connector,
+                source_id=local_channel_id,
+                destination_id=None,
+            )
+        except LinkError as exc:
+            return f"{dest_info.label}: {exc}"
 
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)

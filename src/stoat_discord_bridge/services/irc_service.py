@@ -229,6 +229,17 @@ class IrcSenderService(SenderService):
                 # we don't handle - a silent no-op from the bridge's side.
                 self._client.connection.mode(channel, self._config.default_channel_modes)
 
+    async def ensure_channel(self, name: str) -> str:
+        """IRC has no separate channel-creation call - JOINing a channel
+        that doesn't exist yet creates it (see join_channel, which already
+        handles that + applying default_channel_modes to a freshly-created
+        one). Idempotent: joining an already-joined channel is a no-op on
+        the server. Channel names get a `#` prefix if missing, since local
+        channel names on other connectors (Discord/Stoat) won't have one."""
+        channel = name if name.startswith("#") else f"#{name}"
+        await self.join_channel(channel)
+        return channel
+
     def _schedule(self, coro: Awaitable[None]) -> None:
         # on_pubmsg/on_privmsg run on the IRC reactor's blocking select loop,
         # which start() below moves onto its own executor thread — hand the
