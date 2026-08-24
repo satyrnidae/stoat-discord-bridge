@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stoat-discord-bridge"
+version = "0.1.0"
+description = "Multi-way chat bridge: Discord <-> Stoat (public + self-hosted) <-> IRC"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.4.0",
+    "stoat.py>=1.2.0",
+    "irc>=20.3.0",
+    "python-dotenv>=1.0.1",
+    "PyYAML>=6.0",
+    "motor>=3.6.0",
+    "aiohttp>=3.9",
+]
+
+[project.scripts]
+stoat-discord-bridge = "stoat_discord_bridge.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
