@@ -21,12 +21,14 @@ from collections.abc import Awaitable
 import irc.bot
 import irc.connection
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError
+from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError, UserLinker
 from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import OnMessage, PartialRelayError, ReceiverService, SenderService
 from stoat_discord_bridge.services.formatting import chunk_content
+from stoat_discord_bridge.services.mentions import rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 # IRC's protocol limit is 512 bytes per raw line, including the
 # `:nick!user@host PRIVMSG #channel :` prefix the server sees and the
@@ -35,11 +37,12 @@ from stoat_discord_bridge.status import HealthTracker
 # this receiver prepends to each line.
 _LINE_LIMIT = 400
 
-# Admin commands (LINK_CHANNEL, LINK_EMOTE, LINK_USER) arrive as a DM to the
-# bot's own nick, bare and uppercase (no leading "/" or "!" - unlike
-# Discord/Stoat's slash commands, since many IRC clients swallow a leading
-# "/" as a local client command). See _handle_privmsg/_handle_dm_command.
-_ADMIN_DM_COMMANDS = frozenset({"LINK_CHANNEL", "LINK_EMOTE", "LINK_USER"})
+# Admin commands (LINK_CHANNEL, LINK_EMOTE, LINK_USER, MIRROR_CHANNEL)
+# arrive as a DM to the bot's own nick, bare and uppercase (no leading "/"
+# or "!" - unlike Discord/Stoat's slash commands, since many IRC clients
+# swallow a leading "/" as a local client command). See
+# _handle_privmsg/_handle_dm_command.
+_ADMIN_DM_COMMANDS = frozenset({"LINK_CHANNEL", "LINK_EMOTE", "LINK_USER", "MIRROR_CHANNEL"})
 
 
 def _tls_wrap(sock, *, server_hostname: str, client_cert_file: str | None, client_key_file: str | None):
@@ -126,6 +129,8 @@ class IrcSenderService(SenderService):
         on_message: OnMessage,
         health: HealthTracker,
         linker: ChannelLinker | None = None,
+        emote_linker: EmoteLinker | None = None,
+        user_linker: UserLinker | None = None,
     ) -> None:
         SenderService.__init__(self, on_message)
         self._config = config
@@ -133,6 +138,8 @@ class IrcSenderService(SenderService):
         self._channels = list(channels)
         self._health = health
         self._linker = linker
+        self._emote_linker = emote_linker
+        self._user_linker = user_linker
         self._client = _IrcClient(self, config)
         self._loop: asyncio.AbstractEventLoop | None = None
         # Pending WHOIS queries issued by _check_is_oper, keyed by lowercased
@@ -217,16 +224,69 @@ class IrcSenderService(SenderService):
                 return
             self._notify(nick, summary)
         elif command == "LINK_EMOTE":
-            # TODO: wire up once the emote linker exists - follow-up work,
-            # not this change. Should mirror LINK_CHANNEL's arg-count check
-            # (Usage: LINK_EMOTE <source> <source_id> <local_id>) and call
-            # self._emote_linker.link_emote(...) inside the same try/except
-            # LinkError shape used above.
-            self._notify(nick, "LINK_EMOTE isn't wired up yet.")
+            if len(args) != 3:
+                self._notify(nick, "Usage: LINK_EMOTE <source> <source_id> <local_id>")
+                return
+            source, source_id, local_id = args
+            if self._emote_linker is None:
+                self._notify(nick, "Linking isn't configured.")
+                return
+            try:
+                summary = await self._emote_linker.link_emote(
+                    local_connector=self.connector_id, local_id=local_id, source=source, source_id=source_id
+                )
+            except LinkError as exc:
+                self._notify(nick, str(exc))
+                return
+            self._notify(nick, summary)
         elif command == "LINK_USER":
-            # TODO: wire up once the user linker exists - same shape as
-            # LINK_EMOTE above.
-            self._notify(nick, "LINK_USER isn't wired up yet.")
+            if len(args) != 3:
+                self._notify(nick, "Usage: LINK_USER <source> <user_id> <local_user_id>")
+                return
+            source, user_id, local_user_id = args
+            if self._user_linker is None:
+                self._notify(nick, "User linking isn't configured.")
+                return
+            try:
+                summary = await self._user_linker.link_user(
+                    local_connector=self.connector_id,
+                    local_user_id=local_user_id,
+                    source=source,
+                    source_user_id=user_id,
+                )
+            except LinkError as exc:
+                self._notify(nick, str(exc))
+                return
+            self._notify(nick, summary)
+        elif command == "MIRROR_CHANNEL":
+            # Unlike Discord/Stoat, IRC admin commands arrive as a DM with no
+            # "current channel" context to default to, so local_channel_id is
+            # always required here (not optional like the other two).
+            if len(args) != 2:
+                self._notify(nick, "Usage: MIRROR_CHANNEL <destination|all> <local_channel_id>")
+                return
+            destination, local_channel_id = args
+            if self._linker is None:
+                self._notify(nick, "Linking isn't configured.")
+                return
+            try:
+                if destination.lower() == "all":
+                    summary = await self._linker.mirror_channel_all(
+                        local_connector=self.connector_id,
+                        local_channel_id=local_channel_id,
+                        local_channel_name=local_channel_id,
+                    )
+                else:
+                    summary = await self._linker.mirror_channel(
+                        local_connector=self.connector_id,
+                        local_channel_id=local_channel_id,
+                        local_channel_name=local_channel_id,
+                        destination=destination,
+                    )
+            except LinkError as exc:
+                self._notify(nick, str(exc))
+                return
+            self._notify(nick, summary)
 
     async def _check_is_oper(self, nick: str) -> bool:
         # WHOIS is async on this library (reply numerics arrive later, on
@@ -323,16 +383,26 @@ def _synthetic_message_id(channel: str, nick: str, content: str) -> str:
 
 
 class IrcReceiverService(ReceiverService):
-    def __init__(self, sender: IrcSenderService) -> None:
+    def __init__(self, sender: IrcSenderService, user_mappings: UserMappingRepository | None = None) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
+        self._user_mappings = user_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
+        content = message.content_markdown
+        if self._user_mappings is not None:
+            content = await rewrite_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="irc",
+                user_mappings=self._user_mappings,
+            )
         prefix = f"<{message.sender_name}> "
         limit = max(1, _LINE_LIMIT - len(prefix))
         ids: list[str] = []
-        for line in message.content_markdown.splitlines() or [""]:
+        for line in content.splitlines() or [""]:
             for chunk in chunk_content(line, limit):
                 try:
                     self._sender.connection.privmsg(target_channel_id, f"{prefix}{chunk}")

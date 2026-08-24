@@ -183,6 +183,9 @@ class StoatSenderService(SenderService):
         if cmd == "/link-user":
             await self._handle_link_user(message, parts[1:])
             return
+        if cmd == "/mirror-channel":
+            await self._handle_mirror_channel(message, parts[1:])
+            return
         avatar_url = getattr(message.author, "avatar_url", None)
         await self._on_message(
             StandardMessage(
@@ -365,6 +368,40 @@ class StoatSenderService(SenderService):
                 source=source,
                 source_user_id=user_id,
             )
+        except LinkError as exc:
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_mirror_channel(self, message, args: list[str], /) -> None:
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if not args:
+            await message.channel.send("Usage: /mirror-channel <destination|all> [local_channel_id]")
+            return
+        destination = args[0]
+        if len(args) > 1:
+            channel_id = channel_name = args[1]  # explicit id - no way to resolve its real display name
+        else:
+            channel_id = str(message.channel.id)
+            channel_name = getattr(message.channel, "name", channel_id)
+
+        if self._linker is None:
+            await message.channel.send("Linking isn't configured.")
+            return
+        try:
+            if destination.lower() == "all":
+                summary = await self._linker.mirror_channel_all(
+                    local_connector=self.connector_id, local_channel_id=channel_id, local_channel_name=channel_name
+                )
+            else:
+                summary = await self._linker.mirror_channel(
+                    local_connector=self.connector_id,
+                    local_channel_id=channel_id,
+                    local_channel_name=channel_name,
+                    destination=destination,
+                )
         except LinkError as exc:
             await message.channel.send(str(exc))
             return

@@ -176,6 +176,21 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_link_user(interaction, source, user_id, local_user_id)
 
+        @self.tree.command(
+            name="mirror-channel",
+            description="Ensure a linked counterpart of a channel exists on another connector (or all of them)",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            destination="Connector id to mirror to, or 'all' for every configured connector",
+            local_channel_id="Channel id on this connector (defaults to the current channel)",
+        )
+        async def mirror_channel_command(
+            interaction: discord.Interaction, destination: str, local_channel_id: str | None = None
+        ) -> None:
+            await self._handle_mirror_channel(interaction, destination, local_channel_id)
+
     @property
     def client(self) -> discord.Client:
         return self._client
@@ -356,6 +371,34 @@ class DiscordSenderService(SenderService):
                 source=source,
                 source_user_id=user_id,
             )
+        except LinkError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_mirror_channel(
+        self, interaction: discord.Interaction, destination: str, local_channel_id: str | None
+    ) -> None:
+        if self._linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        if local_channel_id is not None:
+            channel_id = channel_name = local_channel_id  # explicit id - no way to resolve its real display name
+        else:
+            channel_id = str(interaction.channel_id)
+            channel_name = getattr(interaction.channel, "name", channel_id)
+        try:
+            if destination.lower() == "all":
+                summary = await self._linker.mirror_channel_all(
+                    local_connector=self.connector_id, local_channel_id=channel_id, local_channel_name=channel_name
+                )
+            else:
+                summary = await self._linker.mirror_channel(
+                    local_connector=self.connector_id,
+                    local_channel_id=channel_id,
+                    local_channel_name=channel_name,
+                    destination=destination,
+                )
         except LinkError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return

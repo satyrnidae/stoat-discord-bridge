@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, StructureMirrorer
+from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, EmoteLinker, StructureMirrorer, UserLinker
 from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.config import BridgeConfig
 from stoat_discord_bridge.models import (
@@ -43,6 +43,7 @@ from stoat_discord_bridge.storage.channel_mappings import (
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
 from stoat_discord_bridge.storage.message_sync import MessageRef, MessageSyncRepository
 from stoat_discord_bridge.storage.mongo import MongoStore
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 
 class BridgeCoordinator:
@@ -209,6 +210,7 @@ async def run(config: BridgeConfig) -> None:
     message_sync = MessageSyncRepository(mongo.db)
     emoji_mappings = EmojiMappingRepository(mongo.db)
     await emoji_mappings.ensure_indexes()
+    user_mappings = UserMappingRepository(mongo.db)
 
     all_connectors = (*config.discord, *config.stoat, *config.irc)
     health = HealthTracker({c.id: c.label for c in all_connectors})
@@ -223,6 +225,8 @@ async def run(config: BridgeConfig) -> None:
     structure_providers: dict[str, Callable[[], GuildStructure]] = {}
     linker = ChannelLinker(channel_mappings, connector_infos)
     mirrorer = StructureMirrorer(structure_providers)
+    emote_linker = EmoteLinker(emoji_mappings, connector_infos)
+    user_linker = UserLinker(user_mappings, connector_infos)
 
     senders: list = []
     closables: list = []
@@ -236,10 +240,17 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_created=coordinator.handle_emoji_created,
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             linker=linker,
+            emote_linker=emote_linker,
+            user_linker=user_linker,
         )
         structure_providers[dc.id] = sender.snapshot_guild_structure
-        receiver = DiscordReceiverService(client=sender.client, guild_id=dc.guild_id, connector_id=dc.id)
+        receiver = DiscordReceiverService(
+            client=sender.client, guild_id=dc.guild_id, connector_id=dc.id, user_mappings=user_mappings
+        )
         coordinator.register_receiver(receiver)
+        # No ensure_channel: Discord has no channel-creation capability in
+        # this codebase, so /mirror-channel reports it unsupported rather
+        # than this hook ever being called.
         connector_infos[dc.id] = ConnectorInfo(id=dc.id, label=dc.label, resolve_channel_name=sender.get_channel_name)
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -254,19 +265,34 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             linker=linker,
             mirrorer=mirrorer,
+            emote_linker=emote_linker,
+            user_linker=user_linker,
         )
-        coordinator.register_receiver(StoatReceiverService(sender))
-        connector_infos[sc.id] = ConnectorInfo(id=sc.id, label=sc.label, resolve_channel_name=sender.get_channel_name)
+        coordinator.register_receiver(StoatReceiverService(sender, user_mappings=user_mappings))
+        connector_infos[sc.id] = ConnectorInfo(
+            id=sc.id,
+            label=sc.label,
+            resolve_channel_name=sender.get_channel_name,
+            ensure_channel=sender.ensure_channel,
+        )
         senders.append(sender)
         closables.append(sender)
 
     for ic in config.irc:
         boot_channels = [m.channel_id for m in await channel_mappings.get_all_for_connector(ic.id)]
         sender = IrcSenderService(
-            ic, boot_channels, on_message=coordinator.handle_incoming, health=health, linker=linker
+            ic,
+            boot_channels,
+            on_message=coordinator.handle_incoming,
+            health=health,
+            linker=linker,
+            emote_linker=emote_linker,
+            user_linker=user_linker,
         )
-        coordinator.register_receiver(IrcReceiverService(sender))
-        connector_infos[ic.id] = ConnectorInfo(id=ic.id, label=ic.label, on_channel_linked=sender.join_channel)
+        coordinator.register_receiver(IrcReceiverService(sender, user_mappings=user_mappings))
+        connector_infos[ic.id] = ConnectorInfo(
+            id=ic.id, label=ic.label, on_channel_linked=sender.join_channel, ensure_channel=sender.ensure_channel
+        )
         senders.append(sender)
         closables.append(sender)
 

@@ -157,6 +157,24 @@ class ChannelLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    async def mirror_channel_all(
+        self, *, local_connector: str, local_channel_id: str, local_channel_name: str
+    ) -> str:
+        """`/mirror-channel all` - mirror_channel() against every other
+        configured connector, one line of summary/skip/error per connector
+        rather than stopping at the first problem."""
+        results = [
+            await self.mirror_channel(
+                local_connector=local_connector,
+                local_channel_id=local_channel_id,
+                local_channel_name=local_channel_name,
+                destination=destination,
+            )
+            for destination in self._connectors
+            if destination != local_connector
+        ]
+        return "\n".join(results) if results else "no other connectors configured."
+
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
         if info is None or info.resolve_channel_name is None:
