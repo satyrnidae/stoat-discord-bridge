@@ -23,7 +23,7 @@
 # gitignored either way, so it's never visible in the repo itself).
 
 mongo:
-  uri_env: MONGODB_URI
+  uri_env: MONGO__URI
   db_name: stoat_discord_bridge
 
 discord:
