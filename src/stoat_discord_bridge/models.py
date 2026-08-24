@@ -1,25 +1,23 @@
 """Standardized message format used to move a single chat message between
 platform-specific sender/receiver services.
 
-A *sender* service listens to one endpoint (Discord, Stoat, IRC) and turns
-native events into a `StandardMessage`. A *receiver* service takes a
-`StandardMessage` and posts it into one endpoint, handling whatever
-platform-specific quirks that requires (splitting long messages, stripping
-markdown, turning attachments into inline URLs, etc.) — see the TODOs in
-`services/`.
+A *sender* service listens to one endpoint (a configured Discord/Stoat/IRC
+connector) and turns native events into a `StandardMessage`. A *receiver*
+service takes a `StandardMessage` and posts it into one endpoint, handling
+whatever platform-specific quirks that requires (splitting long messages,
+stripping markdown, turning attachments into inline URLs, etc.) — see the
+TODOs in `services/`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 
-
-class Platform(str, Enum):
-    DISCORD = "discord"
-    STOAT_PUBLIC = "stoat_public"
-    STOAT_SELFHOSTED = "stoat_selfhosted"
-    IRC = "irc"
+# The id of one configured connector (a single Discord guild, Stoat server,
+# or IRC network) from config.yaml - free-form, operator-chosen, unique
+# across every connector regardless of kind. Not an enum: any number of
+# connectors of each kind can be configured, so this is no longer a fixed set.
+ConnectorId = str
 
 
 @dataclass(frozen=True)
@@ -34,7 +32,7 @@ class Attachment:
 class StandardMessage:
     """One chat message, in the platform-neutral shape senders/receivers pass around."""
 
-    origin_platform: Platform
+    origin_connector_id: ConnectorId
     origin_channel_id: str
     channel_name: str
     sender_name: str  # display name / username / nickname, whichever the origin platform calls it
@@ -57,21 +55,22 @@ class CustomEmoji:
 
 @dataclass(frozen=True)
 class StandardEmojiCreated:
-    """A custom emoji newly added on `origin_platform`, for the bridge to
-    mirror onto every other platform (see BridgeCoordinator.handle_emoji_created)."""
+    """A custom emoji newly added on `origin_connector_id`, for the bridge to
+    mirror onto every other connector (see BridgeCoordinator.handle_emoji_created)."""
 
-    origin_platform: Platform
+    origin_connector_id: ConnectorId
     emoji: CustomEmoji
 
 
 @dataclass(frozen=True)
 class StandardEmojiDeleted:
-    """A custom emoji removed on `origin_platform`. Deletions are NOT mirrored
-    onto other platforms — a copy still in use elsewhere keeps working there.
-    This only tells the bridge to drop `origin_platform`'s entry from
-    EmojiMappingRepository's bookkeeping (see BridgeCoordinator.handle_emoji_deleted)."""
+    """A custom emoji removed on `origin_connector_id`. Deletions are NOT
+    mirrored onto other connectors — a copy still in use elsewhere keeps
+    working there. This only tells the bridge to drop `origin_connector_id`'s
+    entry from EmojiMappingRepository's bookkeeping (see
+    BridgeCoordinator.handle_emoji_deleted)."""
 
-    origin_platform: Platform
+    origin_connector_id: ConnectorId
     native_id: str
 
 
@@ -81,7 +80,7 @@ class StandardReaction:
     receivers pass around. `emoji` is a bare unicode string (universal across
     platforms) or a `CustomEmoji` (needs ID translation via EmojiMappingRepository)."""
 
-    origin_platform: Platform
+    origin_connector_id: ConnectorId
     origin_channel_id: str
     origin_message_id: str
     emoji: str | CustomEmoji

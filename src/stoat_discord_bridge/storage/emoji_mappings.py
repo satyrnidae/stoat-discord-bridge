@@ -1,12 +1,16 @@
-"""Cross-platform custom emoji ID references, one group per mirrored emoji.
+"""Cross-connector custom emoji ID references, one group per mirrored emoji.
 
-When a custom emoji is created on one platform, `BridgeCoordinator.handle_emoji_created`
-mirrors it onto every other platform it can and records the native emoji ID
+When a custom emoji is created on one connector, `BridgeCoordinator.handle_emoji_created`
+mirrors it onto every other connector it can and records the native emoji ID
 it got on each here, keyed together as one group. A later reaction carrying
-that emoji looks up its equivalent ID on the reaction's target platform via
+that emoji looks up its equivalent ID on the reaction's target connector via
 `find_equivalent` — a miss means "never mirrored there" (creation failed, or
 hasn't happened yet), which callers should treat as "skip this reaction",
 not an error.
+
+The Mongo field is still named "platform" (pre-dating the move to free-form
+connector ids) for the same backward-compatibility reason noted in
+channel_mappings.py.
 """
 
 from __future__ import annotations
@@ -17,12 +21,10 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
-from stoat_discord_bridge.models import Platform
-
 
 @dataclass(frozen=True)
 class EmojiRef:
-    platform: Platform
+    connector_id: str
     emoji_id: str
     name: str
 
@@ -32,7 +34,7 @@ class EmojiMappingRepository:
         self._collection = db["emoji_mappings"]
 
     async def ensure_indexes(self) -> None:
-        """A (platform, emoji_id) pair may appear in at most one mapping
+        """A (connector_id, emoji_id) pair may appear in at most one mapping
         group. Enforced in Mongo, not just checked-then-acted-on in Python,
         so `try_reserve` below can rely on a duplicate-key error to detect a
         concurrent/duplicate creation event atomically."""
@@ -44,7 +46,7 @@ class EmojiMappingRepository:
         group (a duplicate or self-echoed creation event for an
         already-known emoji). This insert is the only place a group is
         created, and the unique index makes it race-proof: two concurrent
-        calls for the same (platform, emoji_id) can't both succeed, unlike
+        calls for the same (connector_id, emoji_id) can't both succeed, unlike
         a separate exists()-check-then-record() pair would allow."""
         try:
             result = await self._collection.insert_one({"refs": [_to_doc(origin)]})
@@ -62,33 +64,33 @@ class EmojiMappingRepository:
 
     async def release(self, group_id: str) -> None:
         """Drop a reservation that ended up mirroring onto no other
-        platform, so a later retry isn't permanently blocked by the unique
+        connector, so a later retry isn't permanently blocked by the unique
         index from ever reserving this emoji again."""
         await self._collection.delete_one({"_id": ObjectId(group_id)})
 
-    async def find_equivalent(self, platform: Platform, emoji_id: str, target_platform: Platform) -> str | None:
+    async def find_equivalent(self, connector_id: str, emoji_id: str, target_connector_id: str) -> str | None:
         doc = await self._collection.find_one(
-            {"refs": {"$elemMatch": {"platform": platform.value, "emoji_id": emoji_id}}}
+            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
         )
         if doc is None:
             return None
         for ref in doc["refs"]:
-            if ref["platform"] == target_platform.value:
+            if ref["platform"] == target_connector_id:
                 return ref["emoji_id"]
         return None
 
-    async def forget(self, platform: Platform, emoji_id: str) -> None:
-        """Drop `platform`'s ref from the group containing (platform, emoji_id) —
-        called when that platform's copy is deleted. The group itself is only
-        deleted once every platform's copy is gone; a ref still remaining
+    async def forget(self, connector_id: str, emoji_id: str) -> None:
+        """Drop `connector_id`'s ref from the group containing (connector_id, emoji_id) —
+        called when that connector's copy is deleted. The group itself is only
+        deleted once every connector's copy is gone; a ref still remaining
         elsewhere means a reaction using it there should keep resolving."""
         doc = await self._collection.find_one(
-            {"refs": {"$elemMatch": {"platform": platform.value, "emoji_id": emoji_id}}}
+            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
         )
         if doc is None:
             return
         remaining = [
-            ref for ref in doc["refs"] if not (ref["platform"] == platform.value and ref["emoji_id"] == emoji_id)
+            ref for ref in doc["refs"] if not (ref["platform"] == connector_id and ref["emoji_id"] == emoji_id)
         ]
         if remaining:
             await self._collection.update_one({"_id": doc["_id"]}, {"$set": {"refs": remaining}})
@@ -97,4 +99,4 @@ class EmojiMappingRepository:
 
 
 def _to_doc(ref: EmojiRef) -> dict:
-    return {"platform": ref.platform.value, "emoji_id": ref.emoji_id, "name": ref.name}
+    return {"platform": ref.connector_id, "emoji_id": ref.emoji_id, "name": ref.name}

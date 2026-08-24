@@ -1,21 +1,23 @@
-"""Base classes for the per-endpoint sender/receiver services.
+"""Base classes for the per-connector sender/receiver services.
 
-Each bridged endpoint (Discord, Stoat public, Stoat self-hosted, IRC) gets:
-  - a *sender*, which listens to the endpoint and turns native events into
+Each bridged connector (a configured Discord guild, Stoat server, or IRC
+network - any number of each, per config.yaml) gets:
+  - a *sender*, which listens to the connector and turns native events into
     `StandardMessage`s (via the `on_message` callback given at construction)
   - a *receiver*, which takes a `StandardMessage` and posts it into the
-    endpoint, returning the native message ID of what it posted
+    connector, returning the native message ID of what it posted
 
 Platform-specific particularities (markdown stripping, attachment URL
 insertion, message-length splitting, etc.) belong in each receiver's
-`receive()` — see the TODOs in the per-platform modules in this package.
+`receive()` — see the TODOs in the per-connector-kind modules in this
+package.
 
 Reactions and custom emoji are optional receiver capabilities, not every
-endpoint's concern (IRC has neither) — a receiver opts in by setting
+connector kind's concern (IRC has neither) — a receiver opts in by setting
 `supports_reactions` / `supports_emoji` and overriding the relevant
 method(s); `BridgeCoordinator` checks those flags before calling in, so the
-default (unsupported, method raises) is never reached for a platform that
-doesn't advertise support.
+default (unsupported, method raises) is never reached for a connector kind
+that doesn't advertise support.
 """
 
 from __future__ import annotations
@@ -25,7 +27,6 @@ from collections.abc import Awaitable, Callable
 
 from stoat_discord_bridge.models import (
     CustomEmoji,
-    Platform,
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
@@ -39,9 +40,9 @@ OnEmojiDeleted = Callable[[StandardEmojiDeleted], Awaitable[None]]
 
 
 class SenderService(ABC):
-    """Listens to one endpoint and emits StandardMessages for the bridge to relay."""
+    """Listens to one connector and emits StandardMessages for the bridge to relay."""
 
-    platform: Platform
+    connector_id: str
 
     def __init__(
         self,
@@ -61,15 +62,15 @@ class SenderService(ABC):
 
 
 class ReceiverService(ABC):
-    """Posts StandardMessages into one endpoint."""
+    """Posts StandardMessages into one connector."""
 
-    platform: Platform
+    connector_id: str
     supports_reactions: bool = False
     supports_emoji: bool = False
 
     @abstractmethod
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
-        """Post `message` into `target_channel_id` on this platform, splitting
+        """Post `message` into `target_channel_id` on this connector, splitting
         it into multiple platform posts if it exceeds that platform's
         per-message length limit.
 
@@ -89,10 +90,10 @@ class ReceiverService(ABC):
         raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
-        """Mirror `emoji` onto this platform, returning it with this platform's
+        """Mirror `emoji` onto this connector, returning it with this connector's
         native ID — or None if it can't be created here (emoji slots full,
         name taken, invalid image, etc.), which callers treat as "skip this
-        platform", not an error. Only called when `supports_emoji`."""
+        connector", not an error. Only called when `supports_emoji`."""
         raise NotImplementedError
 
 

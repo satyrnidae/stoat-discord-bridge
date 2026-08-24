@@ -1,12 +1,12 @@
-"""Tracks per-platform connection health for the bridge's sync targets, and
+"""Tracks per-connector connection health for the bridge's sync targets, and
 renders it for the `/status` (Discord, Stoat) and `STATUS` (IRC DM) commands.
 
 A target's state is derived from two inputs, kept by whichever sender/
 receiver observes them:
-  - connected: whether that platform's sender currently has a live
+  - connected: whether that connector's sender currently has a live
     connection (set from the sender's on_ready/on_disconnect handlers)
   - recent relay outcomes: whether `BridgeCoordinator` has been able to
-    successfully post into that platform's receiver lately
+    successfully post into that connector's receiver lately
 
 Shared across the asyncio event loop (Discord/Stoat senders) and the IRC
 bot's own thread (see services/irc_service.py), so mutations and reads go
@@ -19,20 +19,11 @@ import threading
 from dataclasses import dataclass, field
 from enum import Enum
 
-from stoat_discord_bridge.models import Platform
-
 # how many of the most recent relay attempts into a target factor into its state
 _WINDOW = 20
 # recent-failure counts (within _WINDOW) at which a connected target degrades/fails
 _DEGRADED_AT = 1
 _FAILING_AT = 5
-
-_LABELS = {
-    Platform.DISCORD: "Discord",
-    Platform.STOAT_PUBLIC: "Stoat (public)",
-    Platform.STOAT_SELFHOSTED: "Stoat (self-hosted)",
-    Platform.IRC: "IRC",
-}
 
 
 class HealthState(str, Enum):
@@ -69,31 +60,36 @@ class HealthTracker:
     """Shared by every sender/receiver and `BridgeCoordinator`; the status
     commands read from this to answer `/status` / `STATUS`."""
 
-    def __init__(self, platforms: list[Platform]) -> None:
+    def __init__(self, labels: dict[str, str]) -> None:
+        # `labels` maps every configured connector id to its display label
+        # (from config.yaml, defaulting to the id itself) - also defines the
+        # full set of tracked connectors.
         self._lock = threading.Lock()
-        self._targets = {platform: _TargetHealth() for platform in platforms}
+        self._labels = dict(labels)
+        self._targets = {connector_id: _TargetHealth() for connector_id in labels}
 
-    def mark_connected(self, platform: Platform) -> None:
+    def mark_connected(self, connector_id: str) -> None:
         with self._lock:
-            self._targets[platform].connected = True
+            self._targets[connector_id].connected = True
 
-    def mark_disconnected(self, platform: Platform) -> None:
+    def mark_disconnected(self, connector_id: str) -> None:
         with self._lock:
-            self._targets[platform].connected = False
+            self._targets[connector_id].connected = False
 
-    def record_success(self, platform: Platform) -> None:
+    def record_success(self, connector_id: str) -> None:
         with self._lock:
-            self._targets[platform].record(True)
+            self._targets[connector_id].record(True)
 
-    def record_error(self, platform: Platform) -> None:
+    def record_error(self, connector_id: str) -> None:
         with self._lock:
-            self._targets[platform].record(False)
+            self._targets[connector_id].record(False)
 
-    def snapshot(self) -> dict[Platform, HealthState]:
+    def snapshot(self) -> dict[str, HealthState]:
         with self._lock:
-            return {platform: target.state for platform, target in self._targets.items()}
+            return {connector_id: target.state for connector_id, target in self._targets.items()}
 
     def render(self) -> str:
         return "\n".join(
-            f"{_ICONS[state]} {_LABELS[platform]}: {state.value}" for platform, state in self.snapshot().items()
+            f"{_ICONS[state]} {self._labels[connector_id]}: {state.value}"
+            for connector_id, state in self.snapshot().items()
         )

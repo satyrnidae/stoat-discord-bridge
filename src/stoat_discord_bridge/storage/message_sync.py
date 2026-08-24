@@ -1,8 +1,12 @@
-"""Cross-platform message ID references, keyed by bridge group + origin message.
+"""Cross-connector message ID references, keyed by bridge group + origin message.
 
 Lets a future edit/delete-sync feature look up "this Discord message ID
 corresponds to these Stoat/IRC message IDs" (and vice versa). Not consumed
 anywhere yet — `BridgeCoordinator` just records each relay here.
+
+The Mongo field is still named "platform" (pre-dating the move to free-form
+connector ids) for the same backward-compatibility reason noted in
+channel_mappings.py.
 """
 
 from __future__ import annotations
@@ -11,12 +15,10 @@ from dataclasses import dataclass
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from stoat_discord_bridge.models import Platform
-
 
 @dataclass(frozen=True)
 class MessageRef:
-    platform: Platform
+    connector_id: str
     channel_id: str
     message_id: str
 
@@ -34,20 +36,20 @@ class MessageSyncRepository:
             }
         )
 
-    async def find_group(self, platform: Platform, channel_id: str, message_id: str) -> list[MessageRef] | None:
-        """Given any one platform's message ID, find every ref (origin + relayed) in its sync group."""
+    async def find_group(self, connector_id: str, channel_id: str, message_id: str) -> list[MessageRef] | None:
+        """Given any one connector's message ID, find every ref (origin + relayed) in its sync group."""
         doc = await self._collection.find_one(
             {
                 "$or": [
                     {
-                        "origin.platform": platform.value,
+                        "origin.platform": connector_id,
                         "origin.channel_id": channel_id,
                         "origin.message_id": message_id,
                     },
                     {
                         "relayed": {
                             "$elemMatch": {
-                                "platform": platform.value,
+                                "platform": connector_id,
                                 "channel_id": channel_id,
                                 "message_id": message_id,
                             }
@@ -62,8 +64,8 @@ class MessageSyncRepository:
 
 
 def _to_doc(ref: MessageRef) -> dict:
-    return {"platform": ref.platform.value, "channel_id": ref.channel_id, "message_id": ref.message_id}
+    return {"platform": ref.connector_id, "channel_id": ref.channel_id, "message_id": ref.message_id}
 
 
 def _from_doc(doc: dict) -> MessageRef:
-    return MessageRef(platform=Platform(doc["platform"]), channel_id=doc["channel_id"], message_id=doc["message_id"])
+    return MessageRef(connector_id=doc["platform"], channel_id=doc["channel_id"], message_id=doc["message_id"])
