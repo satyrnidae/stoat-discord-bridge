@@ -1,12 +1,18 @@
 """Discord sender/receiver services.
 
+Instantiated once per configured Discord connector (config.yaml's `discord`
+list can have any number of entries) since each guild needs its own
+discord.Client/command tree.
+
 Sender: a discord.Client that listens for messages in bridged channels and
 emits StandardMessages.
 
 Receiver: posts StandardMessages into Discord "as" the originating
 Stoat/IRC user, via a per-channel Discord webhook (username + avatar
-override) rather than the bridge bot's own identity — so `target_channel_id`
-here is a webhook URL, not a Discord channel ID.
+override) rather than the bridge bot's own identity. `target_channel_id`
+is a real Discord channel id; the receiver resolves/creates that channel's
+webhook itself (cached per channel), so `/link-channel` never needs an
+admin to already have a webhook URL in hand.
 """
 
 from __future__ import annotations
@@ -15,13 +21,14 @@ import re
 
 import aiohttp
 import discord
+from discord import app_commands
 
+from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure, clip_name
-from stoat_discord_bridge.config import DiscordConfig
+from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.models import (
     Attachment,
     CustomEmoji,
-    Platform,
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
@@ -86,20 +93,23 @@ class _DiscordClient(discord.Client):
 
 
 class DiscordSenderService(SenderService):
-    platform = Platform.DISCORD
-
     def __init__(
         self,
-        config: DiscordConfig,
+        config: DiscordConnectorConfig,
         on_message: OnMessage,
         health: HealthTracker,
         on_reaction: OnReaction | None = None,
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
+        linker: ChannelLinker | None = None,
     ) -> None:
+        # linker is only needed to serve `/link-channel`; None is accepted
+        # (e.g. for tests) but that command will then report itself unconfigured.
         SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
         self._config = config
+        self.connector_id = config.id
         self._health = health
+        self._linker = linker
         self._commands_synced = False
         self._guild = discord.Object(id=config.guild_id)
         self._client = _DiscordClient(self)
@@ -111,22 +121,42 @@ class DiscordSenderService(SenderService):
         async def status_command(interaction: discord.Interaction) -> None:
             await interaction.response.send_message(self._health.render(), ephemeral=True)
 
+        @self.tree.command(
+            name="link-channel",
+            description="Link a channel from another bridge connector to this channel",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            source="Connector id to link from (see /status for configured connectors)",
+            source_id="Channel id on that connector",
+            destination_id="Channel id on this connector (defaults to the current channel)",
+        )
+        async def link_channel_command(
+            interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None = None
+        ) -> None:
+            await self._handle_link_channel(interaction, source, source_id, destination_id)
+
+    @property
+    def client(self) -> discord.Client:
+        return self._client
+
     async def _handle_ready(self) -> None:
-        self._health.mark_connected(self.platform)
+        self._health.mark_connected(self.connector_id)
         if not self._commands_synced:
             await self.tree.sync(guild=self._guild)
             self._commands_synced = True
-        print(f"[discord] logged in as {self._client.user} (guild {self._config.guild_id})")
+        print(f"[discord:{self.connector_id}] logged in as {self._client.user} (guild {self._config.guild_id})")
 
     async def _handle_disconnect(self) -> None:
-        self._health.mark_disconnected(self.platform)
+        self._health.mark_disconnected(self.connector_id)
 
     async def _handle_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
         if message.guild is None or message.guild.id != self._config.guild_id:
             return
-        await self._on_message(_to_standard_message(message))
+        await self._on_message(_to_standard_message(message, self.connector_id))
 
     async def _handle_raw_reaction(self, payload: discord.RawReactionActionEvent, *, added: bool) -> None:
         if self._on_reaction is None or payload.guild_id != self._config.guild_id:
@@ -135,7 +165,7 @@ class DiscordSenderService(SenderService):
             return  # the bridge's own mirrored reaction landing back here - drop it, don't re-relay
         if self._is_other_bot(payload):
             return
-        await self._on_reaction(_to_standard_reaction(payload, added=added))
+        await self._on_reaction(_to_standard_reaction(payload, self.connector_id, added=added))
 
     def _is_other_bot(self, payload: discord.RawReactionActionEvent) -> bool:
         # `payload.member` is only ever populated for REACTION_ADD - discord.py
@@ -164,7 +194,7 @@ class DiscordSenderService(SenderService):
                     continue  # the bridge's own mirrored emoji landing back here - drop it, don't re-mirror
                 await self._on_emoji_created(
                     StandardEmojiCreated(
-                        origin_platform=Platform.DISCORD,
+                        origin_connector_id=self.connector_id,
                         emoji=CustomEmoji(
                             native_id=str(emoji.id), name=emoji.name, image_url=str(emoji.url), animated=emoji.animated
                         ),
@@ -176,7 +206,7 @@ class DiscordSenderService(SenderService):
                 if emoji.id in after_ids:
                     continue
                 await self._on_emoji_deleted(
-                    StandardEmojiDeleted(origin_platform=Platform.DISCORD, native_id=str(emoji.id))
+                    StandardEmojiDeleted(origin_connector_id=self.connector_id, native_id=str(emoji.id))
                 )
 
     async def start(self) -> None:
@@ -184,6 +214,15 @@ class DiscordSenderService(SenderService):
 
     async def close(self) -> None:
         await self._client.close()
+
+    async def get_channel_name(self, channel_id: str) -> str | None:
+        """Best-effort channel-id -> name lookup, used as this connector's
+        `ConnectorInfo.resolve_channel_name` for `/link-channel`."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except (discord.HTTPException, discord.NotFound, ValueError):
+            return None
+        return getattr(channel, "name", None)
 
     def snapshot_guild_structure(self) -> GuildStructure:
         """Build a platform-neutral snapshot of the bridged guild's current
@@ -194,14 +233,14 @@ class DiscordSenderService(SenderService):
         Forum posts are limited to what's currently active in cache —
         archived posts aren't paged in.
         """
-        guild = self.get_guild(self._config.guild_id)
+        guild = self._client.get_guild(self._config.guild_id)
         if guild is None:
             raise RuntimeError("Discord guild isn't cached yet — the bridge may still be connecting")
 
         groups: list[GroupSpec] = []
         for category in guild.categories:
             channels = [
-                ChannelSpec(name=clip_name(ch.name))
+                ChannelSpec(name=clip_name(ch.name), source_channel_id=str(ch.id))
                 for ch in category.channels
                 if isinstance(ch, (discord.TextChannel, discord.VoiceChannel))
             ]
@@ -211,35 +250,56 @@ class DiscordSenderService(SenderService):
         groups.extend(
             GroupSpec(
                 name=clip_name(forum.name),
-                channels=[ChannelSpec(name=clip_name(thread.name)) for thread in forum.threads],
+                channels=[
+                    ChannelSpec(name=clip_name(thread.name), source_channel_id=str(thread.id))
+                    for thread in forum.threads
+                ],
             )
             for forum in guild.forums
         )
 
         ungrouped = [
-            ChannelSpec(name=clip_name(ch.name))
+            ChannelSpec(name=clip_name(ch.name), source_channel_id=str(ch.id))
             for ch in (*guild.text_channels, *guild.voice_channels)
             if ch.category is None
         ]
 
         return GuildStructure(groups=groups, ungrouped_channels=ungrouped)
 
+    async def _handle_link_channel(
+        self, interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None
+    ) -> None:
+        if self._linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        try:
+            summary = await self._linker.link_channel(
+                local_connector=self.connector_id,
+                local_channel_id=str(interaction.channel_id),
+                local_channel_name=getattr(interaction.channel, "name", str(interaction.channel_id)),
+                source=source,
+                source_id=source_id,
+                destination_id=destination_id,
+            )
+        except LinkError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
 
 class DiscordReceiverService(ReceiverService):
-    platform = Platform.DISCORD
     supports_reactions = True
     supports_emoji = True
 
-    def __init__(self, client: discord.Client, guild_id: int) -> None:
+    def __init__(self, client: discord.Client, guild_id: int, connector_id: str) -> None:
         self._client = client
         self._guild_id = guild_id
+        self.connector_id = connector_id
         self._session: aiohttp.ClientSession | None = None
-        self._webhook_channel_ids: dict[str, int] = {}
+        self._webhooks: dict[str, discord.Webhook] = {}
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-        webhook = discord.Webhook.from_url(target_channel_id, session=self._session)
+        webhook = await self._get_or_create_webhook(target_channel_id)
         username = _sanitize_username(message.sender_name)
         ids: list[str] = []
         for chunk in chunk_content(content_with_attachments(message), _CONTENT_LIMIT):
@@ -282,19 +342,20 @@ class DiscordReceiverService(ReceiverService):
             native_id=str(created.id), name=created.name, image_url=str(created.url), animated=created.animated
         )
 
+    async def _get_or_create_webhook(self, channel_id: str) -> discord.Webhook:
+        webhook = self._webhooks.get(channel_id)
+        if webhook is not None:
+            return webhook
+        channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        existing = next((w for w in await channel.webhooks() if w.user == self._client.user), None)
+        webhook = existing or await channel.create_webhook(name="Bridge")
+        self._webhooks[channel_id] = webhook
+        return webhook
+
     async def _get_partial_message(self, target_channel_id: str, target_message_id: str) -> discord.PartialMessage:
-        # `target_channel_id` here is a webhook URL (see receive()) - resolve
-        # it to a real channel ID once, since reactions need the bot client
-        # (webhooks can't react), not the webhook.
-        channel_id = self._webhook_channel_ids.get(target_channel_id)
-        if channel_id is None:
-            if self._session is None:
-                self._session = aiohttp.ClientSession()
-            webhook = discord.Webhook.from_url(target_channel_id, session=self._session)
-            fetched = await webhook.fetch()
-            channel_id = fetched.channel_id
-            self._webhook_channel_ids[target_channel_id] = channel_id
-        channel = self._client.get_channel(channel_id) or await self._client.fetch_channel(channel_id)
+        channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
+            int(target_channel_id)
+        )
         return channel.get_partial_message(int(target_message_id))
 
     async def close(self) -> None:
@@ -303,9 +364,9 @@ class DiscordReceiverService(ReceiverService):
             self._session = None
 
 
-def _to_standard_message(message: discord.Message) -> StandardMessage:
+def _to_standard_message(message: discord.Message, connector_id: str) -> StandardMessage:
     return StandardMessage(
-        origin_platform=Platform.DISCORD,
+        origin_connector_id=connector_id,
         origin_channel_id=str(message.channel.id),
         channel_name=getattr(message.channel, "name", str(message.channel.id)),
         sender_name=message.author.display_name,
@@ -319,7 +380,7 @@ def _to_standard_message(message: discord.Message) -> StandardMessage:
     )
 
 
-def _to_standard_reaction(payload: discord.RawReactionActionEvent, *, added: bool) -> StandardReaction:
+def _to_standard_reaction(payload: discord.RawReactionActionEvent, connector_id: str, *, added: bool) -> StandardReaction:
     emoji = payload.emoji
     emoji_repr: str | CustomEmoji
     if emoji.is_custom_emoji():
@@ -329,7 +390,7 @@ def _to_standard_reaction(payload: discord.RawReactionActionEvent, *, added: boo
     else:
         emoji_repr = emoji.name  # plain unicode emoji
     return StandardReaction(
-        origin_platform=Platform.DISCORD,
+        origin_connector_id=connector_id,
         origin_channel_id=str(payload.channel_id),
         origin_message_id=str(payload.message_id),
         emoji=emoji_repr,

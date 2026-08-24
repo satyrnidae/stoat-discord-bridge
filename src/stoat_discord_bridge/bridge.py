@@ -1,22 +1,22 @@
-"""Wires each endpoint's sender service (listens, emits StandardMessages) to
-every other endpoint's receiver service (posts into that platform), and
+"""Wires each connector's sender service (listens, emits StandardMessages) to
+every other connector's receiver service (posts into that platform), and
 records what got relayed where via MongoDB for sync tracking.
 
-Discord -> Stoat channel/category *structure* mirroring is available as the
-Stoat `/mirror-channels` admin command (see services/stoat_service.py and
-channel_structure.py). It only creates matching channels/categories; it
-does not wire up bridging between them — channel mappings are still read
-from Mongo and must be seeded by hand via ChannelMappingRepository.upsert().
+Nothing links automatically: `ChannelMappingRepository` rows only come from
+the `/link-channel` and `/mirror-channels` admin commands (see
+admin_commands.py and each services/*.py module's command handler).
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
+from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, StructureMirrorer
+from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.config import BridgeConfig
 from stoat_discord_bridge.models import (
     CustomEmoji,
-    Platform,
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
@@ -46,8 +46,8 @@ from stoat_discord_bridge.storage.mongo import MongoStore
 
 
 class BridgeCoordinator:
-    """Routes an incoming StandardMessage to every other platform's channel
-    mapped into the same bridge group, via that platform's ReceiverService."""
+    """Routes an incoming StandardMessage to every other connector's channel
+    mapped into the same bridge group, via that connector's ReceiverService."""
 
     def __init__(
         self,
@@ -56,20 +56,20 @@ class BridgeCoordinator:
         emoji_mappings: EmojiMappingRepository,
         health: HealthTracker,
     ) -> None:
-        self._receivers: dict[Platform, ReceiverService] = {}
+        self._receivers: dict[str, ReceiverService] = {}
         self._channel_mappings = channel_mappings
         self._message_sync = message_sync
         self._emoji_mappings = emoji_mappings
         self._health = health
 
     def register_receiver(self, receiver: ReceiverService) -> None:
-        """Every bridged platform's receiver must be registered before any
+        """Every bridged connector's receiver must be registered before any
         sender's start() begins emitting messages into handle_incoming()."""
-        self._receivers[receiver.platform] = receiver
+        self._receivers[receiver.connector_id] = receiver
 
     async def handle_incoming(self, message: StandardMessage) -> None:
         bridge_group = await self._channel_mappings.get_bridge_group(
-            message.origin_platform, message.origin_channel_id
+            message.origin_connector_id, message.origin_channel_id
         )
         if bridge_group is None:
             return  # this channel isn't bridged
@@ -79,62 +79,62 @@ class BridgeCoordinator:
             *(
                 self._relay_to(message, target)
                 for target in targets
-                if target.platform != message.origin_platform
+                if target.connector_id != message.origin_connector_id
             )
         )
         relayed = [ref for refs in per_target for ref in refs]
 
         if relayed:
             origin = MessageRef(
-                platform=message.origin_platform,
+                connector_id=message.origin_connector_id,
                 channel_id=message.origin_channel_id,
                 message_id=message.message_id,
             )
             await self._message_sync.record(bridge_group, origin, relayed)
 
     async def _relay_to(self, message: StandardMessage, target: ChannelMapping) -> list[MessageRef]:
-        receiver = self._receivers.get(target.platform)
+        receiver = self._receivers.get(target.connector_id)
         if receiver is None:
-            print(f"[bridge] no receiver registered for {target.platform.value}, dropping relay")
+            print(f"[bridge] no receiver registered for {target.connector_id}, dropping relay")
             return []
         try:
             native_ids = await receiver.receive(message, target_channel_id=target.channel_id)
         except PartialRelayError as exc:
-            print(f"[bridge] relay to {target.platform.value} partially failed: {exc.cause}")
-            self._health.record_error(target.platform)
+            print(f"[bridge] relay to {target.connector_id} partially failed: {exc.cause}")
+            self._health.record_error(target.connector_id)
             native_ids = exc.partial_ids
         except Exception as exc:
-            print(f"[bridge] relay to {target.platform.value} failed: {exc}")
-            self._health.record_error(target.platform)
+            print(f"[bridge] relay to {target.connector_id} failed: {exc}")
+            self._health.record_error(target.connector_id)
             return []
         else:
-            self._health.record_success(target.platform)
+            self._health.record_success(target.connector_id)
         return [
-            MessageRef(platform=target.platform, channel_id=target.channel_id, message_id=native_id)
+            MessageRef(connector_id=target.connector_id, channel_id=target.channel_id, message_id=native_id)
             for native_id in native_ids
         ]
 
     async def handle_reaction(self, reaction: StandardReaction) -> None:
-        """Relay a reaction add/remove onto every other platform's copy of
+        """Relay a reaction add/remove onto every other connector's copy of
         the same message, translating custom emoji IDs along the way.
         Silently does nothing if the message was never bridged, or a given
         target never got a matching copy of the emoji - both are expected,
         not error conditions."""
         group = await self._message_sync.find_group(
-            reaction.origin_platform, reaction.origin_channel_id, reaction.origin_message_id
+            reaction.origin_connector_id, reaction.origin_channel_id, reaction.origin_message_id
         )
         if group is None:
             return  # this message isn't tracked as bridged
 
         for ref in group:
-            if ref.platform == reaction.origin_platform:
+            if ref.connector_id == reaction.origin_connector_id:
                 continue
-            receiver = self._receivers.get(ref.platform)
+            receiver = self._receivers.get(ref.connector_id)
             if receiver is None or not receiver.supports_reactions:
                 continue
-            emoji = await self._translate_emoji(reaction.origin_platform, reaction.emoji, ref.platform)
+            emoji = await self._translate_emoji(reaction.origin_connector_id, reaction.emoji, ref.connector_id)
             if emoji is None:
-                continue  # custom emoji missing on this platform - ignore per spec
+                continue  # custom emoji missing on this connector - ignore per spec
             try:
                 if reaction.added:
                     await receiver.add_reaction(
@@ -145,47 +145,49 @@ class BridgeCoordinator:
                         target_channel_id=ref.channel_id, target_message_id=ref.message_id, emoji=emoji
                     )
             except Exception as exc:
-                print(f"[bridge] reaction relay to {ref.platform.value} failed: {exc}")
+                print(f"[bridge] reaction relay to {ref.connector_id} failed: {exc}")
 
     async def _translate_emoji(
-        self, origin_platform: Platform, emoji: str | CustomEmoji, target_platform: Platform
+        self, origin_connector_id: str, emoji: str | CustomEmoji, target_connector_id: str
     ) -> str | CustomEmoji | None:
         if isinstance(emoji, str):
             return emoji  # unicode emoji is universal, no translation needed
-        native_id = await self._emoji_mappings.find_equivalent(origin_platform, emoji.native_id, target_platform)
+        native_id = await self._emoji_mappings.find_equivalent(origin_connector_id, emoji.native_id, target_connector_id)
         if native_id is None:
-            return None  # never mirrored to this platform (or mirroring failed) - caller should skip
+            return None  # never mirrored to this connector (or mirroring failed) - caller should skip
         return CustomEmoji(native_id=native_id, name=emoji.name, image_url=emoji.image_url, animated=emoji.animated)
 
     async def handle_emoji_created(self, created: StandardEmojiCreated) -> None:
-        """Mirror a newly created custom emoji onto every other platform
-        that supports custom emoji, skipping (not failing) any platform that
+        """Mirror a newly created custom emoji onto every other connector
+        that supports custom emoji, skipping (not failing) any connector that
         can't create it - full emoji slots, a rejected name, etc.
 
-        Guarded to run at most once per (origin_platform, native_id) via an
-        atomic reserve rather than a check-then-act exists()-then-record()
+        Guarded to run at most once per (origin_connector_id, native_id) via
+        an atomic reserve rather than a check-then-act exists()-then-record()
         pair: a sender's own self-echo filtering isn't fully trustworthy
         (e.g. Discord's is based on `emoji.user`, which the gateway payload
         doesn't reliably populate), and two such duplicate events arriving
         close together could otherwise both pass a plain existence check
         before either recorded its result, mirroring the same emoji twice."""
-        origin = EmojiRef(platform=created.origin_platform, emoji_id=created.emoji.native_id, name=created.emoji.name)
+        origin = EmojiRef(
+            connector_id=created.origin_connector_id, emoji_id=created.emoji.native_id, name=created.emoji.name
+        )
         group_id = await self._emoji_mappings.try_reserve(origin)
         if group_id is None:
             return  # already known, or a concurrent call just won the race
 
         mirrored_refs: list[EmojiRef] = []
-        for platform, receiver in self._receivers.items():
-            if platform == created.origin_platform or not receiver.supports_emoji:
+        for connector_id, receiver in self._receivers.items():
+            if connector_id == created.origin_connector_id or not receiver.supports_emoji:
                 continue
             try:
                 mirrored = await receiver.create_emoji(created.emoji)
             except Exception as exc:
-                print(f"[bridge] emoji mirror to {platform.value} failed: {exc}")
+                print(f"[bridge] emoji mirror to {connector_id} failed: {exc}")
                 continue
             if mirrored is None:
-                continue  # this platform couldn't create it - skip per spec
-            mirrored_refs.append(EmojiRef(platform=platform, emoji_id=mirrored.native_id, name=mirrored.name))
+                continue  # this connector couldn't create it - skip per spec
+            mirrored_refs.append(EmojiRef(connector_id=connector_id, emoji_id=mirrored.native_id, name=mirrored.name))
 
         if mirrored_refs:
             await self._emoji_mappings.add_refs(group_id, mirrored_refs)
@@ -193,12 +195,12 @@ class BridgeCoordinator:
             await self._emoji_mappings.release(group_id)
 
     async def handle_emoji_deleted(self, deleted: StandardEmojiDeleted) -> None:
-        """A custom emoji was removed on one platform. Never mirror the
-        deletion onto other platforms - a copy still in use elsewhere should
-        keep working there. Just drop this platform's entry from the mapping
+        """A custom emoji was removed on one connector. Never mirror the
+        deletion onto other connectors - a copy still in use elsewhere should
+        keep working there. Just drop this connector's entry from the mapping
         group; EmojiMappingRepository.forget() only deletes the whole group
-        once every platform's copy is gone."""
-        await self._emoji_mappings.forget(deleted.origin_platform, deleted.native_id)
+        once every connector's copy is gone."""
+        await self._emoji_mappings.forget(deleted.origin_connector_id, deleted.native_id)
 
 
 async def run(config: BridgeConfig) -> None:
@@ -207,61 +209,69 @@ async def run(config: BridgeConfig) -> None:
     message_sync = MessageSyncRepository(mongo.db)
     emoji_mappings = EmojiMappingRepository(mongo.db)
     await emoji_mappings.ensure_indexes()
-    health = HealthTracker(list(Platform))
+
+    all_connectors = (*config.discord, *config.stoat, *config.irc)
+    health = HealthTracker({c.id: c.label for c in all_connectors})
 
     coordinator = BridgeCoordinator(channel_mappings, message_sync, emoji_mappings, health)
 
-    discord_sender = DiscordSenderService(
-        config.discord,
-        on_message=coordinator.handle_incoming,
-        health=health,
-        on_reaction=coordinator.handle_reaction,
-        on_emoji_created=coordinator.handle_emoji_created,
-        on_emoji_deleted=coordinator.handle_emoji_deleted,
-    )
-    stoat_public_sender = StoatSenderService(
-        config.stoat_public,
-        Platform.STOAT_PUBLIC,
-        on_message=coordinator.handle_incoming,
-        health=health,
-        on_reaction=coordinator.handle_reaction,
-        on_emoji_created=coordinator.handle_emoji_created,
-        on_emoji_deleted=coordinator.handle_emoji_deleted,
-        guild_structure_provider=discord_sender.snapshot_guild_structure,
-    )
-    stoat_selfhosted_sender = StoatSenderService(
-        config.stoat_selfhosted,
-        Platform.STOAT_SELFHOSTED,
-        on_message=coordinator.handle_incoming,
-        health=health,
-        on_reaction=coordinator.handle_reaction,
-        on_emoji_created=coordinator.handle_emoji_created,
-        on_emoji_deleted=coordinator.handle_emoji_deleted,
-        guild_structure_provider=discord_sender.snapshot_guild_structure,
-    )
-    irc_channels = [m.channel_id for m in await channel_mappings.get_all_for_platform(Platform.IRC)]
-    irc_sender = IrcSenderService(config.irc, irc_channels, on_message=coordinator.handle_incoming, health=health)
+    # Populated in place as each sender/receiver below is constructed;
+    # ChannelLinker/StructureMirrorer only read these once a command fires
+    # (well after `run()` finishes wiring), so construction order doesn't
+    # matter.
+    connector_infos: dict[str, ConnectorInfo] = {}
+    structure_providers: dict[str, Callable[[], GuildStructure]] = {}
+    linker = ChannelLinker(channel_mappings, connector_infos)
+    mirrorer = StructureMirrorer(structure_providers)
 
-    discord_receiver = DiscordReceiverService(client=discord_sender, guild_id=config.discord.guild_id)
-    coordinator.register_receiver(discord_receiver)
-    coordinator.register_receiver(StoatReceiverService(stoat_public_sender))
-    coordinator.register_receiver(StoatReceiverService(stoat_selfhosted_sender))
-    coordinator.register_receiver(IrcReceiverService(irc_sender))
+    senders: list = []
+    closables: list = []
+
+    for dc in config.discord:
+        sender = DiscordSenderService(
+            dc,
+            on_message=coordinator.handle_incoming,
+            health=health,
+            on_reaction=coordinator.handle_reaction,
+            on_emoji_created=coordinator.handle_emoji_created,
+            on_emoji_deleted=coordinator.handle_emoji_deleted,
+            linker=linker,
+        )
+        structure_providers[dc.id] = sender.snapshot_guild_structure
+        receiver = DiscordReceiverService(client=sender.client, guild_id=dc.guild_id, connector_id=dc.id)
+        coordinator.register_receiver(receiver)
+        connector_infos[dc.id] = ConnectorInfo(id=dc.id, label=dc.label, resolve_channel_name=sender.get_channel_name)
+        senders.append(sender)
+        closables.extend([receiver, sender])
+
+    for sc in config.stoat:
+        sender = StoatSenderService(
+            sc,
+            on_message=coordinator.handle_incoming,
+            health=health,
+            on_reaction=coordinator.handle_reaction,
+            on_emoji_created=coordinator.handle_emoji_created,
+            on_emoji_deleted=coordinator.handle_emoji_deleted,
+            linker=linker,
+            mirrorer=mirrorer,
+        )
+        coordinator.register_receiver(StoatReceiverService(sender))
+        connector_infos[sc.id] = ConnectorInfo(id=sc.id, label=sc.label, resolve_channel_name=sender.get_channel_name)
+        senders.append(sender)
+        closables.append(sender)
+
+    for ic in config.irc:
+        boot_channels = [m.channel_id for m in await channel_mappings.get_all_for_connector(ic.id)]
+        sender = IrcSenderService(
+            ic, boot_channels, on_message=coordinator.handle_incoming, health=health, linker=linker
+        )
+        coordinator.register_receiver(IrcReceiverService(sender))
+        connector_infos[ic.id] = ConnectorInfo(id=ic.id, label=ic.label, on_channel_linked=sender.join_channel)
+        senders.append(sender)
+        closables.append(sender)
 
     try:
-        await asyncio.gather(
-            discord_sender.start(),
-            stoat_public_sender.start(),
-            stoat_selfhosted_sender.start(),
-            irc_sender.start(),
-        )
+        await asyncio.gather(*(sender.start() for sender in senders))
     finally:
-        await discord_receiver.close()
-        await asyncio.gather(
-            discord_sender.close(),
-            stoat_public_sender.close(),
-            stoat_selfhosted_sender.close(),
-            irc_sender.close(),
-            return_exceptions=True,
-        )
+        await asyncio.gather(*(closable.close() for closable in closables), return_exceptions=True)
         mongo.close()

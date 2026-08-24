@@ -18,6 +18,7 @@ _NAME_LIMIT = 32
 @dataclass(frozen=True)
 class ChannelSpec:
     name: str
+    source_channel_id: str  # native channel/thread id on the source connector, for auto-linking
 
 
 @dataclass(frozen=True)
