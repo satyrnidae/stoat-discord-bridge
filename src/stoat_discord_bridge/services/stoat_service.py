@@ -125,6 +125,9 @@ class StoatSenderService(SenderService):
     def get_channel(self, channel_id: str, *, partial: bool = False):
         return self._client.get_channel(channel_id, partial=partial)
 
+    def get_server(self, server_id: str, *, partial: bool = False):
+        return self._client.get_server(server_id, partial=partial)
+
     async def get_channel_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> name lookup, used as this connector's
         `ConnectorInfo.resolve_channel_name` for `/link-channel`.
