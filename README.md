@@ -37,6 +37,24 @@ copy config.yaml.example config.yaml
 python -m stoat_discord_bridge
 ```
 
+## Docker
+
+```powershell
+copy .env.example .env
+copy config.yaml.example config.yaml
+# fill in both as above (MONGO__URI in .env can be left as-is or omitted -
+# docker-compose.yml always points the bridge at the mongo container
+# below, overriding whatever .env says), then:
+docker compose up --build
+```
+
+Runs the bridge alongside a MongoDB instance (`mongo:7`, data persisted in
+the `mongo-data` named volume) - no separate Mongo setup needed.
+`config.yaml` and `certs/` are bind-mounted read-only into the container
+(so editing either doesn't require a rebuild, just a restart); `.env` is
+loaded via `env_file`. Neither secrets nor `config.yaml` are baked into
+the image (see `.dockerignore`).
+
 ## Tests
 
 ```powershell

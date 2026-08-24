@@ -42,6 +42,13 @@ Discord/Stoat/IRC network integration - no live-server or full-client-mock
 tests exist yet, so those still need manual verification. No linter or CI
 config in this repo yet.
 
+Docker: `docker compose up --build` runs the bridge plus a MongoDB
+instance (data persisted in a named volume) - see the README's Docker
+section. `config.yaml`/`certs/` are bind-mounted, `.env` loaded via
+`env_file`; `docker-compose.yml` forces `MONGO__URI` to the containerized
+Mongo regardless of what `.env` says, so the bridge always gets a working
+Mongo under Docker without needing one set up separately.
+
 ## Architecture
 
 Service-based: each configured connector (a Discord guild, Stoat server, or
@@ -143,6 +150,8 @@ to map it onto IRC/Stoat's flat channel model.
 
 ```
 config.yaml                    # every configured connector (Discord/Stoat/IRC) - gitignored, see config.yaml.example
+Dockerfile / docker-compose.yml # bridge + auto-provisioned Mongo - see README's Docker section
+tests/                          # pytest suite - see README's Tests section
 src/stoat_discord_bridge/
   config.py                    # loads config.yaml, layering env vars over it per-field (see its docstring)
   models.py                    # StandardMessage - the platform-neutral message format

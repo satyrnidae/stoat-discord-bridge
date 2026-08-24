@@ -1,0 +1,20 @@
+# Secrets and per-deployment config - always mounted at runtime, never baked
+# into the image (see docker-compose.yml).
+.env
+config.yaml
+certs/
+
+.git/
+.claude/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+
+tests/
+scripts/
