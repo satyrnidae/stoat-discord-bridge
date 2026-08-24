@@ -1,0 +1,65 @@
+# Template for config.yaml - copy this file to config.yaml and fill in your
+# actual deployment's ids/hosts. config.yaml itself is gitignored.
+#
+# Any field on any connector below can come from two places, in priority
+# order (see the docstring at the top of src/stoat_discord_bridge/config.py
+# for the full rules):
+#
+#   1. An env var named `{SECTION}__{index}__{FIELD}` - Azure App
+#      Configuration / ASP.NET Core-style hierarchical binding, where
+#      `index` is the connector's 0-based position within its kind's list
+#      below (the first `stoat:` entry is index 0, the second is index 1,
+#      etc). e.g. `DISCORD__0__TOKEN`, `STOAT__1__TOKEN`,
+#      `IRC__0__NICKSERV_PASSWORD`.
+#   2. A literal value written directly in config.yaml.
+#
+# This example shows the *minimal* config.yaml this lets you get away with -
+# only `id`/`label`/`host` (things you'd never really want to source from a
+# secret store) are literal below; everything else (tokens, guild/server
+# ids, IRC credentials) is expected to come from env vars named per rule 1
+# above. You can just as easily go the other way and put everything literal
+# in config.yaml instead, as long as you don't mind that shape being visible
+# to anyone with access to this file on disk (recall config.yaml is
+# gitignored either way, so it's never visible in the repo itself).
+
+mongo:
+  uri_env: MONGODB_URI
+  db_name: stoat_discord_bridge
+
+discord:
+  - id: discord
+    label: Discord
+    # guild_id, token: set DISCORD__0__GUILD_ID / DISCORD__0__TOKEN
+
+stoat:
+  - id: stoat_public
+    label: Stoat (public)
+    # server_id, api_url, token: set STOAT__0__SERVER_ID / STOAT__0__API_URL / STOAT__0__TOKEN
+  - id: stoat_selfhosted
+    label: Stoat (self-hosted)
+    # server_id, api_url, token: set STOAT__1__SERVER_ID / STOAT__1__API_URL / STOAT__1__TOKEN
+
+irc:
+  - id: irc
+    label: IRC
+    host: irc.example.net
+    port: 6697
+    use_tls: true
+    # Applied (best-effort) to a channel only when the bridge's own JOIN is
+    # what created it - see IrcSenderService.join_channel.
+    default_channel_modes: "+HtnPR"
+    # nick, nickserv_password: set IRC__0__NICK / IRC__0__NICKSERV_PASSWORD
+    #
+    # RFC1459 ident (the "user" field of the USER command) - optional, 1-9
+    # characters, falls back to the nick if unset: IRC__0__IDENT
+    #
+    # /OPER login - deliberately a separate identity from `ident`/`nick`.
+    # Leave both unset to skip auto-opering: IRC__0__OPER_ACCOUNT / IRC__0__OPER_PASSWORD
+    #
+    # Optional TLS client certificate for networks that authenticate the
+    # connection itself (e.g. via a services cert-fp binding). Paths (not
+    # secrets themselves) can go directly in config.yaml, or via
+    # IRC__0__CLIENT_CERT_FILE / IRC__0__CLIENT_KEY_FILE if you'd rather
+    # they vary per environment:
+    client_cert_file: certs/irc-client.pem
+    client_key_file: certs/irc-client.key

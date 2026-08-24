@@ -9,7 +9,14 @@ dist/
 venv/
 
 .env
+config.yaml
 *.log
+
+# IRC client TLS cert/key material (see config.yaml's client_cert_file /
+# client_key_file)
+*.pem
+*.key
+certs/
 
 .vscode/
 .idea/
