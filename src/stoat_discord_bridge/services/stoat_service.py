@@ -189,14 +189,13 @@ class StoatSenderService(SenderService):
         if cmd == "/mirror-channel":
             await self._handle_mirror_channel(message, parts[1:])
             return
-        avatar_url = getattr(message.author, "avatar_url", None)
         await self._on_message(
             StandardMessage(
                 origin_connector_id=self.connector_id,
                 origin_channel_id=str(message.channel.id),
                 channel_name=getattr(message.channel, "name", str(message.channel.id)),
                 sender_name=getattr(message.author, "display_name", None) or message.author.tag,
-                sender_avatar_url=str(avatar_url) if avatar_url is not None else None,
+                sender_avatar_url=_avatar_url(message.author),
                 content_markdown=message.content,
                 message_id=str(message.id),
                 attachments=[],  # TODO: map stoat.py attachment objects to Attachment once confirmed
@@ -240,7 +239,7 @@ class StoatSenderService(SenderService):
                 emoji=CustomEmoji(
                     native_id=str(emoji.id),
                     name=emoji.name,
-                    image_url=emoji.image_url if hasattr(emoji, "image_url") else str(emoji.url),
+                    image_url=emoji.image.url(),
                     animated=getattr(emoji, "animated", False),
                 ),
             )
@@ -482,9 +481,6 @@ class StoatReceiverService(ReceiverService):
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         try:
-            # TODO: verify how stoat.Client exposes the connected server object -
-            # guessing a `.get_server(id, partial=True)` accessor mirroring
-            # `.get_channel(id, partial=True)`, used elsewhere in this class.
             server = self._sender.get_server(self._sender.server_id, partial=True)
             image_bytes = await _download(emoji.image_url)
             created = await server.create_emoji(name=emoji.name[:32], image=image_bytes)
@@ -493,9 +489,23 @@ class StoatReceiverService(ReceiverService):
         return CustomEmoji(
             native_id=str(created.id),
             name=created.name,
-            image_url=created.image_url if hasattr(created, "image_url") else str(created.url),
+            image_url=created.image.url(),
             animated=getattr(created, "animated", emoji.animated),
         )
+
+
+def _avatar_url(author) -> str | None:
+    """Best-effort avatar URL for a Stoat message author. stoat.py exposes
+    an avatar as an `Asset` (a `.url()` *method*, not a plain string
+    attribute - there's no `avatar_url` shortcut on User/Member, confirmed
+    against the installed stoat.py package directly), and a Member's
+    optional per-server avatar override takes priority over the
+    account-level one when set, matching how it's displayed in the client.
+    Falls back to the platform's default avatar if the author has neither."""
+    asset = getattr(author, "server_avatar", None) or getattr(author, "avatar", None)
+    if asset is not None:
+        return asset.url()
+    return getattr(author, "default_avatar_url", None)
 
 
 async def _download(url: str) -> bytes:
