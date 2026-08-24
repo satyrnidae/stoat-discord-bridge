@@ -14,7 +14,7 @@ import aiohttp
 
 import stoat
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError, StructureMirrorer
+from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError, StructureMirrorer, UserLinker
 from stoat_discord_bridge.channel_structure import ChannelSpec, GuildStructure
 from stoat_discord_bridge.config import StoatConnectorConfig
 from stoat_discord_bridge.models import (
@@ -37,7 +37,9 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     content_with_attachments,
 )
+from stoat_discord_bridge.services.mentions import rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 # Stoat message length cap (matches Discord's 2000-char webhook limit; stoat.py
 # doesn't expose its own constant, so this mirrors the documented server-side max).
@@ -102,10 +104,12 @@ class StoatSenderService(SenderService):
         linker: ChannelLinker | None = None,
         mirrorer: StructureMirrorer | None = None,
         emote_linker: "EmoteLinker | None" = None,
+        user_linker: "UserLinker | None" = None,
     ) -> None:
-        # linker/mirrorer are only needed to serve `/link-channel` and
-        # `/mirror-channels`; None is accepted (e.g. for tests) but those
-        # commands will then report themselves unconfigured.
+        # linker/mirrorer/emote_linker/user_linker are only needed to serve
+        # `/link-channel`, `/mirror-channels`, `/link-emote`, and `/link-user`;
+        # None is accepted (e.g. for tests) but those commands will then
+        # report themselves unconfigured.
         SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
         self._config = config
         self.server_id = config.server_id
@@ -114,6 +118,7 @@ class StoatSenderService(SenderService):
         self._linker = linker
         self._mirrorer = mirrorer
         self._emote_linker = emote_linker
+        self._user_linker = user_linker
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
 
@@ -162,6 +167,9 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/link-emote":
             await self._handle_link_emote(message, parts[1:])
+            return
+        if cmd == "/link-user":
+            await self._handle_link_user(message, parts[1:])
             return
         avatar_url = getattr(message.author, "avatar_url", None)
         await self._on_message(
@@ -326,6 +334,30 @@ class StoatSenderService(SenderService):
             return
         await message.channel.send(summary)
 
+    async def _handle_link_user(self, message, args: list[str], /) -> None:
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if len(args) < 3:
+            await message.channel.send("Usage: /link-user <source> <user_id> <local_user_id>")
+            return
+        source, user_id, local_user_id = args[0], args[1], args[2]
+
+        if self._user_linker is None:
+            await message.channel.send("User linking isn't configured.")
+            return
+        try:
+            summary = await self._user_linker.link_user(
+                local_connector=self.connector_id,
+                local_user_id=local_user_id,
+                source=source,
+                source_user_id=user_id,
+            )
+        except LinkError as exc:
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
     def _is_admin(self, message) -> bool:
         try:
             return bool(message.author_as_member.server_permissions.manage_server)
@@ -346,9 +378,10 @@ class StoatReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
 
-    def __init__(self, sender: StoatSenderService) -> None:
+    def __init__(self, sender: StoatSenderService, user_mappings: UserMappingRepository | None = None) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
+        self._user_mappings = user_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         channel = self._sender.get_channel(target_channel_id, partial=True)
@@ -356,8 +389,17 @@ class StoatReceiverService(ReceiverService):
             name=message.sender_name[:32],
             avatar=message.sender_avatar_url,
         )
+        content = content_with_attachments(message)
+        if self._user_mappings is not None:
+            content = await rewrite_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                user_mappings=self._user_mappings,
+            )
         ids: list[str] = []
-        for chunk in chunk_content(content_with_attachments(message), _CONTENT_LIMIT):
+        for chunk in chunk_content(content, _CONTENT_LIMIT):
             try:
                 sent = await channel.send(chunk, masquerade=masquerade)
             except Exception as exc:

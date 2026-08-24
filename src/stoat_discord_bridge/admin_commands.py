@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
+from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 
 
 class LinkError(Exception):
@@ -160,6 +161,41 @@ class EmoteLinker:
         local_info = self._connectors.get(local_connector)
         local_label = local_info.label if local_info else local_connector
         return f"Linked {source_label} emote '{source_id}' to {local_label} emote '{local_id}'."
+
+
+class UserLinker:
+    def __init__(self, user_mappings: UserMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+        self._user_mappings = user_mappings
+        self._connectors = connectors
+
+    async def link_user(self, *, local_connector: str, local_user_id: str, source: str, source_user_id: str) -> str:
+        """Link `source`'s `source_user_id` to `local_user_id` on `local_connector`.
+        Raises LinkError if `source` is unknown, the two are already the same
+        identity, or both already belong to two *different* existing link groups."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+        if source == local_connector and source_user_id == local_user_id:
+            raise LinkError("can't link a user to themselves.")
+
+        source_group = await self._user_mappings.get_link_group(source, source_user_id)
+        local_group = await self._user_mappings.get_link_group(local_connector, local_user_id)
+        if source_group and local_group and source_group != local_group:
+            raise LinkError(
+                "both users are already linked, but to different link groups - unlink one before relinking."
+            )
+        link_group = source_group or local_group or uuid.uuid4().hex
+
+        await self._user_mappings.upsert(
+            UserMapping(link_group=link_group, connector_id=source, user_id=source_user_id, display_name=source_user_id)
+        )
+        await self._user_mappings.upsert(
+            UserMapping(link_group=link_group, connector_id=local_connector, user_id=local_user_id, display_name=local_user_id)
+        )
+
+        source_label = self._connectors[source].label
+        local_info = self._connectors.get(local_connector)
+        local_label = local_info.label if local_info else local_connector
+        return f"Linked {source_label} user '{source_user_id}' to {local_label} user '{local_user_id}'."
 
 
 class StructureMirrorer:
