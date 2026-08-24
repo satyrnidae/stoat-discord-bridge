@@ -68,6 +68,15 @@ class EmojiMappingRepository:
         index from ever reserving this emoji again."""
         await self._collection.delete_one({"_id": ObjectId(group_id)})
 
+    async def get_group_id(self, connector_id: str, emoji_id: str) -> str | None:
+        """Which mapping group (if any) already contains this (connector_id,
+        emoji_id) ref - used by EmoteLinker to detect/merge with an existing
+        group when manually linking two already-existing emoji."""
+        doc = await self._collection.find_one(
+            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
+        )
+        return str(doc["_id"]) if doc else None
+
     async def find_equivalent(self, connector_id: str, emoji_id: str, target_connector_id: str) -> str | None:
         doc = await self._collection.find_one(
             {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}

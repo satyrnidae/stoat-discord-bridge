@@ -14,7 +14,7 @@ import aiohttp
 
 import stoat
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError, StructureMirrorer
+from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError, StructureMirrorer
 from stoat_discord_bridge.channel_structure import ChannelSpec, GuildStructure
 from stoat_discord_bridge.config import StoatConnectorConfig
 from stoat_discord_bridge.models import (
@@ -101,6 +101,7 @@ class StoatSenderService(SenderService):
         on_emoji_deleted: OnEmojiDeleted | None = None,
         linker: ChannelLinker | None = None,
         mirrorer: StructureMirrorer | None = None,
+        emote_linker: "EmoteLinker | None" = None,
     ) -> None:
         # linker/mirrorer are only needed to serve `/link-channel` and
         # `/mirror-channels`; None is accepted (e.g. for tests) but those
@@ -112,6 +113,7 @@ class StoatSenderService(SenderService):
         self._health = health
         self._linker = linker
         self._mirrorer = mirrorer
+        self._emote_linker = emote_linker
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
 
@@ -157,6 +159,9 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/link-channel":
             await self._handle_link_channel(message, parts[1:])
+            return
+        if cmd == "/link-emote":
+            await self._handle_link_emote(message, parts[1:])
             return
         avatar_url = getattr(message.author, "avatar_url", None)
         await self._on_message(
@@ -291,6 +296,30 @@ class StoatSenderService(SenderService):
                 source=source,
                 source_id=source_id,
                 destination_id=destination_id,
+            )
+        except LinkError as exc:
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_link_emote(self, message, args: list[str], /) -> None:
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if len(args) < 3:
+            await message.channel.send("Usage: /link-emote <source> <source_id> <local_id>")
+            return
+        source, source_id, local_id = args[:3]
+
+        if self._emote_linker is None:
+            await message.channel.send("Linking isn't configured.")
+            return
+        try:
+            summary = await self._emote_linker.link_emote(
+                local_connector=self.connector_id,
+                local_id=local_id,
+                source=source,
+                source_id=source_id,
             )
         except LinkError as exc:
             await message.channel.send(str(exc))

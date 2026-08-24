@@ -23,7 +23,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError
+from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure, clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.models import (
@@ -102,6 +102,7 @@ class DiscordSenderService(SenderService):
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
         linker: ChannelLinker | None = None,
+        emote_linker: "EmoteLinker | None" = None,
     ) -> None:
         # linker is only needed to serve `/link-channel`; None is accepted
         # (e.g. for tests) but that command will then report itself unconfigured.
@@ -110,6 +111,7 @@ class DiscordSenderService(SenderService):
         self.connector_id = config.id
         self._health = health
         self._linker = linker
+        self._emote_linker = emote_linker
         self._commands_synced = False
         self._guild = discord.Object(id=config.guild_id)
         self._client = _DiscordClient(self)
@@ -136,6 +138,22 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None = None
         ) -> None:
             await self._handle_link_channel(interaction, source, source_id, destination_id)
+
+        @self.tree.command(
+            name="link-emote",
+            description="Link a custom emoji from another bridge connector to a local custom emoji",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            source="Connector id to link from (see /status for configured connectors)",
+            source_id="Emoji id on that connector",
+            local_id="Emoji id on this connector",
+        )
+        async def link_emote_command(
+            interaction: discord.Interaction, source: str, source_id: str, local_id: str
+        ) -> None:
+            await self._handle_link_emote(interaction, source, source_id, local_id)
 
     @property
     def client(self) -> discord.Client:
@@ -280,6 +298,24 @@ class DiscordSenderService(SenderService):
                 source=source,
                 source_id=source_id,
                 destination_id=destination_id,
+            )
+        except LinkError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_link_emote(
+        self, interaction: discord.Interaction, source: str, source_id: str, local_id: str
+    ) -> None:
+        if self._emote_linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        try:
+            summary = await self._emote_linker.link_emote(
+                local_connector=self.connector_id,
+                local_id=local_id,
+                source=source,
+                source_id=source_id,
             )
         except LinkError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)

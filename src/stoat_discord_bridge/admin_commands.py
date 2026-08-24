@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
 
 
 class LinkError(Exception):
@@ -120,6 +121,45 @@ class ChannelLinker:
         if info is None or info.on_channel_linked is None:
             return
         await info.on_channel_linked(channel_id)
+
+
+class EmoteLinker:
+    def __init__(self, emoji_mappings: EmojiMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+        self._emoji_mappings = emoji_mappings
+        self._connectors = connectors
+
+    async def link_emote(self, *, local_connector: str, local_id: str, source: str, source_id: str) -> str:
+        """Link `source`'s `source_id` emoji to `local_id` on `local_connector`.
+        Raises LinkError if `source` is unknown, the two are the same emoji,
+        or both already belong to two *different* existing mapping groups."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+        if source == local_connector and source_id == local_id:
+            raise LinkError("can't link an emote to itself.")
+
+        source_group = await self._emoji_mappings.get_group_id(source, source_id)
+        local_group = await self._emoji_mappings.get_group_id(local_connector, local_id)
+        if source_group and local_group and source_group != local_group:
+            raise LinkError(
+                "both emotes are already linked, but to different mapping groups - unlink one before relinking."
+            )
+
+        if source_group is None and local_group is None:
+            group_id = await self._emoji_mappings.try_reserve(EmojiRef(connector_id=source, emoji_id=source_id, name=source_id))
+            if group_id is None:
+                # lost a race to a concurrent reservation - fall back to whatever group now owns it
+                group_id = await self._emoji_mappings.get_group_id(source, source_id)
+            await self._emoji_mappings.add_refs(group_id, [EmojiRef(connector_id=local_connector, emoji_id=local_id, name=local_id)])
+        elif local_group is None:
+            await self._emoji_mappings.add_refs(source_group, [EmojiRef(connector_id=local_connector, emoji_id=local_id, name=local_id)])
+        elif source_group is None:
+            await self._emoji_mappings.add_refs(local_group, [EmojiRef(connector_id=source, emoji_id=source_id, name=source_id)])
+        # else: source_group == local_group already - no-op, already linked
+
+        source_label = self._connectors[source].label
+        local_info = self._connectors.get(local_connector)
+        local_label = local_info.label if local_info else local_connector
+        return f"Linked {source_label} emote '{source_id}' to {local_label} emote '{local_id}'."
 
 
 class StructureMirrorer:
