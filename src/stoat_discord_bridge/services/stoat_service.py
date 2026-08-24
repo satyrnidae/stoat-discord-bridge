@@ -7,6 +7,9 @@ each Stoat deployment needs its own client/session.
 
 from __future__ import annotations
 
+import json
+import urllib.request
+
 import aiohttp
 
 import stoat
@@ -41,6 +44,30 @@ from stoat_discord_bridge.status import HealthTracker
 _CONTENT_LIMIT = 2000
 
 
+def _discover_websocket_base(http_base: str) -> str | None:
+    """stoat.Client's `websocket_base` defaults to the public hosted
+    instance's gateway (wss://events.stoat.chat/) regardless of `http_base`
+    - correct for the public deployment (whose real gateway happens to live
+    on that exact domain) but silently wrong for a self-hosted one, which
+    then just hangs forever waiting on a response from a server that was
+    never going to answer for that token, with no error to show for it.
+
+    Every deployment's REST root reports its actual gateway URL in a `ws`
+    field, so fetch that instead of assuming the public one. Best-effort:
+    returns None (stoat.Client's own default) on any failure - network
+    hiccup, unexpected shape, whatever - rather than blocking startup on it,
+    since this is more of an override than something the bridge can't run
+    without.
+    """
+    try:
+        with urllib.request.urlopen(http_base.rstrip("/"), timeout=10) as resp:
+            data = json.loads(resp.read())
+        ws = data.get("ws")
+        return ws if isinstance(ws, str) and ws else None
+    except Exception:
+        return None
+
+
 class _StoatClient(stoat.Client):
     """stoat.py dispatches events by looking up `on_<event>` attributes on the
     Client instance itself, so *something* has to subclass stoat.Client. This
@@ -49,7 +76,11 @@ class _StoatClient(stoat.Client):
     third-party client class."""
 
     def __init__(self, owner: StoatSenderService, config: StoatConnectorConfig) -> None:
-        super().__init__(token=config.bot_token, http_base=config.api_url)
+        super().__init__(
+            token=config.bot_token,
+            http_base=config.api_url,
+            websocket_base=_discover_websocket_base(config.api_url),
+        )
         self._owner = owner
 
     async def on_ready(self, event, /) -> None:
