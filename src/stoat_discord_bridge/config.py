@@ -58,6 +58,7 @@ class IrcConnectorConfig:
     use_tls: bool
     nick: str
     nickserv_password: str | None
+    default_channel_modes: str | None
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,7 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 use_tls=_as_bool(_resolve(entry, section="irc", index=index, field="use_tls"), default=True),
                 nick=nick,
                 nickserv_password=_resolve(entry, section="irc", index=index, field="nickserv_password"),
+                default_channel_modes=_resolve(entry, section="irc", index=index, field="default_channel_modes"),
             )
         )
 

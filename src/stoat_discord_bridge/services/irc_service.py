@@ -189,10 +189,21 @@ class IrcSenderService(SenderService):
         """Called by ChannelLinker right after a fresh mapping involving this
         connector is created, so a newly-linked channel is joined immediately
         instead of waiting for a restart to pick it up from Mongo."""
-        if channel not in self._channels:
+        is_new = channel not in self._channels
+        if is_new:
             self._channels.append(channel)
         if self._client.connection.is_connected():
             self._client.connection.join(channel)
+            if is_new and self._config.default_channel_modes:
+                # Only meaningful if this JOIN just created the channel (the
+                # server auto-ops the first joiner of a previously-empty
+                # channel) - relies on IRC processing commands from one
+                # connection in order, so this MODE lands only after the
+                # server has handled the JOIN above. If we're joining a
+                # channel that already existed, we won't have ops and the
+                # server just bounces this with ERR_CHANOPRIVSNEEDED, which
+                # we don't handle - a silent no-op from the bridge's side.
+                self._client.connection.mode(channel, self._config.default_channel_modes)
 
     def _schedule(self, coro: Awaitable[None]) -> None:
         # on_pubmsg/on_privmsg run on the IRC reactor's blocking select loop,
