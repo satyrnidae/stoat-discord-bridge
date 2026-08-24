@@ -13,6 +13,7 @@ to a fake that records calls instead of hitting a socket.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -214,3 +215,83 @@ async def test_ensure_channel_leaves_existing_hash_prefix_alone(monkeypatch):
 
     assert result == "#general"
     assert conn.join_calls == ["#general"]
+
+
+# ---------------------------------------------------------------- history-replay suppression
+
+
+def _notice_event(channel: str, text: str):
+    return SimpleNamespace(target=channel, arguments=[text])
+
+
+def _pubmsg_event(channel: str, nick: str = "someone", text: str = "hi"):
+    return SimpleNamespace(target=channel, arguments=[text], source=SimpleNamespace(nick=nick))
+
+
+async def test_pubnotice_unrelated_text_is_ignored():
+    sender = _make_sender()
+    sender._handle_pubnotice(_notice_event("#general", "some other server notice"))
+    assert sender._history_replay == {}
+
+
+async def test_pubnotice_history_replay_sets_budget():
+    sender = _make_sender()
+    sender._handle_pubnotice(_notice_event("#general", "Replaying up to 50 lines of pre-join history from the last 5 years"))
+    remaining, _deadline = sender._history_replay["#general"]
+    assert remaining == 50
+
+
+async def test_pubnotice_channel_key_is_case_insensitive():
+    sender = _make_sender()
+    sender._handle_pubnotice(_notice_event("#General", "Replaying up to 3 lines of pre-join history"))
+    assert "#general" in sender._history_replay
+
+
+async def test_consume_history_replay_suppresses_exactly_the_announced_count():
+    sender = _make_sender()
+    sender._handle_pubnotice(_notice_event("#general", "Replaying up to 2 lines of pre-join history"))
+
+    assert sender._consume_history_replay("#general") is True
+    assert sender._consume_history_replay("#general") is True
+    assert sender._consume_history_replay("#general") is False  # budget exhausted - back to live
+
+
+async def test_consume_history_replay_is_per_channel():
+    sender = _make_sender()
+    sender._handle_pubnotice(_notice_event("#general", "Replaying up to 1 lines of pre-join history"))
+
+    assert sender._consume_history_replay("#other") is False  # different channel, no budget
+    assert sender._consume_history_replay("#general") is True
+
+
+async def test_consume_history_replay_expires_after_the_timeout(monkeypatch):
+    sender = _make_sender()
+    sender._handle_pubnotice(_notice_event("#general", "Replaying up to 50 lines of pre-join history"))
+
+    # simulate the deadline having already passed, without a real sleep
+    remaining, _ = sender._history_replay["#general"]
+    sender._history_replay["#general"] = (remaining, 0.0)
+
+    assert sender._consume_history_replay("#general") is False
+    assert "#general" not in sender._history_replay
+
+
+async def test_handle_pubmsg_suppresses_replayed_history_but_relays_live_messages():
+    received = []
+
+    async def record(message):
+        received.append(message.content_markdown)
+
+    sender = IrcSenderService(_irc_config(), [], on_message=record, health=HealthTracker({"irc": "IRC"}))
+    sender._loop = asyncio.get_running_loop()
+
+    sender._handle_pubnotice(_notice_event("#general", "Replaying up to 1 lines of pre-join history"))
+    sender._handle_pubmsg(_pubmsg_event("#general", text="old replayed message"))
+    sender._handle_pubmsg(_pubmsg_event("#general", text="a live message"))
+
+    # run_coroutine_threadsafe schedules via call_soon_threadsafe, which
+    # needs the loop to actually cycle - a bare sleep(0) isn't reliably
+    # enough of a tick for that (unlike an in-loop create_task).
+    await asyncio.sleep(0.05)
+
+    assert received == ["a live message"]

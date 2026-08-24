@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import re
 import ssl
 import time
 from collections.abc import Awaitable
@@ -43,6 +44,24 @@ _LINE_LIMIT = 400
 # swallow a leading "/" as a local client command). See
 # _handle_privmsg/_handle_dm_command.
 _ADMIN_DM_COMMANDS = frozenset({"LINK_CHANNEL", "LINK_EMOTE", "LINK_USER", "MIRROR_CHANNEL"})
+
+# irc.satyrn.dev (InspIRCd-4 + a chanhistory-style module, enabled via the
+# `H` in default_channel_modes) replays recent history to a channel right
+# after JOIN, announced by a channel NOTICE of this exact shape (confirmed
+# by a live probe against the real server - not a guess):
+#   "Replaying up to 50 lines of pre-join history from the last ..."
+# immediately followed by that many PRIVMSGs, indistinguishable from live
+# traffic otherwise. This network doesn't support CAP negotiation at all
+# (CAP LS gets 421 Unknown command), so there's no IRCv3 batch/server-time
+# to lean on, and there's no explicit "end of replay" marker either - only
+# the server's own "up to N" cap on how many lines *could* follow.
+_HISTORY_REPLAY_NOTICE_RE = re.compile(r"Replaying up to (\d+) lines? of pre-join history", re.IGNORECASE)
+# Safety net for a channel whose actual history was shorter than the
+# announced cap: without this, the leftover "budget" would silently
+# swallow the next several genuinely-live messages whenever they next
+# arrive, however much later. Observed replay bursts land in a single TCP
+# read (sub-second), so this is generous, not tight.
+_HISTORY_REPLAY_TIMEOUT = 5.0
 
 
 def _tls_wrap(sock, *, server_hostname: str, client_cert_file: str | None, client_key_file: str | None):
@@ -104,6 +123,9 @@ class _IrcClient(irc.bot.SingleServerIRCBot):
     def on_pubmsg(self, connection, event) -> None:
         self._owner._handle_pubmsg(event)
 
+    def on_pubnotice(self, connection, event) -> None:
+        self._owner._handle_pubnotice(event)
+
     def on_whoisoperator(self, connection, event) -> None:
         # Fired only if the WHOIS target IS an oper - always arrives before
         # on_endofwhois for the same WHOIS exchange.
@@ -146,6 +168,10 @@ class IrcSenderService(SenderService):
         # nick, awaiting resolution from the reactor thread's on_whoisoperator
         # / on_endofwhois / on_nosuchnick callbacks - see _resolve_whois.
         self._pending_whois: dict[str, asyncio.Future] = {}
+        # Channel (lowercased) -> (remaining count, deadline) for a history
+        # replay currently in progress - see _handle_pubnotice/
+        # _consume_history_replay and _HISTORY_REPLAY_NOTICE_RE's comment.
+        self._history_replay: dict[str, tuple[int, float]] = {}
 
     @property
     def connection(self):
@@ -178,8 +204,36 @@ class IrcSenderService(SenderService):
         if words and words[0].upper() in _ADMIN_DM_COMMANDS:
             self._schedule(self._handle_dm_command(event.source.nick, content))
 
+    def _handle_pubnotice(self, event) -> None:
+        match = _HISTORY_REPLAY_NOTICE_RE.search(event.arguments[0])
+        if match is None:
+            return
+        channel = event.target.lower()
+        self._history_replay[channel] = (int(match.group(1)), time.monotonic() + _HISTORY_REPLAY_TIMEOUT)
+
+    def _consume_history_replay(self, channel: str) -> bool:
+        """True if this message is (probably) server-replayed history, not
+        a live message - and, side-effectingly, advances that channel's
+        replay budget/expiry so the *next* message gets judged correctly too."""
+        key = channel.lower()
+        entry = self._history_replay.get(key)
+        if entry is None:
+            return False
+        remaining, deadline = entry
+        if time.monotonic() > deadline:
+            del self._history_replay[key]
+            return False
+        remaining -= 1
+        if remaining <= 0:
+            del self._history_replay[key]
+        else:
+            self._history_replay[key] = (remaining, deadline)
+        return True
+
     def _handle_pubmsg(self, event) -> None:
         channel = event.target
+        if self._consume_history_replay(channel):
+            return  # server-replayed history from joining, not a live message - don't relay it
         content = event.arguments[0]
         self._schedule(
             self._on_message(
