@@ -37,6 +37,19 @@ copy config.yaml.example config.yaml
 python -m stoat_discord_bridge
 ```
 
+## Tests
+
+```powershell
+pip install -e ".[test]"
+pytest
+```
+
+Covers the pure-logic layer (config resolution, the storage repositories
+against an in-memory fake Mongo, the admin-command linkers, mention
+rewriting) plus a few network-free pieces of the service modules. Doesn't
+cover live Discord/Stoat/IRC connectivity - see CLAUDE.md for the exact
+scope.
+
 ## Architecture
 
 Service-based: each configured connector gets a **sender** service (listens

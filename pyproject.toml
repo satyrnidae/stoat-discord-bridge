@@ -18,8 +18,18 @@ dependencies = [
     "aiohttp>=3.9",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
 [project.scripts]
 stoat-discord-bridge = "stoat_discord_bridge.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

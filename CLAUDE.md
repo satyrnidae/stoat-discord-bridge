@@ -24,7 +24,7 @@ IRC channel-operator check backing `!link-channel`'s permission gate.
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e .
+pip install -e ".[test]"
 copy .env.example .env
 copy config.yaml.example config.yaml
 # fill in .env with real bot tokens, fill in config.yaml with your actual
@@ -32,7 +32,15 @@ copy config.yaml.example config.yaml
 python -m stoat_discord_bridge
 ```
 
-There is no test suite, linter, or CI config in this repo yet.
+Tests: `pytest` (config lives in `pyproject.toml`'s `[tool.pytest.ini_options]`).
+Covers the pure-logic layer - `config.py`'s env/YAML resolution, the
+storage repositories (against an in-memory fake Mongo, `tests/conftest.py`),
+`admin_commands.py`'s linkers, `services/mentions.py`, and a few
+network-free pieces of the service modules (IRC's WHOIS-based oper check,
+Stoat's websocket-gateway discovery). Does not cover the actual
+Discord/Stoat/IRC network integration - no live-server or full-client-mock
+tests exist yet, so those still need manual verification. No linter or CI
+config in this repo yet.
 
 ## Architecture
 
