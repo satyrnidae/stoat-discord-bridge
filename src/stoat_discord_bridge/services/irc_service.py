@@ -35,11 +35,11 @@ from stoat_discord_bridge.status import HealthTracker
 # this receiver prepends to each line.
 _LINE_LIMIT = 400
 
-# "!" rather than "/" for the admin commands below: many IRC clients treat a
-# leading "/" as a local client command and never send it as message text
-# unless escaped, so this bridge uses its own bang-prefix convention here
-# (unlike Discord/Stoat, which both use "/"). STATUS-via-DM is unaffected.
-_LINK_CHANNEL_PREFIX = "!link-channel"
+# Admin commands (LINK_CHANNEL, LINK_EMOTE, LINK_USER) arrive as a DM to the
+# bot's own nick, bare and uppercase (no leading "/" or "!" - unlike
+# Discord/Stoat's slash commands, since many IRC clients swallow a leading
+# "/" as a local client command). See _handle_privmsg/_handle_dm_command.
+_ADMIN_DM_COMMANDS = frozenset({"LINK_CHANNEL", "LINK_EMOTE", "LINK_USER"})
 
 
 def _tls_wrap(sock, *, server_hostname: str, client_cert_file: str | None, client_key_file: str | None):
@@ -101,6 +101,22 @@ class _IrcClient(irc.bot.SingleServerIRCBot):
     def on_pubmsg(self, connection, event) -> None:
         self._owner._handle_pubmsg(event)
 
+    def on_whoisoperator(self, connection, event) -> None:
+        # Fired only if the WHOIS target IS an oper - always arrives before
+        # on_endofwhois for the same WHOIS exchange.
+        self._owner._resolve_whois(event.arguments[0], True)
+
+    def on_endofwhois(self, connection, event) -> None:
+        # Always fires at the end of a WHOIS exchange, oper or not. If
+        # on_whoisoperator already resolved this nick's future to True,
+        # _resolve_whois is a no-op here - see its docstring.
+        self._owner._resolve_whois(event.arguments[0], False)
+
+    def on_nosuchnick(self, connection, event) -> None:
+        # WHOIS target doesn't exist (e.g. they disconnected between sending
+        # the DM and this WHOIS resolving) - treat as "not oper".
+        self._owner._resolve_whois(event.arguments[0], False)
+
 
 class IrcSenderService(SenderService):
     def __init__(
@@ -119,6 +135,10 @@ class IrcSenderService(SenderService):
         self._linker = linker
         self._client = _IrcClient(self, config)
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Pending WHOIS queries issued by _check_is_oper, keyed by lowercased
+        # nick, awaiting resolution from the reactor thread's on_whoisoperator
+        # / on_endofwhois / on_nosuchnick callbacks - see _resolve_whois.
+        self._pending_whois: dict[str, asyncio.Future] = {}
 
     @property
     def connection(self):
@@ -139,18 +159,21 @@ class IrcSenderService(SenderService):
         self._health.mark_disconnected(self.connector_id)
 
     def _handle_privmsg(self, connection, event) -> None:
-        # DM to the bot. `STATUS` reports sync target health; anything else
-        # is ignored (IRC has no other DM-driven commands yet).
-        if event.arguments[0].strip().upper() == "STATUS":
+        # DM to the bot. `STATUS` reports sync target health (no permission
+        # gate - read-only). LINK_CHANNEL/LINK_EMOTE/LINK_USER are
+        # oper-gated admin commands, dispatched to _handle_dm_command.
+        content = event.arguments[0]
+        if content.strip().upper() == "STATUS":
             for line in self._health.render().splitlines():
                 connection.notice(event.source.nick, line)
+            return
+        words = content.split()
+        if words and words[0].upper() in _ADMIN_DM_COMMANDS:
+            self._schedule(self._handle_dm_command(event.source.nick, content))
 
     def _handle_pubmsg(self, event) -> None:
         channel = event.target
         content = event.arguments[0]
-        if content.strip().startswith(_LINK_CHANNEL_PREFIX):
-            self._schedule(self._handle_link_channel(channel, event.source.nick, content))
-            return
         self._schedule(
             self._on_message(
                 StandardMessage(
@@ -166,48 +189,78 @@ class IrcSenderService(SenderService):
             )
         )
 
-    async def _handle_link_channel(self, channel: str, nick: str, content: str) -> None:
-        if not self._is_channel_admin(channel, nick):
-            self._reply(channel, "You need to be a channel operator to do that.")
+    async def _handle_dm_command(self, nick: str, content: str) -> None:
+        command, *args = content.split()
+        command = command.upper()
+        if not await self._check_is_oper(nick):
+            self._notify(nick, "You need to be an IRC operator to do that.")
             return
-        args = content.split()[1:]
-        if len(args) < 2:
-            self._reply(channel, "Usage: !link-channel <source> <source_id> [<destination_id>]")
-            return
-        source, source_id, *rest = args
-        destination_id = rest[0] if rest else None
+        if command == "LINK_CHANNEL":
+            if len(args) != 3:
+                self._notify(nick, "Usage: LINK_CHANNEL <source> <source_id> <local_id>")
+                return
+            source, source_id, local_id = args
+            if self._linker is None:
+                self._notify(nick, "Linking isn't configured.")
+                return
+            try:
+                summary = await self._linker.link_channel(
+                    local_connector=self.connector_id,
+                    local_channel_id=local_id,
+                    local_channel_name=local_id,
+                    source=source,
+                    source_id=source_id,
+                    destination_id=local_id,
+                )
+            except LinkError as exc:
+                self._notify(nick, str(exc))
+                return
+            self._notify(nick, summary)
+        elif command == "LINK_EMOTE":
+            # TODO: wire up once the emote linker exists - follow-up work,
+            # not this change. Should mirror LINK_CHANNEL's arg-count check
+            # (Usage: LINK_EMOTE <source> <source_id> <local_id>) and call
+            # self._emote_linker.link_emote(...) inside the same try/except
+            # LinkError shape used above.
+            self._notify(nick, "LINK_EMOTE isn't wired up yet.")
+        elif command == "LINK_USER":
+            # TODO: wire up once the user linker exists - same shape as
+            # LINK_EMOTE above.
+            self._notify(nick, "LINK_USER isn't wired up yet.")
 
-        if self._linker is None:
-            self._reply(channel, "Linking isn't configured.")
-            return
+    async def _check_is_oper(self, nick: str) -> bool:
+        # WHOIS is async on this library (reply numerics arrive later, on
+        # the reactor thread) - issue the query and await its resolution via
+        # a Future that _resolve_whois fulfils from that thread. Always live
+        # (never cached), since oper status can be granted/revoked at any
+        # time on the network.
+        key = nick.lower()
+        future: asyncio.Future = self._loop.create_future()
+        self._pending_whois[key] = future
+        self.connection.whois([nick])
         try:
-            summary = await self._linker.link_channel(
-                local_connector=self.connector_id,
-                local_channel_id=channel,
-                local_channel_name=channel,
-                source=source,
-                source_id=source_id,
-                destination_id=destination_id,
-            )
-        except LinkError as exc:
-            self._reply(channel, str(exc))
-            return
-        self._reply(channel, summary)
-
-    def _is_channel_admin(self, channel: str, nick: str) -> bool:
-        # TODO: verify against the `irc` library's actual Channel API -
-        # assumes SingleServerIRCBot.channels[channel].is_oper(nick) tracks
-        # +o status from the server's NAMES/MODE state, matching this
-        # library's common usage elsewhere. Fails closed (treats as
-        # non-admin) if the channel/nick isn't tracked or the API differs.
-        try:
-            return bool(self._client.channels[channel].is_oper(nick))
-        except Exception:
+            return await asyncio.wait_for(future, timeout=10)
+        except asyncio.TimeoutError:
             return False
+        finally:
+            self._pending_whois.pop(key, None)
 
-    def _reply(self, channel: str, text: str) -> None:
+    def _resolve_whois(self, nick: str, is_oper: bool) -> None:
+        # Runs on the IRC reactor's own thread (see _IrcClient's on_whois*
+        # callbacks) - the Future it resolves is awaited by a coroutine on
+        # the asyncio loop, so it must be resolved via call_soon_threadsafe,
+        # never by calling set_result directly from this thread.
+        future = self._pending_whois.get(nick.lower())
+        if future is None or future.done():
+            # Either no _check_is_oper call is waiting on this nick, or
+            # on_whoisoperator already resolved it True and this is the
+            # trailing on_endofwhois/on_nosuchnick for the same exchange.
+            return
+        self._loop.call_soon_threadsafe(future.set_result, is_oper)
+
+    def _notify(self, nick: str, text: str) -> None:
         for line in text.splitlines():
-            self.connection.privmsg(channel, line)
+            self.connection.notice(nick, line)
 
     async def join_channel(self, channel: str) -> None:
         """Called by ChannelLinker right after a fresh mapping involving this
