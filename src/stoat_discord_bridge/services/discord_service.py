@@ -23,7 +23,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError
+from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError, UserLinker
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure, clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.models import (
@@ -47,7 +47,9 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     content_with_attachments,
 )
+from stoat_discord_bridge.services.mentions import rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 # Discord webhook hard limits: 2000 chars per message, 1-80 char usernames,
 # and usernames may not contain "clyde" or "discord" (case-insensitive) or
@@ -102,14 +104,17 @@ class DiscordSenderService(SenderService):
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
         linker: ChannelLinker | None = None,
+        user_linker: "UserLinker | None" = None,
     ) -> None:
-        # linker is only needed to serve `/link-channel`; None is accepted
-        # (e.g. for tests) but that command will then report itself unconfigured.
+        # linker/user_linker are only needed to serve `/link-channel` and
+        # `/link-user`; None is accepted (e.g. for tests) but those commands
+        # will then report themselves unconfigured.
         SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
         self._config = config
         self.connector_id = config.id
         self._health = health
         self._linker = linker
+        self._user_linker = user_linker
         self._commands_synced = False
         self._guild = discord.Object(id=config.guild_id)
         self._client = _DiscordClient(self)
@@ -136,6 +141,22 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None = None
         ) -> None:
             await self._handle_link_channel(interaction, source, source_id, destination_id)
+
+        @self.tree.command(
+            name="link-user",
+            description="Link a user from another bridge connector to a local user, for mention rewriting",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            source="Connector id to link from (see /status for configured connectors)",
+            user_id="User id on that connector",
+            local_user_id="User id on this connector",
+        )
+        async def link_user_command(
+            interaction: discord.Interaction, source: str, user_id: str, local_user_id: str
+        ) -> None:
+            await self._handle_link_user(interaction, source, user_id, local_user_id)
 
     @property
     def client(self) -> discord.Client:
@@ -286,23 +307,57 @@ class DiscordSenderService(SenderService):
             return
         await interaction.response.send_message(summary, ephemeral=True)
 
+    async def _handle_link_user(
+        self, interaction: discord.Interaction, source: str, user_id: str, local_user_id: str
+    ) -> None:
+        if self._user_linker is None:
+            await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
+            return
+        try:
+            summary = await self._user_linker.link_user(
+                local_connector=self.connector_id,
+                local_user_id=local_user_id,
+                source=source,
+                source_user_id=user_id,
+            )
+        except LinkError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
 
 class DiscordReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
 
-    def __init__(self, client: discord.Client, guild_id: int, connector_id: str) -> None:
+    def __init__(
+        self,
+        client: discord.Client,
+        guild_id: int,
+        connector_id: str,
+        user_mappings: UserMappingRepository | None = None,
+    ) -> None:
         self._client = client
         self._guild_id = guild_id
         self.connector_id = connector_id
+        self._user_mappings = user_mappings
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         webhook = await self._get_or_create_webhook(target_channel_id)
         username = _sanitize_username(message.sender_name)
+        content = content_with_attachments(message)
+        if self._user_mappings is not None:
+            content = await rewrite_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                user_mappings=self._user_mappings,
+            )
         ids: list[str] = []
-        for chunk in chunk_content(content_with_attachments(message), _CONTENT_LIMIT):
+        for chunk in chunk_content(content, _CONTENT_LIMIT):
             try:
                 sent = await webhook.send(
                     content=chunk,
