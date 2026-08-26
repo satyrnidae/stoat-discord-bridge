@@ -195,12 +195,39 @@ class StoatSenderService(SenderService):
                 origin_channel_id=str(message.channel.id),
                 channel_name=getattr(message.channel, "name", str(message.channel.id)),
                 sender_name=getattr(message.author, "display_name", None) or message.author.tag,
-                sender_avatar_url=_avatar_url(message.author),
+                sender_avatar_url=await self._resolve_avatar_url(message),
                 content_markdown=message.content,
                 message_id=str(message.id),
                 attachments=[],  # TODO: map stoat.py attachment objects to Attachment once confirmed
             )
         )
+
+    async def _resolve_avatar_url(self, message) -> str | None:
+        """Resolve `message.author`'s avatar, fetching a fresh Member/User
+        from the API when the cached copy on the message hasn't got its
+        avatar populated yet.
+
+        A Member's underlying User isn't always cached by the time its
+        message arrives (e.g. the bot hasn't chunked that member yet), so
+        `_avatar_url` reads the avatar as unset even when the sender has a
+        real one set, and falls back to the platform default - relaying
+        every message with the wrong avatar until the cache happens to
+        catch up on its own. Relaying isn't latency-sensitive enough for
+        that to be worth it, so await the real lookup instead: only taken
+        when the cache is already known to be missing the avatar.
+        """
+        author = message.author
+        if getattr(author, "server_avatar", None) or getattr(author, "avatar", None):
+            return _avatar_url(author)
+        try:
+            server_id = getattr(message.channel, "server_id", None)
+            if server_id is not None:
+                fresh = await self._client.get_server(server_id, partial=True).fetch_member(author.id)
+            else:
+                fresh = await self._client.fetch_user(author.id)
+        except Exception:
+            return _avatar_url(author)
+        return _avatar_url(fresh)
 
     # TODO: verify these event names/signatures against stoat.py - modeled on
     # revolt.py's on_reaction_add(message, user_id, emoji_id) /
