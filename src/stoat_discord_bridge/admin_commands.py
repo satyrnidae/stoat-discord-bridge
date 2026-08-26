@@ -44,6 +44,13 @@ class ConnectorInfo:
     # /mirror-channel then reports that connector as unsupported rather than
     # calling this).
     ensure_channel: Callable[[str], Awaitable[str]] | None = None
+    # Best-effort native-user-id -> display-name lookup, for `/linked-users`
+    # to show real names instead of raw ids. None, an exception, or a falsy
+    # return all fall back to the raw id, same as resolve_channel_name.
+    # IRC leaves this unset - a user_id there already IS the nick (see
+    # storage/user_mappings.py's UserMapping.display_name docstring), so
+    # there's nothing further to resolve.
+    resolve_user_name: Callable[[str], Awaitable[str | None]] | None = None
 
 
 class ChannelLinker:
@@ -303,6 +310,51 @@ class UserLinker:
         local_info = self._connectors.get(local_connector)
         local_label = local_info.label if local_info else local_connector
         return f"Linked {source_label} user '{source_user_id}' to {local_label} user '{local_user_id}'."
+
+    async def list_linked_users(self, *, local_connector: str | None = None, local_user_id: str | None = None) -> str:
+        """Human-readable listing of cross-connector user links, for the
+        `/linked-users` debugging command. With no target given, lists every
+        link group; given a specific (local_connector, local_user_id), shows
+        just that identity's group. Real display names are resolved live
+        from each connector (via ConnectorInfo.resolve_user_name) rather
+        than read off the stored mapping, since that's just the id it was
+        linked with, never a real name (see UserMapping.display_name)."""
+        if local_connector is not None and local_user_id is not None:
+            link_group = await self._user_mappings.get_link_group(local_connector, local_user_id)
+            if link_group is None:
+                return "This user isn't linked to any others."
+            groups = [await self._user_mappings.get_mapped_users(link_group)]
+        else:
+            groups_by_id: dict[str, list[UserMapping]] = {}
+            for mapping in await self._user_mappings.get_all():
+                groups_by_id.setdefault(mapping.link_group, []).append(mapping)
+            if not groups_by_id:
+                return "No users are linked yet."
+            groups = list(groups_by_id.values())
+
+        lines = []
+        for group_mappings in groups:
+            parts = []
+            for mapping in sorted(group_mappings, key=lambda m: (m.connector_id, m.user_id)):
+                info = self._connectors.get(mapping.connector_id)
+                label = info.label if info else mapping.connector_id
+                name = await self._resolve_user_name(mapping.connector_id, mapping.user_id)
+                # Only show the raw id alongside the name when it adds
+                # information - for IRC (whose user_id already IS the nick)
+                # or a failed/unconfigured resolution, they're identical.
+                parts.append(f"{label}: {name}" if name == mapping.user_id else f"{label}: {name} ({mapping.user_id})")
+            lines.append(" ↔ ".join(parts))
+        return "Linked users:\n" + "\n".join(lines)
+
+    async def _resolve_user_name(self, connector_id: str, user_id: str) -> str:
+        info = self._connectors.get(connector_id)
+        if info is None or info.resolve_user_name is None:
+            return user_id
+        try:
+            name = await info.resolve_user_name(user_id)
+        except Exception:
+            return user_id
+        return name or user_id
 
 
 class StructureMirrorer:

@@ -83,12 +83,17 @@ class FakeUserLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
         self._raises = raises
         self.calls: list[dict] = []
+        self.list_linked_users_calls: list[dict] = []
 
     async def link_user(self, **kwargs):
         self.calls.append(kwargs)
         if self._raises is not None:
             raise self._raises
         return "user linked ok"
+
+    async def list_linked_users(self, **kwargs):
+        self.list_linked_users_calls.append(kwargs)
+        return "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
 
 
 def _make_sender(
@@ -355,3 +360,58 @@ async def test_linked_channels_needs_no_oper_status():
     await sender._handle_linked_channels_command("alice", ["#general"])  # must not be rejected
 
     assert linker.list_linked_channels_calls
+
+
+# ---------------------------------------------------------------- LINKED_USERS
+
+
+async def test_privmsg_linked_users_is_scheduled_not_run_inline():
+    sender, _conn = _make_sender(user_linker=FakeUserLinker())
+    scheduled = []
+    sender._schedule = lambda coro: scheduled.append(coro)
+
+    sender._handle_privmsg(None, FakeIrcEvent(text="LINKED_USERS 01KH", nick="alice"))
+
+    assert len(scheduled) == 1
+    scheduled[0].close()
+
+
+async def test_linked_users_with_an_argument_shows_only_that_users_link():
+    user_linker = FakeUserLinker()
+    sender, conn = _make_sender(user_linker=user_linker)
+
+    await sender._handle_linked_users_command("alice", ["01KH7TH31EBY08FTQ7YC2RC4DQ"])
+
+    assert user_linker.list_linked_users_calls == [
+        {"local_connector": "irc", "local_user_id": "01KH7TH31EBY08FTQ7YC2RC4DQ"}
+    ]
+    assert conn.notice_calls == [
+        ("alice", "Linked users:"),
+        ("alice", "Discord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"),
+    ]
+
+
+async def test_linked_users_with_no_argument_lists_everything():
+    user_linker = FakeUserLinker()
+    sender, _conn = _make_sender(user_linker=user_linker)
+
+    await sender._handle_linked_users_command("alice", [])
+
+    assert user_linker.list_linked_users_calls == [{}]
+
+
+async def test_linked_users_without_a_configured_user_linker():
+    sender, conn = _make_sender(user_linker=None)
+
+    await sender._handle_linked_users_command("alice", [])
+
+    assert conn.notice_calls == [("alice", "Linking isn't configured.")]
+
+
+async def test_linked_users_needs_no_oper_status():
+    user_linker = FakeUserLinker()
+    sender, _conn = _make_sender(is_oper=False, user_linker=user_linker)
+
+    await sender._handle_linked_users_command("alice", [])  # must not be rejected
+
+    assert user_linker.list_linked_users_calls

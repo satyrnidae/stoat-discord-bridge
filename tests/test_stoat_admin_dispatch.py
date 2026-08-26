@@ -69,6 +69,11 @@ class FakeUserLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
         self._raises = raises
         self.calls: list[dict] = []
+        self.list_linked_users_calls: list[dict] = []
+
+    async def list_linked_users(self, **kwargs):
+        self.list_linked_users_calls.append(kwargs)
+        return "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
 
     async def link_user(self, **kwargs):
         self.calls.append(kwargs)
@@ -422,3 +427,48 @@ async def test_linked_channels_needs_no_admin_permission():
     await sender._handle_linked_channels(message)  # must not be rejected
 
     assert linker.list_linked_channels_calls
+
+
+# ---------------------------------------------------------------- _handle_linked_users
+
+
+async def test_linked_users_with_an_argument_shows_only_that_users_link():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    message = _admin_message()
+
+    await sender._handle_linked_users(message, ["01KH7TH31EBY08FTQ7YC2RC4DQ"])
+
+    assert user_linker.list_linked_users_calls == [
+        {"local_connector": "stoat", "local_user_id": "01KH7TH31EBY08FTQ7YC2RC4DQ"}
+    ]
+    assert message.channel.sent[0]["content"] == "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
+
+
+async def test_linked_users_with_no_argument_lists_everything():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    message = _admin_message()
+
+    await sender._handle_linked_users(message, [])
+
+    assert user_linker.list_linked_users_calls == [{}]
+
+
+async def test_linked_users_without_a_configured_user_linker():
+    sender = _make_sender(user_linker=None)
+    message = _admin_message()
+
+    await sender._handle_linked_users(message, [])
+
+    assert message.channel.sent[0]["content"] == "User linking isn't configured."
+
+
+async def test_linked_users_needs_no_admin_permission():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    message = _admin_message(manage_server=False)
+
+    await sender._handle_linked_users(message, [])  # must not be rejected
+
+    assert user_linker.list_linked_users_calls

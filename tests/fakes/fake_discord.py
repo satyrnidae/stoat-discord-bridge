@@ -187,6 +187,12 @@ class FakeClient:
     def get_user(self, user_id: int) -> FakeUser | None:
         return self._users.get(user_id)
 
+    async def fetch_user(self, user_id: int) -> FakeUser:
+        user = self._users.get(user_id)
+        if user is None:
+            raise discord.NotFound(_FakeHttpResponse(status=404, reason="Not Found"), "user not found")
+        return user
+
 
 class FakePartialEmoji:
     def __init__(self, *, name: str | None, id: int | None = None, animated: bool = False, url: str = "") -> None:

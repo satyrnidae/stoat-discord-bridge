@@ -164,6 +164,15 @@ class StoatSenderService(SenderService):
     def get_server(self, server_id: str, *, partial: bool = False):
         return self._client.get_server(server_id, partial=partial)
 
+    async def get_user_name(self, user_id: str) -> str | None:
+        """Best-effort user-id -> display-name lookup, used as this
+        connector's `ConnectorInfo.resolve_user_name` for `/linked-users`."""
+        try:
+            user = await self._client.fetch_user(user_id)
+        except Exception:
+            return None
+        return getattr(user, "display_name", None) or getattr(user, "tag", None)
+
     async def get_channel_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> name lookup, used as this connector's
         `ConnectorInfo.resolve_channel_name` for `/link-channel`.
@@ -212,6 +221,9 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/linked-channels":
             await self._handle_linked_channels(message)
+            return
+        if cmd == "/linked-users":
+            await self._handle_linked_users(message, parts[1:])
             return
         if cmd == "/mirror-channels":
             await self._handle_mirror_channels(message, parts[1:])
@@ -337,6 +349,20 @@ class StoatSenderService(SenderService):
         summary = await self._linker.list_linked_channels(
             local_connector=self.connector_id, local_channel_id=str(message.channel.id)
         )
+        await message.channel.send(summary)
+
+    async def _handle_linked_users(self, message, args: list[str], /) -> None:
+        """`/linked-users [local_user_id]`: with no argument, lists every
+        cross-connector user link (for debugging); given a Stoat user id,
+        shows just that identity's link. No permission gate - read-only,
+        same as /status and /linked-channels."""
+        if self._user_linker is None:
+            await message.channel.send("User linking isn't configured.")
+            return
+        if args:
+            summary = await self._user_linker.list_linked_users(local_connector=self.connector_id, local_user_id=args[0])
+        else:
+            summary = await self._user_linker.list_linked_users()
         await message.channel.send(summary)
 
     async def _handle_mirror_channels(self, message, args: list[str], /) -> None:

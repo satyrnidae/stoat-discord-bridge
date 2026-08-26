@@ -305,3 +305,28 @@ async def test_get_channel_name_returns_none_on_a_non_numeric_id():
     sender = _make_sender(_Recorder(), client)
 
     assert await sender.get_channel_name("not-a-number") is None
+
+
+# ---------------------------------------------------------------- get_user_name
+
+
+async def test_get_user_name_from_cache():
+    client = FakeClient()
+    client.add_user(FakeUser(id=216591124222050304, display_name="ShrinerH"))
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_user_name("216591124222050304") == "ShrinerH"
+
+
+async def test_get_user_name_returns_none_when_not_found():
+    client = FakeClient()
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_user_name("999") is None
+
+
+async def test_get_user_name_returns_none_on_a_non_numeric_id():
+    client = FakeClient()
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_user_name("not-a-number") is None

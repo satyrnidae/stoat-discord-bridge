@@ -47,11 +47,16 @@ class FakeLinker:
         self.link_channel_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
         self.link_user_calls: list[dict] = []
+        self.list_linked_users_calls: list[dict] = []
         self.connectors = connectors or {}
 
     async def link_user(self, **kwargs):
         self.link_user_calls.append(kwargs)
         return "user linked ok"
+
+    async def list_linked_users(self, **kwargs):
+        self.list_linked_users_calls.append(kwargs)
+        return "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
 
     async def mirror_channel(self, **kwargs):
         self.mirror_channel_calls.append(kwargs)
@@ -252,6 +257,42 @@ async def test_link_user_without_a_configured_user_linker():
     interaction = FakeInteraction()
 
     await sender._handle_link_user(interaction, "stoat", "01KH", SimpleNamespace(id=111))
+
+    assert interaction.sent == ["User linking isn't configured."]
+
+
+# ---------------------------------------------------------------- _handle_linked_users
+
+
+async def test_linked_users_with_a_member_shows_only_their_link():
+    user_linker = FakeLinker()
+    sender = _make_sender(FakeLinker(), user_linker=user_linker)
+    interaction = FakeInteraction()
+    member = SimpleNamespace(id=216591124222050304)
+
+    await sender._handle_linked_users(interaction, member)
+
+    assert user_linker.list_linked_users_calls == [
+        {"local_connector": "discord", "local_user_id": "216591124222050304"}
+    ]
+    assert interaction.sent == ["Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"]
+
+
+async def test_linked_users_with_no_member_lists_everything():
+    user_linker = FakeLinker()
+    sender = _make_sender(FakeLinker(), user_linker=user_linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_linked_users(interaction, None)
+
+    assert user_linker.list_linked_users_calls == [{}]
+
+
+async def test_linked_users_without_a_configured_user_linker():
+    sender = _make_sender(FakeLinker(), user_linker=None)
+    interaction = FakeInteraction()
+
+    await sender._handle_linked_users(interaction, None)
 
     assert interaction.sent == ["User linking isn't configured."]
 

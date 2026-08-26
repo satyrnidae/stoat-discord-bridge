@@ -246,9 +246,10 @@ class IrcSenderService(SenderService):
             self.connection.join(channel)
 
     def _handle_privmsg(self, connection, event) -> None:
-        # DM to the bot. `STATUS`/`LINKED_CHANNELS` are read-only, no
-        # permission gate. LINK_CHANNEL/LINK_EMOTE/LINK_USER/MIRROR_CHANNEL
-        # are oper-gated admin commands, dispatched to _handle_dm_command.
+        # DM to the bot. `STATUS`/`LINKED_CHANNELS`/`LINKED_USERS` are
+        # read-only, no permission gate. LINK_CHANNEL/LINK_EMOTE/LINK_USER/
+        # MIRROR_CHANNEL are oper-gated admin commands, dispatched to
+        # _handle_dm_command.
         content = event.arguments[0]
         if content.strip().upper() == "STATUS":
             for line in self._health.render().splitlines():
@@ -257,6 +258,9 @@ class IrcSenderService(SenderService):
         words = content.split()
         if words and words[0].upper() == "LINKED_CHANNELS":
             self._schedule(self._handle_linked_channels_command(event.source.nick, words[1:]))
+            return
+        if words and words[0].upper() == "LINKED_USERS":
+            self._schedule(self._handle_linked_users_command(event.source.nick, words[1:]))
             return
         if words and words[0].upper() in _ADMIN_DM_COMMANDS:
             self._schedule(self._handle_dm_command(event.source.nick, content))
@@ -318,6 +322,19 @@ class IrcSenderService(SenderService):
             self._notify(nick, "Linking isn't configured.")
             return
         summary = await self._linker.list_linked_channels(local_connector=self.connector_id, local_channel_id=args[0])
+        self._notify(nick, summary)
+
+    async def _handle_linked_users_command(self, nick: str, args: list[str]) -> None:
+        """`LINKED_USERS [local_user_id]`: with no argument, lists every
+        cross-connector user link (for debugging); given an IRC nick, shows
+        just that identity's link."""
+        if self._user_linker is None:
+            self._notify(nick, "Linking isn't configured.")
+            return
+        if args:
+            summary = await self._user_linker.list_linked_users(local_connector=self.connector_id, local_user_id=args[0])
+        else:
+            summary = await self._user_linker.list_linked_users()
         self._notify(nick, summary)
 
     async def _handle_dm_command(self, nick: str, content: str) -> None:

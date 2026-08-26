@@ -38,6 +38,12 @@ class UserMappingRepository:
         cursor = self._collection.find({"connector_id": connector_id})
         return [_from_doc(doc) async for doc in cursor]
 
+    async def get_all(self) -> list[UserMapping]:
+        """Every linked identity, across every connector and group - for
+        the `/linked-users` debugging command's "list everything" mode."""
+        cursor = self._collection.find({})
+        return [_from_doc(doc) async for doc in cursor]
+
     async def upsert(self, mapping: UserMapping) -> None:
         # A link group should have at most one identity per connector.
         # Without this, relinking a connector's id within an existing group

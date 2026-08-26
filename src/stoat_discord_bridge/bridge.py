@@ -252,7 +252,9 @@ async def run(config: BridgeConfig) -> None:
         # No ensure_channel: Discord has no channel-creation capability in
         # this codebase, so /mirror-channel reports it unsupported rather
         # than this hook ever being called.
-        connector_infos[dc.id] = ConnectorInfo(id=dc.id, label=dc.label, resolve_channel_name=sender.get_channel_name)
+        connector_infos[dc.id] = ConnectorInfo(
+            id=dc.id, label=dc.label, resolve_channel_name=sender.get_channel_name, resolve_user_name=sender.get_user_name
+        )
         senders.append(sender)
         closables.extend([receiver, sender])
 
@@ -275,6 +277,7 @@ async def run(config: BridgeConfig) -> None:
             label=sc.label,
             resolve_channel_name=sender.get_channel_name,
             ensure_channel=sender.ensure_channel,
+            resolve_user_name=sender.get_user_name,
         )
         senders.append(sender)
         closables.append(sender)

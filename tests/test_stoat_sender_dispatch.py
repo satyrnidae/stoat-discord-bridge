@@ -52,6 +52,7 @@ def _make_sender(
     sender._client = client
     sender._health = HealthTracker({"stoat": "Stoat"})
     sender._linker = None
+    sender._user_linker = None
     sender._self_id = self_id
     sender._on_message = recorder.on_message
     sender._on_reaction = recorder.on_reaction if with_reactions else None
@@ -103,6 +104,20 @@ async def test_handle_message_linked_channels_command_routes_to_its_handler():
 
     assert recorder.messages == []
     assert channel.sent == [{"content": "Linking isn't configured.", "masquerade": None}]
+
+
+async def test_handle_message_linked_users_command_routes_to_its_handler():
+    # Full behavior is covered in test_stoat_admin_dispatch.py; this only
+    # proves _handle_message actually routes "/linked-users" there.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    author = FakeAuthor(id="u1")
+
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked-users"))
+
+    assert recorder.messages == []
+    assert channel.sent == [{"content": "User linking isn't configured.", "masquerade": None}]
 
 
 async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar():
@@ -254,3 +269,29 @@ async def test_on_emoji_delete_is_a_noop_when_emoji_sync_isnt_wired_up():
     await sender.on_emoji_delete(emoji)  # must not raise
 
     assert recorder.emoji_deleted == []
+
+
+# ---------------------------------------------------------------- get_user_name
+
+
+async def test_get_user_name_prefers_display_name():
+    client = FakeClient()
+    client.add_user("01KH", FakeAuthor(id="01KH", tag="shriner#0000", display_name="ShrinerH"))
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_user_name("01KH") == "ShrinerH"
+
+
+async def test_get_user_name_falls_back_to_tag_when_no_display_name():
+    client = FakeClient()
+    client.add_user("01KH", FakeAuthor(id="01KH", tag="shriner#0000", display_name=None))
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_user_name("01KH") == "shriner#0000"
+
+
+async def test_get_user_name_returns_none_when_the_fetch_fails():
+    client = FakeClient()  # no user added - fetch_user raises LookupError
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_user_name("unknown") is None

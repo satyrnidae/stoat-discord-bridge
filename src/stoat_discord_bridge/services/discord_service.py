@@ -171,6 +171,17 @@ class DiscordSenderService(SenderService):
         async def linked_channels_command(interaction: discord.Interaction) -> None:
             await self._handle_linked_channels(interaction)
 
+        @self.tree.command(
+            name="linked-users",
+            description="List cross-connector user links, for debugging - or just one member's, if given",
+            guild=self._guild,
+        )
+        @app_commands.describe(user="Show only this member's link (omit to list every linked user)")
+        async def linked_users_command(
+            interaction: discord.Interaction, user: discord.Member | None = None
+        ) -> None:
+            await self._handle_linked_users(interaction, user)
+
         async def link_channel_source_autocomplete(
             interaction: discord.Interaction, current: str
         ) -> list[app_commands.Choice[str]]:
@@ -349,6 +360,15 @@ class DiscordSenderService(SenderService):
             return None
         return getattr(channel, "name", None)
 
+    async def get_user_name(self, user_id: str) -> str | None:
+        """Best-effort user-id -> display-name lookup, used as this
+        connector's `ConnectorInfo.resolve_user_name` for `/linked-users`."""
+        try:
+            user = self._client.get_user(int(user_id)) or await self._client.fetch_user(int(user_id))
+        except (discord.HTTPException, discord.NotFound, ValueError):
+            return None
+        return getattr(user, "display_name", None)
+
     def snapshot_guild_structure(self) -> GuildStructure:
         """Build a platform-neutral snapshot of the bridged guild's current
         categories/channels, for the Stoat `/mirror-channels` command.
@@ -398,6 +418,18 @@ class DiscordSenderService(SenderService):
         summary = await self._linker.list_linked_channels(
             local_connector=self.connector_id, local_channel_id=str(interaction.channel_id)
         )
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_linked_users(self, interaction: discord.Interaction, user: discord.Member | None) -> None:
+        if self._user_linker is None:
+            await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
+            return
+        if user is not None:
+            summary = await self._user_linker.list_linked_users(
+                local_connector=self.connector_id, local_user_id=str(user.id)
+            )
+        else:
+            summary = await self._user_linker.list_linked_users()
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_link_channel(

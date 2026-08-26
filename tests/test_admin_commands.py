@@ -249,6 +249,95 @@ async def test_link_user_conflicting_groups_raises(fake_db, connectors):
         await linker.link_user(local_connector="irc", local_user_id="Bob", source="discord", source_user_id="111")
 
 
+# ---------------------------------------------------------------- UserLinker.list_linked_users
+
+
+async def test_list_linked_users_reports_unlinked(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    summary = await linker.list_linked_users(local_connector="discord", local_user_id="111")
+    assert summary == "This user isn't linked to any others."
+
+
+async def test_list_linked_users_reports_none_linked_at_all(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    assert await linker.list_linked_users() == "No users are linked yet."
+
+
+async def test_list_linked_users_resolves_real_names_live(fake_db):
+    async def discord_name(user_id):
+        return {"216591124222050304": "ShrinerH"}.get(user_id)
+
+    async def stoat_name(user_id):
+        return {"01KH7TH31EBY08FTQ7YC2RC4DQ": "shriner"}.get(user_id)
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_user_name=discord_name),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", resolve_user_name=stoat_name),
+    }
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    await linker.link_user(
+        local_connector="discord", local_user_id="216591124222050304",
+        source="stoat", source_user_id="01KH7TH31EBY08FTQ7YC2RC4DQ",
+    )
+
+    summary = await linker.list_linked_users(local_connector="discord", local_user_id="216591124222050304")
+
+    assert "Discord: ShrinerH (216591124222050304)" in summary
+    assert "Stoat: shriner (01KH7TH31EBY08FTQ7YC2RC4DQ)" in summary
+
+
+async def test_list_linked_users_falls_back_to_the_raw_id_when_unresolvable(fake_db):
+    async def failing_resolver(user_id):
+        raise RuntimeError("boom")
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_user_name=failing_resolver),
+        "irc": ConnectorInfo(id="irc", label="IRC"),  # no resolver at all - IRC's id already IS the name
+    }
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    await linker.link_user(local_connector="discord", local_user_id="111", source="irc", source_user_id="Alice")
+
+    summary = await linker.list_linked_users(local_connector="discord", local_user_id="111")
+
+    # no redundant "(id)" suffix when the resolved name IS the id (fallback
+    # or, for IRC, the id always being the display name to begin with)
+    assert "Discord: 111" in summary
+    assert "Discord: 111 (111)" not in summary
+    assert "IRC: Alice" in summary
+    assert "(Alice)" not in summary
+
+
+async def test_list_linked_users_with_no_target_lists_every_group(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    await linker.link_user(local_connector="discord", local_user_id="111", source="stoat", source_user_id="s1")
+    await linker.link_user(local_connector="discord", local_user_id="222", source="irc", source_user_id="Bob")
+
+    summary = await linker.list_linked_users()
+
+    lines = summary.splitlines()[1:]  # drop the "Linked users:" header
+    assert len(lines) == 2
+    assert any("111" in line and "s1" in line for line in lines)
+    assert any("222" in line and "Bob" in line for line in lines)
+
+
+# ---------------------------------------------------------------- .connectors (Discord autocomplete)
+
+
+def test_channel_linker_exposes_the_connectors_it_was_given(connectors):
+    linker = ChannelLinker(channel_mappings=None, connectors=connectors)
+    assert linker.connectors == connectors
+
+
+def test_emote_linker_exposes_the_connectors_it_was_given(connectors):
+    linker = EmoteLinker(emoji_mappings=None, connectors=connectors)
+    assert linker.connectors == connectors
+
+
+def test_user_linker_exposes_the_connectors_it_was_given(connectors):
+    linker = UserLinker(user_mappings=None, connectors=connectors)
+    assert linker.connectors == connectors
+
+
 # ---------------------------------------------------------------- ChannelLinker.mirror_channel / mirror_channel_all
 
 

@@ -61,6 +61,26 @@ async def test_upsert_leaves_other_groups_and_connectors_alone(fake_db):
     assert await repo.get_link_group("discord", "111") is None  # same group+connector - replaced
 
 
+async def test_get_all_returns_every_mapping_across_every_group(fake_db):
+    repo = UserMappingRepository(fake_db)
+    await repo.upsert(UserMapping(link_group="g1", connector_id="discord", user_id="111", display_name="111"))
+    await repo.upsert(UserMapping(link_group="g1", connector_id="stoat", user_id="s1", display_name="s1"))
+    await repo.upsert(UserMapping(link_group="g2", connector_id="irc", user_id="Bob", display_name="Bob"))
+
+    all_mappings = await repo.get_all()
+
+    assert {(m.link_group, m.connector_id, m.user_id) for m in all_mappings} == {
+        ("g1", "discord", "111"),
+        ("g1", "stoat", "s1"),
+        ("g2", "irc", "Bob"),
+    }
+
+
+async def test_get_all_returns_empty_when_nothing_is_linked(fake_db):
+    repo = UserMappingRepository(fake_db)
+    assert await repo.get_all() == []
+
+
 async def test_get_all_for_connector(fake_db):
     repo = UserMappingRepository(fake_db)
     await repo.upsert(UserMapping(link_group="g1", connector_id="irc", user_id="Alice", display_name="Alice"))
