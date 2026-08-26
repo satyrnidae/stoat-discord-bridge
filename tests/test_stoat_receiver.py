@@ -173,6 +173,22 @@ async def test_receive_prefers_the_members_nick_over_the_account_display_name(fa
     assert masquerade.name == "Server Nickname"
 
 
+async def test_receive_strips_the_discriminator_when_falling_back_to_the_bare_username(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="discord", user_id="discord-alice", display_name="discord-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="stoat", user_id="u1", display_name="u1"))
+    client = FakeClient()
+    client.add_user("u1", FakeAuthor(id="u1", name="alice", tag="alice#0000", display_name=None))
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="42")
+
+    assert channel.sent[0]["masquerade"].name == "alice"
+
+
 async def test_receive_uses_the_remote_identity_when_the_sender_isnt_linked(fake_db):
     user_mappings = UserMappingRepository(fake_db)
     client = FakeClient()

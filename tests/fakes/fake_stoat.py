@@ -30,6 +30,7 @@ class FakeAuthor:
         self,
         id: str,
         *,
+        name: str = "user",
         tag: str = "user#0000",
         display_name: str | None = None,
         nick: str | None = None,
@@ -39,6 +40,7 @@ class FakeAuthor:
         default_avatar_url: str = "https://cdn.example/default.png",
     ) -> None:
         self.id = id
+        self.name = name
         self.tag = tag
         self.display_name = display_name
         self.nick = nick

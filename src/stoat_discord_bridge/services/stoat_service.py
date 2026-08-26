@@ -671,8 +671,14 @@ def _display_name(author) -> str:
     falls all the way through to `tag` (username#discriminator) - showing a
     raw username where the nickname should appear. So check `nick` first,
     mirroring the same per-server-override-before-global preference already
-    given to avatars by `_avatar_url` below."""
-    return getattr(author, "nick", None) or getattr(author, "display_name", None) or author.tag
+    given to avatars by `_avatar_url` below.
+
+    Falls back to the bare `name` (not `tag`) when neither is set - a
+    masquerade name showing a bare `#0000`-style discriminator suffix reads
+    as broken/internal even though it's technically accurate, so it's
+    stripped here rather than carried through to whatever's displaying the
+    masquerade."""
+    return getattr(author, "nick", None) or getattr(author, "display_name", None) or author.name
 
 
 def _avatar_url(author) -> str | None:

@@ -140,16 +140,18 @@ async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar
     assert message.message_id == "m1"
 
 
-async def test_handle_message_falls_back_to_tag_when_no_display_name():
+async def test_handle_message_falls_back_to_the_bare_username_when_no_display_name():
+    # the discriminator suffix (tag = "name#0000") is stripped for a
+    # masquerade name - it reads as broken/internal even though accurate.
     recorder = _Recorder()
     client = FakeClient()
     sender = _make_sender(recorder, client)
     channel = FakeChannel(id="42")
-    author = FakeAuthor(id="u1", tag="alice#0000", display_name=None)
+    author = FakeAuthor(id="u1", name="alice", tag="alice#0000", display_name=None)
 
     await sender._handle_message(_stoat_message(channel=channel, author=author))
 
-    assert recorder.messages[0].sender_name == "alice#0000"
+    assert recorder.messages[0].sender_name == "alice"
 
 
 async def test_handle_message_prefers_the_members_nick_over_the_account_display_name():
