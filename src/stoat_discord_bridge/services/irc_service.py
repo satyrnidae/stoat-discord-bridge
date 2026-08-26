@@ -126,6 +126,22 @@ class _IrcClient(irc.bot.SingleServerIRCBot):
     def on_pubnotice(self, connection, event) -> None:
         self._owner._handle_pubnotice(event)
 
+    def on_privnotice(self, connection, event) -> None:
+        self._owner._handle_privnotice(event)
+
+    def on_join(self, connection, event) -> None:
+        self._owner._handle_join(connection, event)
+
+    def on_nochanmodes(self, connection, event) -> None:
+        # Numeric 477. RFC2812 defines this as ERR_NOCHANMODES ("channel
+        # doesn't support modes"), but InspIRCd's services module (this
+        # bridge's target network - see the history-replay heuristic above)
+        # repurposes it as ERR_NEEDREGGEDNICK: "you need to be identified to
+        # a registered account to join this channel" - the failure mode this
+        # handler exists for. A network that sends 477 for its RFC meaning
+        # instead would just cause a harmless spurious rejoin attempt here.
+        self._owner._handle_join_blocked(event)
+
     def on_whoisoperator(self, connection, event) -> None:
         # Fired only if the WHOIS target IS an oper - always arrives before
         # on_endofwhois for the same WHOIS exchange.
@@ -172,6 +188,14 @@ class IrcSenderService(SenderService):
         # replay currently in progress - see _handle_pubnotice/
         # _consume_history_replay and _HISTORY_REPLAY_NOTICE_RE's comment.
         self._history_replay: dict[str, tuple[int, float]] = {}
+        # Channels a JOIN was rejected for (ERR_NEEDREGGEDNICK/477 - this
+        # network requires a registered+identified nick to join anything but
+        # #welcome) and hasn't yet been retried - see _handle_join_blocked/
+        # _retry_blocked_joins. Without this, a JOIN sent immediately on
+        # connect (before NickServ's IDENTIFY reply comes back) is silently
+        # dropped by the server and never retried, so the bridge looks
+        # "connected" while never actually being in the channel.
+        self._blocked_channels: set[str] = set()
 
     @property
     def connection(self):
@@ -190,6 +214,36 @@ class IrcSenderService(SenderService):
 
     def _handle_disconnect(self) -> None:
         self._health.mark_disconnected(self.connector_id)
+
+    def _handle_join(self, connection, event) -> None:
+        # on_join fires for every user joining a channel we're in, not just
+        # us - only our own successful join is a health signal.
+        if event.source.nick.lower() != connection.get_nickname().lower():
+            return
+        self._blocked_channels.discard(event.target)
+        self._health.record_success(self.connector_id)
+
+    def _handle_join_blocked(self, event) -> None:
+        channel = event.arguments[0]
+        self._blocked_channels.add(channel)
+        self._health.record_error(self.connector_id)
+
+    def _handle_privnotice(self, event) -> None:
+        # NickServ's IDENTIFY reply (success or failure - either way, worth
+        # a retry now rather than leaving rejected channels unjoined for the
+        # rest of the connection). "NickServ" is the same services nick
+        # _handle_welcome already sends IDENTIFY to.
+        if event.source is None or event.source.nick.lower() != "nickserv":
+            return
+        self._retry_blocked_joins()
+
+    def _retry_blocked_joins(self) -> None:
+        if not self._blocked_channels:
+            return
+        channels = list(self._blocked_channels)
+        self._blocked_channels.clear()
+        for channel in channels:
+            self.connection.join(channel)
 
     def _handle_privmsg(self, connection, event) -> None:
         # DM to the bot. `STATUS`/`LINKED_CHANNELS` are read-only, no

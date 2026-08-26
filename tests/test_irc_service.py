@@ -19,7 +19,7 @@ import pytest
 
 from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.services.irc_service import IrcSenderService
-from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.status import HealthState, HealthTracker
 
 
 def _irc_config(**overrides):
@@ -45,11 +45,12 @@ def _make_sender(**config_overrides) -> IrcSenderService:
 
 
 class FakeConnection:
-    def __init__(self, connected: bool = True):
+    def __init__(self, connected: bool = True, nickname: str = "bot"):
         self.whois_calls: list = []
         self.join_calls: list[str] = []
         self.mode_calls: list[tuple[str, str]] = []
         self._connected = connected
+        self._nickname = nickname
 
     def whois(self, targets) -> None:
         self.whois_calls.append(targets)
@@ -62,6 +63,9 @@ class FakeConnection:
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def get_nickname(self) -> str:
+        return self._nickname
 
 
 def _patch_connection(monkeypatch, sender, connection: FakeConnection) -> None:
@@ -295,3 +299,114 @@ async def test_handle_pubmsg_suppresses_replayed_history_but_relays_live_message
     await asyncio.sleep(0.05)
 
     assert received == ["a live message"]
+
+
+# ---------------------------------------------------------------- join-blocked-on-+r retry
+#
+# Regression coverage for a real production bug: this bridge's target
+# network (irc.satyrn.dev, InspIRCd) requires a registered+identified nick
+# to join any channel but #welcome. _handle_welcome sends NickServ IDENTIFY
+# and the initial JOINs back-to-back, with no wait for IDENTIFY to actually
+# resolve - so on a fresh connect, the JOINs land before the server has
+# processed IDENTIFY and get rejected with ERR_NEEDREGGEDNICK (numeric 477,
+# dispatched as on_nochanmodes - see its docstring), and were never retried:
+# the bridge looked "connected" (HealthTracker only tracked the raw IRC
+# connection) while sitting outside every configured channel forever.
+
+
+def _nochanmodes_event(channel: str, message: str = "You need to be identified to a registered account to join this channel."):
+    return SimpleNamespace(arguments=[channel, message])
+
+
+def _privnotice_event(nick: str, text: str = "Password accepted - you are now identified."):
+    return SimpleNamespace(source=SimpleNamespace(nick=nick), arguments=[text])
+
+
+def _join_event(nick: str, channel: str):
+    return SimpleNamespace(source=SimpleNamespace(nick=nick), target=channel)
+
+
+async def test_join_blocked_queues_the_channel_and_degrades_health():
+    sender = _make_sender()
+
+    sender._handle_join_blocked(_nochanmodes_event("#general"))
+
+    assert sender._blocked_channels == {"#general"}
+    assert sender._health.snapshot()["irc"] == HealthState.FAILING  # not yet marked connected in this test
+
+    sender._health.mark_connected("irc")
+    assert sender._health.snapshot()["irc"] == HealthState.DEGRADED
+
+
+async def test_nickserv_privnotice_retries_every_blocked_channel_and_clears_the_queue(monkeypatch):
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+    sender._handle_join_blocked(_nochanmodes_event("#general"))
+    sender._handle_join_blocked(_nochanmodes_event("#other"))
+
+    sender._handle_privnotice(_privnotice_event("NickServ"))
+
+    assert set(conn.join_calls) == {"#general", "#other"}
+    assert sender._blocked_channels == set()
+
+
+async def test_nickserv_nick_check_is_case_insensitive():
+    sender = _make_sender()
+    conn = FakeConnection()
+    sender._client.connection = conn
+    sender._handle_join_blocked(_nochanmodes_event("#general"))
+
+    sender._handle_privnotice(_privnotice_event("nickserv"))
+
+    assert conn.join_calls == ["#general"]
+
+
+async def test_privnotice_from_someone_else_does_not_retry(monkeypatch):
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+    sender._handle_join_blocked(_nochanmodes_event("#general"))
+
+    sender._handle_privnotice(_privnotice_event("SomeRandomUser"))
+
+    assert conn.join_calls == []
+    assert sender._blocked_channels == {"#general"}
+
+
+async def test_retry_blocked_joins_is_a_noop_when_nothing_is_queued(monkeypatch):
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    sender._handle_privnotice(_privnotice_event("NickServ"))  # must not raise
+
+    assert conn.join_calls == []
+
+
+async def test_own_successful_join_clears_the_blocked_channel_and_records_a_health_success():
+    sender = _make_sender()
+    conn = FakeConnection(nickname="bot")
+    sender._handle_join_blocked(_nochanmodes_event("#general"))
+    sender._health.mark_connected("irc")
+    assert sender._health.snapshot()["irc"] == HealthState.DEGRADED
+
+    sender._handle_join(conn, _join_event("bot", "#general"))
+
+    assert sender._blocked_channels == set()
+    # a single success doesn't erase the earlier recorded failure from the
+    # rolling window (see HealthTracker/_TargetHealth.state) - it stays
+    # DEGRADED until enough later outcomes push that failure out, same as
+    # any other connector's relay-error recovery. What matters here is that
+    # a success was recorded at all, unlike before this fix (never was).
+    assert sender._health._targets["irc"].recent_results[-1] is True
+
+
+async def test_someone_elses_join_is_ignored():
+    sender = _make_sender()
+    conn = FakeConnection(nickname="bot")
+    sender._handle_join_blocked(_nochanmodes_event("#general"))
+
+    sender._handle_join(conn, _join_event("someone-else", "#general"))
+
+    assert sender._blocked_channels == {"#general"}  # untouched - not our join
