@@ -236,7 +236,7 @@ class DiscordSenderService(SenderService):
 
         @self.tree.command(
             name="link-user",
-            description="Link a user from another bridge connector to a local user, for mention rewriting and masquerade override",
+            description="Link a user from another connector to a local user, for mention rewriting and masquerade override",
             guild=self._guild,
         )
         @app_commands.default_permissions(manage_guild=True)
