@@ -46,7 +46,25 @@ from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 _CONTENT_LIMIT = 2000
 
 
-def _discover_websocket_base(http_base: str) -> str | None:
+def _discover_node_config(http_base: str) -> dict | None:
+    """Fetches the "NodeInfo"-style config document every stoat.py-compatible
+    server exposes at its REST root - used to discover deployment-specific
+    URLs that stoat.Client otherwise defaults to the *public* hosted
+    instance's for, regardless of `http_base` (see `_discover_websocket_base`
+    and `_discover_cdn_base`, both fed from this one fetch rather than each
+    hitting the network separately). Best-effort: returns None on any
+    failure - network hiccup, unexpected shape, whatever - so callers fall
+    back to stoat.Client's own (public-instance) defaults rather than
+    blocking startup on it.
+    """
+    try:
+        with urllib.request.urlopen(http_base.rstrip("/"), timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+
+def _discover_websocket_base(node_config: dict | None) -> str | None:
     """stoat.Client's `websocket_base` defaults to the public hosted
     instance's gateway (wss://events.stoat.chat/) regardless of `http_base`
     - correct for the public deployment (whose real gateway happens to live
@@ -55,19 +73,35 @@ def _discover_websocket_base(http_base: str) -> str | None:
     never going to answer for that token, with no error to show for it.
 
     Every deployment's REST root reports its actual gateway URL in a `ws`
-    field, so fetch that instead of assuming the public one. Best-effort:
-    returns None (stoat.Client's own default) on any failure - network
-    hiccup, unexpected shape, whatever - rather than blocking startup on it,
-    since this is more of an override than something the bridge can't run
-    without.
+    field, so use that instead of assuming the public one.
     """
-    try:
-        with urllib.request.urlopen(http_base.rstrip("/"), timeout=10) as resp:
-            data = json.loads(resp.read())
-        ws = data.get("ws")
-        return ws if isinstance(ws, str) and ws else None
-    except Exception:
+    if node_config is None:
         return None
+    ws = node_config.get("ws")
+    return ws if isinstance(ws, str) and ws else None
+
+
+def _discover_cdn_base(node_config: dict | None) -> str | None:
+    """stoat.Client's `cdn_base` - which every avatar/attachment/custom-emoji
+    URL this bridge builds (via Asset.url()) goes through - defaults to the
+    public hosted instance's CDN (`cdn.stoatusercontent.com`, hardcoded in
+    stoat.py's CDNClient) regardless of `http_base`, same class of bug as
+    `websocket_base` above. For a self-hosted deployment this means every
+    asset URL silently points at the wrong server's CDN and never resolves
+    - the images just don't exist there - with no error, since URL
+    construction itself can't fail.
+
+    Every deployment's REST root reports its actual CDN ("autumn", Revolt's
+    - and by extension stoat.py's - name for this microservice) URL at
+    features.autumn.url, so use that instead of assuming the public one.
+    """
+    if node_config is None:
+        return None
+    try:
+        url = node_config["features"]["autumn"]["url"]
+    except (KeyError, TypeError):
+        return None
+    return url if isinstance(url, str) and url else None
 
 
 class _StoatClient(stoat.Client):
@@ -78,10 +112,12 @@ class _StoatClient(stoat.Client):
     third-party client class."""
 
     def __init__(self, owner: StoatSenderService, config: StoatConnectorConfig) -> None:
+        node_config = _discover_node_config(config.api_url)
         super().__init__(
             token=config.bot_token,
             http_base=config.api_url,
-            websocket_base=_discover_websocket_base(config.api_url),
+            websocket_base=_discover_websocket_base(node_config),
+            cdn_base=_discover_cdn_base(node_config),
         )
         self._owner = owner
 
