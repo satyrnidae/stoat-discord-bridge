@@ -15,11 +15,14 @@ wants finer detail than a pass/fail.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from aiohttp import web
 
 from stoat_discord_bridge.status import HealthTracker
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8080
 
@@ -51,4 +54,5 @@ async def start_health_server(health: HealthTracker) -> web.AppRunner:
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=port)
     await site.start()
+    logger.info("health server listening on 0.0.0.0:%d", port)
     return runner

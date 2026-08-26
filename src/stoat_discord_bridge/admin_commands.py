@@ -10,6 +10,7 @@ channel created/matched, by the Stoat `/mirror-channels` handler.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
+
+logger = logging.getLogger(__name__)
 
 
 class LinkError(Exception):
@@ -157,6 +160,7 @@ class ChannelLinker:
         try:
             destination_channel_id = await dest_info.ensure_channel(local_channel_name)
         except Exception as exc:
+            logger.warning("mirror-channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
             return f"{dest_info.label}: failed to create/find a channel: {exc}"
 
         try:
@@ -220,6 +224,7 @@ class ChannelLinker:
         try:
             name = await info.resolve_channel_name(channel_id)
         except Exception:
+            logger.debug("couldn't resolve channel name for %s on %s", channel_id, connector_id, exc_info=True)
             return channel_id
         return name or channel_id
 
@@ -353,6 +358,7 @@ class UserLinker:
         try:
             name = await info.resolve_user_name(user_id)
         except Exception:
+            logger.debug("couldn't resolve user name for %s on %s", user_id, connector_id, exc_info=True)
             return user_id
         return name or user_id
 

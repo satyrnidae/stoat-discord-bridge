@@ -15,9 +15,12 @@ through a lock.
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 # how many of the most recent relay attempts into a target factor into its state
 _WINDOW = 20
@@ -78,11 +81,20 @@ class HealthTracker:
 
     def record_success(self, connector_id: str) -> None:
         with self._lock:
-            self._targets[connector_id].record(True)
+            self._set_state(connector_id, lambda target: target.record(True))
 
     def record_error(self, connector_id: str) -> None:
         with self._lock:
-            self._targets[connector_id].record(False)
+            self._set_state(connector_id, lambda target: target.record(False))
+
+    def _set_state(self, connector_id: str, mutate) -> None:
+        # Caller already holds self._lock.
+        target = self._targets[connector_id]
+        before = target.state
+        mutate(target)
+        after = target.state
+        if after != before:
+            logger.info("%s health: %s -> %s", self._labels[connector_id], before.value, after.value)
 
     def snapshot(self) -> dict[str, HealthState]:
         with self._lock:
