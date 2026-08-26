@@ -39,6 +39,19 @@ class UserMappingRepository:
         return [_from_doc(doc) async for doc in cursor]
 
     async def upsert(self, mapping: UserMapping) -> None:
+        # A link group should have at most one identity per connector.
+        # Without this, relinking a connector's id within an existing group
+        # (e.g. correcting one that was mistyped when first linked) would
+        # leave the old, wrong id sitting in the group alongside the new
+        # one - and get_mapped_users/mention rewriting would then have two
+        # same-connector entries to pick from, nondeterministically.
+        await self._collection.delete_many(
+            {
+                "link_group": mapping.link_group,
+                "connector_id": mapping.connector_id,
+                "user_id": {"$ne": mapping.user_id},
+            }
+        )
         await self._collection.update_one(
             {"connector_id": mapping.connector_id, "user_id": mapping.user_id},
             {"$set": {"link_group": mapping.link_group, "display_name": mapping.display_name}},

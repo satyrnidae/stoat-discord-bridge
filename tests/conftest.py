@@ -2,10 +2,10 @@
 
 fake_mongo provides a minimal in-memory stand-in for the subset of Motor's
 async collection API this codebase's storage/*.py repositories actually
-use (find_one/find/insert_one/update_one/delete_one, plus the $or/$elemMatch/
-$set/$push operators and dotted-path field queries the message sync/emoji/
-channel/user mapping repos rely on) - just enough to exercise their real
-query/update logic without a live MongoDB.
+use (find_one/find/insert_one/update_one/delete_one/delete_many, plus the
+$or/$elemMatch/$ne/$set/$push operators and dotted-path field queries the
+message sync/emoji/channel/user mapping repos rely on) - just enough to
+exercise their real query/update logic without a live MongoDB.
 """
 
 from __future__ import annotations
@@ -83,6 +83,11 @@ class FakeCollection:
                 del self.docs[key]
                 return
 
+    async def delete_many(self, query: dict) -> None:
+        for key, doc in list(self.docs.items()):
+            if _matches(doc, query):
+                del self.docs[key]
+
 
 def _matches(doc: dict, query: dict) -> bool:
     if "$or" in query:
@@ -95,6 +100,10 @@ def _matches(doc: dict, query: dict) -> bool:
         if isinstance(value, dict) and "$elemMatch" in value:
             cond = value["$elemMatch"]
             if not any(all(item.get(ck) == cv for ck, cv in cond.items()) for item in _dotted_get(doc, key) or []):
+                return False
+            continue
+        if isinstance(value, dict) and "$ne" in value:
+            if _dotted_get(doc, key) == value["$ne"]:
                 return False
             continue
         if _dotted_get(doc, key) != value:

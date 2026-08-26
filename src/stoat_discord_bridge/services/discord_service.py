@@ -232,13 +232,13 @@ class DiscordSenderService(SenderService):
         @app_commands.describe(
             source="Connector id to link from (see /status for configured connectors)",
             user_id="User id on that connector",
-            local_user_id="User id on this connector",
+            local_user="The Discord member this is the same person as",
         )
         @app_commands.autocomplete(source=link_user_source_autocomplete)
         async def link_user_command(
-            interaction: discord.Interaction, source: str, user_id: str, local_user_id: str
+            interaction: discord.Interaction, source: str, user_id: str, local_user: discord.Member
         ) -> None:
-            await self._handle_link_user(interaction, source, user_id, local_user_id)
+            await self._handle_link_user(interaction, source, user_id, local_user)
 
         async def mirror_channel_destination_autocomplete(
             interaction: discord.Interaction, current: str
@@ -442,15 +442,20 @@ class DiscordSenderService(SenderService):
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_link_user(
-        self, interaction: discord.Interaction, source: str, user_id: str, local_user_id: str
+        self, interaction: discord.Interaction, source: str, user_id: str, local_user: discord.Member
     ) -> None:
+        # local_user is a real discord.Member (picked from Discord's own
+        # member search, not typed as free text) specifically so this can't
+        # end up linked to a mistyped/malformed id or a bare "@name" - see
+        # LinkError-free "Unknown User"/`<@@name>` mangling that caused
+        # further downstream once such a bad id was already on file.
         if self._user_linker is None:
             await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
             return
         try:
             summary = await self._user_linker.link_user(
                 local_connector=self.connector_id,
-                local_user_id=local_user_id,
+                local_user_id=str(local_user.id),
                 source=source,
                 source_user_id=user_id,
             )

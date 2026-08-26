@@ -46,7 +46,12 @@ class FakeLinker:
         self.mirror_channel_all_calls: list[dict] = []
         self.link_channel_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
+        self.link_user_calls: list[dict] = []
         self.connectors = connectors or {}
+
+    async def link_user(self, **kwargs):
+        self.link_user_calls.append(kwargs)
+        return "user linked ok"
 
     async def mirror_channel(self, **kwargs):
         self.mirror_channel_calls.append(kwargs)
@@ -213,6 +218,42 @@ async def test_linked_channels_without_a_configured_linker():
     await sender._handle_linked_channels(interaction)
 
     assert interaction.sent == ["Linking isn't configured."]
+
+
+# ---------------------------------------------------------------- _handle_link_user
+
+
+async def test_link_user_uses_the_picked_members_id_not_free_text():
+    # local_user is a discord.Member (a real search/pick from Discord's own
+    # UI), not a typed string - this is the fix for a real bug: a plain
+    # string option let someone type "@shrinerh" instead of the actual
+    # snowflake, which silently linked the wrong (nonexistent) id and broke
+    # mention rewriting in both directions.
+    user_linker = FakeLinker()
+    sender = _make_sender(FakeLinker(), user_linker=user_linker)
+    interaction = FakeInteraction()
+    member = SimpleNamespace(id=216591124222050304)
+
+    await sender._handle_link_user(interaction, "stoat", "01KH7TH31EBY08FTQ7YC2RC4DQ", member)
+
+    assert user_linker.link_user_calls == [
+        {
+            "local_connector": "discord",
+            "local_user_id": "216591124222050304",
+            "source": "stoat",
+            "source_user_id": "01KH7TH31EBY08FTQ7YC2RC4DQ",
+        }
+    ]
+    assert interaction.sent == ["user linked ok"]
+
+
+async def test_link_user_without_a_configured_user_linker():
+    sender = _make_sender(FakeLinker(), user_linker=None)
+    interaction = FakeInteraction()
+
+    await sender._handle_link_user(interaction, "stoat", "01KH", SimpleNamespace(id=111))
+
+    assert interaction.sent == ["User linking isn't configured."]
 
 
 @pytest.fixture
