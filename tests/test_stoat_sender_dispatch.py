@@ -152,6 +152,22 @@ async def test_handle_message_falls_back_to_tag_when_no_display_name():
     assert recorder.messages[0].sender_name == "alice#0000"
 
 
+async def test_handle_message_prefers_the_members_nick_over_the_account_display_name():
+    # stoat.py's Member.display_name ignores the member's own per-server
+    # nick and passes straight through to the underlying User's
+    # account-level display_name (confirmed against the installed package)
+    # - _handle_message must check nick itself.
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client)
+    channel = FakeChannel(id="42")
+    author = FakeAuthor(id="u1", tag="alice#0000", display_name="Global Alice", nick="Server Nickname")
+
+    await sender._handle_message(_stoat_message(channel=channel, author=author))
+
+    assert recorder.messages[0].sender_name == "Server Nickname"
+
+
 async def test_handle_message_fetches_a_fresh_member_when_the_avatar_is_uncached():
     recorder = _Recorder()
     client = FakeClient()

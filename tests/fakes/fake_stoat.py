@@ -32,6 +32,7 @@ class FakeAuthor:
         *,
         tag: str = "user#0000",
         display_name: str | None = None,
+        nick: str | None = None,
         bot: bool = False,
         server_avatar: FakeAsset | None = None,
         avatar: FakeAsset | None = None,
@@ -40,6 +41,7 @@ class FakeAuthor:
         self.id = id
         self.tag = tag
         self.display_name = display_name
+        self.nick = nick
         self.bot = bot
         self.server_avatar = server_avatar
         self.avatar = avatar

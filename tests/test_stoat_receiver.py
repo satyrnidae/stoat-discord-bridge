@@ -143,6 +143,36 @@ async def test_receive_masquerades_as_the_linked_local_user_when_linked(fake_db)
     assert masquerade.avatar == "https://cdn.example/local.png"
 
 
+async def test_receive_prefers_the_members_nick_over_the_account_display_name(fake_db):
+    # stoat.py's Member.display_name passes straight through to the
+    # underlying User's account-level display_name and ignores the member's
+    # own per-server nick entirely (confirmed against the installed
+    # package) - get_masquerade_identity must check nick itself rather than
+    # trusting display_name to already account for it.
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="discord", user_id="discord-alice", display_name="discord-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="stoat", user_id="u1", display_name="u1"))
+    client = FakeClient()
+    client.add_user(
+        "u1",
+        FakeAuthor(
+            id="u1",
+            nick="Server Nickname",
+            display_name="Global Alice",
+            avatar=FakeAsset("https://cdn.example/nick.png"),
+        ),
+    )
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="42")
+
+    masquerade = channel.sent[0]["masquerade"]
+    assert masquerade.name == "Server Nickname"
+
+
 async def test_receive_uses_the_remote_identity_when_the_sender_isnt_linked(fake_db):
     user_mappings = UserMappingRepository(fake_db)
     client = FakeClient()

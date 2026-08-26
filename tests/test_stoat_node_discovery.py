@@ -41,8 +41,21 @@ def test_node_config_strips_trailing_slash_before_fetching():
     with patch("urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value = _fake_response({"ws": "wss://srv.example.net/ws"})
         _discover_node_config("https://srv.example.net/api/")
-        called_url = mock_urlopen.call_args[0][0]
-        assert called_url == "https://srv.example.net/api"
+        called_request = mock_urlopen.call_args[0][0]
+        assert called_request.full_url == "https://srv.example.net/api"
+
+
+def test_node_config_sends_a_real_user_agent():
+    # urllib's default User-Agent ("Python-urllib/x.y") is a common
+    # bot-blocklist target for reverse proxies/CDNs fronting a self-hosted
+    # deployment - a request with no override looks exactly like one of
+    # those to the server, and gets rejected the same way.
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value = _fake_response({"ws": "wss://srv.example.net/ws"})
+        _discover_node_config("https://srv.example.net/api", connector_id="stoat_selfhosted")
+        called_request = mock_urlopen.call_args[0][0]
+        assert "python-urllib" not in called_request.get_header("User-agent").lower()
+        assert "stoat_selfhosted" in called_request.get_header("User-agent")
 
 
 def test_node_config_returns_none_on_network_failure():
@@ -50,10 +63,27 @@ def test_node_config_returns_none_on_network_failure():
         assert _discover_node_config("https://srv.example.net/api") is None
 
 
+def test_node_config_logs_the_failure_reason_on_network_failure(capsys):
+    with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+        _discover_node_config("https://srv.example.net/api", connector_id="stoat_selfhosted")
+    output = capsys.readouterr().out
+    assert "stoat_selfhosted" in output
+    assert "connection refused" in output
+
+
 def test_node_config_returns_none_on_malformed_json():
     with patch("urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value = BytesIO(b"not json")
         assert _discover_node_config("https://srv.example.net/api") is None
+
+
+def test_node_config_logs_the_response_body_on_malformed_json(capsys):
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value = BytesIO(b"<html>not json</html>")
+        _discover_node_config("https://srv.example.net/api", connector_id="stoat_selfhosted")
+    output = capsys.readouterr().out
+    assert "stoat_selfhosted" in output
+    assert "<html>not json</html>" in output
 
 
 # ---------------------------------------------------------------- _discover_websocket_base

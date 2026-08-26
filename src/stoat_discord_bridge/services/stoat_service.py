@@ -46,7 +46,7 @@ from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 _CONTENT_LIMIT = 2000
 
 
-def _discover_node_config(http_base: str) -> dict | None:
+def _discover_node_config(http_base: str, *, connector_id: str = "stoat") -> dict | None:
     """Fetches the "NodeInfo"-style config document every stoat.py-compatible
     server exposes at its REST root - used to discover deployment-specific
     URLs that stoat.Client otherwise defaults to the *public* hosted
@@ -55,12 +55,37 @@ def _discover_node_config(http_base: str) -> dict | None:
     hitting the network separately). Best-effort: returns None on any
     failure - network hiccup, unexpected shape, whatever - so callers fall
     back to stoat.Client's own (public-instance) defaults rather than
-    blocking startup on it.
+    blocking startup on it. Unlike that silent fallback, though, the failure
+    itself is logged (not swallowed) - a self-hosted deployment silently
+    stuck on the public instance's URLs is exactly the failure mode this
+    function exists to avoid, so a reverse proxy/WAF rejection, a self-signed
+    cert, or a REST root that isn't actually the NodeInfo document all need
+    to be visible, not just "avatars never load".
+
+    Sends a real User-Agent (urllib's default, "Python-urllib/x.y", is a
+    common bot-blocklist target for reverse proxies/CDNs fronting a
+    self-hosted deployment - a 403 for that reason looks identical to a
+    genuine network failure without this).
     """
+    url = http_base.rstrip("/")
+    request = urllib.request.Request(url, headers={"User-Agent": f"stoat-discord-bridge ({connector_id})"})
     try:
-        with urllib.request.urlopen(http_base.rstrip("/"), timeout=10) as resp:
-            return json.loads(resp.read())
-    except Exception:
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            body = resp.read()
+    except Exception as exc:
+        print(
+            f"[stoat:{connector_id}] couldn't reach '{url}' to discover its real websocket/CDN URLs - "
+            f"falling back to the public instance's, which is wrong for a self-hosted deployment: {exc!r}"
+        )
+        return None
+    try:
+        return json.loads(body)
+    except Exception as exc:
+        print(
+            f"[stoat:{connector_id}] '{url}' didn't return the expected NodeInfo JSON - falling back to the "
+            f"public instance's websocket/CDN URLs, which is wrong for a self-hosted deployment: {exc!r}; "
+            f"response started with {body[:200]!r}"
+        )
         return None
 
 
@@ -112,7 +137,7 @@ class _StoatClient(stoat.Client):
     third-party client class."""
 
     def __init__(self, owner: StoatSenderService, config: StoatConnectorConfig) -> None:
-        node_config = _discover_node_config(config.api_url)
+        node_config = _discover_node_config(config.api_url, connector_id=config.id)
         super().__init__(
             token=config.bot_token,
             http_base=config.api_url,
@@ -196,7 +221,7 @@ class StoatSenderService(SenderService):
                 member_or_user = await self._client.fetch_user(user_id)
             except Exception:
                 return None
-        name = getattr(member_or_user, "display_name", None) or getattr(member_or_user, "tag", None)
+        name = _display_name(member_or_user)
         if not name:
             return None
         return name, _avatar_url(member_or_user)
@@ -273,7 +298,7 @@ class StoatSenderService(SenderService):
                 origin_connector_id=self.connector_id,
                 origin_channel_id=str(message.channel.id),
                 channel_name=getattr(message.channel, "name", str(message.channel.id)),
-                sender_name=getattr(message.author, "display_name", None) or message.author.tag,
+                sender_name=_display_name(message.author),
                 sender_avatar_url=await self._resolve_avatar_url(message),
                 sender_user_id=str(message.author.id),
                 content_markdown=message.content,
@@ -632,6 +657,22 @@ class StoatReceiverService(ReceiverService):
             image_url=created.image.url(),
             animated=getattr(created, "animated", emoji.animated),
         )
+
+
+def _display_name(author) -> str:
+    """Best-effort display name for a Stoat message author/member.
+
+    stoat.py's `Member.display_name` property - confirmed against the
+    installed package (server.py) - passes straight through to the
+    underlying User's *account-level* display_name and never reads the
+    member's own per-server `nick` field at all, even though `nick` is a
+    distinct attribute the same Member carries. Left unchecked, that means a
+    member with a server nickname set but no account-level display name
+    falls all the way through to `tag` (username#discriminator) - showing a
+    raw username where the nickname should appear. So check `nick` first,
+    mirroring the same per-server-override-before-global preference already
+    given to avatars by `_avatar_url` below."""
+    return getattr(author, "nick", None) or getattr(author, "display_name", None) or author.tag
 
 
 def _avatar_url(author) -> str | None:
