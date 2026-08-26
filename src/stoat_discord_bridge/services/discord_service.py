@@ -502,7 +502,18 @@ class DiscordReceiverService(ReceiverService):
             return webhook
         channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         existing = next((w for w in await channel.webhooks() if w.user == self._client.user), None)
-        webhook = existing or await channel.create_webhook(name="Bridge")
+        if existing is not None:
+            webhook = existing
+        else:
+            # A per-message avatar_url override (the relayed sender's own
+            # avatar) is passed to webhook.send() below when available, but
+            # when it's not (e.g. sender_avatar_url couldn't be resolved),
+            # Discord falls back to the webhook's own avatar - give it the
+            # bot's, rather than Discord's blank/generic default, so an
+            # unattributable message still looks like it came from *this*
+            # bridge rather than nothing at all.
+            avatar_bytes = await self._client.user.display_avatar.read()
+            webhook = await channel.create_webhook(name="Bridge", avatar=avatar_bytes)
         self._webhooks[channel_id] = webhook
         return webhook
 
