@@ -128,72 +128,12 @@ IRC has no reaction or custom-emoji concept, so it's excluded from both —
 `ReceiverService.supports_reactions` / `supports_emoji` gate this per
 connector, and IRC's receiver leaves them at the base-class default (`False`).
 
-## Status command
+## Commands
 
-Each connector exposes a way to check sync target health (`healthy` /
-`degraded` / `failing` per connector, tracked in `status.py`'s
-`HealthTracker` from sender connection state and recent relay outcomes):
-
-- Discord: `/status` slash command
-- Stoat: `/status` message command
-- IRC: `STATUS`, sent as a DM to the bot
-
-## Channel linking
-
-Nothing is bridged automatically — every pair of channels has to be linked
-explicitly, via one of:
-
-### `/link-channel <source> <source_id> [<destination_id>]`
-
-Links `source_id` on connector `<source>` (any configured connector id) to
-`<destination_id>` on the connector the command is run on — or to the
-current channel if `<destination_id>` is omitted. If either channel is
-already linked, the existing bridge group is reused; if *both* are already
-linked to two different groups, the command fails rather than merging them
-(unlink one side first). Available on:
-
-- **Discord**: `/link-channel` slash command (requires Manage Server)
-- **Stoat**: `/link-channel <source> <source_id> [<destination_id>]` message
-  command (requires Manage Server)
-- **IRC**: `LINK_CHANNEL <source> <source_id> <local_id>`, sent as a DM to
-  the bot, bare and uppercase (no leading `/` or `!` — many IRC clients
-  treat a leading `/` as a local command and never send it as text).
-  Requires IRC-operator status (checked live via `WHOIS`, not
-  channel-operator status) since a DM has no per-channel permission to
-  check against. Unlike Discord/Stoat, there's also no "current channel" a
-  DM can default to, so `local_id` is always required.
-
-### `/linked-channels`
-
-Read-only listing of every channel bridged to the invoking channel, across
-every connector in its bridge group. No permission gate on any connector,
-same as `/status`.
-
-- **Discord**: `/linked-channels` slash command (defaults to the current channel)
-- **Stoat**: `/linked-channels` message command (defaults to the current channel)
-- **IRC**: `LINKED_CHANNELS <local_channel_id>`, sent as a DM to the bot —
-  same "no current channel to default to" reasoning as `LINK_CHANNEL` above.
-
-### `/mirror-channels <source>`
-
-Sent as a message in Stoat by someone with Manage Server permission,
-recreates `<source>`'s (a configured Discord connector's) current
-category/channel layout on that Stoat server (see `channel_structure.py`
-and `services/stoat_service.py`) — additive/idempotent, existing
-categories/channels (matched by name) are left alone, nothing is deleted or
-renamed. Unlike `/link-channel`, this is Stoat-only on the receiving side:
-Discord doesn't need to mirror structure onto itself, and IRC networks
-don't offer bot-driven channel creation.
-
-Every channel it creates **or matches by name** is also linked back to its
-Discord counterpart (same underlying logic as `/link-channel`) — so
-`/mirror-channels` alone is enough to both create and bridge a Stoat
-server's structure from Discord. A channel that's already linked to a
-*different* group is skipped (reported in the summary), not overwritten.
-
-Discord forum channels have no Stoat equivalent, so each forum is mirrored
-as its own group named after the forum, containing one channel per
-currently active post in it (archived posts aren't included).
+Every admin/status command (`/status`, `/link-channel`, `/linked-channels`,
+`/link-user`, `/linked-users`, `/link-emote`, `/mirror-channel`,
+`/mirror-channels`) and how to reach it on each connector is documented in
+[`COMMANDS.md`](COMMANDS.md).
 
 ## Layout
 
@@ -225,5 +165,5 @@ unverified against a live server. Reaction and custom-emoji sync
 (`services/discord_service.py`, `services/stoat_service.py`, `bridge.py`) is
 implemented against a best guess at `stoat.py`'s event names and object
 shape, flagged with `TODO`s where unconfirmed — same caveat as the rest of
-the Stoat integration and the IRC channel-operator check backing
-`!link-channel`'s permission gate.
+the Stoat integration and the WHOIS-based IRC-operator check backing IRC's
+admin DM commands' permission gate.

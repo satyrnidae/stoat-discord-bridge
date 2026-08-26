@@ -106,50 +106,16 @@ working) — it only updates `EmojiMappingRepository`'s bookkeeping via
 `forget()` for the connector it was deleted on; the cross-connector mapping
 itself drops only once every connector's copy has been deleted.
 
-### Status command
+### Admin & status commands
 
-Each connector exposes a way to check sync target health (`healthy` /
-`degraded` / `failing` per connector, tracked in `status.py`'s
-`HealthTracker` from sender connection state and recent relay outcomes):
-Discord `/status` slash command, Stoat `/status` message command, IRC
-`STATUS` sent as a DM to the bot.
-
-### Channel linking (`admin_commands.py`)
-
-Nothing is bridged automatically — every pair of channels must be linked
-explicitly:
-
-- **`/link-channel <source> <source_id> [<destination_id>]`** — links
-  `source_id` on connector `<source>` to `<destination_id>` on the connector
-  the command is run on (or the current channel if omitted). If either side
-  is already linked, the existing bridge group is reused; if *both* sides are
-  already linked to *different* groups, the command fails rather than merging
-  them (unlink one side first). Available as a Discord slash command
-  (Manage Server), a Stoat message command (Manage Server), and IRC's
-  `LINK_CHANNEL <source> <source_id> <local_id>` — sent as a DM to the bot,
-  bare and uppercase (no leading `/` or `!`, unlike Discord/Stoat's slash
-  commands, since many IRC clients treat a leading `/` as a local command),
-  gated on IRC-operator status (via `WHOIS`, not channel-operator status)
-  since a DM has no per-channel permission to check. Unlike Discord/Stoat,
-  a DM has no "current channel" to default `local_id` to, so it's always
-  required there.
-- **`/linked-channels`** — read-only listing of every channel bridged to the
-  invoking channel (no args on Discord/Stoat, since they default to the
-  current channel; IRC's `LINKED_CHANNELS <local_channel_id>` needs one
-  explicit, same reasoning as `LINK_CHANNEL`'s `local_id` above). No
-  permission gate on any connector, same as `/status`. Available as a
-  Discord slash command, a Stoat message command, and an IRC DM command.
-- **`/mirror-channels <source>`** — Stoat-only message command (Manage
-  Server) that recreates a configured Discord connector's current
-  category/channel layout on that Stoat server (`channel_structure.py`).
-  Additive/idempotent: existing categories/channels matched by name are left
-  alone, nothing deleted or renamed. Every channel it creates or matches is
-  also linked back to its Discord counterpart, so this command alone both
-  creates and bridges a Stoat server's structure from Discord. A channel
-  already linked to a *different* group is skipped (reported in the
-  summary), not overwritten. Discord forum channels have no Stoat
-  equivalent, so each forum mirrors as its own group named after the forum,
-  with one channel per currently active (non-archived) post.
+Every admin/status command (`/status`, `/link-channel`, `/linked-channels`,
+`/link-user`, `/linked-users`, `/link-emote`, `/mirror-channel`,
+`/mirror-channels`) and how to reach it on each connector is documented in
+`COMMANDS.md`, not duplicated here — shared logic lives in
+`admin_commands.py` (`ChannelLinker` / `EmoteLinker` / `UserLinker` /
+`StructureMirrorer`), called identically from each connector's own
+`services/*.py` module. Nothing is bridged (or mention-linked) automatically
+— every pair is linked explicitly via those commands.
 
 ### Discord threads
 
