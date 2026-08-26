@@ -20,8 +20,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from stoat_discord_bridge.admin_commands import ConnectorInfo
 from stoat_discord_bridge.config import DiscordConnectorConfig
-from stoat_discord_bridge.services.discord_service import DiscordSenderService, _normalize_channel_id
+from stoat_discord_bridge.services.discord_service import (
+    DiscordSenderService,
+    _connector_autocomplete_choices,
+    _normalize_channel_id,
+)
 from stoat_discord_bridge.status import HealthTracker
 
 
@@ -36,11 +41,12 @@ async def _noop(_message) -> None:
 
 
 class FakeLinker:
-    def __init__(self):
+    def __init__(self, connectors: dict | None = None):
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
         self.link_channel_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
+        self.connectors = connectors or {}
 
     async def mirror_channel(self, **kwargs):
         self.mirror_channel_calls.append(kwargs)
@@ -70,8 +76,15 @@ class FakeInteraction:
         self.sent.append(content)
 
 
-def _make_sender(linker: FakeLinker) -> DiscordSenderService:
-    return DiscordSenderService(_discord_config(), on_message=_noop, health=HealthTracker({"discord": "Discord"}), linker=linker)
+def _make_sender(linker: FakeLinker, *, emote_linker=None, user_linker=None) -> DiscordSenderService:
+    return DiscordSenderService(
+        _discord_config(),
+        on_message=_noop,
+        health=HealthTracker({"discord": "Discord"}),
+        linker=linker,
+        emote_linker=emote_linker,
+        user_linker=user_linker,
+    )
 
 
 # ---------------------------------------------------------------- _normalize_channel_id
@@ -200,3 +213,109 @@ async def test_linked_channels_without_a_configured_linker():
     await sender._handle_linked_channels(interaction)
 
     assert interaction.sent == ["Linking isn't configured."]
+
+
+@pytest.fixture
+def sample_connectors():
+    return {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat-public": ConnectorInfo(id="stoat-public", label="Stoat (public)"),
+        "irc": ConnectorInfo(id="irc", label="IRC"),
+    }
+
+
+def test_autocomplete_choices_lists_everything_for_an_empty_query(sample_connectors):
+    choices = _connector_autocomplete_choices("", sample_connectors)
+    assert {c.value for c in choices} == {"discord", "stoat-public", "irc"}
+
+
+def test_autocomplete_choices_filters_by_connector_id_substring(sample_connectors):
+    choices = _connector_autocomplete_choices("stoat", sample_connectors)
+    assert [c.value for c in choices] == ["stoat-public"]
+
+
+def test_autocomplete_choices_filters_by_label_substring_case_insensitively(sample_connectors):
+    choices = _connector_autocomplete_choices("PUBLIC", sample_connectors)
+    assert [c.value for c in choices] == ["stoat-public"]
+
+
+def test_autocomplete_choices_no_match_returns_empty(sample_connectors):
+    assert _connector_autocomplete_choices("webchat", sample_connectors) == []
+
+
+def test_autocomplete_choices_empty_connectors_returns_empty():
+    assert _connector_autocomplete_choices("anything", {}) == []
+
+
+def test_autocomplete_choices_caps_at_25():
+    many = {f"c{i}": ConnectorInfo(id=f"c{i}", label=f"Connector {i}") for i in range(30)}
+    assert len(_connector_autocomplete_choices("", many)) == 25
+
+
+def test_autocomplete_choices_include_all_adds_the_all_choice_first(sample_connectors):
+    choices = _connector_autocomplete_choices("", sample_connectors, include_all=True)
+    assert choices[0].value == "all"
+    assert {c.value for c in choices} == {"all", "discord", "stoat-public", "irc"}
+
+
+def test_autocomplete_choices_include_all_respects_the_filter(sample_connectors):
+    choices = _connector_autocomplete_choices("disc", sample_connectors, include_all=True)
+    assert [c.value for c in choices] == ["discord"]  # "all" doesn't match "disc" - excluded
+
+
+def test_autocomplete_choices_all_not_added_when_include_all_is_false(sample_connectors):
+    choices = _connector_autocomplete_choices("", sample_connectors, include_all=False)
+    assert "all" not in {c.value for c in choices}
+
+
+# ---------------------------------------------------------------- autocomplete wiring on the slash commands
+
+
+def _autocomplete_callback(sender: DiscordSenderService, command_name: str, param_name: str):
+    command = sender.tree.get_command(command_name, guild=sender._guild)
+    return command._params[param_name].autocomplete
+
+
+async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_connectors):
+    sender = _make_sender(FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link-channel", "source")
+
+    choices = await callback(FakeInteraction(), "stoat")
+
+    assert [c.value for c in choices] == ["stoat-public"]
+
+
+async def test_link_channel_source_autocomplete_handles_no_configured_linker():
+    sender = DiscordSenderService(
+        _discord_config(), on_message=_noop, health=HealthTracker({"discord": "Discord"}), linker=None
+    )
+    callback = _autocomplete_callback(sender, "link-channel", "source")
+
+    assert await callback(FakeInteraction(), "") == []
+
+
+async def test_link_emote_source_autocomplete_reads_the_emote_linker(sample_connectors):
+    sender = _make_sender(FakeLinker(), emote_linker=FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link-emote", "source")
+
+    choices = await callback(FakeInteraction(), "irc")
+
+    assert [c.value for c in choices] == ["irc"]
+
+
+async def test_link_user_source_autocomplete_reads_the_user_linker(sample_connectors):
+    sender = _make_sender(FakeLinker(), user_linker=FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link-user", "source")
+
+    choices = await callback(FakeInteraction(), "irc")
+
+    assert [c.value for c in choices] == ["irc"]
+
+
+async def test_mirror_channel_destination_autocomplete_includes_all(sample_connectors):
+    sender = _make_sender(FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "mirror-channel", "destination")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"all", "discord", "stoat-public", "irc"}

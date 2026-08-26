@@ -54,6 +54,13 @@ class ChannelLinker:
         self._channel_mappings = channel_mappings
         self._connectors = connectors
 
+    @property
+    def connectors(self) -> dict[str, ConnectorInfo]:
+        """Every connector this bridge knows about, for admin-command UIs
+        (e.g. Discord slash-command autocomplete on a `source`/`destination`
+        option) to list without duplicating bridge.run()'s wiring."""
+        return self._connectors
+
     async def link_channel(
         self,
         *,
@@ -221,6 +228,10 @@ class EmoteLinker:
         self._emoji_mappings = emoji_mappings
         self._connectors = connectors
 
+    @property
+    def connectors(self) -> dict[str, ConnectorInfo]:
+        return self._connectors
+
     async def link_emote(self, *, local_connector: str, local_id: str, source: str, source_id: str) -> str:
         """Link `source`'s `source_id` emoji to `local_id` on `local_connector`.
         Raises LinkError if `source` is unknown, the two are the same emoji,
@@ -259,6 +270,10 @@ class UserLinker:
     def __init__(self, user_mappings: UserMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
         self._user_mappings = user_mappings
         self._connectors = connectors
+
+    @property
+    def connectors(self) -> dict[str, ConnectorInfo]:
+        return self._connectors
 
     async def link_user(self, *, local_connector: str, local_user_id: str, source: str, source_user_id: str) -> str:
         """Link `source`'s `source_user_id` to `local_user_id` on `local_connector`.

@@ -23,7 +23,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError, UserLinker
+from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, EmoteLinker, LinkError, UserLinker
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure, clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.models import (
@@ -59,6 +59,25 @@ _USERNAME_LIMIT = 80
 _FORBIDDEN_USERNAME_SUBSTRINGS = ("clyde", "discord")
 
 _CHANNEL_MENTION_RE = re.compile(r"^<#(\d+)>$")
+
+
+def _connector_autocomplete_choices(
+    current: str, connectors: dict[str, ConnectorInfo], *, include_all: bool = False
+) -> list[app_commands.Choice[str]]:
+    """Shared filtering behind every `source`/`destination` option's
+    autocomplete: Discord expects results ranked/filtered by `current` (the
+    option's in-progress text) and caps them at 25 - substring match against
+    both the connector id and its display label, so typing either finds it.
+    `include_all` adds the literal "all" choice `/mirror-channel` accepts."""
+    current = current.lower()
+    choices = [
+        app_commands.Choice(name=f"{info.label} ({connector_id})", value=connector_id)
+        for connector_id, info in connectors.items()
+        if current in connector_id.lower() or current in info.label.lower()
+    ]
+    if include_all and current in "all":
+        choices.insert(0, app_commands.Choice(name="all", value="all"))
+    return choices[:25]
 
 
 def _normalize_channel_id(raw: str) -> str:
@@ -152,6 +171,12 @@ class DiscordSenderService(SenderService):
         async def linked_channels_command(interaction: discord.Interaction) -> None:
             await self._handle_linked_channels(interaction)
 
+        async def link_channel_source_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._linker.connectors if self._linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors)
+
         @self.tree.command(
             name="link-channel",
             description="Link a channel from another bridge connector to this channel",
@@ -163,10 +188,17 @@ class DiscordSenderService(SenderService):
             source_id="Channel id on that connector",
             destination_id="Channel id on this connector (defaults to the current channel)",
         )
+        @app_commands.autocomplete(source=link_channel_source_autocomplete)
         async def link_channel_command(
             interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None = None
         ) -> None:
             await self._handle_link_channel(interaction, source, source_id, destination_id)
+
+        async def link_emote_source_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._emote_linker.connectors if self._emote_linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors)
 
         @self.tree.command(
             name="link-emote",
@@ -179,10 +211,17 @@ class DiscordSenderService(SenderService):
             source_id="Emoji id on that connector",
             local_id="Emoji id on this connector",
         )
+        @app_commands.autocomplete(source=link_emote_source_autocomplete)
         async def link_emote_command(
             interaction: discord.Interaction, source: str, source_id: str, local_id: str
         ) -> None:
             await self._handle_link_emote(interaction, source, source_id, local_id)
+
+        async def link_user_source_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._user_linker.connectors if self._user_linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors)
 
         @self.tree.command(
             name="link-user",
@@ -195,10 +234,17 @@ class DiscordSenderService(SenderService):
             user_id="User id on that connector",
             local_user_id="User id on this connector",
         )
+        @app_commands.autocomplete(source=link_user_source_autocomplete)
         async def link_user_command(
             interaction: discord.Interaction, source: str, user_id: str, local_user_id: str
         ) -> None:
             await self._handle_link_user(interaction, source, user_id, local_user_id)
+
+        async def mirror_channel_destination_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._linker.connectors if self._linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors, include_all=True)
 
         @self.tree.command(
             name="mirror-channel",
@@ -210,6 +256,7 @@ class DiscordSenderService(SenderService):
             destination="Connector id to mirror to, or 'all' for every configured connector",
             local_channel_id="Channel id on this connector (defaults to the current channel)",
         )
+        @app_commands.autocomplete(destination=mirror_channel_destination_autocomplete)
         async def mirror_channel_command(
             interaction: discord.Interaction, destination: str, local_channel_id: str | None = None
         ) -> None:
