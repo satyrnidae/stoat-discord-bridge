@@ -14,6 +14,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import discord
+
+
+class _FakeHttpResponse:
+    """Minimal stand-in for the aiohttp response object discord.py's
+    HTTPException reads `.status`/`.reason` off of - enough to construct a
+    real discord.NotFound/HTTPException without a live request."""
+
+    def __init__(self, *, status: int, reason: str) -> None:
+        self.status = status
+        self.reason = reason
+
 
 class FakeAsset:
     """Stands in for discord.Asset. Unlike stoat.py's Asset, discord.py
@@ -166,7 +178,7 @@ class FakeClient:
     async def fetch_channel(self, channel_id: int) -> FakeChannel:
         channel = self._channels.get(channel_id)
         if channel is None:
-            raise LookupError(f"no such channel: {channel_id}")
+            raise discord.NotFound(_FakeHttpResponse(status=404, reason="Not Found"), "channel not found")
         return channel
 
     def get_guild(self, guild_id: int) -> FakeGuild | None:
