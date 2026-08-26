@@ -138,6 +138,20 @@ class FakeGuild:
         self._raises = raises
         self.created_emoji_calls: list[dict] = []
         self._next_emoji_id = 1
+        self._members: dict[int, FakeUser] = {}
+
+    def add_member(self, member: FakeUser) -> FakeUser:
+        self._members[member.id] = member
+        return member
+
+    def get_member(self, user_id: int) -> FakeUser | None:
+        return self._members.get(user_id)
+
+    async def fetch_member(self, user_id: int) -> FakeUser:
+        member = self._members.get(user_id)
+        if member is None:
+            raise discord.NotFound(_FakeHttpResponse(status=404, reason="Not Found"), "member not found")
+        return member
 
     async def create_custom_emoji(self, *, name: str, image: bytes) -> FakeEmoji:
         if self._raises is not None:

@@ -12,6 +12,7 @@ import pytest
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError
 from stoat_discord_bridge.services.irc_service import IrcReceiverService
+from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 from tests.fakes.fake_irc import FakeIrcConnection
 
 
@@ -31,6 +32,7 @@ def _message(**overrides) -> StandardMessage:
         channel_name="general",
         sender_name="Alice",
         sender_avatar_url=None,
+        sender_user_id="discord-alice",
         content_markdown="hello",
         message_id="m1",
     )
@@ -38,8 +40,8 @@ def _message(**overrides) -> StandardMessage:
     return StandardMessage(**defaults)
 
 
-def _make_receiver(connection: FakeIrcConnection) -> IrcReceiverService:
-    return IrcReceiverService(_FakeSender(connection))
+def _make_receiver(connection: FakeIrcConnection, user_mappings: UserMappingRepository | None = None) -> IrcReceiverService:
+    return IrcReceiverService(_FakeSender(connection), user_mappings=user_mappings)
 
 
 async def test_receive_prefixes_each_line_with_the_senders_name():
@@ -75,6 +77,30 @@ async def test_receive_sends_a_single_bare_line_when_content_is_empty():
 
     assert connection.privmsg_calls == [("#general", "<Alice> ")]
     assert len(ids) == 1
+
+
+async def test_receive_prefixes_with_the_linked_local_nick_when_linked(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="discord", user_id="discord-alice", display_name="discord-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="irc", user_id="AliceIrc", display_name="AliceIrc"))
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="#general")
+
+    assert connection.privmsg_calls == [("#general", "<AliceIrc> hello")]
+
+
+async def test_receive_uses_the_remote_name_when_the_sender_isnt_linked(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="#general")
+
+    assert connection.privmsg_calls == [("#general", "<Alice> hello")]
 
 
 async def test_receive_raises_partial_relay_error_and_keeps_ids_already_sent():

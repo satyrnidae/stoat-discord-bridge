@@ -37,6 +37,12 @@ class StandardMessage:
     channel_name: str
     sender_name: str  # display name / username / nickname, whichever the origin platform calls it
     sender_avatar_url: str | None
+    # Native user ID of the sender on origin_connector_id - for IRC this IS
+    # the nick (same convention as storage/user_mappings.py's UserMapping.user_id).
+    # Used to look up a /link-user mapping so a linked sender's masquerade on
+    # the target connector can show the locally-linked identity instead of
+    # the remote one (see each receiver's receive()).
+    sender_user_id: str
     content_markdown: str
     message_id: str  # native message ID on the origin platform, for sync tracking
     attachments: list[Attachment] = field(default_factory=list)

@@ -173,6 +173,34 @@ class StoatSenderService(SenderService):
             return None
         return getattr(user, "display_name", None) or getattr(user, "tag", None)
 
+    async def get_masquerade_identity(self, user_id: str) -> tuple[str, str | None] | None:
+        """Best-effort (display_name, avatar_url) for `user_id` as a member
+        of this connector's own Stoat server (`self.server_id` - there's
+        exactly one per connector, see StoatConnectorConfig), used by
+        StoatReceiverService to masquerade a linked (/link-user) sender as
+        their local Stoat identity instead of their remote one. Prefers the
+        per-server Member (whose nickname/avatar override applies) over the
+        global User, same preference `_resolve_avatar_url` gives a message's
+        own author below - deliberately keyed off the connector's own
+        server_id rather than derived from a `get_channel(partial=True)`
+        object, which - being partial - isn't guaranteed to carry a
+        populated server_id at all. Returns None if `user_id` can't be
+        resolved to a real name at all (never falls back to displaying the
+        bare id - the caller should keep the remote identity instead)."""
+        try:
+            member_or_user = await self._client.get_server(self.server_id, partial=True).fetch_member(user_id)
+        except Exception:
+            member_or_user = None
+        if member_or_user is None:
+            try:
+                member_or_user = await self._client.fetch_user(user_id)
+            except Exception:
+                return None
+        name = getattr(member_or_user, "display_name", None) or getattr(member_or_user, "tag", None)
+        if not name:
+            return None
+        return name, _avatar_url(member_or_user)
+
     async def get_channel_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> name lookup, used as this connector's
         `ConnectorInfo.resolve_channel_name` for `/link-channel`.
@@ -247,6 +275,7 @@ class StoatSenderService(SenderService):
                 channel_name=getattr(message.channel, "name", str(message.channel.id)),
                 sender_name=getattr(message.author, "display_name", None) or message.author.tag,
                 sender_avatar_url=await self._resolve_avatar_url(message),
+                sender_user_id=str(message.author.id),
                 content_markdown=message.content,
                 message_id=str(message.id),
                 attachments=[],  # TODO: map stoat.py attachment objects to Attachment once confirmed
@@ -537,9 +566,19 @@ class StoatReceiverService(ReceiverService):
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         channel = self._sender.get_channel(target_channel_id, partial=True)
+        sender_name = message.sender_name
+        avatar_url = message.sender_avatar_url
+        if self._user_mappings is not None:
+            local_user_id = await self._user_mappings.find_linked_user_id(
+                message.origin_connector_id, message.sender_user_id, self.connector_id
+            )
+            if local_user_id is not None:
+                identity = await self._sender.get_masquerade_identity(local_user_id)
+                if identity is not None:
+                    sender_name, avatar_url = identity
         masquerade = stoat.MessageMasquerade(
-            name=message.sender_name[:32],
-            avatar=message.sender_avatar_url,
+            name=sender_name[:32],
+            avatar=avatar_url,
         )
         content = content_with_attachments(message)
         if self._user_mappings is not None:

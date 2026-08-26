@@ -14,7 +14,9 @@ import pytest
 from stoat_discord_bridge.models import CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.discord_service import DiscordReceiverService
 from stoat_discord_bridge.services.base import PartialRelayError
+from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 from tests.fakes.fake_discord import (
+    FakeAsset,
     FakeChannel,
     FakeClient,
     FakeGuild,
@@ -30,6 +32,7 @@ def _message(**overrides) -> StandardMessage:
         channel_name="general",
         sender_name="Alice",
         sender_avatar_url="https://cdn.example/alice.png",
+        sender_user_id="stoat-alice",
         content_markdown="hello",
         message_id="m1",
     )
@@ -37,8 +40,8 @@ def _message(**overrides) -> StandardMessage:
     return StandardMessage(**defaults)
 
 
-def _make_receiver(client: FakeClient) -> DiscordReceiverService:
-    return DiscordReceiverService(client, guild_id=123, connector_id="discord")
+def _make_receiver(client: FakeClient, user_mappings: UserMappingRepository | None = None) -> DiscordReceiverService:
+    return DiscordReceiverService(client, guild_id=123, connector_id="discord", user_mappings=user_mappings)
 
 
 # ---------------------------------------------------------------- receive()
@@ -92,6 +95,79 @@ async def test_receive_raises_partial_relay_error_and_keeps_ids_already_sent(mon
         await receiver.receive(_message(content_markdown="abcdefghij"), target_channel_id="42")
 
     assert len(exc_info.value.partial_ids) == 1
+
+
+# ---------------------------------------------------------- linked-user masquerade
+
+
+async def test_receive_masquerades_as_the_linked_local_user_when_linked(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="stoat", user_id="stoat-alice", display_name="stoat-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="discord", user_id="42", display_name="42"))
+    client = FakeClient()
+    client.add_user(FakeUser(id=42, display_name="Local Alice", display_avatar=FakeAsset("https://cdn.example/local.png")))
+    channel = client.add_channel(FakeChannel(id=99))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="99")
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.sent == [
+        {"content": "hello", "username": "Local Alice", "avatar_url": "https://cdn.example/local.png"}
+    ]
+
+
+async def test_receive_prefers_the_guild_members_nickname_over_the_global_username(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="stoat", user_id="stoat-alice", display_name="stoat-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="discord", user_id="42", display_name="42"))
+    client = FakeClient()
+    # the global user (username) and the guild member (server nickname) differ.
+    client.add_user(FakeUser(id=42, display_name="global-username"))
+    guild = client.add_guild(FakeGuild(id=123))
+    guild.add_member(FakeUser(id=42, display_name="Server Nickname", display_avatar=FakeAsset("https://cdn.example/nick.png")))
+    channel = client.add_channel(FakeChannel(id=99))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="99")
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.sent[0]["username"] == "Server Nickname"
+    assert webhook.sent[0]["avatar_url"] == "https://cdn.example/nick.png"
+
+
+async def test_receive_uses_the_remote_identity_when_the_sender_isnt_linked(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=99))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="99")
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.sent[0]["username"] == "Alice"
+    assert webhook.sent[0]["avatar_url"] == "https://cdn.example/alice.png"
+
+
+async def test_receive_falls_back_to_the_remote_identity_when_the_linked_discord_user_cant_be_resolved(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="stoat", user_id="stoat-alice", display_name="stoat-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="discord", user_id="42", display_name="42"))
+    client = FakeClient()  # discord user 42 never added - get_user/fetch_user both miss
+    channel = client.add_channel(FakeChannel(id=99))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="99")
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.sent[0]["username"] == "Alice"
+    assert webhook.sent[0]["avatar_url"] == "https://cdn.example/alice.png"
 
 
 # ---------------------------------------------------------------- reactions

@@ -80,6 +80,7 @@ def _message(**overrides) -> StandardMessage:
         channel_name="general",
         sender_name="Alice",
         sender_avatar_url=None,
+        sender_user_id="alice-id",
         content_markdown="hi",
         message_id="m1",
     )

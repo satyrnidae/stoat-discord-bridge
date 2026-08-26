@@ -135,6 +135,7 @@ async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar
     assert message.channel_name == "general"
     assert message.sender_name == "Alice"
     assert message.sender_avatar_url == "https://cdn.example/a.png"
+    assert message.sender_user_id == "u1"
     assert message.content_markdown == "hello"
     assert message.message_id == "m1"
 

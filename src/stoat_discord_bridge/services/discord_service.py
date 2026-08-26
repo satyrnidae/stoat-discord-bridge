@@ -236,7 +236,7 @@ class DiscordSenderService(SenderService):
 
         @self.tree.command(
             name="link-user",
-            description="Link a user from another bridge connector to a local user, for mention rewriting",
+            description="Link a user from another bridge connector to a local user, for mention rewriting and masquerade override",
             guild=self._guild,
         )
         @app_commands.default_permissions(manage_guild=True)
@@ -546,7 +546,13 @@ class DiscordReceiverService(ReceiverService):
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         webhook = await self._get_or_create_webhook(target_channel_id)
-        username = _sanitize_username(message.sender_name)
+        sender_name = message.sender_name
+        avatar_url = message.sender_avatar_url
+        if self._user_mappings is not None:
+            local_identity = await self._resolve_local_identity(message)
+            if local_identity is not None:
+                sender_name, avatar_url = local_identity
+        username = _sanitize_username(sender_name)
         content = content_with_attachments(message)
         if self._user_mappings is not None:
             content = await rewrite_mentions(
@@ -562,7 +568,7 @@ class DiscordReceiverService(ReceiverService):
                 sent = await webhook.send(
                     content=chunk,
                     username=username,
-                    avatar_url=message.sender_avatar_url,
+                    avatar_url=avatar_url,
                     wait=True,
                 )
             except Exception as exc:
@@ -596,6 +602,45 @@ class DiscordReceiverService(ReceiverService):
         return CustomEmoji(
             native_id=str(created.id), name=created.name, image_url=str(created.url), animated=created.animated
         )
+
+    async def _resolve_local_identity(self, message: StandardMessage) -> tuple[str, str | None] | None:
+        """If `message`'s sender is linked (via /link-user) to a Discord
+        identity on this connector, return that identity's (display_name,
+        avatar_url) to masquerade as instead of the remote sender's own -
+        None if unlinked or the linked id can't be resolved at all. Prefers
+        the guild Member (whose server nickname/avatar override is what
+        `_to_standard_message` uses for a *native* Discord message's own
+        sender_name/avatar) over the global User, which only has an
+        account-wide username/avatar - using the User here would show a
+        linked user's username instead of their nickname in this guild."""
+        local_user_id = await self._user_mappings.find_linked_user_id(
+            message.origin_connector_id, message.sender_user_id, self.connector_id
+        )
+        if local_user_id is None:
+            return None
+        identity = await self._fetch_member(local_user_id) or await self._fetch_user(local_user_id)
+        if identity is None:
+            return None
+        name = getattr(identity, "display_name", None)
+        if not name:
+            return None
+        avatar = getattr(identity, "display_avatar", None)
+        return name, str(avatar.url) if avatar else None
+
+    async def _fetch_member(self, user_id: str) -> discord.Member | None:
+        guild = self._client.get_guild(self._guild_id)
+        if guild is None:
+            return None
+        try:
+            return guild.get_member(int(user_id)) or await guild.fetch_member(int(user_id))
+        except (discord.HTTPException, discord.NotFound, ValueError):
+            return None
+
+    async def _fetch_user(self, user_id: str) -> discord.User | None:
+        try:
+            return self._client.get_user(int(user_id)) or await self._client.fetch_user(int(user_id))
+        except (discord.HTTPException, discord.NotFound, ValueError):
+            return None
 
     async def _get_or_create_webhook(self, channel_id: str) -> discord.Webhook:
         webhook = self._webhooks.get(channel_id)
@@ -637,6 +682,7 @@ def _to_standard_message(message: discord.Message, connector_id: str) -> Standar
         channel_name=getattr(message.channel, "name", str(message.channel.id)),
         sender_name=message.author.display_name,
         sender_avatar_url=str(message.author.display_avatar.url) if message.author.display_avatar else None,
+        sender_user_id=str(message.author.id),
         content_markdown=message.content,
         message_id=str(message.id),
         attachments=[

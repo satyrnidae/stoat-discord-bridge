@@ -116,6 +116,7 @@ async def test_handle_message_dispatches_a_standard_message():
     assert message.channel_name == "general"
     assert message.sender_name == "Alice"
     assert message.sender_avatar_url == "https://cdn.example/alice.png"
+    assert message.sender_user_id == "1"
     assert message.content_markdown == "hello"
     assert message.message_id == "99"
     assert [a.url for a in message.attachments] == ["https://cdn.example/f.png"]

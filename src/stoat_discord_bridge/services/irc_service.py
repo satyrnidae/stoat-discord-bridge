@@ -304,6 +304,7 @@ class IrcSenderService(SenderService):
                     channel_name=channel,
                     sender_name=event.source.nick,
                     sender_avatar_url=None,
+                    sender_user_id=event.source.nick,
                     content_markdown=content,
                     message_id=_synthetic_message_id(channel, event.source.nick, content),
                     attachments=[],
@@ -532,6 +533,7 @@ class IrcReceiverService(ReceiverService):
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
         content = message.content_markdown
+        sender_name = message.sender_name
         if self._user_mappings is not None:
             content = await rewrite_mentions(
                 content,
@@ -540,7 +542,15 @@ class IrcReceiverService(ReceiverService):
                 target_kind="irc",
                 user_mappings=self._user_mappings,
             )
-        prefix = f"<{message.sender_name}> "
+            # A linked sender's user_id on IRC IS the nick (see
+            # storage/user_mappings.py's UserMapping.user_id docstring), so
+            # unlike Discord/Stoat this needs no further identity lookup.
+            local_nick = await self._user_mappings.find_linked_user_id(
+                message.origin_connector_id, message.sender_user_id, self.connector_id
+            )
+            if local_nick is not None:
+                sender_name = local_nick
+        prefix = f"<{sender_name}> "
         limit = max(1, _LINE_LIMIT - len(prefix))
         ids: list[str] = []
         for line in content.splitlines() or [""]:

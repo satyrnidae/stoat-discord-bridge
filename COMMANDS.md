@@ -69,9 +69,12 @@ every connector in its bridge group.
 
 ## `/link-user <source> <user_id> <local_user>`
 
-Links `source`'s `user_id` to a local identity, purely for `services/
-mentions.py`'s @mention rewriting — never affects message relaying itself.
-Same already-linked/conflicting-group rules as `/link-channel`.
+Links `source`'s `user_id` to a local identity, for two things: `services/
+mentions.py`'s @mention rewriting, and making a message from the linked
+remote user masquerade as the local identity when relayed (webhook
+username+avatar on Discord, masquerade name+avatar on Stoat, the `<nick>`
+prefix on IRC) instead of showing the remote user's own name/avatar. Same
+already-linked/conflicting-group rules as `/link-channel`.
 
 - **Discord**: `/link-user` slash command (Manage Server). The local side
   (`local_user`) is picked from Discord's own member search — a real

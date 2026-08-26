@@ -1,7 +1,9 @@
-"""Which user identities, across connectors, refer to the same person -
-used to rewrite @mentions into each target connector's native syntax when
-relaying a message (see services/mentions.py). Rows are created only by
-the `/link-user` admin command (see admin_commands.py) - nothing links
+"""Which user identities, across connectors, refer to the same person - used
+to rewrite @mentions into each target connector's native syntax when relaying
+a message (see services/mentions.py), and to make a linked sender's relayed
+masquerade show their local identity instead of their remote one (see each
+receiver's receive(), via find_linked_user_id below). Rows are created only
+by the `/link-user` admin command (see admin_commands.py) - nothing links
 automatically.
 """
 
@@ -37,6 +39,20 @@ class UserMappingRepository:
     async def get_all_for_connector(self, connector_id: str) -> list[UserMapping]:
         cursor = self._collection.find({"connector_id": connector_id})
         return [_from_doc(doc) async for doc in cursor]
+
+    async def find_linked_user_id(self, origin_connector_id: str, origin_user_id: str, target_connector_id: str) -> str | None:
+        """If `origin_user_id` (on `origin_connector_id`) is linked to an
+        identity on `target_connector_id`, return that identity's native user
+        id there - None if unlinked, or linked but with no identity recorded
+        for `target_connector_id`. Used by each receiver's receive() to swap
+        a relayed message's masquerade to the locally-linked identity."""
+        link_group = await self.get_link_group(origin_connector_id, origin_user_id)
+        if link_group is None:
+            return None
+        for mapping in await self.get_mapped_users(link_group):
+            if mapping.connector_id == target_connector_id:
+                return mapping.user_id
+        return None
 
     async def get_all(self) -> list[UserMapping]:
         """Every linked identity, across every connector and group - for

@@ -81,6 +81,27 @@ async def test_get_all_returns_empty_when_nothing_is_linked(fake_db):
     assert await repo.get_all() == []
 
 
+async def test_find_linked_user_id_returns_the_mapped_identity(fake_db):
+    repo = UserMappingRepository(fake_db)
+    await repo.upsert(UserMapping(link_group="g1", connector_id="discord", user_id="111", display_name="111"))
+    await repo.upsert(UserMapping(link_group="g1", connector_id="irc", user_id="Alice", display_name="Alice"))
+
+    assert await repo.find_linked_user_id("discord", "111", "irc") == "Alice"
+    assert await repo.find_linked_user_id("irc", "Alice", "discord") == "111"
+
+
+async def test_find_linked_user_id_returns_none_when_unlinked(fake_db):
+    repo = UserMappingRepository(fake_db)
+    assert await repo.find_linked_user_id("discord", "111", "irc") is None
+
+
+async def test_find_linked_user_id_returns_none_when_the_target_connector_has_no_entry(fake_db):
+    repo = UserMappingRepository(fake_db)
+    await repo.upsert(UserMapping(link_group="g1", connector_id="discord", user_id="111", display_name="111"))
+
+    assert await repo.find_linked_user_id("discord", "111", "irc") is None
+
+
 async def test_get_all_for_connector(fake_db):
     repo = UserMappingRepository(fake_db)
     await repo.upsert(UserMapping(link_group="g1", connector_id="irc", user_id="Alice", display_name="Alice"))

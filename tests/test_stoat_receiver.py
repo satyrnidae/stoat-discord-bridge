@@ -11,15 +11,19 @@ import pytest
 
 from stoat_discord_bridge.models import CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError
-from stoat_discord_bridge.services.stoat_service import StoatReceiverService
-from tests.fakes.fake_stoat import FakeChannel, FakeClient, FakeServer
+from stoat_discord_bridge.services.stoat_service import StoatReceiverService, StoatSenderService
+from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
+from tests.fakes.fake_stoat import FakeAsset, FakeAuthor, FakeChannel, FakeClient, FakeServer
 
 
 class _FakeSender:
     """StoatReceiverService only ever reads .connector_id and reuses the
     sender's already-connected client - stand in for StoatSenderService
     without building a real one (whose __init__ makes a real network call,
-    see test_stoat_resolve_avatar.py's docstring)."""
+    see test_stoat_resolve_avatar.py's docstring). get_masquerade_identity is
+    the real StoatSenderService implementation, bound onto this fake, since
+    it's plain client-reading logic with no network-touching __init__ of its
+    own to avoid."""
 
     def __init__(self, client: FakeClient, connector_id: str = "stoat", server_id: str = "srv-1") -> None:
         self.connector_id = connector_id
@@ -32,6 +36,8 @@ class _FakeSender:
     def get_server(self, server_id: str, *, partial: bool = True):
         return self._client.get_server(server_id, partial=partial)
 
+    get_masquerade_identity = StoatSenderService.get_masquerade_identity
+
 
 def _message(**overrides) -> StandardMessage:
     defaults = dict(
@@ -40,6 +46,7 @@ def _message(**overrides) -> StandardMessage:
         channel_name="general",
         sender_name="Alice",
         sender_avatar_url="https://cdn.example/alice.png",
+        sender_user_id="discord-alice",
         content_markdown="hello",
         message_id="m1",
     )
@@ -47,8 +54,8 @@ def _message(**overrides) -> StandardMessage:
     return StandardMessage(**defaults)
 
 
-def _make_receiver(client: FakeClient) -> StoatReceiverService:
-    return StoatReceiverService(_FakeSender(client))
+def _make_receiver(client: FakeClient, user_mappings: UserMappingRepository | None = None) -> StoatReceiverService:
+    return StoatReceiverService(_FakeSender(client), user_mappings=user_mappings)
 
 
 # ---------------------------------------------------------------- receive()
@@ -113,6 +120,57 @@ async def test_receive_raises_partial_relay_error_and_keeps_ids_already_sent(mon
         await receiver.receive(_message(content_markdown="abcdefghij"), target_channel_id="42")
 
     assert exc_info.value.partial_ids == ["1"]
+
+
+# ---------------------------------------------------- linked-user masquerade
+
+
+async def test_receive_masquerades_as_the_linked_local_user_when_linked(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="discord", user_id="discord-alice", display_name="discord-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="stoat", user_id="u1", display_name="u1"))
+    client = FakeClient()
+    client.add_user("u1", FakeAuthor(id="u1", display_name="Local Alice", avatar=FakeAsset("https://cdn.example/local.png")))
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="42")
+
+    masquerade = channel.sent[0]["masquerade"]
+    assert masquerade.name == "Local Alice"
+    assert masquerade.avatar == "https://cdn.example/local.png"
+
+
+async def test_receive_uses_the_remote_identity_when_the_sender_isnt_linked(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="42")
+
+    masquerade = channel.sent[0]["masquerade"]
+    assert masquerade.name == "Alice"
+    assert masquerade.avatar == "https://cdn.example/alice.png"
+
+
+async def test_receive_falls_back_to_the_remote_identity_when_the_linked_stoat_user_cant_be_resolved(fake_db):
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="discord", user_id="discord-alice", display_name="discord-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="stoat", user_id="u1", display_name="u1"))
+    client = FakeClient()  # stoat user u1 never added - fetch_user raises
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="42")
+
+    masquerade = channel.sent[0]["masquerade"]
+    assert masquerade.name == "Alice"
+    assert masquerade.avatar == "https://cdn.example/alice.png"
 
 
 # ---------------------------------------------------------------- reactions
