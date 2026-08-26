@@ -8,7 +8,7 @@ from stoat_discord_bridge.admin_commands import (
     StructureMirrorer,
     UserLinker,
 )
-from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -121,6 +121,67 @@ async def test_link_channel_resolve_name_failure_falls_back_to_id(fake_db):
         source="discord", source_id="d1", destination_id=None,
     )
     assert "channel 'd1' (d1)" in summary  # name resolution failed - fell back to the raw id
+
+
+# ---------------------------------------------------------------- ChannelLinker.list_linked_channels
+
+
+async def test_list_linked_channels_reports_unlinked(fake_db, connectors):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    summary = await linker.list_linked_channels(local_connector="stoat", local_channel_id="s1")
+    assert summary == "This channel isn't linked to any others."
+
+
+async def test_list_linked_channels_lists_every_channel_in_the_group(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+    await linker.link_channel(
+        local_connector="irc", local_channel_id="#general", local_channel_name="#general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    summary = await linker.list_linked_channels(local_connector="stoat", local_channel_id="s1")
+
+    # Discord's name is "d1" (not "general") because the fixture's Discord
+    # ConnectorInfo has no resolve_channel_name - link_channel only ever
+    # learns the *local*/destination side's real name from its caller.
+    assert "Discord: d1 (d1)" in summary
+    assert "Stoat: general (s1) (this channel)" in summary
+    assert "IRC: #general (#general)" in summary
+
+
+async def test_list_linked_channels_marks_only_the_invoking_channel(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    summary = await linker.list_linked_channels(local_connector="discord", local_channel_id="d1")
+
+    assert "Discord: d1 (d1) (this channel)" in summary
+    assert "Stoat: general (s1)" in summary
+    assert "Stoat: general (s1) (this channel)" not in summary
+
+
+async def test_list_linked_channels_falls_back_to_the_raw_id_for_an_unknown_connector(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, {"stoat": ConnectorInfo(id="stoat", label="Stoat")})
+    await channel_mappings.upsert(
+        ChannelMapping(bridge_group="g1", connector_id="stoat", channel_id="s1", channel_name="general")
+    )
+    await channel_mappings.upsert(
+        ChannelMapping(bridge_group="g1", connector_id="webchat", channel_id="w1", channel_name="general")
+    )
+
+    summary = await linker.list_linked_channels(local_connector="stoat", local_channel_id="s1")
+
+    assert "webchat: general (w1)" in summary
 
 
 # ---------------------------------------------------------------- EmoteLinker.link_emote

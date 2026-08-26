@@ -40,6 +40,7 @@ class FakeLinker:
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
         self.link_channel_calls: list[dict] = []
+        self.list_linked_channels_calls: list[dict] = []
 
     async def mirror_channel(self, **kwargs):
         self.mirror_channel_calls.append(kwargs)
@@ -52,6 +53,10 @@ class FakeLinker:
     async def link_channel(self, **kwargs):
         self.link_channel_calls.append(kwargs)
         return "ok"
+
+    async def list_linked_channels(self, **kwargs):
+        self.list_linked_channels_calls.append(kwargs)
+        return "Linked channels:\nDiscord: general (999) (this channel)"
 
 
 class FakeInteraction:
@@ -170,3 +175,28 @@ async def test_link_channel_leaves_a_missing_destination_id_as_none():
 
     call = linker.link_channel_calls[0]
     assert call["destination_id"] is None
+
+
+# ---------------------------------------------------------------- _handle_linked_channels
+
+
+async def test_linked_channels_reports_the_invoking_channel():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=555)
+
+    await sender._handle_linked_channels(interaction)
+
+    assert linker.list_linked_channels_calls == [{"local_connector": "discord", "local_channel_id": "555"}]
+    assert interaction.sent == ["Linked channels:\nDiscord: general (999) (this channel)"]
+
+
+async def test_linked_channels_without_a_configured_linker():
+    sender = DiscordSenderService(
+        _discord_config(), on_message=_noop, health=HealthTracker({"discord": "Discord"}), linker=None
+    )
+    interaction = FakeInteraction()
+
+    await sender._handle_linked_channels(interaction)
+
+    assert interaction.sent == ["Linking isn't configured."]

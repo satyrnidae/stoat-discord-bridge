@@ -145,6 +145,14 @@ class DiscordSenderService(SenderService):
             await interaction.response.send_message(self._health.render(), ephemeral=True)
 
         @self.tree.command(
+            name="linked-channels",
+            description="List every channel linked to this one across the bridge",
+            guild=self._guild,
+        )
+        async def linked_channels_command(interaction: discord.Interaction) -> None:
+            await self._handle_linked_channels(interaction)
+
+        @self.tree.command(
             name="link-channel",
             description="Link a channel from another bridge connector to this channel",
             guild=self._guild,
@@ -335,6 +343,15 @@ class DiscordSenderService(SenderService):
         ]
 
         return GuildStructure(groups=groups, ungrouped_channels=ungrouped)
+
+    async def _handle_linked_channels(self, interaction: discord.Interaction) -> None:
+        if self._linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        summary = await self._linker.list_linked_channels(
+            local_connector=self.connector_id, local_channel_id=str(interaction.channel_id)
+        )
+        await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_link_channel(
         self, interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None

@@ -17,7 +17,7 @@ Reaction and custom-emoji sync (`services/discord_service.py`,
 `services/stoat_service.py`, `bridge.py`) is implemented against a best guess
 at `stoat.py`'s event names and object shape, flagged with `TODO`s where
 unconfirmed — same caveat applies to the rest of the Stoat integration and the
-IRC channel-operator check backing `!link-channel`'s permission gate.
+WHOIS-based IRC-operator check backing IRC's admin DM commands' permission gate.
 
 ## Commands
 
@@ -126,8 +126,19 @@ explicitly:
   already linked to *different* groups, the command fails rather than merging
   them (unlink one side first). Available as a Discord slash command
   (Manage Server), a Stoat message command (Manage Server), and IRC's
-  `!link-channel` channel message (channel-operator status) — IRC uses `!`
-  instead of `/` since many clients treat a leading `/` as a local command.
+  `LINK_CHANNEL <source> <source_id> <local_id>` — sent as a DM to the bot,
+  bare and uppercase (no leading `/` or `!`, unlike Discord/Stoat's slash
+  commands, since many IRC clients treat a leading `/` as a local command),
+  gated on IRC-operator status (via `WHOIS`, not channel-operator status)
+  since a DM has no per-channel permission to check. Unlike Discord/Stoat,
+  a DM has no "current channel" to default `local_id` to, so it's always
+  required there.
+- **`/linked-channels`** — read-only listing of every channel bridged to the
+  invoking channel (no args on Discord/Stoat, since they default to the
+  current channel; IRC's `LINKED_CHANNELS <local_channel_id>` needs one
+  explicit, same reasoning as `LINK_CHANNEL`'s `local_id` above). No
+  permission gate on any connector, same as `/status`. Available as a
+  Discord slash command, a Stoat message command, and an IRC DM command.
 - **`/mirror-channels <source>`** — Stoat-only message command (Manage
   Server) that recreates a configured Discord connector's current
   category/channel layout on that Stoat server (`channel_structure.py`).

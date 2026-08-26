@@ -175,6 +175,30 @@ class ChannelLinker:
         ]
         return "\n".join(results) if results else "no other connectors configured."
 
+    async def list_linked_channels(self, *, local_connector: str, local_channel_id: str) -> str:
+        """Human-readable listing of every channel bridged to
+        `local_channel_id` on `local_connector` (the invoking channel),
+        across every connector in its bridge group - for the
+        `/linked-channels` command. Read-only, so unlike `link_channel` it
+        never raises LinkError; an unlinked channel just gets a plain
+        "nothing here" reply."""
+        bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
+        if bridge_group is None:
+            return "This channel isn't linked to any others."
+
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+        lines = []
+        for mapping in sorted(mapped, key=lambda m: (m.connector_id, m.channel_id)):
+            info = self._connectors.get(mapping.connector_id)
+            label = info.label if info else mapping.connector_id
+            marker = (
+                " (this channel)"
+                if mapping.connector_id == local_connector and mapping.channel_id == local_channel_id
+                else ""
+            )
+            lines.append(f"{label}: {mapping.channel_name} ({mapping.channel_id}){marker}")
+        return "Linked channels:\n" + "\n".join(lines)
+
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
         if info is None or info.resolve_channel_name is None:

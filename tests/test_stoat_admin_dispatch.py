@@ -28,12 +28,17 @@ class FakeLinker:
         self.link_channel_calls: list[dict] = []
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
+        self.list_linked_channels_calls: list[dict] = []
 
     async def link_channel(self, **kwargs):
         self.link_channel_calls.append(kwargs)
         if self._raises is not None:
             raise self._raises
         return "linked ok"
+
+    async def list_linked_channels(self, **kwargs):
+        self.list_linked_channels_calls.append(kwargs)
+        return "Linked channels:\nStoat: general (c1) (this channel)"
 
     async def mirror_channel(self, **kwargs):
         self.mirror_channel_calls.append(kwargs)
@@ -383,3 +388,37 @@ async def test_mirror_channels_reports_an_unexpected_error_from_get_structure():
     await sender._handle_mirror_channels(message, ["discord"])
 
     assert "Couldn't read the 'discord' channel structure: boom" in message.channel.sent[0]["content"]
+
+
+# ---------------------------------------------------------------- _handle_linked_channels
+
+
+async def test_linked_channels_reports_the_invoking_channel():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    channel = FakeChannel(id="c1")
+    message = _admin_message(channel=channel)
+
+    await sender._handle_linked_channels(message)
+
+    assert linker.list_linked_channels_calls == [{"local_connector": "stoat", "local_channel_id": "c1"}]
+    assert channel.sent[0]["content"] == "Linked channels:\nStoat: general (c1) (this channel)"
+
+
+async def test_linked_channels_without_a_configured_linker():
+    sender = _make_sender(linker=None)
+    message = _admin_message()
+
+    await sender._handle_linked_channels(message)
+
+    assert message.channel.sent[0]["content"] == "Linking isn't configured."
+
+
+async def test_linked_channels_needs_no_admin_permission():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    message = _admin_message(manage_server=False)
+
+    await sender._handle_linked_channels(message)  # must not be rejected
+
+    assert linker.list_linked_channels_calls

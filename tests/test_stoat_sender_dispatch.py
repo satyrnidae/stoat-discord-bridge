@@ -51,6 +51,7 @@ def _make_sender(
     sender.connector_id = "stoat"
     sender._client = client
     sender._health = HealthTracker({"stoat": "Stoat"})
+    sender._linker = None
     sender._self_id = self_id
     sender._on_message = recorder.on_message
     sender._on_reaction = recorder.on_reaction if with_reactions else None
@@ -87,6 +88,21 @@ async def test_handle_message_status_command_replies_in_channel_and_doesnt_relay
     assert recorder.messages == []
     assert len(channel.sent) == 1
     assert "Stoat" in channel.sent[0]["content"]
+
+
+async def test_handle_message_linked_channels_command_routes_to_its_handler():
+    # Full behavior (a configured linker, admin gating - there is none) is
+    # covered in test_stoat_admin_dispatch.py; this only proves _handle_message
+    # actually routes "/linked-channels" there instead of relaying it.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    author = FakeAuthor(id="u1")
+
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked-channels"))
+
+    assert recorder.messages == []
+    assert channel.sent == [{"content": "Linking isn't configured.", "masquerade": None}]
 
 
 async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar():

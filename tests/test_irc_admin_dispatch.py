@@ -42,12 +42,17 @@ class FakeLinker:
         self.link_channel_calls: list[dict] = []
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
+        self.list_linked_channels_calls: list[dict] = []
 
     async def link_channel(self, **kwargs):
         self.link_channel_calls.append(kwargs)
         if self._raises is not None:
             raise self._raises
         return "linked ok"
+
+    async def list_linked_channels(self, **kwargs):
+        self.list_linked_channels_calls.append(kwargs)
+        return "Linked channels:\nIRC: #general (#general) (this channel)"
 
     async def mirror_channel(self, **kwargs):
         self.mirror_channel_calls.append(kwargs)
@@ -301,3 +306,52 @@ async def test_unrecognized_admin_command_is_silently_ignored():
     await sender._handle_dm_command("alice", "NOT_A_REAL_COMMAND foo")
 
     assert conn.notice_calls == []
+
+
+# ---------------------------------------------------------------- LINKED_CHANNELS
+
+
+async def test_privmsg_linked_channels_is_scheduled_not_run_inline():
+    sender, _conn = _make_sender(linker=FakeLinker())
+    scheduled = []
+    sender._schedule = lambda coro: scheduled.append(coro)
+
+    sender._handle_privmsg(None, FakeIrcEvent(text="LINKED_CHANNELS #general", nick="alice"))
+
+    assert len(scheduled) == 1
+    scheduled[0].close()
+
+
+async def test_linked_channels_reports_the_requested_channel():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_linked_channels_command("alice", ["#general"])
+
+    assert linker.list_linked_channels_calls == [{"local_connector": "irc", "local_channel_id": "#general"}]
+    assert conn.notice_calls == [("alice", "Linked channels:"), ("alice", "IRC: #general (#general) (this channel)")]
+
+
+async def test_linked_channels_wrong_arg_count_sends_usage():
+    sender, conn = _make_sender(linker=FakeLinker())
+
+    await sender._handle_linked_channels_command("alice", [])
+
+    assert conn.notice_calls == [("alice", "Usage: LINKED_CHANNELS <local_channel_id>")]
+
+
+async def test_linked_channels_without_a_configured_linker():
+    sender, conn = _make_sender(linker=None)
+
+    await sender._handle_linked_channels_command("alice", ["#general"])
+
+    assert conn.notice_calls == [("alice", "Linking isn't configured.")]
+
+
+async def test_linked_channels_needs_no_oper_status():
+    linker = FakeLinker()
+    sender, _conn = _make_sender(is_oper=False, linker=linker)
+
+    await sender._handle_linked_channels_command("alice", ["#general"])  # must not be rejected
+
+    assert linker.list_linked_channels_calls

@@ -174,6 +174,9 @@ class StoatSenderService(SenderService):
         if cmd == "/status":
             await message.channel.send(self._health.render())
             return
+        if cmd == "/linked-channels":
+            await self._handle_linked_channels(message)
+            return
         if cmd == "/mirror-channels":
             await self._handle_mirror_channels(message, parts[1:])
             return
@@ -290,6 +293,15 @@ class StoatSenderService(SenderService):
 
     async def close(self) -> None:
         await self._client.close()
+
+    async def _handle_linked_channels(self, message) -> None:
+        if self._linker is None:
+            await message.channel.send("Linking isn't configured.")
+            return
+        summary = await self._linker.list_linked_channels(
+            local_connector=self.connector_id, local_channel_id=str(message.channel.id)
+        )
+        await message.channel.send(summary)
 
     async def _handle_mirror_channels(self, message, args: list[str], /) -> None:
         """`/mirror-channels <source>`: recreate `<source>`'s (a configured

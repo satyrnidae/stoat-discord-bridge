@@ -155,10 +155,24 @@ linked to two different groups, the command fails rather than merging them
 - **Discord**: `/link-channel` slash command (requires Manage Server)
 - **Stoat**: `/link-channel <source> <source_id> [<destination_id>]` message
   command (requires Manage Server)
-- **IRC**: `!link-channel <source> <source_id> [<destination_id>]`, sent as a
-  channel message (requires channel-operator status). IRC uses `!` instead
-  of `/` here since many clients treat a leading `/` as a local command and
-  never send it as text.
+- **IRC**: `LINK_CHANNEL <source> <source_id> <local_id>`, sent as a DM to
+  the bot, bare and uppercase (no leading `/` or `!` — many IRC clients
+  treat a leading `/` as a local command and never send it as text).
+  Requires IRC-operator status (checked live via `WHOIS`, not
+  channel-operator status) since a DM has no per-channel permission to
+  check against. Unlike Discord/Stoat, there's also no "current channel" a
+  DM can default to, so `local_id` is always required.
+
+### `/linked-channels`
+
+Read-only listing of every channel bridged to the invoking channel, across
+every connector in its bridge group. No permission gate on any connector,
+same as `/status`.
+
+- **Discord**: `/linked-channels` slash command (defaults to the current channel)
+- **Stoat**: `/linked-channels` message command (defaults to the current channel)
+- **IRC**: `LINKED_CHANNELS <local_channel_id>`, sent as a DM to the bot —
+  same "no current channel to default to" reasoning as `LINK_CHANNEL` above.
 
 ### `/mirror-channels <source>`
 

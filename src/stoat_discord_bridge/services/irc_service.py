@@ -192,15 +192,18 @@ class IrcSenderService(SenderService):
         self._health.mark_disconnected(self.connector_id)
 
     def _handle_privmsg(self, connection, event) -> None:
-        # DM to the bot. `STATUS` reports sync target health (no permission
-        # gate - read-only). LINK_CHANNEL/LINK_EMOTE/LINK_USER are
-        # oper-gated admin commands, dispatched to _handle_dm_command.
+        # DM to the bot. `STATUS`/`LINKED_CHANNELS` are read-only, no
+        # permission gate. LINK_CHANNEL/LINK_EMOTE/LINK_USER/MIRROR_CHANNEL
+        # are oper-gated admin commands, dispatched to _handle_dm_command.
         content = event.arguments[0]
         if content.strip().upper() == "STATUS":
             for line in self._health.render().splitlines():
                 connection.notice(event.source.nick, line)
             return
         words = content.split()
+        if words and words[0].upper() == "LINKED_CHANNELS":
+            self._schedule(self._handle_linked_channels_command(event.source.nick, words[1:]))
+            return
         if words and words[0].upper() in _ADMIN_DM_COMMANDS:
             self._schedule(self._handle_dm_command(event.source.nick, content))
 
@@ -249,6 +252,19 @@ class IrcSenderService(SenderService):
                 )
             )
         )
+
+    async def _handle_linked_channels_command(self, nick: str, args: list[str]) -> None:
+        # Unlike Discord/Stoat, an IRC DM has no "current channel" context to
+        # default to (same reasoning as MIRROR_CHANNEL's local_channel_id),
+        # so the channel to look up is always required here.
+        if len(args) != 1:
+            self._notify(nick, "Usage: LINKED_CHANNELS <local_channel_id>")
+            return
+        if self._linker is None:
+            self._notify(nick, "Linking isn't configured.")
+            return
+        summary = await self._linker.list_linked_channels(local_connector=self.connector_id, local_channel_id=args[0])
+        self._notify(nick, summary)
 
     async def _handle_dm_command(self, nick: str, content: str) -> None:
         command, *args = content.split()
