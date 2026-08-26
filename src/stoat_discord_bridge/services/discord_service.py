@@ -17,6 +17,7 @@ admin to already have a webhook URL in hand.
 
 from __future__ import annotations
 
+import logging
 import re
 
 import aiohttp
@@ -50,6 +51,8 @@ from stoat_discord_bridge.services.formatting import (
 from stoat_discord_bridge.services.mentions import rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
+
+logger = logging.getLogger(__name__)
 
 # Discord webhook hard limits: 2000 chars per message, 1-80 char usernames,
 # and usernames may not contain "clyde" or "discord" (case-insensitive) or
@@ -282,16 +285,27 @@ class DiscordSenderService(SenderService):
         if not self._commands_synced:
             await self.tree.sync(guild=self._guild)
             self._commands_synced = True
-        print(f"[discord:{self.connector_id}] logged in as {self._client.user} (guild {self._config.guild_id})")
+            logger.debug("[discord:%s] slash commands synced", self.connector_id)
+        logger.info(
+            "[discord:%s] logged in as %s (guild %s)", self.connector_id, self._client.user, self._config.guild_id
+        )
 
     async def _handle_disconnect(self) -> None:
         self._health.mark_disconnected(self.connector_id)
+        logger.warning("[discord:%s] disconnected", self.connector_id)
 
     async def _handle_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
         if message.guild is None or message.guild.id != self._config.guild_id:
             return
+        logger.debug(
+            "[discord:%s] message %s in channel %s from %s",
+            self.connector_id,
+            message.id,
+            message.channel.id,
+            message.author.id,
+        )
         await self._on_message(_to_standard_message(message, self.connector_id))
 
     async def _handle_raw_reaction(self, payload: discord.RawReactionActionEvent, *, added: bool) -> None:
@@ -357,6 +371,7 @@ class DiscordSenderService(SenderService):
         try:
             channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         except (discord.HTTPException, discord.NotFound, ValueError):
+            logger.debug("[discord:%s] couldn't resolve channel name for %s", self.connector_id, channel_id)
             return None
         return getattr(channel, "name", None)
 
@@ -366,6 +381,7 @@ class DiscordSenderService(SenderService):
         try:
             user = self._client.get_user(int(user_id)) or await self._client.fetch_user(int(user_id))
         except (discord.HTTPException, discord.NotFound, ValueError):
+            logger.debug("[discord:%s] couldn't resolve user name for %s", self.connector_id, user_id)
             return None
         return getattr(user, "display_name", None)
 
@@ -441,6 +457,14 @@ class DiscordSenderService(SenderService):
         source_id = _normalize_channel_id(source_id)
         if destination_id is not None:
             destination_id = _normalize_channel_id(destination_id)
+        logger.info(
+            "[discord:%s] %s ran /link-channel source=%s source_id=%s destination_id=%s",
+            self.connector_id,
+            interaction.user.id,
+            source,
+            source_id,
+            destination_id,
+        )
         try:
             summary = await self._linker.link_channel(
                 local_connector=self.connector_id,
@@ -451,6 +475,7 @@ class DiscordSenderService(SenderService):
                 destination_id=destination_id,
             )
         except LinkError as exc:
+            logger.info("[discord:%s] /link-channel rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -461,6 +486,14 @@ class DiscordSenderService(SenderService):
         if self._emote_linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
+        logger.info(
+            "[discord:%s] %s ran /link-emote source=%s source_id=%s local_id=%s",
+            self.connector_id,
+            interaction.user.id,
+            source,
+            source_id,
+            local_id,
+        )
         try:
             summary = await self._emote_linker.link_emote(
                 local_connector=self.connector_id,
@@ -469,6 +502,7 @@ class DiscordSenderService(SenderService):
                 source_id=source_id,
             )
         except LinkError as exc:
+            logger.info("[discord:%s] /link-emote rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -484,6 +518,14 @@ class DiscordSenderService(SenderService):
         if self._user_linker is None:
             await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
             return
+        logger.info(
+            "[discord:%s] %s ran /link-user source=%s user_id=%s local_user=%s",
+            self.connector_id,
+            interaction.user.id,
+            source,
+            user_id,
+            local_user.id,
+        )
         try:
             summary = await self._user_linker.link_user(
                 local_connector=self.connector_id,
@@ -492,6 +534,7 @@ class DiscordSenderService(SenderService):
                 source_user_id=user_id,
             )
         except LinkError as exc:
+            logger.info("[discord:%s] /link-user rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -508,6 +551,13 @@ class DiscordSenderService(SenderService):
         else:
             channel_id = str(interaction.channel_id)
             channel_name = getattr(interaction.channel, "name", channel_id)
+        logger.info(
+            "[discord:%s] %s ran /mirror-channel destination=%s local_channel_id=%s",
+            self.connector_id,
+            interaction.user.id,
+            destination,
+            channel_id,
+        )
         try:
             if destination.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
@@ -521,6 +571,7 @@ class DiscordSenderService(SenderService):
                     destination=destination,
                 )
         except LinkError as exc:
+            logger.info("[discord:%s] /mirror-channel rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -597,7 +648,10 @@ class DiscordReceiverService(ReceiverService):
                 resp.raise_for_status()
                 image_bytes = await resp.read()
             created = await guild.create_custom_emoji(name=_sanitize_emoji_name(emoji.name), image=image_bytes)
-        except (discord.HTTPException, aiohttp.ClientError):
+        except (discord.HTTPException, aiohttp.ClientError) as exc:
+            logger.warning(
+                "[discord:%s] couldn't create emoji %r in guild %s: %s", self.connector_id, emoji.name, guild.id, exc
+            )
             return None  # emoji slots full, name taken, image too large, etc. - skip this platform
         return CustomEmoji(
             native_id=str(created.id), name=created.name, image_url=str(created.url), animated=created.animated
@@ -660,6 +714,7 @@ class DiscordReceiverService(ReceiverService):
             # bridge rather than nothing at all.
             avatar_bytes = await self._client.user.display_avatar.read()
             webhook = await channel.create_webhook(name="Bridge", avatar=avatar_bytes)
+            logger.info("[discord:%s] created bridge webhook in channel %s", self.connector_id, channel_id)
         self._webhooks[channel_id] = webhook
         return webhook
 

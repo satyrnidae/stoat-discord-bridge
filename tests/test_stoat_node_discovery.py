@@ -63,12 +63,12 @@ def test_node_config_returns_none_on_network_failure():
         assert _discover_node_config("https://srv.example.net/api") is None
 
 
-def test_node_config_logs_the_failure_reason_on_network_failure(capsys):
+def test_node_config_logs_the_failure_reason_on_network_failure(caplog):
     with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
-        _discover_node_config("https://srv.example.net/api", connector_id="stoat_selfhosted")
-    output = capsys.readouterr().out
-    assert "stoat_selfhosted" in output
-    assert "connection refused" in output
+        with caplog.at_level("WARNING"):
+            _discover_node_config("https://srv.example.net/api", connector_id="stoat_selfhosted")
+    assert "stoat_selfhosted" in caplog.text
+    assert "connection refused" in caplog.text
 
 
 def test_node_config_returns_none_on_malformed_json():
@@ -77,13 +77,13 @@ def test_node_config_returns_none_on_malformed_json():
         assert _discover_node_config("https://srv.example.net/api") is None
 
 
-def test_node_config_logs_the_response_body_on_malformed_json(capsys):
+def test_node_config_logs_the_response_body_on_malformed_json(caplog):
     with patch("urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value = BytesIO(b"<html>not json</html>")
-        _discover_node_config("https://srv.example.net/api", connector_id="stoat_selfhosted")
-    output = capsys.readouterr().out
-    assert "stoat_selfhosted" in output
-    assert "<html>not json</html>" in output
+        with caplog.at_level("WARNING"):
+            _discover_node_config("https://srv.example.net/api", connector_id="stoat_selfhosted")
+    assert "stoat_selfhosted" in caplog.text
+    assert "<html>not json</html>" in caplog.text
 
 
 # ---------------------------------------------------------------- _discover_websocket_base

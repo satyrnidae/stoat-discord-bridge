@@ -8,6 +8,7 @@ each Stoat deployment needs its own client/session.
 from __future__ import annotations
 
 import json
+import logging
 import urllib.request
 
 import aiohttp
@@ -41,6 +42,8 @@ from stoat_discord_bridge.services.mentions import rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
+logger = logging.getLogger(__name__)
+
 # Stoat message length cap (matches Discord's 2000-char webhook limit; stoat.py
 # doesn't expose its own constant, so this mirrors the documented server-side max).
 _CONTENT_LIMIT = 2000
@@ -72,19 +75,25 @@ def _discover_node_config(http_base: str, *, connector_id: str = "stoat") -> dic
     try:
         with urllib.request.urlopen(request, timeout=10) as resp:
             body = resp.read()
-    except Exception as exc:
-        print(
-            f"[stoat:{connector_id}] couldn't reach '{url}' to discover its real websocket/CDN URLs - "
-            f"falling back to the public instance's, which is wrong for a self-hosted deployment: {exc!r}"
+    except Exception:
+        logger.warning(
+            "[stoat:%s] couldn't reach '%s' to discover its real websocket/CDN URLs - falling back to the "
+            "public instance's, which is wrong for a self-hosted deployment",
+            connector_id,
+            url,
+            exc_info=True,
         )
         return None
     try:
         return json.loads(body)
-    except Exception as exc:
-        print(
-            f"[stoat:{connector_id}] '{url}' didn't return the expected NodeInfo JSON - falling back to the "
-            f"public instance's websocket/CDN URLs, which is wrong for a self-hosted deployment: {exc!r}; "
-            f"response started with {body[:200]!r}"
+    except Exception:
+        logger.warning(
+            "[stoat:%s] '%s' didn't return the expected NodeInfo JSON - falling back to the public instance's "
+            "websocket/CDN URLs, which is wrong for a self-hosted deployment; response started with %r",
+            connector_id,
+            url,
+            body[:200],
+            exc_info=True,
         )
         return None
 
@@ -255,7 +264,7 @@ class StoatSenderService(SenderService):
     async def _handle_ready(self, event) -> None:
         self._health.mark_connected(self.connector_id)
         self._self_id = str(event.me.id)
-        print(f"[stoat:{self.connector_id}] logged in as {event.me.tag}")
+        logger.info("[stoat:%s] logged in as %s", self.connector_id, event.me.tag)
 
     # stoat.Client has no disconnect/logout-on-drop event to hook (only
     # on_before_connect/on_after_connect for the connect side, and on_logout
@@ -293,6 +302,13 @@ class StoatSenderService(SenderService):
         if cmd == "/mirror-channel":
             await self._handle_mirror_channel(message, parts[1:])
             return
+        logger.debug(
+            "[stoat:%s] message %s in channel %s from %s",
+            self.connector_id,
+            message.id,
+            message.channel.id,
+            message.author.id,
+        )
         await self._on_message(
             StandardMessage(
                 origin_connector_id=self.connector_id,
@@ -339,9 +355,11 @@ class StoatSenderService(SenderService):
     # on_reaction_remove(...), which stoat.py's masquerade-based API otherwise
     # closely mirrors.
     async def on_reaction_add(self, message, user_id, emoji_id, /) -> None:
+        logger.debug("[stoat:%s] on_reaction_add message=%s user=%s emoji=%s", self.connector_id, message.id, user_id, emoji_id)
         await self._handle_reaction(message, user_id, emoji_id, added=True)
 
     async def on_reaction_remove(self, message, user_id, emoji_id, /) -> None:
+        logger.debug("[stoat:%s] on_reaction_remove message=%s user=%s emoji=%s", self.connector_id, message.id, user_id, emoji_id)
         await self._handle_reaction(message, user_id, emoji_id, added=False)
 
     async def _handle_reaction(self, message, user_id, emoji_id, *, added: bool) -> None:
@@ -361,6 +379,7 @@ class StoatSenderService(SenderService):
     # equivalent yet; server-level emoji creation may instead surface via a
     # generic on_server_update and require diffing `server.emojis`.
     async def on_emoji_create(self, emoji, /) -> None:
+        logger.debug("[stoat:%s] on_emoji_create id=%s name=%r", self.connector_id, emoji.id, emoji.name)
         if self._on_emoji_created is None:
             return
         if getattr(emoji, "creator_id", None) is not None and str(emoji.creator_id) == self._self_id:
@@ -382,6 +401,7 @@ class StoatSenderService(SenderService):
     # other platforms (see BridgeCoordinator.handle_emoji_deleted), so unlike
     # on_emoji_create there's no self-mirrored-echo to filter out here.
     async def on_emoji_delete(self, emoji, /) -> None:
+        logger.debug("[stoat:%s] on_emoji_delete id=%s", self.connector_id, emoji.id)
         if self._on_emoji_deleted is None:
             return
         await self._on_emoji_deleted(
@@ -437,12 +457,15 @@ class StoatSenderService(SenderService):
         if self._mirrorer is None:
             await message.channel.send("Mirroring isn't configured.")
             return
+        logger.info("[stoat:%s] %s ran /mirror-channels source=%s", self.connector_id, message.author.id, source)
         try:
             structure = self._mirrorer.get_structure(source)
         except LinkError as exc:
+            logger.info("[stoat:%s] /mirror-channels rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         except Exception as exc:
+            logger.exception("[stoat:%s] /mirror-channels couldn't read '%s' structure", self.connector_id, source)
             await message.channel.send(f"Couldn't read the '{source}' channel structure: {exc}")
             return
 
@@ -468,6 +491,14 @@ class StoatSenderService(SenderService):
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
+        logger.info(
+            "[stoat:%s] %s ran /link-channel source=%s source_id=%s destination_id=%s",
+            self.connector_id,
+            message.author.id,
+            source,
+            source_id,
+            destination_id,
+        )
         try:
             summary = await self._linker.link_channel(
                 local_connector=self.connector_id,
@@ -478,6 +509,7 @@ class StoatSenderService(SenderService):
                 destination_id=destination_id,
             )
         except LinkError as exc:
+            logger.info("[stoat:%s] /link-channel rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -494,6 +526,14 @@ class StoatSenderService(SenderService):
         if self._emote_linker is None:
             await message.channel.send("Linking isn't configured.")
             return
+        logger.info(
+            "[stoat:%s] %s ran /link-emote source=%s source_id=%s local_id=%s",
+            self.connector_id,
+            message.author.id,
+            source,
+            source_id,
+            local_id,
+        )
         try:
             summary = await self._emote_linker.link_emote(
                 local_connector=self.connector_id,
@@ -502,6 +542,7 @@ class StoatSenderService(SenderService):
                 source_id=source_id,
             )
         except LinkError as exc:
+            logger.info("[stoat:%s] /link-emote rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -518,6 +559,14 @@ class StoatSenderService(SenderService):
         if self._user_linker is None:
             await message.channel.send("User linking isn't configured.")
             return
+        logger.info(
+            "[stoat:%s] %s ran /link-user source=%s user_id=%s local_user_id=%s",
+            self.connector_id,
+            message.author.id,
+            source,
+            user_id,
+            local_user_id,
+        )
         try:
             summary = await self._user_linker.link_user(
                 local_connector=self.connector_id,
@@ -526,6 +575,7 @@ class StoatSenderService(SenderService):
                 source_user_id=user_id,
             )
         except LinkError as exc:
+            logger.info("[stoat:%s] /link-user rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -547,6 +597,13 @@ class StoatSenderService(SenderService):
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
+        logger.info(
+            "[stoat:%s] %s ran /mirror-channel destination=%s local_channel_id=%s",
+            self.connector_id,
+            message.author.id,
+            destination,
+            channel_id,
+        )
         try:
             if destination.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
@@ -560,6 +617,7 @@ class StoatSenderService(SenderService):
                     destination=destination,
                 )
         except LinkError as exc:
+            logger.info("[stoat:%s] /mirror-channel rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -649,7 +707,8 @@ class StoatReceiverService(ReceiverService):
             server = self._sender.get_server(self._sender.server_id, partial=True)
             image_bytes = await _download(emoji.image_url)
             created = await server.create_emoji(name=emoji.name[:32], image=image_bytes)
-        except (stoat.HTTPException, aiohttp.ClientError):
+        except (stoat.HTTPException, aiohttp.ClientError) as exc:
+            logger.warning("[stoat:%s] couldn't create emoji %r: %s", self.connector_id, emoji.name, exc)
             return None  # e.g. emoji slots full, name taken, image too large, network failure - skip this platform
         return CustomEmoji(
             native_id=str(created.id),

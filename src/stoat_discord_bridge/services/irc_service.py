@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import logging
 import re
 import ssl
 import time
@@ -30,6 +31,8 @@ from stoat_discord_bridge.services.formatting import chunk_content
 from stoat_discord_bridge.services.mentions import rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
+
+logger = logging.getLogger(__name__)
 
 # IRC's protocol limit is 512 bytes per raw line, including the
 # `:nick!user@host PRIVMSG #channel :` prefix the server sees and the
@@ -203,6 +206,7 @@ class IrcSenderService(SenderService):
 
     def _handle_welcome(self, connection) -> None:
         self._health.mark_connected(self.connector_id)
+        logger.info("[irc:%s] connected as %s (%s:%s)", self.connector_id, self._config.nick, self._config.host, self._config.port)
         if self._config.nickserv_password:
             connection.privmsg("NickServ", f"IDENTIFY {self._config.nickserv_password}")
         if self._config.oper_account and self._config.oper_password:
@@ -214,17 +218,20 @@ class IrcSenderService(SenderService):
 
     def _handle_disconnect(self) -> None:
         self._health.mark_disconnected(self.connector_id)
+        logger.warning("[irc:%s] disconnected", self.connector_id)
 
     def _handle_join(self, connection, event) -> None:
         # on_join fires for every user joining a channel we're in, not just
         # us - only our own successful join is a health signal.
         if event.source.nick.lower() != connection.get_nickname().lower():
             return
+        logger.info("[irc:%s] joined %s", self.connector_id, event.target)
         self._blocked_channels.discard(event.target)
         self._health.record_success(self.connector_id)
 
     def _handle_join_blocked(self, event) -> None:
         channel = event.arguments[0]
+        logger.warning("[irc:%s] join to %s blocked (needs registered/identified nick) - will retry", self.connector_id, channel)
         self._blocked_channels.add(channel)
         self._health.record_error(self.connector_id)
 
@@ -235,6 +242,7 @@ class IrcSenderService(SenderService):
         # _handle_welcome already sends IDENTIFY to.
         if event.source is None or event.source.nick.lower() != "nickserv":
             return
+        logger.debug("[irc:%s] NickServ replied, retrying blocked joins", self.connector_id)
         self._retry_blocked_joins()
 
     def _retry_blocked_joins(self) -> None:
@@ -242,6 +250,7 @@ class IrcSenderService(SenderService):
             return
         channels = list(self._blocked_channels)
         self._blocked_channels.clear()
+        logger.info("[irc:%s] retrying joins for %s", self.connector_id, ", ".join(channels))
         for channel in channels:
             self.connection.join(channel)
 
@@ -270,6 +279,9 @@ class IrcSenderService(SenderService):
         if match is None:
             return
         channel = event.target.lower()
+        logger.debug(
+            "[irc:%s] expecting up to %s line(s) of history replay in %s", self.connector_id, match.group(1), channel
+        )
         self._history_replay[channel] = (int(match.group(1)), time.monotonic() + _HISTORY_REPLAY_TIMEOUT)
 
     def _consume_history_replay(self, channel: str) -> bool:
@@ -294,8 +306,10 @@ class IrcSenderService(SenderService):
     def _handle_pubmsg(self, event) -> None:
         channel = event.target
         if self._consume_history_replay(channel):
+            logger.debug("[irc:%s] dropping replayed history line in %s", self.connector_id, channel)
             return  # server-replayed history from joining, not a live message - don't relay it
         content = event.arguments[0]
+        logger.debug("[irc:%s] message in %s from %s", self.connector_id, channel, event.source.nick)
         self._schedule(
             self._on_message(
                 StandardMessage(
@@ -342,8 +356,10 @@ class IrcSenderService(SenderService):
         command, *args = content.split()
         command = command.upper()
         if not await self._check_is_oper(nick):
+            logger.info("[irc:%s] %s tried admin command %s without oper status - denied", self.connector_id, nick, command)
             self._notify(nick, "You need to be an IRC operator to do that.")
             return
+        logger.info("[irc:%s] %s ran %s %s", self.connector_id, nick, command, " ".join(args))
         if command == "LINK_CHANNEL":
             if len(args) != 3:
                 self._notify(nick, "Usage: LINK_CHANNEL <source> <source_id> <local_id>")
@@ -362,6 +378,7 @@ class IrcSenderService(SenderService):
                     destination_id=local_id,
                 )
             except LinkError as exc:
+                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
                 self._notify(nick, str(exc))
                 return
             self._notify(nick, summary)
@@ -378,6 +395,7 @@ class IrcSenderService(SenderService):
                     local_connector=self.connector_id, local_id=local_id, source=source, source_id=source_id
                 )
             except LinkError as exc:
+                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
                 self._notify(nick, str(exc))
                 return
             self._notify(nick, summary)
@@ -397,6 +415,7 @@ class IrcSenderService(SenderService):
                     source_user_id=user_id,
                 )
             except LinkError as exc:
+                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
                 self._notify(nick, str(exc))
                 return
             self._notify(nick, summary)
@@ -426,6 +445,7 @@ class IrcSenderService(SenderService):
                         destination=destination,
                     )
             except LinkError as exc:
+                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
                 self._notify(nick, str(exc))
                 return
             self._notify(nick, summary)
@@ -443,6 +463,7 @@ class IrcSenderService(SenderService):
         try:
             return await asyncio.wait_for(future, timeout=10)
         except asyncio.TimeoutError:
+            logger.warning("[irc:%s] WHOIS for %s timed out - treating as not-oper", self.connector_id, nick)
             return False
         finally:
             self._pending_whois.pop(key, None)
@@ -472,6 +493,7 @@ class IrcSenderService(SenderService):
         if is_new:
             self._channels.append(channel)
         if self._client.connection.is_connected():
+            logger.info("[irc:%s] joining %s", self.connector_id, channel)
             self._client.connection.join(channel)
             if is_new and self._config.default_channel_modes:
                 # Only meaningful if this JOIN just created the channel (the

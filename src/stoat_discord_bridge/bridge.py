@@ -10,6 +10,7 @@ admin_commands.py and each services/*.py module's command handler).
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, EmoteLinker, StructureMirrorer, UserLinker
@@ -45,6 +46,8 @@ from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, 
 from stoat_discord_bridge.storage.message_sync import MessageRef, MessageSyncRepository
 from stoat_discord_bridge.storage.mongo import MongoStore
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
+
+logger = logging.getLogger(__name__)
 
 
 class BridgeCoordinator:
@@ -97,20 +100,33 @@ class BridgeCoordinator:
     async def _relay_to(self, message: StandardMessage, target: ChannelMapping) -> list[MessageRef]:
         receiver = self._receivers.get(target.connector_id)
         if receiver is None:
-            print(f"[bridge] no receiver registered for {target.connector_id}, dropping relay")
+            logger.warning("no receiver registered for %s, dropping relay", target.connector_id)
             return []
         try:
             native_ids = await receiver.receive(message, target_channel_id=target.channel_id)
         except PartialRelayError as exc:
-            print(f"[bridge] relay to {target.connector_id} partially failed: {exc.cause}")
+            logger.warning(
+                "relay from %s to %s partially failed: %s",
+                message.origin_connector_id,
+                target.connector_id,
+                exc.cause,
+                exc_info=exc.cause,
+            )
             self._health.record_error(target.connector_id)
             native_ids = exc.partial_ids
-        except Exception as exc:
-            print(f"[bridge] relay to {target.connector_id} failed: {exc}")
+        except Exception:
+            logger.exception("relay from %s to %s failed", message.origin_connector_id, target.connector_id)
             self._health.record_error(target.connector_id)
             return []
         else:
             self._health.record_success(target.connector_id)
+            logger.debug(
+                "relayed message %s from %s to %s (channel %s)",
+                message.message_id,
+                message.origin_connector_id,
+                target.connector_id,
+                target.channel_id,
+            )
         return [
             MessageRef(connector_id=target.connector_id, channel_id=target.channel_id, message_id=native_id)
             for native_id in native_ids
@@ -146,8 +162,8 @@ class BridgeCoordinator:
                     await receiver.remove_reaction(
                         target_channel_id=ref.channel_id, target_message_id=ref.message_id, emoji=emoji
                     )
-            except Exception as exc:
-                print(f"[bridge] reaction relay to {ref.connector_id} failed: {exc}")
+            except Exception:
+                logger.exception("reaction relay from %s to %s failed", reaction.origin_connector_id, ref.connector_id)
 
     async def _translate_emoji(
         self, origin_connector_id: str, emoji: str | CustomEmoji, target_connector_id: str
@@ -184,8 +200,13 @@ class BridgeCoordinator:
                 continue
             try:
                 mirrored = await receiver.create_emoji(created.emoji)
-            except Exception as exc:
-                print(f"[bridge] emoji mirror to {connector_id} failed: {exc}")
+            except Exception:
+                logger.exception(
+                    "emoji mirror of %s from %s to %s failed",
+                    created.emoji.name,
+                    created.origin_connector_id,
+                    connector_id,
+                )
                 continue
             if mirrored is None:
                 continue  # this connector couldn't create it - skip per spec
@@ -214,6 +235,11 @@ async def run(config: BridgeConfig) -> None:
     user_mappings = UserMappingRepository(mongo.db)
 
     all_connectors = (*config.discord, *config.stoat, *config.irc)
+    logger.info(
+        "starting bridge with %d connector(s): %s",
+        len(all_connectors),
+        ", ".join(f"{c.id} ({c.label})" for c in all_connectors) or "none",
+    )
     health = HealthTracker({c.id: c.label for c in all_connectors})
 
     coordinator = BridgeCoordinator(channel_mappings, message_sync, emoji_mappings, health)
@@ -305,6 +331,7 @@ async def run(config: BridgeConfig) -> None:
     try:
         await asyncio.gather(*(sender.start() for sender in senders))
     finally:
+        logger.info("shutting down bridge")
         await asyncio.gather(*(closable.close() for closable in closables), return_exceptions=True)
         await health_runner.cleanup()
         mongo.close()

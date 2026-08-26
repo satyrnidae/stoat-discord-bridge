@@ -6,6 +6,8 @@ partial-failure behavior, reaction add/remove, and custom emoji mirroring
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import aiohttp
 import pytest
 
@@ -294,7 +296,9 @@ async def test_create_emoji_downloads_and_mirrors_it(monkeypatch):
 async def test_create_emoji_returns_none_on_http_failure(monkeypatch):
     monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"image-bytes"))
     client = FakeClient()
-    client.add_server(FakeServer(id="srv-1", raises=aiohttp.ClientResponseError(None, (), status=400)))
+    client.add_server(
+        FakeServer(id="srv-1", raises=aiohttp.ClientResponseError(SimpleNamespace(real_url="https://cdn.example"), (), status=400))
+    )
     receiver = _make_receiver(client)
 
     result = await receiver.create_emoji(CustomEmoji(native_id="e1", name="smile", image_url="https://cdn.example/e.png"))

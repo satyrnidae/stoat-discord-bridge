@@ -8,6 +8,8 @@ which used narrower ad hoc fakes for the same thing).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import aiohttp
 import pytest
 
@@ -261,7 +263,9 @@ async def test_create_emoji_returns_none_when_the_guild_isnt_cached():
 async def test_create_emoji_returns_none_when_discord_rejects_it(monkeypatch):
     monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"image-bytes"))
     client = FakeClient()
-    client.add_guild(FakeGuild(id=123, raises=aiohttp.ClientResponseError(None, (), status=400)))
+    client.add_guild(
+        FakeGuild(id=123, raises=aiohttp.ClientResponseError(SimpleNamespace(real_url="https://cdn.example"), (), status=400))
+    )
     receiver = _make_receiver(client)
 
     result = await receiver.create_emoji(CustomEmoji(native_id="src-1", name="smile", image_url="https://cdn.example/e.png"))

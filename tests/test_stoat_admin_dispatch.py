@@ -113,7 +113,11 @@ def _make_sender(
 
 def _admin_message(*, manage_server: bool = True, channel=None):
     channel = channel if channel is not None else FakeChannel(id="c1")
-    return SimpleNamespace(channel=channel, author_as_member=SimpleNamespace(server_permissions=SimpleNamespace(manage_server=manage_server)))
+    return SimpleNamespace(
+        channel=channel,
+        author=SimpleNamespace(id="admin-1"),
+        author_as_member=SimpleNamespace(server_permissions=SimpleNamespace(manage_server=manage_server)),
+    )
 
 
 # ---------------------------------------------------------------- _is_admin

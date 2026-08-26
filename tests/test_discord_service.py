@@ -76,9 +76,10 @@ class FakeLinker:
 
 
 class FakeInteraction:
-    def __init__(self, channel_id: int = 999, channel_name: str = "current-channel"):
+    def __init__(self, channel_id: int = 999, channel_name: str = "current-channel", user_id: int = 1):
         self.channel_id = channel_id
         self.channel = SimpleNamespace(name=channel_name)
+        self.user = SimpleNamespace(id=user_id)
         self.sent: list[str] = []
         self.response = SimpleNamespace(send_message=self._send_message)
 
