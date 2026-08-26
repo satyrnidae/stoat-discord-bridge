@@ -1,0 +1,5 @@
+{
+    "$schema": "https://opencode.ai/config.json",
+    "lsp": true,
+    "shell": "C:\\Program Files\\Git\\bin\\bash.exe"
+}

@@ -55,6 +55,15 @@ the `mongo-data` named volume) - no separate Mongo setup needed.
 loaded via `env_file`. Neither secrets nor `config.yaml` are baked into
 the image (see `.dockerignore`).
 
+The bridge image ships a `HEALTHCHECK` (`docker ps` / `docker inspect` shows
+it) polling a liveness-only `GET /healthz` on port 8080
+(`src/stoat_discord_bridge/health_server.py`) - it proves the event loop is
+responsive, not that every connector is currently connected (a transient IRC
+reconnect shouldn't flip the container unhealthy and get it restarted,
+killing the other, still-fine connectors with it). Per-connector state is
+still available via `/status` (Discord/Stoat) and `STATUS` (IRC DM), plus a
+`GET /status` JSON endpoint on the same port mirroring the same data.
+
 ## Tests
 
 ```powershell

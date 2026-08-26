@@ -58,6 +58,22 @@ _CONTENT_LIMIT = 2000
 _USERNAME_LIMIT = 80
 _FORBIDDEN_USERNAME_SUBSTRINGS = ("clyde", "discord")
 
+_CHANNEL_MENTION_RE = re.compile(r"^<#(\d+)>$")
+
+
+def _normalize_channel_id(raw: str) -> str:
+    """The `source_id`/`destination_id`/`local_channel_id` slash-command
+    options below are plain strings, not discord.py channel-type options -
+    Discord's client still lets a user pick a channel from the `#` picker
+    while typing one, which pastes a full `<#id>` mention rather than the
+    bare id. Strip that down to the id so it's actually usable as one -
+    otherwise it ends up stored as a channel_id that never matches a real
+    incoming message's origin_channel_id, and (for /mirror-channel, which
+    also uses this as the display name when no name can be resolved) as the
+    literal name of the channel created on the other connector."""
+    match = _CHANNEL_MENTION_RE.match(raw.strip())
+    return match.group(1) if match else raw
+
 
 class _DiscordClient(discord.Client):
     """discord.py dispatches events by looking up `on_<event>` attributes on
@@ -326,6 +342,9 @@ class DiscordSenderService(SenderService):
         if self._linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
+        source_id = _normalize_channel_id(source_id)
+        if destination_id is not None:
+            destination_id = _normalize_channel_id(destination_id)
         try:
             summary = await self._linker.link_channel(
                 local_connector=self.connector_id,
@@ -383,7 +402,8 @@ class DiscordSenderService(SenderService):
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
         if local_channel_id is not None:
-            channel_id = channel_name = local_channel_id  # explicit id - no way to resolve its real display name
+            channel_id = _normalize_channel_id(local_channel_id)
+            channel_name = await self.get_channel_name(channel_id) or channel_id
         else:
             channel_id = str(interaction.channel_id)
             channel_name = getattr(interaction.channel, "name", channel_id)

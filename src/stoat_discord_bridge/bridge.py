@@ -15,6 +15,7 @@ from collections.abc import Callable
 from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, EmoteLinker, StructureMirrorer, UserLinker
 from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.config import BridgeConfig
+from stoat_discord_bridge.health_server import start_health_server
 from stoat_discord_bridge.models import (
     CustomEmoji,
     StandardEmojiCreated,
@@ -296,8 +297,11 @@ async def run(config: BridgeConfig) -> None:
         senders.append(sender)
         closables.append(sender)
 
+    health_runner = await start_health_server(health)
+
     try:
         await asyncio.gather(*(sender.start() for sender in senders))
     finally:
         await asyncio.gather(*(closable.close() for closable in closables), return_exceptions=True)
+        await health_runner.cleanup()
         mongo.close()
