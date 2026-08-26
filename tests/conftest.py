@@ -2,9 +2,10 @@
 
 fake_mongo provides a minimal in-memory stand-in for the subset of Motor's
 async collection API this codebase's storage/*.py repositories actually
-use (find_one/find/insert_one/update_one/delete_one, plus the $elemMatch/
-$set/$push operators the emoji/channel/user mapping repos rely on) - just
-enough to exercise their real query/update logic without a live MongoDB.
+use (find_one/find/insert_one/update_one/delete_one, plus the $or/$elemMatch/
+$set/$push operators and dotted-path field queries the message sync/emoji/
+channel/user mapping repos rely on) - just enough to exercise their real
+query/update logic without a live MongoDB.
 """
 
 from __future__ import annotations
@@ -84,6 +85,8 @@ class FakeCollection:
 
 
 def _matches(doc: dict, query: dict) -> bool:
+    if "$or" in query:
+        return any(_matches(doc, sub_query) for sub_query in query["$or"])
     for key, value in query.items():
         if key == "_id":
             if str(doc.get("_id")) != str(value):
@@ -91,12 +94,24 @@ def _matches(doc: dict, query: dict) -> bool:
             continue
         if isinstance(value, dict) and "$elemMatch" in value:
             cond = value["$elemMatch"]
-            if not any(all(item.get(ck) == cv for ck, cv in cond.items()) for item in doc.get(key, [])):
+            if not any(all(item.get(ck) == cv for ck, cv in cond.items()) for item in _dotted_get(doc, key) or []):
                 return False
             continue
-        if doc.get(key) != value:
+        if _dotted_get(doc, key) != value:
             return False
     return True
+
+
+def _dotted_get(doc: dict, path: str):
+    """MessageSyncRepository.find_group queries nested fields via dotted
+    paths (e.g. "origin.platform"), same as real MongoDB - walk the path
+    segment by segment instead of a flat dict lookup."""
+    value: object = doc
+    for part in path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
 
 
 def _apply_update(doc: dict, update: dict) -> None:
