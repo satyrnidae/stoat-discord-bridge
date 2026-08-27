@@ -32,7 +32,9 @@ autocomplete listing the bridge's currently configured connectors.
   commands need no permission. A DM also has no "current channel" the way a
   Discord/Stoat command run *in* a channel does, so any argument that would
   otherwise default to "the channel this was run in" is always required on
-  IRC instead.
+  IRC instead - and, since it's the one argument IRC can't let slide, it's
+  hoisted to the first position in IRC's syntax even where Discord/Stoat put
+  it elsewhere.
 
 ## `/status`
 
@@ -61,7 +63,9 @@ means linking one side elsewhere to move it into a different group).
 - **Discord**: `/link-channel` slash command (Manage Server)
 - **Stoat**: `/link-channel <source> <source_id> [<destination_id>]` message
   command (Manage Server)
-- **IRC**: `LINK_CHANNEL <source> <source_id> <local_id>`, DM (IRC-operator)
+- **IRC**: `LINK_CHANNEL <local_id> <source> <source_id>`, DM (IRC-operator;
+  channel always required - no "current channel" to default to - and hoisted
+  to the first arg since it's the one id IRC can't leave out)
 
 ## `/linked-channels`
 
@@ -133,8 +137,10 @@ is reported per-connector rather than aborting the rest when `all` is used.
   autocomplete includes the literal `all` choice)
 - **Stoat**: `/mirror-channel <destination|all> [local_channel_id]` message
   command (Manage Server)
-- **IRC**: `MIRROR_CHANNEL <destination|all> <local_channel_id>`, DM
-  (IRC-operator; channel always required)
+- **IRC**: `MIRROR_CHANNEL <local_channel_id> <destination|all>`, DM
+  (IRC-operator; channel always required - no "current channel" to default
+  to - and hoisted to the first arg since it's the one id IRC can't leave
+  out)
 
 ## `/mirror-channels <source>`
 
@@ -176,10 +182,10 @@ that.
 - **Stoat**: `/unlink-channel [destination|all] [local_channel_id]` message
   command (Manage Server). `local_channel_id` defaults to the current
   channel.
-- **IRC**: `UNLINK_CHANNEL [destination|all] <local_channel_id>`, DM
+- **IRC**: `UNLINK_CHANNEL <local_channel_id> [destination|all]`, DM
   (IRC-operator; channel always required - no "current channel" to default
-  to - `destination` optional, and comes *before* the channel id when
-  given)
+  to - and hoisted to the first arg since it's the one id IRC can't leave
+  out; `destination` remains optional and comes after)
 
 ## `/unlink-user [destination|all] [user]`
 

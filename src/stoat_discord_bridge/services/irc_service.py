@@ -56,11 +56,11 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   STATUS - sync target health, read-only
   LINKED_CHANNELS <local_channel_id> - channels bridged to <local_channel_id>, read-only
   LINKED_USERS [local_user_id] - cross-connector user links, read-only
-  LINK_CHANNEL <source> <source_id> <local_id> - bridge a channel (IRC-operator)
+  LINK_CHANNEL <local_id> <source> <source_id> - bridge a channel (IRC-operator)
   LINK_USER <source> <user_id> <local_user_id> - link a user for mentions/masquerading (IRC-operator)
   LINK_EMOTE <source> <source_id> <local_id> - link a custom emoji (IRC-operator)
-  MIRROR_CHANNEL <destination|all> <local_channel_id> - create+link a matching channel (IRC-operator)
-  UNLINK_CHANNEL [destination|all] <local_channel_id> - unlink a channel from one connector, or the whole group (IRC-operator)
+  MIRROR_CHANNEL <local_channel_id> <destination|all> - create+link a matching channel (IRC-operator)
+  UNLINK_CHANNEL <local_channel_id> [destination|all] - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK_USER [destination|all] [local_user_id] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
   HELP - this message"""
 
@@ -380,10 +380,14 @@ class IrcSenderService(SenderService):
             return
         logger.info("[irc:%s] %s ran %s %s", self.connector_id, nick, command, " ".join(args))
         if command == "LINK_CHANNEL":
+            # local_id is optional on Discord/Stoat (defaults to the current
+            # channel) but always required on IRC (no "current channel" for
+            # a DM) - hoisted to the first arg so IRC's one always-required
+            # id leads, same convention as MIRROR_CHANNEL/UNLINK_CHANNEL.
             if len(args) != 3:
-                self._notify(nick, "Usage: LINK_CHANNEL <source> <source_id> <local_id>")
+                self._notify(nick, "Usage: LINK_CHANNEL <local_id> <source> <source_id>")
                 return
-            source, source_id, local_id = args
+            local_id, source, source_id = args
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")
                 return
@@ -441,11 +445,13 @@ class IrcSenderService(SenderService):
         elif command == "MIRROR_CHANNEL":
             # Unlike Discord/Stoat, IRC admin commands arrive as a DM with no
             # "current channel" context to default to, so local_channel_id is
-            # always required here (not optional like the other two).
+            # always required here (not optional like the other two) -
+            # hoisted to the first arg, same convention as LINK_CHANNEL/
+            # UNLINK_CHANNEL.
             if len(args) != 2:
-                self._notify(nick, "Usage: MIRROR_CHANNEL <destination|all> <local_channel_id>")
+                self._notify(nick, "Usage: MIRROR_CHANNEL <local_channel_id> <destination|all>")
                 return
-            destination, local_channel_id = args
+            local_channel_id, destination = args
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")
                 return
@@ -470,17 +476,16 @@ class IrcSenderService(SenderService):
             self._notify(nick, summary)
         elif command == "UNLINK_CHANNEL":
             # Same "no current channel" reasoning as MIRROR_CHANNEL -
-            # local_channel_id is always required. destination is optional
-            # and defaults to "all" (dissolving the whole bridge group); when
-            # given, it comes *before* local_channel_id (same order as
-            # Discord/Stoat), so 1 arg is just the channel and 2 args are
-            # destination then channel.
+            # local_channel_id is always required, hoisted to the first arg.
+            # destination is optional and defaults to "all" (dissolving the
+            # whole bridge group), so 1 arg is just the channel and 2 args
+            # are channel then destination.
             if len(args) == 1:
-                destination, local_channel_id = None, args[0]
+                local_channel_id, destination = args[0], None
             elif len(args) == 2:
-                destination, local_channel_id = args
+                local_channel_id, destination = args
             else:
-                self._notify(nick, "Usage: UNLINK_CHANNEL [destination|all] <local_channel_id>")
+                self._notify(nick, "Usage: UNLINK_CHANNEL <local_channel_id> [destination|all]")
                 return
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")

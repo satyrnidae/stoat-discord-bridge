@@ -198,7 +198,7 @@ async def test_link_channel_success():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id local-id")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord src-id")
 
     assert linker.link_channel_calls == [
         {
@@ -216,15 +216,15 @@ async def test_link_channel_success():
 async def test_link_channel_wrong_arg_count_sends_usage():
     sender, conn = _make_sender(linker=FakeLinker())
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord")
 
-    assert conn.notice_calls == [("alice", "Usage: LINK_CHANNEL <source> <source_id> <local_id>")]
+    assert conn.notice_calls == [("alice", "Usage: LINK_CHANNEL <local_id> <source> <source_id>")]
 
 
 async def test_link_channel_without_a_configured_linker():
     sender, conn = _make_sender(linker=None)
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id local-id")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord src-id")
 
     assert conn.notice_calls == [("alice", "Linking isn't configured.")]
 
@@ -232,7 +232,7 @@ async def test_link_channel_without_a_configured_linker():
 async def test_link_channel_reports_a_link_error():
     sender, conn = _make_sender(linker=FakeLinker(raises=LinkError("already linked elsewhere")))
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id local-id")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord src-id")
 
     assert conn.notice_calls == [("alice", "already linked elsewhere")]
 
@@ -288,7 +288,7 @@ async def test_mirror_channel_to_a_single_destination():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR_CHANNEL discord #general")
+    await sender._handle_dm_command("alice", "MIRROR_CHANNEL #general discord")
 
     assert linker.mirror_channel_calls == [
         {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general", "destination": "discord"}
@@ -300,7 +300,7 @@ async def test_mirror_channel_to_all_is_case_insensitive():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR_CHANNEL ALL #general")
+    await sender._handle_dm_command("alice", "MIRROR_CHANNEL #general ALL")
 
     assert linker.mirror_channel_all_calls == [
         {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general"}
@@ -313,7 +313,7 @@ async def test_mirror_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_dm_command("alice", "MIRROR_CHANNEL discord")
 
-    assert conn.notice_calls == [("alice", "Usage: MIRROR_CHANNEL <destination|all> <local_channel_id>")]
+    assert conn.notice_calls == [("alice", "Usage: MIRROR_CHANNEL <local_channel_id> <destination|all>")]
 
 
 # ---------------------------------------------------------------- unrecognized command
@@ -450,7 +450,7 @@ async def test_unlink_channel_with_a_specific_destination():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "UNLINK_CHANNEL discord #general")
+    await sender._handle_dm_command("alice", "UNLINK_CHANNEL #general discord")
 
     assert linker.unlink_channel_calls == [
         {"local_connector": "irc", "local_channel_id": "#general", "destination": "discord"}
@@ -462,7 +462,7 @@ async def test_unlink_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_dm_command("alice", "UNLINK_CHANNEL")
 
-    assert conn.notice_calls == [("alice", "Usage: UNLINK_CHANNEL [destination|all] <local_channel_id>")]
+    assert conn.notice_calls == [("alice", "Usage: UNLINK_CHANNEL <local_channel_id> [destination|all]")]
 
 
 async def test_unlink_channel_without_a_configured_linker():
