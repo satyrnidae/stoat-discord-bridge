@@ -67,6 +67,14 @@ class StoatConnectorConfig:
     # masquerading as the remote identity, e.g. while diagnosing
     # local-user masquerade failures on a self-hosted Stoat instance.
     enable_local_user_masquerade: bool = True
+    # When a Discord thread is mirrored here as a channel under a Category
+    # named after its parent channel (see
+    # DiscordSenderService._handle_thread_create), also move the parent
+    # channel itself into that Category, at the top - so `#bot-config` and
+    # every thread spawned from it sit together under one "bot-config"
+    # Category. Re-checked on every relayed message, so turning it on
+    # mid-deployment takes effect without a restart. Defaults on.
+    group_parent_channel_with_threads: bool = True
 
 
 @dataclass(frozen=True)
@@ -252,6 +260,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 bot_token=bot_token,
                 enable_local_user_masquerade=_as_bool(
                     _resolve(entry, section="stoat", index=index, field="enable_local_user_masquerade"),
+                    default=True,
+                ),
+                group_parent_channel_with_threads=_as_bool(
+                    _resolve(entry, section="stoat", index=index, field="group_parent_channel_with_threads"),
                     default=True,
                 ),
             )

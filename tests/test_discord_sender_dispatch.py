@@ -429,16 +429,21 @@ async def test_handle_thread_create_marks_ready_when_the_starter_message_hasnt_a
     assert 777 not in sender._pending_thread_starter
 
 
-async def test_handle_thread_create_uses_parent_channel_name_as_category(fake_db):
+async def test_handle_thread_create_names_category_after_the_destinations_linked_parent(fake_db):
     calls = []
 
     async def stoat_ensure_channel(name, category=None, is_thread_category=False):
         calls.append((name, category))
         return f"stoat_{name}"
 
+    async def resolve_channel_name(channel_id):
+        return {"s-general": "Bot Config"}.get(channel_id)
+
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
-        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=stoat_ensure_channel),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", ensure_channel=stoat_ensure_channel, resolve_channel_name=resolve_channel_name
+        ),
     }
     channel_mappings = ChannelMappingRepository(fake_db)
     linker = ChannelLinker(channel_mappings, connectors)
@@ -454,7 +459,9 @@ async def test_handle_thread_create_uses_parent_channel_name_as_category(fake_db
 
     await sender._handle_thread_create(thread)
 
-    assert calls == [("Test Thread", "Announcements")]  # category = parent's name, not any real Discord Category
+    # category = Stoat's own name for the linked parent channel, not the
+    # Discord parent's name ("Announcements")
+    assert calls == [("Test Thread", "Bot Config")]
 
 
 async def test_handle_thread_create_marks_destination_category_as_thread_category(fake_db):

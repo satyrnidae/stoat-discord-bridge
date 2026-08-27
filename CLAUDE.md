@@ -136,8 +136,15 @@ Stoat/IRC channel rather than trying to map it onto their flat channel model:
 it auto-mirrors (creates + links) the channel on every other connector via
 `ChannelLinker.mirror_channel_all`, placed under a Category named after the
 thread's **parent channel** (so every thread under one parent groups together
-on the destination), then relays the thread's own starter message into it as
-the originating user. Discord's own "<user> started a thread" system message in
+on the destination) — using each destination's *own* linked name for that
+parent channel (`mirror_channel`'s `category_from_channel_id`), not the Discord
+name, and falling back to the Discord name only where the parent isn't linked
+there. It then relays the thread's own starter message into it as
+the originating user. On Stoat, if `group_parent_channel_with_threads` is set
+(default on, per-connector), the parent channel itself is also moved into that
+Category at the top — re-checked on every relayed message
+(`StoatSenderService.group_parent_channel_with_threads`, called from the
+receiver) so enabling it mid-deployment takes effect without a restart. Discord's own "<user> started a thread" system message in
 the parent channel is suppressed (`_handle_message`); `_handle_thread_create`
 instead posts its own bot notice — `"<user> started a thread: <#thread>"` — but
 only *after* the mirror+link finishes, so the `<#thread>` mention resolves. Each

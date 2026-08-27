@@ -51,6 +51,13 @@ stoat:
     # remote identity instead - useful here since local-user masquerade is
     # known to be flaky against some self-hosted Stoat instances.
     enable_local_user_masquerade: true
+    # When a Discord thread is mirrored here (a channel under a Category
+    # named after the thread's parent channel), also move that parent
+    # channel into the Category, at the top - so the parent channel and all
+    # its threads sit together. Defaults to true; set false (or
+    # STOAT__1__GROUP_PARENT_CHANNEL_WITH_THREADS=false) to leave the parent
+    # channel where it is. Re-checked on every relayed message.
+    group_parent_channel_with_threads: true
 
 irc:
   - id: irc

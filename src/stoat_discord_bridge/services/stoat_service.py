@@ -515,6 +515,79 @@ class StoatSenderService(SenderService):
         )
         return SimpleNamespace(id=resolved["id"], title=resolved["title"], channels=resolved["channels"])
 
+    async def group_parent_channel_with_threads(self, thread_channel_id: str) -> None:
+        """If `group_parent_channel_with_threads` is enabled and
+        `thread_channel_id` (a channel a message was just relayed into) sits
+        in a Category that Discord thread-mirroring created (see
+        DiscordSenderService._handle_thread_create), pull the parent channel
+        - the server channel whose name matches that Category's title - out
+        of wherever it currently lives and place it first in the thread
+        Category. So `#bot-config` and every thread spawned from it end up
+        together under one "bot-config" Category.
+
+        Re-checked on every relay (StoatReceiverService.receive calls this)
+        so enabling the option mid-deployment takes effect without a restart.
+        Best-effort: never raises, and only uses the already-cached full
+        Server - no network fetch on the hot path - so it no-ops silently
+        until the cache holds one with its Category list populated."""
+        if not getattr(self._config, "group_parent_channel_with_threads", True):
+            return
+        if self._category_linker is None:
+            return
+        try:
+            server = self._client.get_server(self.server_id, partial=False)
+            categories = getattr(server, "categories", None)
+            if categories is None or not hasattr(server, "state"):
+                return
+            thread_cat = next(
+                (c for c in categories if thread_channel_id in (getattr(c, "channels", None) or [])), None
+            )
+            if thread_cat is None:
+                return
+            if not await self._category_linker.is_thread_category(self.connector_id, str(thread_cat.id)):
+                return
+            parent = next((ch for ch in getattr(server, "channels", []) if ch.name == thread_cat.title), None)
+            if parent is None:
+                return
+            if list(getattr(thread_cat, "channels", None) or [])[:1] == [parent.id]:
+                return  # parent already grouped at the top - nothing to do
+            await self._move_channel_to_category_top(server, parent.id, str(thread_cat.id))
+            logger.info(
+                "[stoat:%s] grouped parent channel %s (%r) atop thread category %s",
+                self.connector_id,
+                parent.id,
+                thread_cat.title,
+                thread_cat.id,
+            )
+        except Exception:
+            logger.exception(
+                "[stoat:%s] couldn't group parent channel with threads for channel %s",
+                self.connector_id,
+                thread_channel_id,
+            )
+
+    async def _move_channel_to_category_top(self, server, channel_id: str, category_id: str) -> None:
+        """PATCH the server's whole Category list with `channel_id` removed
+        from every Category and re-inserted at the front of `category_id`.
+        Same hand-built payload / raw HTTP path as _place_via_server_edit
+        (see its docstring for why `server.edit(categories=...)` can't be
+        used)."""
+        raw_categories = [
+            {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
+            for c in (getattr(server, "categories", None) or [])
+        ]
+        target = next((c for c in raw_categories if c["id"] == category_id), None)
+        if target is None:
+            return
+        for c in raw_categories:
+            if channel_id in c["channels"]:
+                c["channels"].remove(channel_id)
+        target["channels"].insert(0, channel_id)
+        await server.state.http.request(
+            stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
+            json={"categories": raw_categories},
+        )
+
     async def _handle_channel_create(self, channel) -> None:
         """`_StoatClient.on_server_channel_create`'s target - auto-syncs a
         newly-created channel into every other connector's own linked
@@ -1185,6 +1258,9 @@ class StoatReceiverService(ReceiverService):
                 raise PartialRelayError(ids, exc) from exc
             logger.debug("[stoat:%s] masqueraded message sent, id=%s", self.connector_id, sent.id)
             ids.append(str(sent.id))
+        # Best-effort, never fatal to the relay: keep a thread Category's
+        # parent channel grouped at its top (see the sender method's docstring).
+        await self._sender.group_parent_channel_with_threads(target_channel_id)
         return ids
 
     async def add_reaction(self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji) -> None:

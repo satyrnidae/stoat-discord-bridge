@@ -680,6 +680,58 @@ async def test_mirror_channel_defaults_is_thread_category_to_false(fake_db):
     assert calls == [False]
 
 
+async def test_mirror_channel_names_category_after_the_destinations_linked_parent(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    async def resolve_channel_name(channel_id):
+        return {"s-parent": "Bot Config"}.get(channel_id)
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", ensure_channel=ensure_channel, resolve_channel_name=resolve_channel_name
+        ),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="d-parent", local_channel_name="bot-config",
+        source="stoat", source_id="s-parent", destination_id=None,
+    )
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d-thread", local_channel_name="cool thread",
+        destination="stoat", local_channel_category="bot-config", category_from_channel_id="d-parent",
+    )
+
+    assert calls == [("cool thread", "Bot Config")]  # Stoat's own name for the parent, not "bot-config"
+
+
+async def test_mirror_channel_category_falls_back_when_parent_isnt_linked_to_destination(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d-thread", local_channel_name="cool thread",
+        destination="stoat", local_channel_category="bot-config", category_from_channel_id="d-parent",
+    )
+
+    assert calls == [("cool thread", "bot-config")]  # no link -> Discord parent name
+
+
 async def test_mirror_channel_all_with_no_other_connectors(fake_db):
     connectors = {"discord": ConnectorInfo(id="discord", label="Discord")}
     linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)

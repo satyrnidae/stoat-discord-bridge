@@ -469,7 +469,9 @@ class DiscordSenderService(SenderService):
         itself belongs to - so every thread/forum-post under the same parent
         groups together on the destination, deliberately overriding the
         general "mirror the source's own Category" rule /mirror-channel
-        otherwise follows.
+        otherwise follows. The Category takes each destination's *own* name
+        for the parent channel (via `category_from_channel_id`), falling back
+        to the Discord name only where the parent isn't linked there.
         """
         if self._linker is None or thread.guild.id != self._config.guild_id:
             return
@@ -485,6 +487,7 @@ class DiscordSenderService(SenderService):
                 local_channel_name=clip_name(thread.name),
                 local_channel_category=clip_name(parent.name),
                 is_thread_category=True,
+                category_from_channel_id=str(parent.id),
             )
         except Exception:
             logger.exception("[discord:%s] failed to auto-mirror thread %s", self.connector_id, thread.id)

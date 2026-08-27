@@ -15,7 +15,7 @@ from stoat_discord_bridge.models import CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError
 from stoat_discord_bridge.services.stoat_service import StoatReceiverService, StoatSenderService
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
-from tests.fakes.fake_stoat import FakeAsset, FakeAuthor, FakeChannel, FakeClient, FakeServer
+from tests.fakes.fake_stoat import FakeAsset, FakeAuthor, FakeCategory, FakeChannel, FakeClient, FakeServer
 
 
 class _FakeSender:
@@ -37,7 +37,11 @@ class _FakeSender:
         self.connector_id = connector_id
         self.server_id = server_id
         self._client = client
-        self._config = SimpleNamespace(enable_local_user_masquerade=enable_local_user_masquerade)
+        self._category_linker = None
+        self._config = SimpleNamespace(
+            enable_local_user_masquerade=enable_local_user_masquerade,
+            group_parent_channel_with_threads=True,
+        )
 
     def get_channel(self, channel_id: str, *, partial: bool = True):
         return self._client.get_channel(channel_id, partial=partial)
@@ -46,6 +50,8 @@ class _FakeSender:
         return self._client.get_server(server_id, partial=partial)
 
     get_masquerade_identity = StoatSenderService.get_masquerade_identity
+    group_parent_channel_with_threads = StoatSenderService.group_parent_channel_with_threads
+    _move_channel_to_category_top = StoatSenderService._move_channel_to_category_top
 
 
 def _message(**overrides) -> StandardMessage:
@@ -254,6 +260,84 @@ async def test_receive_falls_back_to_the_remote_identity_when_the_linked_stoat_u
     masquerade = channel.sent[0]["masquerade"]
     assert masquerade.name == "Alice"
     assert masquerade.avatar == "https://cdn.example/alice.png"
+
+
+# ------------------------------------------- group_parent_channel_with_threads
+
+
+class _ThreadCats:
+    def __init__(self, ids: set[str]) -> None:
+        self._ids = set(ids)
+
+    async def is_thread_category(self, connector_id: str, category_id: str) -> bool:
+        return category_id in self._ids
+
+
+def _thread_grouping_server() -> FakeServer:
+    server = FakeServer(id="srv-1")
+    server.channels = [
+        FakeChannel(id="parent-1", name="bot-config"),
+        FakeChannel(id="thread-1", name="cool thread"),
+    ]
+    server.categories = [
+        FakeCategory(id="cat-admin", title="Admin", channels=["parent-1"]),
+        FakeCategory(id="cat-bc", title="bot-config", channels=["thread-1"]),
+    ]
+    return server
+
+
+async def test_receive_groups_the_parent_channel_atop_the_thread_category():
+    client = FakeClient()
+    server = client.add_server(_thread_grouping_server())
+    client.add_channel(FakeChannel(id="thread-1"))
+    receiver = _make_receiver(client)
+    receiver._sender._category_linker = _ThreadCats({"cat-bc"})
+
+    await receiver.receive(_message(), target_channel_id="thread-1")
+
+    [payload] = server.server_edits
+    cats = {c["title"]: c["channels"] for c in payload["categories"]}
+    assert cats["Admin"] == []  # parent pulled out of its old category
+    assert cats["bot-config"] == ["parent-1", "thread-1"]  # parent first, then the thread
+
+
+async def test_receive_doesnt_group_when_the_option_is_off():
+    client = FakeClient()
+    server = client.add_server(_thread_grouping_server())
+    client.add_channel(FakeChannel(id="thread-1"))
+    receiver = _make_receiver(client)
+    receiver._sender._category_linker = _ThreadCats({"cat-bc"})
+    receiver._sender._config.group_parent_channel_with_threads = False
+
+    await receiver.receive(_message(), target_channel_id="thread-1")
+
+    assert server.server_edits == []
+
+
+async def test_receive_doesnt_group_for_a_non_thread_category():
+    client = FakeClient()
+    server = client.add_server(_thread_grouping_server())
+    client.add_channel(FakeChannel(id="thread-1"))
+    receiver = _make_receiver(client)
+    receiver._sender._category_linker = _ThreadCats(set())  # cat-bc not marked a thread category
+
+    await receiver.receive(_message(), target_channel_id="thread-1")
+
+    assert server.server_edits == []
+
+
+async def test_receive_skips_grouping_when_the_parent_is_already_on_top():
+    client = FakeClient()
+    server = _thread_grouping_server()
+    server.categories[1].channels = ["parent-1", "thread-1"]
+    client.add_server(server)
+    client.add_channel(FakeChannel(id="thread-1"))
+    receiver = _make_receiver(client)
+    receiver._sender._category_linker = _ThreadCats({"cat-bc"})
+
+    await receiver.receive(_message(), target_channel_id="thread-1")
+
+    assert server.server_edits == []
 
 
 # ---------------------------------------------------------------- reactions

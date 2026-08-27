@@ -179,6 +179,7 @@ class ChannelLinker:
         destination: str,
         local_channel_category: str | None = None,
         is_thread_category: bool = False,
+        category_from_channel_id: str | None = None,
     ) -> str:
         """Ensure `local_channel_id` (on `local_connector`) has a linked
         counterpart on `destination`: reuses an existing same-name channel
@@ -193,7 +194,16 @@ class ChannelLinker:
         same-named Category there too. `is_thread_category` is only ever
         True from DiscordSenderService._handle_thread_create's auto-mirror -
         it marks that destination Category as thread-only, so
-        `/link-category` later refuses to link it."""
+        `/link-category` later refuses to link it.
+
+        `category_from_channel_id`, if given, is a channel id on
+        `local_connector` (the thread's parent channel) whose linked
+        counterpart's name *on `destination`* becomes the Category title
+        instead of `local_channel_category` - so the Category is named after
+        the destination's own copy of the parent channel (a Discord
+        `bot-config` thread lands under Stoat's "Bot Config"), not the
+        Discord name. Falls back to `local_channel_category` when the parent
+        has no linked channel on `destination`."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
@@ -209,9 +219,17 @@ class ChannelLinker:
         if dest_info.ensure_channel is None:
             return f"{dest_info.label}: doesn't support channel creation - link it manually with /link-channel."
 
+        category = local_channel_category
+        if category_from_channel_id is not None:
+            linked_parent_name = await self._linked_channel_name(
+                local_connector, category_from_channel_id, destination
+            )
+            if linked_parent_name is not None:
+                category = linked_parent_name
+
         try:
             destination_channel_id = await dest_info.ensure_channel(
-                local_channel_name, local_channel_category, is_thread_category
+                local_channel_name, category, is_thread_category
             )
         except Exception as exc:
             logger.warning("mirror-channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
@@ -237,6 +255,7 @@ class ChannelLinker:
         local_channel_name: str,
         local_channel_category: str | None = None,
         is_thread_category: bool = False,
+        category_from_channel_id: str | None = None,
     ) -> str:
         """`/mirror-channel all` - mirror_channel() against every other
         configured connector, one line of summary/skip/error per connector
@@ -249,6 +268,7 @@ class ChannelLinker:
                 destination=destination,
                 local_channel_category=local_channel_category,
                 is_thread_category=is_thread_category,
+                category_from_channel_id=category_from_channel_id,
             )
             for destination in self._connectors
             if destination != local_connector
@@ -309,6 +329,19 @@ class ChannelLinker:
         parent channel already being bridged, rather than mirroring every
         thread created anywhere in the guild."""
         return await self._channel_mappings.get_bridge_group(connector_id, channel_id) is not None
+
+    async def _linked_channel_name(self, local_connector: str, channel_id: str, destination: str) -> str | None:
+        """Name of `channel_id`'s linked counterpart on `destination` (from
+        the channel bridge group `channel_id` belongs to on
+        `local_connector`), or None if it isn't linked there. Used by
+        mirror_channel to name a thread Category after the destination's own
+        copy of the thread's parent channel."""
+        bridge_group = await self._channel_mappings.get_bridge_group(local_connector, channel_id)
+        if bridge_group is None:
+            return None
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+        match = next((m for m in mapped if m.connector_id == destination), None)
+        return match.channel_name if match is not None and match.channel_name else None
 
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
@@ -505,6 +538,13 @@ class CategoryLinker:
         ensure_channel() when it was itself called with is_thread_category=
         True (ultimately from DiscordSenderService._handle_thread_create)."""
         await self._thread_categories.mark(connector_id, category_id)
+
+    async def is_thread_category(self, connector_id: str, category_id: str) -> bool:
+        """Whether `category_id` on `connector_id` was auto-created for
+        Discord thread/forum-post mirroring - the read side of
+        mark_thread_category, used by StoatSenderService to decide whether to
+        group a thread Category's parent channel into it."""
+        return await self._thread_categories.is_thread_category(connector_id, category_id)
 
     async def _resolve_name(self, connector_id: str, category_id: str) -> str:
         info = self._connectors.get(connector_id)

@@ -78,6 +78,27 @@ def test_index_is_0_based_per_connector_kind(tmp_path, isolated_env, monkeypatch
     assert config.stoat[1].bot_token == "t1"
 
 
+def test_stoat_group_parent_channel_with_threads_defaults_on_and_is_overridable(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("STOAT__1__GROUP_PARENT_CHANNEL_WITH_THREADS", "false")
+    path = _write_config(
+        tmp_path,
+        """
+        stoat:
+          - id: stoat_a
+            server_id: s1
+            api_url: https://a.example/api
+            bot_token: t0
+          - id: stoat_b
+            server_id: s2
+            api_url: https://b.example/api
+            bot_token: t1
+        """,
+    )
+    config = load_config(path)
+    assert config.stoat[0].group_parent_channel_with_threads is True  # default
+    assert config.stoat[1].group_parent_channel_with_threads is False  # env override
+
+
 def test_missing_required_field_raises(tmp_path, isolated_env):
     path = _write_config(
         tmp_path,
