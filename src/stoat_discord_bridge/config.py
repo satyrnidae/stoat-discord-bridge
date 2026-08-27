@@ -2,7 +2,7 @@
 
 config.yaml lists every connector the bridge should run - any number of
 Discord guilds, Stoat servers, and IRC networks. Any field on any connector
-can be supplied two ways, in priority order:
+can be supplied three ways, in priority order:
 
 1. An `{SECTION}__{index}__{FIELD}` env var - Azure App Configuration /
    ASP.NET Core-style hierarchical env var binding, where `index` is the
@@ -10,7 +10,15 @@ can be supplied two ways, in priority order:
    `IRC__0__NICKSERV_PASSWORD`, `STOAT__1__TOKEN` for the 2nd `stoat:`
    entry). Reordering a kind's list changes its indices, so prefer this only
    for fields you're comfortable pinning to list position.
-2. A literal value directly in config.yaml.
+2. An `{SECTION}__{index}__{FIELD}_FILE` env var naming a file whose
+   contents are the value - the Docker/Kubernetes secrets convention (see
+   e.g. the official postgres image's `POSTGRES_PASSWORD_FILE`). Lets a
+   secret live as a Docker secret (mounted at `/run/secrets/<name>`) rather
+   than plaintext in `.env`, where an accidental `docker inspect` or
+   `docker compose config` prints every env var back out. Trailing
+   whitespace is stripped; setting both this and the plain env var for the
+   same field is a `ConfigError`, not a silent pick-one.
+3. A literal value directly in config.yaml.
 
 This keeps secrets out of config.yaml (which is itself gitignored anyway -
 see config.yaml.example) while letting the *shape* of the deployment (which
@@ -90,6 +98,31 @@ class ConfigError(Exception):
     """Raised for a malformed config.yaml or a referenced .env var that isn't set."""
 
 
+def _read_secret_file(path: str, *, env_name: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ConfigError(f"couldn't read secret file '{path}' referenced by '{env_name}': {exc}") from exc
+
+
+def _resolve_env(env_name: str) -> str | None:
+    """Resolve one env var's value per the plain-value/`_FILE` priority
+    documented at the top of this module. Shared by `_resolve` (per-connector
+    fields) and `load_config`'s Mongo URI handling, which resolves an env var
+    named indirectly (via config.yaml's `mongo.uri_env`) rather than one
+    built from a fixed `{SECTION}__{index}__{FIELD}` pattern."""
+    file_env_name = f"{env_name}_FILE"
+    value = os.environ.get(env_name)
+    file_path = os.environ.get(file_env_name)
+    if value and file_path:
+        raise ConfigError(f"both '{env_name}' and '{file_env_name}' are set - use only one")
+    if value:
+        return value
+    if file_path:
+        return _read_secret_file(file_path, env_name=file_env_name)
+    return None
+
+
 def _resolve(entry: dict, *, section: str, index: int, field: str, yaml_key: str | None = None) -> str | None:
     """Resolve one connector field's raw value, per the priority order
     documented at the top of this module. `field` names the env var's
@@ -104,7 +137,7 @@ def _resolve(entry: dict, *, section: str, index: int, field: str, yaml_key: str
     yaml_key = yaml_key or field
 
     env_name = f"{section.upper()}__{index}__{field.upper()}"
-    value = os.environ.get(env_name)
+    value = _resolve_env(env_name)
     if value:
         return value
 
@@ -241,7 +274,7 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
 
     mongo_raw = raw.get("mongo", {})
     mongo = MongoConfig(
-        uri=os.environ.get(mongo_raw.get("uri_env", "MONGODB_URI"), "mongodb://localhost:27017"),
+        uri=_resolve_env(mongo_raw.get("uri_env", "MONGODB_URI")) or "mongodb://localhost:27017",
         db_name=mongo_raw.get("db_name", "stoat_discord_bridge"),
     )
 

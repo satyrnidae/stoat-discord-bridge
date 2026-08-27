@@ -12,6 +12,10 @@ venv/
 config.yaml
 *.log
 
+# Docker secret files (see docker-compose.yml's commented `secrets:` example
+# and config.py's *_FILE env var convention)
+secrets/
+
 .pytest_cache/
 
 # IRC client TLS cert/key material (see config.yaml's client_cert_file /
@@ -23,3 +27,6 @@ certs/
 .vscode/
 .idea/
 .coverage
+
+# Local overrides
+*.override.*

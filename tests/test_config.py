@@ -164,6 +164,92 @@ def test_irc_valid_ident_accepted(tmp_path, isolated_env, monkeypatch):
     assert config.irc[0].ident == "bridge"
 
 
+# ---------------------------------------------------------------- *_FILE secrets
+
+
+def test_file_env_var_reads_the_secret_from_disk(tmp_path, isolated_env, monkeypatch):
+    secret_file = tmp_path / "token"
+    secret_file.write_text("from-file-token\n", encoding="utf-8")
+    monkeypatch.setenv("DISCORD__0__TOKEN_FILE", str(secret_file))
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+
+    config = load_config(path)
+
+    assert config.discord[0].bot_token == "from-file-token"  # trailing newline stripped
+
+
+def test_file_env_var_overrides_literal_config(tmp_path, isolated_env, monkeypatch):
+    secret_file = tmp_path / "token"
+    secret_file.write_text("from-file-token", encoding="utf-8")
+    monkeypatch.setenv("DISCORD__0__TOKEN_FILE", str(secret_file))
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+            bot_token: literal-token
+        """,
+    )
+
+    config = load_config(path)
+
+    assert config.discord[0].bot_token == "from-file-token"
+
+
+def test_plain_env_var_overrides_the_file_variant(tmp_path, isolated_env, monkeypatch):
+    # the plain env var still takes priority when only it is set - _FILE is
+    # an alternative source, not a higher-priority one.
+    secret_file = tmp_path / "token"
+    secret_file.write_text("from-file-token", encoding="utf-8")
+    monkeypatch.setenv("DISCORD__0__TOKEN", "from-env-token")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+
+    config = load_config(path)
+
+    assert config.discord[0].bot_token == "from-env-token"
+
+
+def test_setting_both_plain_and_file_env_vars_raises(tmp_path, isolated_env, monkeypatch):
+    secret_file = tmp_path / "token"
+    secret_file.write_text("from-file-token", encoding="utf-8")
+    monkeypatch.setenv("DISCORD__0__TOKEN", "from-env-token")
+    monkeypatch.setenv("DISCORD__0__TOKEN_FILE", str(secret_file))
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+
+    with pytest.raises(ConfigError, match="both 'DISCORD__0__TOKEN' and 'DISCORD__0__TOKEN_FILE' are set"):
+        load_config(path)
+
+
+def test_file_env_var_pointing_at_a_missing_file_raises(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN_FILE", str(tmp_path / "does-not-exist"))
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+
+    with pytest.raises(ConfigError, match="couldn't read secret file"):
+        load_config(path)
+
+
+def test_mongo_uri_resolved_from_a_file(tmp_path, isolated_env, monkeypatch):
+    secret_file = tmp_path / "mongo-uri"
+    secret_file.write_text("mongodb://from-file/db\n", encoding="utf-8")
+    monkeypatch.setenv("MONGO__URI_FILE", str(secret_file))
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+            bot_token: t
+        mongo:
+          uri_env: MONGO__URI
+        """,
+    )
+
+    config = load_config(path)
+
+    assert config.mongo.uri == "mongodb://from-file/db"
+
+
 def test_legacy_env_pointer_field_is_ignored(tmp_path, isolated_env, monkeypatch):
     """*_env pointer fields (e.g. nick_env) were removed - config.yaml
     setting one should just be a plain unused key, not resolve anything."""

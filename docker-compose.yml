@@ -1,7 +1,19 @@
+# Docker's default json-file log driver has no size/rotation cap, so a
+# long-running container's logs (the bridge's own stderr output - see
+# logging_setup.py - plus Mongo's) can grow without bound and fill the
+# host's disk. Both services share this cap so `docker compose logs` stays
+# usable and bounded.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   mongo:
     image: mongo:7
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -13,6 +25,7 @@ services:
   bridge:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       mongo:
         condition: service_healthy
@@ -26,6 +39,24 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./certs:/app/certs:ro
+    # To keep a token/password out of .env entirely - so it never surfaces
+    # in `docker compose config` or `docker inspect` output - mount it as a
+    # file-based secret instead and point the matching *_FILE env var at it
+    # (see config.py's module docstring for the full priority order). Add
+    # the concrete secret names/paths to docker-compose.override.yml
+    # (gitignored, auto-merged by `docker compose up`/`config`) rather than
+    # here, so wiring a new secret never needs a commit. Example for the
+    # first `discord:` entry's bot token, in that override file:
+    #
+    #   services:
+    #     bridge:
+    #       secrets:
+    #         - discord_0_token
+    #       environment:
+    #         DISCORD__0__TOKEN_FILE: /run/secrets/discord_0_token
+    #   secrets:
+    #     discord_0_token:
+    #       file: ./secrets/discord_0_token
 
 volumes:
   mongo-data:
