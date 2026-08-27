@@ -690,7 +690,7 @@ class DiscordReceiverService(ReceiverService):
         self._webhooks: dict[str, discord.Webhook] = {}
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
-        webhook = await self._get_or_create_webhook(target_channel_id)
+        webhook, thread = await self._get_or_create_webhook(target_channel_id)
         sender_name = message.sender_name
         avatar_url = message.sender_avatar_url
         if self._user_mappings is not None and self._enable_local_user_masquerade:
@@ -730,6 +730,7 @@ class DiscordReceiverService(ReceiverService):
                     username=username,
                     avatar_url=avatar_url,
                     wait=True,
+                    **({"thread": thread} if thread is not None else {}),
                 )
             except Exception as exc:
                 raise PartialRelayError(ids, exc) from exc
@@ -825,12 +826,20 @@ class DiscordReceiverService(ReceiverService):
         except (discord.HTTPException, discord.NotFound, ValueError):
             return None
 
-    async def _get_or_create_webhook(self, channel_id: str) -> discord.Webhook:
-        webhook = self._webhooks.get(channel_id)
-        if webhook is not None:
-            return webhook
+    async def _get_or_create_webhook(self, channel_id: str) -> tuple[discord.Webhook, discord.Thread | None]:
+        # Threads have no webhooks of their own - a webhook belongs to (and
+        # is fetched/created on) the thread's parent channel, and posting
+        # into the thread itself is done by passing thread= to
+        # Webhook.send() below. Cache under the parent's id so every thread
+        # under it shares one webhook instead of creating a new one each.
         channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
-        existing = next((w for w in await channel.webhooks() if w.user == self._client.user), None)
+        thread = channel if isinstance(channel, discord.Thread) else None
+        webhook_channel = channel.parent if thread is not None else channel
+        cache_key = str(webhook_channel.id)
+        webhook = self._webhooks.get(cache_key)
+        if webhook is not None:
+            return webhook, thread
+        existing = next((w for w in await webhook_channel.webhooks() if w.user == self._client.user), None)
         if existing is not None:
             webhook = existing
         else:
@@ -842,10 +851,10 @@ class DiscordReceiverService(ReceiverService):
             # unattributable message still looks like it came from *this*
             # bridge rather than nothing at all.
             avatar_bytes = await self._client.user.display_avatar.read()
-            webhook = await channel.create_webhook(name="Bridge", avatar=avatar_bytes)
-            logger.info("[discord:%s] created bridge webhook in channel %s", self.connector_id, channel_id)
-        self._webhooks[channel_id] = webhook
-        return webhook
+            webhook = await webhook_channel.create_webhook(name="Bridge", avatar=avatar_bytes)
+            logger.info("[discord:%s] created bridge webhook in channel %s", self.connector_id, cache_key)
+        self._webhooks[cache_key] = webhook
+        return webhook, thread
 
     async def _get_partial_message(self, target_channel_id: str, target_message_id: str) -> discord.PartialMessage:
         channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(

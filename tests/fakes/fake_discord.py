@@ -93,10 +93,18 @@ class FakeWebhook:
         self._raises = raises
         self._next_message_id = 1000
 
-    async def send(self, *, content: str, username: str, avatar_url: str | None, wait: bool = True) -> FakeSentMessage:
+    async def send(
+        self,
+        *,
+        content: str,
+        username: str,
+        avatar_url: str | None,
+        wait: bool = True,
+        thread: Any = None,
+    ) -> FakeSentMessage:
         if self._raises is not None:
             raise self._raises
-        self.sent.append({"content": content, "username": username, "avatar_url": avatar_url})
+        self.sent.append({"content": content, "username": username, "avatar_url": avatar_url, "thread": thread})
         message_id = self._next_message_id
         self._next_message_id += 1
         return FakeSentMessage(id=message_id)
@@ -122,6 +130,29 @@ class FakeChannel:
 
     def get_partial_message(self, message_id: int) -> FakePartialMessage:
         return self.partial_messages.setdefault(message_id, FakePartialMessage())
+
+
+class FakeThread(discord.Thread):
+    """Stands in for discord.Thread - a Discord thread (and a forum post,
+    which discord.py also represents as a Thread whose .parent is the
+    ForumChannel) has no webhooks of its own, so DiscordReceiverService
+    resolves/creates webhooks on .parent instead and passes thread= to
+    Webhook.send(). Subclasses the real discord.Thread (rather than duck
+    typing, like the other fakes here) so isinstance() checks in the
+    receiver see it as a thread, but skips Thread.__init__ - which needs a
+    real guild/state/payload - setting only id/name/parent directly, and
+    shadowing the inherited `parent` property (which has no setter) with
+    its own.
+    """
+
+    def __init__(self, id: int, *, parent: FakeChannel, name: str = "thread") -> None:
+        self.id = id
+        self.name = name
+        self._parent = parent
+
+    @property
+    def parent(self) -> FakeChannel:
+        return self._parent
 
 
 class FakeEmoji:

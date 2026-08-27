@@ -22,6 +22,7 @@ from tests.fakes.fake_discord import (
     FakeChannel,
     FakeClient,
     FakeGuild,
+    FakeThread,
     FakeUser,
     FakeWebhook,
 )
@@ -57,7 +58,9 @@ async def test_receive_posts_through_the_channels_webhook():
     ids = await receiver.receive(_message(), target_channel_id="42")
 
     webhook = channel.created_webhooks[0]
-    assert webhook.sent == [{"content": "hello", "username": "Alice", "avatar_url": "https://cdn.example/alice.png"}]
+    assert webhook.sent == [
+        {"content": "hello", "username": "Alice", "avatar_url": "https://cdn.example/alice.png", "thread": None}
+    ]
     assert ids == ["1000"]
 
 
@@ -80,7 +83,7 @@ async def test_receive_raises_partial_relay_error_and_keeps_ids_already_sent(mon
     receiver = _make_receiver(client)
     monkeypatch.setattr("stoat_discord_bridge.services.discord_service._CONTENT_LIMIT", 5)
 
-    webhook = await receiver._get_or_create_webhook("42")
+    webhook, _thread = await receiver._get_or_create_webhook("42")
     call_count = 0
     real_send = webhook.send
 
@@ -117,7 +120,12 @@ async def test_receive_masquerades_as_the_linked_local_user_when_linked(fake_db)
 
     webhook = channel.created_webhooks[0]
     assert webhook.sent == [
-        {"content": "hello", "username": "Local Alice", "avatar_url": "https://cdn.example/local.png"}
+        {
+            "content": "hello",
+            "username": "Local Alice",
+            "avatar_url": "https://cdn.example/local.png",
+            "thread": None,
+        }
     ]
 
 
@@ -282,9 +290,10 @@ async def test_creates_a_webhook_stamped_with_the_bots_avatar_when_none_exists()
     channel = client.add_channel(FakeChannel(id=42))
     receiver = _make_receiver(client)
 
-    webhook = await receiver._get_or_create_webhook("42")
+    webhook, thread = await receiver._get_or_create_webhook("42")
 
     assert webhook.created_with == {"name": "Bridge", "avatar": b"avatar-bytes"}
+    assert thread is None
 
 
 async def test_reuses_an_existing_bridge_webhook_without_touching_its_avatar():
@@ -293,7 +302,7 @@ async def test_reuses_an_existing_bridge_webhook_without_touching_its_avatar():
     channel = client.add_channel(FakeChannel(id=42, webhooks=[existing]))
     receiver = _make_receiver(client)
 
-    webhook = await receiver._get_or_create_webhook("42")
+    webhook, _thread = await receiver._get_or_create_webhook("42")
 
     assert webhook is existing
     assert channel.created_webhooks == []
@@ -305,7 +314,7 @@ async def test_ignores_a_webhook_owned_by_a_different_user():
     channel = client.add_channel(FakeChannel(id=42, webhooks=[other_webhook]))
     receiver = _make_receiver(client)
 
-    webhook = await receiver._get_or_create_webhook("42")
+    webhook, _thread = await receiver._get_or_create_webhook("42")
 
     assert webhook is not other_webhook
     assert len(channel.created_webhooks) == 1
@@ -316,8 +325,50 @@ async def test_caches_the_webhook_across_calls():
     channel = client.add_channel(FakeChannel(id=42))
     receiver = _make_receiver(client)
 
-    first = await receiver._get_or_create_webhook("42")
-    second = await receiver._get_or_create_webhook("42")
+    first, _thread1 = await receiver._get_or_create_webhook("42")
+    second, _thread2 = await receiver._get_or_create_webhook("42")
 
     assert first is second
     assert len(channel.created_webhooks) == 1
+
+
+async def test_resolves_the_parent_channels_webhook_for_a_thread():
+    client = FakeClient()
+    parent = client.add_channel(FakeChannel(id=42))
+    thread = client.add_channel(FakeThread(id=777, parent=parent))
+    receiver = _make_receiver(client)
+
+    webhook, resolved_thread = await receiver._get_or_create_webhook("777")
+
+    assert webhook.created_with == {"name": "Bridge", "avatar": b"avatar-bytes"}
+    assert parent.created_webhooks == [webhook]
+    assert resolved_thread is thread
+
+
+async def test_threads_under_the_same_parent_share_one_cached_webhook():
+    client = FakeClient()
+    parent = client.add_channel(FakeChannel(id=42))
+    thread_a = client.add_channel(FakeThread(id=777, parent=parent))
+    thread_b = client.add_channel(FakeThread(id=778, parent=parent))
+    receiver = _make_receiver(client)
+
+    webhook_a, _ = await receiver._get_or_create_webhook("777")
+    webhook_b, _ = await receiver._get_or_create_webhook("778")
+
+    assert webhook_a is webhook_b
+    assert len(parent.created_webhooks) == 1
+
+
+async def test_receive_posts_into_a_thread_through_its_parents_webhook():
+    client = FakeClient()
+    parent = client.add_channel(FakeChannel(id=42))
+    thread = client.add_channel(FakeThread(id=777, parent=parent))
+    receiver = _make_receiver(client)
+
+    ids = await receiver.receive(_message(), target_channel_id="777")
+
+    webhook = parent.created_webhooks[0]
+    assert webhook.sent == [
+        {"content": "hello", "username": "Alice", "avatar_url": "https://cdn.example/alice.png", "thread": thread}
+    ]
+    assert ids == ["1000"]
