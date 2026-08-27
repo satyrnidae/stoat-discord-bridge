@@ -2,7 +2,8 @@
 
 Every admin/status command the bridge exposes, and how to reach it on each
 connector. Shared logic lives in `src/stoat_discord_bridge/admin_commands.py`
-(`ChannelLinker` / `EmoteLinker` / `UserLinker` / `StructureMirrorer`); each
+(`ChannelLinker` / `CategoryLinker` / `EmoteLinker` / `UserLinker` /
+`StructureMirrorer`); each
 connector's own `services/*.py` module just wires its native command syntax
 to that shared logic, so behavior is identical everywhere except where noted.
 
@@ -139,6 +140,57 @@ is reported per-connector rather than aborting the rest when `all` is used.
   (IRC-operator; channel always required - no "current channel" to default
   to - and hoisted to the first arg since it's the one id IRC can't leave
   out)
+
+## `/link-category <source> <source_id> [<destination_id>]`
+
+**Discord and Stoat only** (IRC has no Category concept). Links the invoking
+channel's Category to `source_id`'s Category on connector `<source>` - or to
+`<destination_id>`'s Category on the connector the command is run on, if
+given. Same already-linked/conflicting-group rules as `/link-channel`. Once
+two Categories are linked, any **new channel** created inside either one is
+automatically mirrored (created + linked, via the same logic as
+`/mirror-channel`) into every other connector's own linked Category - no
+manual `/mirror-channel` needed per new channel.
+
+A Category that Discord's thread/forum-post auto-mirroring created on Stoat
+(see the README's Discord threads section) can never be linked this way -
+`/link-category` rejects it as both a `source`/`destination_id` and as the
+invoking channel's own Category, so thread mirroring's synthetic "Threads"
+Categories always stay outside the bridge.
+
+- **Discord**: `/link-category` slash command (Manage Server); the Category
+  is always the invoking channel's own Category (the command must be run
+  from inside a channel that's in one).
+- **Stoat**: `/link-category <source> <source_id> [<destination_id>]`
+  message command (Manage Server); same "invoking channel's own Category"
+  rule.
+- **IRC**: not available - IRC has no Category concept.
+
+## `/linked-categories`
+
+Read-only listing of every Category linked to the invoking channel's own
+Category, across every connector in its bridge group.
+
+- **Discord**: `/linked-categories` slash command (defaults to the current
+  channel's Category)
+- **Stoat**: `/linked-categories` message command (defaults to the current
+  channel's Category)
+- **IRC**: not available - IRC has no Category concept.
+
+## `/unlink-category [destination|all]`
+
+Removes members from the invoking channel's own Category's bridge group.
+Given a specific `destination` (a connector id), kicks just that one member
+out - the rest of the group stays linked to each other. With no argument, or
+`all` (the default), dissolves the whole group instead. Existing channels
+already synced into the Category are left alone either way - only future
+auto-sync stops.
+
+- **Discord**: `/unlink-category [destination]` slash command (Manage
+  Server); `destination`'s autocomplete includes the literal `all` choice.
+- **Stoat**: `/unlink-category [destination|all]` message command (Manage
+  Server).
+- **IRC**: not available - IRC has no Category concept.
 
 ## `/mirror-channels <source>`
 

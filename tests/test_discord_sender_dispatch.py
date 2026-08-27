@@ -54,7 +54,9 @@ class _Recorder:
         self.emoji_deleted.append(deleted)
 
 
-def _make_sender(recorder: _Recorder, client: FakeClient, *, linker=None, **config_overrides) -> DiscordSenderService:
+def _make_sender(
+    recorder: _Recorder, client: FakeClient, *, linker=None, category_linker=None, **config_overrides
+) -> DiscordSenderService:
     sender = DiscordSenderService(
         _discord_config(**config_overrides),
         on_message=recorder.on_message,
@@ -63,6 +65,7 @@ def _make_sender(recorder: _Recorder, client: FakeClient, *, linker=None, **conf
         on_emoji_created=recorder.on_emoji_created,
         on_emoji_deleted=recorder.on_emoji_deleted,
         linker=linker,
+        category_linker=category_linker,
     )
     sender._client = client
     return sender
@@ -340,11 +343,11 @@ async def test_get_user_name_returns_none_on_a_non_numeric_id():
 # ---------------------------------------------------------------- _handle_thread_create
 
 
-async def _stoat_ensure_channel(name: str, category: str | None = None) -> str:
+async def _stoat_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False) -> str:
     return f"stoat_{name}"
 
 
-async def _irc_ensure_channel(name: str, category: str | None = None) -> str:
+async def _irc_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False) -> str:
     return f"irc_{name}"
 
 
@@ -388,7 +391,7 @@ async def test_handle_thread_create_mirrors_and_announces_when_parent_is_bridged
 async def test_handle_thread_create_uses_parent_channel_name_as_category(fake_db):
     calls = []
 
-    async def stoat_ensure_channel(name, category=None):
+    async def stoat_ensure_channel(name, category=None, is_thread_category=False):
         calls.append((name, category))
         return f"stoat_{name}"
 
@@ -411,6 +414,37 @@ async def test_handle_thread_create_uses_parent_channel_name_as_category(fake_db
     await sender._handle_thread_create(thread)
 
     assert calls == [("Test Thread", "Announcements")]  # category = parent's name, not any real Discord Category
+
+
+async def test_handle_thread_create_marks_destination_category_as_thread_category(fake_db):
+    calls = []
+
+    async def stoat_ensure_channel(name, category=None, is_thread_category=False):
+        calls.append(is_thread_category)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=stoat_ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=9, display_name="Bridge", display_avatar=FakeAsset("https://cdn.example/bot.png")))
+    sender = _make_sender(recorder, client, linker=linker)
+    parent = FakeChannel(id=42, name="Announcements")
+    thread = FakeThread(id=777, parent=parent, name="Test Thread", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    # is_thread_category=True flows all the way from the thread-mirroring
+    # call site through to ensure_channel, so the destination Category gets
+    # marked as thread-only and /link-category will later refuse to link it.
+    assert calls == [True]
 
 
 async def test_handle_thread_create_skips_when_parent_isnt_bridged(fake_db):

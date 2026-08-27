@@ -13,7 +13,14 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, EmoteLinker, StructureMirrorer, UserLinker
+from stoat_discord_bridge.admin_commands import (
+    CategoryLinker,
+    ChannelLinker,
+    ConnectorInfo,
+    EmoteLinker,
+    StructureMirrorer,
+    UserLinker,
+)
 from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.config import BridgeConfig
 from stoat_discord_bridge.health_server import start_health_server
@@ -38,6 +45,7 @@ from stoat_discord_bridge.services.stoat_service import (
     StoatSenderService,
 )
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import (
     ChannelMapping,
     ChannelMappingRepository,
@@ -233,6 +241,8 @@ async def run(config: BridgeConfig) -> None:
     emoji_mappings = EmojiMappingRepository(mongo.db)
     await emoji_mappings.ensure_indexes()
     user_mappings = UserMappingRepository(mongo.db)
+    category_mappings = CategoryMappingRepository(mongo.db)
+    thread_categories = ThreadCategoryRepository(mongo.db)
 
     all_connectors = (*config.discord, *config.stoat, *config.irc)
     logger.info(
@@ -254,6 +264,7 @@ async def run(config: BridgeConfig) -> None:
     mirrorer = StructureMirrorer(structure_providers)
     emote_linker = EmoteLinker(emoji_mappings, connector_infos)
     user_linker = UserLinker(user_mappings, connector_infos)
+    category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
 
     senders: list = []
     closables: list = []
@@ -269,6 +280,7 @@ async def run(config: BridgeConfig) -> None:
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
+            category_linker=category_linker,
         )
         structure_providers[dc.id] = sender.snapshot_guild_structure
         receiver = DiscordReceiverService(
@@ -283,7 +295,11 @@ async def run(config: BridgeConfig) -> None:
         # this codebase, so /mirror-channel reports it unsupported rather
         # than this hook ever being called.
         connector_infos[dc.id] = ConnectorInfo(
-            id=dc.id, label=dc.label, resolve_channel_name=sender.get_channel_name, resolve_user_name=sender.get_user_name
+            id=dc.id,
+            label=dc.label,
+            resolve_channel_name=sender.get_channel_name,
+            resolve_user_name=sender.get_user_name,
+            resolve_category_name=sender.get_category_name,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -300,6 +316,7 @@ async def run(config: BridgeConfig) -> None:
             mirrorer=mirrorer,
             emote_linker=emote_linker,
             user_linker=user_linker,
+            category_linker=category_linker,
         )
         coordinator.register_receiver(StoatReceiverService(sender, user_mappings=user_mappings))
         connector_infos[sc.id] = ConnectorInfo(
@@ -308,6 +325,7 @@ async def run(config: BridgeConfig) -> None:
             resolve_channel_name=sender.get_channel_name,
             ensure_channel=sender.ensure_channel,
             resolve_user_name=sender.get_user_name,
+            resolve_category_name=sender.get_category_name,
         )
         senders.append(sender)
         closables.append(sender)

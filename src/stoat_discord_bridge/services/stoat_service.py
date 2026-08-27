@@ -15,7 +15,14 @@ import aiohttp
 
 import stoat
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError, StructureMirrorer, UserLinker
+from stoat_discord_bridge.admin_commands import (
+    CategoryLinker,
+    ChannelLinker,
+    EmoteLinker,
+    LinkError,
+    StructureMirrorer,
+    UserLinker,
+)
 from stoat_discord_bridge.channel_structure import ChannelSpec, GuildStructure
 from stoat_discord_bridge.config import StoatConnectorConfig
 from stoat_discord_bridge.models import (
@@ -54,13 +61,16 @@ _CONTENT_LIMIT = 2000
 _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /status - sync target health, read-only
   /linked-channels - channels bridged to this one, read-only
+  /linked-categories - Categories bridged to this channel's Category, read-only
   /linked-users [user_id] - cross-connector user links, read-only
   /link-channel <source> <source_id> [destination_id] - bridge a channel (Manage Server)
+  /link-category <source> <source_id> [destination_id] - bridge a Category; new channels in either sync automatically (Manage Server)
   /link-user <source> <user_id> <local_user_id> - link a user for mentions/masquerading (Manage Server)
   /link-emote <source> <source_id> <local_id> - link a custom emoji (Manage Server)
   /mirror-channel <destination|all> [local_channel_id] - create+link a matching channel (Manage Server)
   /mirror-channels <source> - recreate a Discord guild's structure here (Manage Server)
   /unlink-channel [destination|all] [local_channel_id] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
+  /unlink-category [destination|all] - unlink this channel's Category (default: whole group) from one connector, or the whole group (Manage Server)
   /unlink-user [destination|all] [user_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
@@ -177,6 +187,9 @@ class _StoatClient(stoat.Client):
     async def on_message(self, message, /) -> None:
         await self._owner._handle_message(message)
 
+    async def on_server_channel_create(self, event, /) -> None:
+        await self._owner._handle_channel_create(event.channel)
+
 
 class StoatSenderService(SenderService):
     def __init__(
@@ -191,11 +204,12 @@ class StoatSenderService(SenderService):
         mirrorer: StructureMirrorer | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
+        category_linker: "CategoryLinker | None" = None,
     ) -> None:
-        # linker/mirrorer/emote_linker/user_linker are only needed to serve
-        # `/link-channel`, `/mirror-channels`, `/link-emote`, and `/link-user`;
-        # None is accepted (e.g. for tests) but those commands will then
-        # report themselves unconfigured.
+        # linker/mirrorer/emote_linker/user_linker/category_linker are only
+        # needed to serve `/link-channel`, `/mirror-channels`, `/link-emote`,
+        # `/link-user`, and `/link-category`; None is accepted (e.g. for
+        # tests) but those commands will then report themselves unconfigured.
         SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
         self._config = config
         self.server_id = config.server_id
@@ -205,6 +219,7 @@ class StoatSenderService(SenderService):
         self._mirrorer = mirrorer
         self._emote_linker = emote_linker
         self._user_linker = user_linker
+        self._category_linker = category_linker
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
 
@@ -347,14 +362,31 @@ class StoatSenderService(SenderService):
             return None
         return category.title if category is not None else None
 
-    async def ensure_channel(self, name: str, category: str | None = None) -> str:
+    async def get_category_name(self, category_id: str) -> str | None:
+        """Best-effort Category-id -> title lookup, used as this connector's
+        `ConnectorInfo.resolve_category_name` for `/link-category`. Unlike
+        get_channel_name/get_channel_category_name, there's no direct
+        "get Category by id" call on stoat.Server, so this scans
+        `server.categories` for a matching id instead."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            category = next((c for c in (server.categories or []) if str(c.id) == category_id), None)
+        except Exception:
+            return None
+        return category.title if category is not None else None
+
+    async def ensure_channel(self, name: str, category: str | None = None, is_thread_category: bool = False) -> str:
         """Idempotent get-or-create by name, for `/mirror-channel`'s
         `ConnectorInfo.ensure_channel` hook - same "match existing by name,
         else create" logic `_mirror_guild_structure` already uses in bulk,
         just for a single channel outside that flow. If `category` is given,
         the matched-or-created channel is placed into a same-named Category
         (creating it if needed) - best-effort, never raises, since the
-        channel itself has already been secured by this point."""
+        channel itself has already been secured by this point.
+        `is_thread_category`, when True, marks that Category (via
+        CategoryLinker.mark_thread_category) as one Discord's thread/forum-
+        post auto-mirroring created, so `/link-category` later refuses to
+        link it - see DiscordSenderService._handle_thread_create."""
         server = self._client.get_server(self.server_id, partial=True)
         for channel in server.channels:
             if channel.name == name:
@@ -364,10 +396,12 @@ class StoatSenderService(SenderService):
             channel = await server.create_channel(name=name)
             channel_id = channel.id
         if category is not None:
-            await self._ensure_channel_in_category(server, channel_id, category)
+            await self._ensure_channel_in_category(server, channel_id, category, is_thread_category)
         return channel_id
 
-    async def _ensure_channel_in_category(self, server, channel_id: str, category: str) -> None:
+    async def _ensure_channel_in_category(
+        self, server, channel_id: str, category: str, is_thread_category: bool = False
+    ) -> None:
         """Places `channel_id` into a Category named `category` on `server`,
         creating the Category if none by that name exists yet. Neither
         stoat.py's create_category nor edit_category takes a `position` -
@@ -377,13 +411,42 @@ class StoatSenderService(SenderService):
         try:
             existing = next((c for c in (server.categories or []) if c.title == category), None)
             if existing is None:
-                await server.create_category(category, channels=[channel_id])
-            elif channel_id not in existing.channels:
-                await server.edit_category(existing, channels=[*existing.channels, channel_id])
+                resolved = await server.create_category(category, channels=[channel_id])
+            else:
+                resolved = existing
+                if channel_id not in existing.channels:
+                    await server.edit_category(existing, channels=[*existing.channels, channel_id])
+            if is_thread_category and self._category_linker is not None:
+                await self._category_linker.mark_thread_category(self.connector_id, resolved.id)
         except Exception as exc:
             logger.warning(
                 "[stoat:%s] failed to place channel %s into category %r: %s", self.connector_id, channel_id, category, exc
             )
+
+    async def _handle_channel_create(self, channel) -> None:
+        """`_StoatClient.on_server_channel_create`'s target - auto-syncs a
+        newly-created channel into every other connector's own linked
+        Category, if the Category this channel appeared in on this server is
+        itself linked via `/link-category`. Best-effort: never lets a sync
+        failure or an unrelated channel (wrong server, no Category, Category
+        linking not configured) propagate."""
+        if self._category_linker is None or getattr(channel, "server_id", None) != self.server_id:
+            return
+        try:
+            category = channel.category
+        except Exception:
+            category = None
+        if category is None:
+            return
+        try:
+            await self._category_linker.sync_new_channel(
+                local_connector=self.connector_id,
+                local_category_id=str(category.id),
+                channel_id=str(channel.id),
+                channel_name=channel.name,
+            )
+        except Exception:
+            logger.exception("[stoat:%s] failed to auto-sync new channel %s", self.connector_id, channel.id)
 
     async def _handle_ready(self, event) -> None:
         self._health.mark_connected(self.connector_id)
@@ -411,6 +474,9 @@ class StoatSenderService(SenderService):
         if cmd == "/linked-channels":
             await self._handle_linked_channels(message)
             return
+        if cmd == "/linked-categories":
+            await self._handle_linked_categories(message)
+            return
         if cmd == "/linked-users":
             await self._handle_linked_users(message, parts[1:])
             return
@@ -419,6 +485,9 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/link-channel":
             await self._handle_link_channel(message, parts[1:])
+            return
+        if cmd == "/link-category":
+            await self._handle_link_category(message, parts[1:])
             return
         if cmd == "/link-emote":
             await self._handle_link_emote(message, parts[1:])
@@ -431,6 +500,9 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/unlink-channel":
             await self._handle_unlink_channel(message, parts[1:])
+            return
+        if cmd == "/unlink-category":
+            await self._handle_unlink_category(message, parts[1:])
             return
         if cmd == "/unlink-user":
             await self._handle_unlink_user(message, parts[1:])
@@ -588,6 +660,19 @@ class StoatSenderService(SenderService):
         )
         await message.channel.send(summary)
 
+    async def _handle_linked_categories(self, message) -> None:
+        if self._category_linker is None:
+            await message.channel.send("Category linking isn't configured.")
+            return
+        category = _channel_category(message.channel)
+        if category is None:
+            await message.channel.send("This channel isn't in a Category.")
+            return
+        summary = await self._category_linker.list_linked_categories(
+            local_connector=self.connector_id, local_category_id=str(category.id)
+        )
+        await message.channel.send(summary)
+
     async def _handle_linked_users(self, message, args: list[str], /) -> None:
         """`/linked-users [local_user_id]`: with no argument, lists every
         cross-connector user link (for debugging); given a Stoat user id,
@@ -673,6 +758,51 @@ class StoatSenderService(SenderService):
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link-channel rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_link_category(self, message, args: list[str], /) -> None:
+        """`/link-category <source> <source_id> [<destination_id>]`: links
+        the invoking channel's Category to `source_id`'s Category on
+        `source` (or `destination_id`'s Category on this connector, if
+        given). Once linked, a new channel appearing in either Category
+        auto-syncs onto the other."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if len(args) < 2:
+            await message.channel.send("Usage: /link-category <source> <source_id> [<destination_id>]")
+            return
+        source, source_id, *rest = args
+        destination_id = rest[0] if rest else None
+
+        if self._category_linker is None:
+            await message.channel.send("Category linking isn't configured.")
+            return
+        category = _channel_category(message.channel)
+        if category is None:
+            await message.channel.send("This channel isn't in a Category.")
+            return
+        logger.info(
+            "[stoat:%s] %s ran /link-category source=%s source_id=%s destination_id=%s",
+            self.connector_id,
+            message.author.id,
+            source,
+            source_id,
+            destination_id,
+        )
+        try:
+            summary = await self._category_linker.link_category(
+                local_connector=self.connector_id,
+                local_category_id=str(category.id),
+                local_category_name=category.title,
+                source=source,
+                source_id=source_id,
+                destination_id=destination_id,
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /link-category rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -820,6 +950,39 @@ class StoatSenderService(SenderService):
             return
         await message.channel.send(summary)
 
+    async def _handle_unlink_category(self, message, args: list[str], /) -> None:
+        """`/unlink-category [destination|all]`: destination defaults to
+        "all" (dissolving the whole bridge group); the Category is always
+        the invoking channel's own Category."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        destination = args[0] if args else None
+
+        if self._category_linker is None:
+            await message.channel.send("Category linking isn't configured.")
+            return
+        category = _channel_category(message.channel)
+        if category is None:
+            await message.channel.send("This channel isn't in a Category.")
+            return
+        logger.info(
+            "[stoat:%s] %s ran /unlink-category destination=%s category_id=%s",
+            self.connector_id,
+            message.author.id,
+            destination,
+            category.id,
+        )
+        try:
+            summary = await self._category_linker.unlink_category(
+                local_connector=self.connector_id, local_category_id=str(category.id), destination=destination
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /unlink-category rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
     async def _handle_unlink_user(self, message, args: list[str], /) -> None:
         """`/unlink-user [destination|all] [user_id]`: destination defaults
         to "all" (dissolving the whole link group); user_id defaults to the
@@ -953,6 +1116,17 @@ class StoatReceiverService(ReceiverService):
             image_url=created.image.url(),
             animated=getattr(created, "animated", emoji.animated),
         )
+
+
+def _channel_category(channel):
+    """Best-effort `channel.category` read - the property can raise NoData
+    on a cache miss (same caveat as StoatSenderService.get_channel_category_
+    name), so command handlers that need "the Category this channel is in"
+    go through this rather than touching `.category` directly."""
+    try:
+        return channel.category
+    except Exception:
+        return None
 
 
 def _display_name(author) -> str:

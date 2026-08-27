@@ -523,7 +523,7 @@ async def test_mirror_channel_without_ensure_channel_reports_unsupported(fake_db
 async def test_mirror_channel_creates_and_links(fake_db):
     created = {}
 
-    async def ensure_channel(name, category=None):
+    async def ensure_channel(name, category=None, is_thread_category=False):
         created.setdefault(name, f"stoat_{name}")
         return created[name]
 
@@ -544,7 +544,7 @@ async def test_mirror_channel_creates_and_links(fake_db):
 async def test_mirror_channel_skips_if_already_synced(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None):
+    async def ensure_channel(name, category=None, is_thread_category=False):
         calls.append(name)
         return f"stoat_{name}"
 
@@ -565,7 +565,7 @@ async def test_mirror_channel_skips_if_already_synced(fake_db):
 
 
 async def test_mirror_channel_reports_link_conflict_instead_of_raising(fake_db):
-    async def ensure_channel(name, category=None):
+    async def ensure_channel(name, category=None, is_thread_category=False):
         return "stoat_existing"  # always resolves to an already-linked-elsewhere channel
 
     connectors = {
@@ -595,7 +595,7 @@ async def test_mirror_channel_reports_link_conflict_instead_of_raising(fake_db):
 
 
 async def test_mirror_channel_all_skips_local_connector_and_reports_each(fake_db):
-    async def ensure_channel(name, category=None):
+    async def ensure_channel(name, category=None, is_thread_category=False):
         return f"stoat_{name}"
 
     connectors = {
@@ -617,7 +617,7 @@ async def test_mirror_channel_all_skips_local_connector_and_reports_each(fake_db
 async def test_mirror_channel_forwards_category_to_ensure_channel(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None):
+    async def ensure_channel(name, category=None, is_thread_category=False):
         calls.append((name, category))
         return f"stoat_{name}"
 
@@ -635,6 +635,49 @@ async def test_mirror_channel_forwards_category_to_ensure_channel(fake_db):
         local_channel_category="Team Alpha",
     )
     assert calls == [("general", "Team Alpha")]
+
+
+async def test_mirror_channel_forwards_is_thread_category_to_ensure_channel(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False):
+        calls.append((name, category, is_thread_category))
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="Test Thread",
+        destination="stoat",
+        local_channel_category="Announcements",
+        is_thread_category=True,
+    )
+    assert calls == [("Test Thread", "Announcements", True)]
+
+
+async def test_mirror_channel_defaults_is_thread_category_to_false(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False):
+        calls.append(is_thread_category)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert calls == [False]
 
 
 async def test_mirror_channel_all_with_no_other_connectors(fake_db):

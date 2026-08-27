@@ -1,11 +1,17 @@
-"""Shared logic behind the `/link-channel` and `/mirror-channels` admin
-commands, called identically from each connector's own command handler
-(services/discord_service.py, stoat_service.py, irc_service.py) so the
-bridge-group/conflict logic isn't duplicated three times.
+"""Shared logic behind the `/link-channel`, `/link-category`, and
+`/mirror-channels` admin commands, called identically from each connector's
+own command handler (services/discord_service.py, stoat_service.py,
+irc_service.py) so the bridge-group/conflict logic isn't duplicated three
+times.
 
 Channels never link automatically - a bridge_group only comes into being via
 `ChannelLinker.link_channel`, called directly by `/link-channel` or, per
-channel created/matched, by the Stoat `/mirror-channels` handler.
+channel created/matched, by the Stoat `/mirror-channels` handler. Categories
+are the same - only `/link-category` creates a CategoryLinker bridge_group -
+but once a Category *is* linked, a new channel appearing inside it on either
+side auto-syncs onto the other's linked Category (CategoryLinker.
+sync_new_channel), which is the one place in this module something
+auto-links without an explicit admin command.
 """
 
 from __future__ import annotations
@@ -17,6 +23,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from stoat_discord_bridge.channel_structure import GuildStructure
+from stoat_discord_bridge.storage.category_mappings import (
+    CategoryMapping,
+    CategoryMappingRepository,
+    ThreadCategoryRepository,
+)
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
@@ -64,7 +75,13 @@ class ConnectorInfo:
     # doesn't support channel creation (e.g. Discord has no channel-creation
     # capability in this codebase at all - /mirror-channel then reports that
     # connector as unsupported rather than calling this).
-    ensure_channel: Callable[[str, str | None], Awaitable[str]] | None = None
+    # The third argument, is_thread_category, marks the matched/created
+    # Category (if any) as one Discord's thread/forum-post auto-mirroring
+    # created (see DiscordSenderService._handle_thread_create), via
+    # CategoryLinker.mark_thread_category - so `/link-category` later
+    # refuses to link it. False for every other caller (regular
+    # /mirror-channel, and CategoryLinker.sync_new_channel's own auto-sync).
+    ensure_channel: Callable[[str, str | None, bool], Awaitable[str]] | None = None
     # Best-effort native-user-id -> display-name lookup, for `/linked-users`
     # to show real names instead of raw ids. None, an exception, or a falsy
     # return all fall back to the raw id, same as resolve_channel_name.
@@ -72,6 +89,10 @@ class ConnectorInfo:
     # storage/user_mappings.py's UserMapping.display_name docstring), so
     # there's nothing further to resolve.
     resolve_user_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Best-effort native-category-id -> title lookup, the Category
+    # counterpart of resolve_channel_name, used by CategoryLinker for
+    # `/link-category`. None on IRC (no Category concept there).
+    resolve_category_name: Callable[[str], Awaitable[str | None]] | None = None
 
 
 class ChannelLinker:
@@ -157,6 +178,7 @@ class ChannelLinker:
         local_channel_name: str,
         destination: str,
         local_channel_category: str | None = None,
+        is_thread_category: bool = False,
     ) -> str:
         """Ensure `local_channel_id` (on `local_connector`) has a linked
         counterpart on `destination`: reuses an existing same-name channel
@@ -168,7 +190,10 @@ class ChannelLinker:
         bad destination abort the rest. `local_channel_category`, if given,
         is the Category the source channel belongs to on `local_connector` -
         `destination`'s ensure_channel() places the mirrored channel into a
-        same-named Category there too."""
+        same-named Category there too. `is_thread_category` is only ever
+        True from DiscordSenderService._handle_thread_create's auto-mirror -
+        it marks that destination Category as thread-only, so
+        `/link-category` later refuses to link it."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
@@ -185,7 +210,9 @@ class ChannelLinker:
             return f"{dest_info.label}: doesn't support channel creation - link it manually with /link-channel."
 
         try:
-            destination_channel_id = await dest_info.ensure_channel(local_channel_name, local_channel_category)
+            destination_channel_id = await dest_info.ensure_channel(
+                local_channel_name, local_channel_category, is_thread_category
+            )
         except Exception as exc:
             logger.warning("mirror-channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
             return f"{dest_info.label}: failed to create/find a channel: {exc}"
@@ -209,6 +236,7 @@ class ChannelLinker:
         local_channel_id: str,
         local_channel_name: str,
         local_channel_category: str | None = None,
+        is_thread_category: bool = False,
     ) -> str:
         """`/mirror-channel all` - mirror_channel() against every other
         configured connector, one line of summary/skip/error per connector
@@ -220,6 +248,7 @@ class ChannelLinker:
                 local_channel_name=local_channel_name,
                 destination=destination,
                 local_channel_category=local_channel_category,
+                is_thread_category=is_thread_category,
             )
             for destination in self._connectors
             if destination != local_connector
@@ -297,6 +326,196 @@ class ChannelLinker:
         if info is None or info.on_channel_linked is None:
             return
         await info.on_channel_linked(channel_id)
+
+
+class CategoryLinker:
+    """The Category-level counterpart of ChannelLinker: `/link-category`
+    links two Categories across connectors, and once linked, a new channel
+    appearing inside either is auto-synced (created + linked) onto the
+    other's own linked Category - see sync_new_channel, called from each
+    connector's own channel-create event handler
+    (DiscordSenderService._handle_channel_create,
+    StoatSenderService._handle_channel_create)."""
+
+    def __init__(
+        self,
+        category_mappings: CategoryMappingRepository,
+        thread_categories: ThreadCategoryRepository,
+        channel_linker: ChannelLinker,
+        connectors: dict[str, ConnectorInfo],
+    ) -> None:
+        self._category_mappings = category_mappings
+        self._thread_categories = thread_categories
+        self._channel_linker = channel_linker
+        self._connectors = connectors
+
+    @property
+    def connectors(self) -> dict[str, ConnectorInfo]:
+        return self._connectors
+
+    async def link_category(
+        self,
+        *,
+        local_connector: str,
+        local_category_id: str,
+        local_category_name: str,
+        source: str,
+        source_id: str,
+        destination_id: str | None,
+    ) -> str:
+        """Link `source`'s `source_id` Category to `destination_id` (or the
+        invoking Category, if omitted) on `local_connector`. Symmetric to
+        ChannelLinker.link_channel, plus a guard rejecting either side if
+        it's a Category Discord's thread/forum-post auto-mirroring created
+        (see DiscordSenderService._handle_thread_create) - such a Category
+        is dedicated to that per-thread-parent mirroring flow, and linking
+        it here would create a second, conflicting sync path onto the same
+        channels. Once linked, any new channel that appears in either
+        Category is auto-synced onto the other - see sync_new_channel."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+
+        if destination_id is None or destination_id == local_category_id:
+            destination_category_id = local_category_id
+            destination_name = local_category_name
+        else:
+            destination_category_id = destination_id
+            destination_name = await self._resolve_name(local_connector, destination_id)
+
+        if source == local_connector and source_id == destination_category_id:
+            raise LinkError("can't link a Category to itself.")
+
+        if await self._thread_categories.is_thread_category(source, source_id) or await self._thread_categories.is_thread_category(
+            local_connector, destination_category_id
+        ):
+            raise LinkError(
+                "that Category was auto-created for Discord thread mirroring and can't be linked with /link-category."
+            )
+
+        source_group = await self._category_mappings.get_bridge_group(source, source_id)
+        destination_group = await self._category_mappings.get_bridge_group(local_connector, destination_category_id)
+        if source_group and destination_group and source_group != destination_group:
+            raise LinkError(
+                "both Categories are already linked, but to different bridge groups - unlink one before relinking."
+            )
+        bridge_group = source_group or destination_group or uuid.uuid4().hex
+
+        source_name = await self._resolve_name(source, source_id)
+        await self._category_mappings.upsert(
+            CategoryMapping(bridge_group=bridge_group, connector_id=source, category_id=source_id, category_name=source_name)
+        )
+        await self._category_mappings.upsert(
+            CategoryMapping(
+                bridge_group=bridge_group,
+                connector_id=local_connector,
+                category_id=destination_category_id,
+                category_name=destination_name,
+            )
+        )
+
+        source_label = self._connectors[source].label
+        local_info = self._connectors.get(local_connector)
+        local_label = local_info.label if local_info else local_connector
+        return (
+            f"Linked {source_label} Category '{source_name}' ({source_id}) to "
+            f"{local_label} Category '{destination_name}' ({destination_category_id}). "
+            "New channels in either will now sync automatically."
+        )
+
+    async def list_linked_categories(self, *, local_connector: str, local_category_id: str) -> str:
+        """Read-only listing, for `/linked-categories` - never raises
+        LinkError, same as ChannelLinker.list_linked_channels."""
+        bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
+        if bridge_group is None:
+            return "This Category isn't linked to any others."
+
+        mapped = await self._category_mappings.get_mapped_categories(bridge_group)
+        lines = []
+        for mapping in sorted(mapped, key=lambda m: (m.connector_id, m.category_id)):
+            info = self._connectors.get(mapping.connector_id)
+            label = info.label if info else mapping.connector_id
+            marker = (
+                " (this Category)"
+                if mapping.connector_id == local_connector and mapping.category_id == local_category_id
+                else ""
+            )
+            lines.append(f"{label}: {mapping.category_name} ({mapping.category_id}){marker}")
+        return "Linked Categories:\n" + "\n".join(lines)
+
+    async def unlink_category(self, *, local_connector: str, local_category_id: str, destination: str | None) -> str:
+        """`/unlink-category`, symmetric to ChannelLinker.unlink_channel."""
+        bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
+        if bridge_group is None:
+            raise LinkError("this Category isn't linked to anything.")
+
+        if destination is None or destination.lower() == "all":
+            count = await self._category_mappings.delete_bridge_group(bridge_group)
+            return f"Unlinked this Category's entire bridge group ({count} Category(s) removed)."
+
+        mapped = await self._category_mappings.get_mapped_categories(bridge_group)
+        target = next((m for m in mapped if m.connector_id == destination), None)
+        if target is None:
+            raise LinkError(f"'{destination}' isn't linked in this Category's bridge group.")
+        await self._category_mappings.delete_mapping(destination, target.category_id)
+        label = self._connectors[destination].label if destination in self._connectors else destination
+        return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
+
+    async def sync_new_channel(
+        self, *, local_connector: str, local_category_id: str, channel_id: str, channel_name: str
+    ) -> None:
+        """Called by each connector's channel-create event handler when a
+        new channel appears inside `local_category_id`. If that Category is
+        linked (via /link-category), auto-mirrors the new channel onto every
+        other connector in its bridge group - into that destination's own
+        linked Category (by name), not `local_category_id`'s name, since
+        /link-category allows differently-named Categories across
+        connectors (unlike /mirror-channel's same-name carry-over). No-op if
+        the Category isn't linked - which a thread-mirroring-created
+        Category never is, since link_category refuses to ever link one, so
+        this is naturally never triggered for those without needing its own
+        explicit guard. Reuses ChannelLinker.mirror_channel, whose own
+        "already synced - skipped" check makes this safe against duplicate/
+        echoed channel-create events (e.g. the bridge's own created channel
+        firing its creator's event back at this same listener)."""
+        bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
+        if bridge_group is None:
+            return
+        mapped = await self._category_mappings.get_mapped_categories(bridge_group)
+        for mapping in mapped:
+            if mapping.connector_id == local_connector:
+                continue
+            result = await self._channel_linker.mirror_channel(
+                local_connector=local_connector,
+                local_channel_id=channel_id,
+                local_channel_name=channel_name,
+                destination=mapping.connector_id,
+                local_channel_category=mapping.category_name,
+            )
+            logger.info(
+                "[category-sync] new channel %r in %s's linked Category -> %s: %s",
+                channel_name,
+                local_connector,
+                mapping.connector_id,
+                result,
+            )
+
+    async def mark_thread_category(self, connector_id: str, category_id: str) -> None:
+        """Marks `category_id` on `connector_id` as auto-created for Discord
+        thread/forum-post mirroring - called from a connector's
+        ensure_channel() when it was itself called with is_thread_category=
+        True (ultimately from DiscordSenderService._handle_thread_create)."""
+        await self._thread_categories.mark(connector_id, category_id)
+
+    async def _resolve_name(self, connector_id: str, category_id: str) -> str:
+        info = self._connectors.get(connector_id)
+        if info is None or info.resolve_category_name is None:
+            return category_id
+        try:
+            name = await info.resolve_category_name(category_id)
+        except Exception:
+            logger.debug("couldn't resolve category name for %s on %s", category_id, connector_id, exc_info=True)
+            return category_id
+        return name or category_id
 
 
 class EmoteLinker:

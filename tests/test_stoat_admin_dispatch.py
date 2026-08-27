@@ -96,6 +96,34 @@ class FakeUserLinker:
         return "user unlinked ok"
 
 
+class FakeCategoryLinker:
+    def __init__(self, *, raises: LinkError | None = None) -> None:
+        self._raises = raises
+        self.link_category_calls: list[dict] = []
+        self.list_linked_categories_calls: list[dict] = []
+        self.unlink_category_calls: list[dict] = []
+        self.sync_new_channel_calls: list[dict] = []
+
+    async def link_category(self, **kwargs):
+        self.link_category_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "category linked ok"
+
+    async def list_linked_categories(self, **kwargs):
+        self.list_linked_categories_calls.append(kwargs)
+        return "Linked categories:\nStoat: Team (cat-1) (this Category)"
+
+    async def unlink_category(self, **kwargs):
+        self.unlink_category_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "category unlinked ok"
+
+    async def sync_new_channel(self, **kwargs):
+        self.sync_new_channel_calls.append(kwargs)
+
+
 class FakeMirrorer:
     def __init__(self, *, structure: GuildStructure | None = None, raises: Exception | None = None) -> None:
         self._structure = structure
@@ -115,6 +143,7 @@ def _make_sender(
     mirrorer: FakeMirrorer | None = None,
     emote_linker: FakeEmoteLinker | None = None,
     user_linker: FakeUserLinker | None = None,
+    category_linker: FakeCategoryLinker | None = None,
     client: FakeClient | None = None,
     server_id: str | None = "s1",
 ) -> StoatSenderService:
@@ -124,6 +153,7 @@ def _make_sender(
     sender._mirrorer = mirrorer
     sender._emote_linker = emote_linker
     sender._user_linker = user_linker
+    sender._category_linker = category_linker
     sender.server_id = server_id
     if client is not None:
         sender._client = client
@@ -161,7 +191,13 @@ def test_is_admin_false_when_member_info_is_unavailable():
 
 
 async def test_each_admin_command_rejects_a_non_admin():
-    sender = _make_sender(linker=FakeLinker(), emote_linker=FakeEmoteLinker(), user_linker=FakeUserLinker(), mirrorer=FakeMirrorer())
+    sender = _make_sender(
+        linker=FakeLinker(),
+        emote_linker=FakeEmoteLinker(),
+        user_linker=FakeUserLinker(),
+        mirrorer=FakeMirrorer(),
+        category_linker=FakeCategoryLinker(),
+    )
     message = _admin_message(manage_server=False)
 
     await sender._handle_mirror_channels(message, ["discord"])
@@ -171,8 +207,10 @@ async def test_each_admin_command_rejects_a_non_admin():
     await sender._handle_mirror_channel(message, ["discord"])
     await sender._handle_unlink_channel(message, [])
     await sender._handle_unlink_user(message, [])
+    await sender._handle_link_category(message, ["discord", "s1"])
+    await sender._handle_unlink_category(message, [])
 
-    assert message.channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}] * 7
+    assert message.channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}] * 9
 
 
 # ---------------------------------------------------------------- _handle_link_channel
@@ -690,3 +728,236 @@ async def test_unlink_user_reports_a_link_error():
     await sender._handle_unlink_user(message, [])
 
     assert message.channel.sent[0]["content"] == "this user isn't linked to anything."
+
+
+# ---------------------------------------------------------------- _handle_linked_categories
+
+
+async def test_linked_categories_reports_the_invoking_channels_category():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_linked_categories(message)
+
+    assert category_linker.list_linked_categories_calls == [{"local_connector": "stoat", "local_category_id": "cat-1"}]
+    assert channel.sent[0]["content"] == "Linked categories:\nStoat: Team (cat-1) (this Category)"
+
+
+async def test_linked_categories_without_a_configured_category_linker():
+    sender = _make_sender(category_linker=None)
+    message = _admin_message()
+
+    await sender._handle_linked_categories(message)
+
+    assert message.channel.sent[0]["content"] == "Category linking isn't configured."
+
+
+async def test_linked_categories_when_invoking_channel_has_no_category():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=None)
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_linked_categories(message)
+
+    assert message.channel.sent[0]["content"] == "This channel isn't in a Category."
+    assert category_linker.list_linked_categories_calls == []
+
+
+async def test_linked_categories_needs_no_admin_permission():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(manage_server=False, channel=channel)
+
+    await sender._handle_linked_categories(message)  # must not be rejected
+
+    assert category_linker.list_linked_categories_calls
+
+
+# ---------------------------------------------------------------- _handle_link_category
+
+
+async def test_link_category_success():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_link_category(message, ["discord", "src-id", "dest-id"])
+
+    assert category_linker.link_category_calls == [
+        {
+            "local_connector": "stoat",
+            "local_category_id": "cat-1",
+            "local_category_name": "Team",
+            "source": "discord",
+            "source_id": "src-id",
+            "destination_id": "dest-id",
+        }
+    ]
+    assert channel.sent[0]["content"] == "category linked ok"
+
+
+async def test_link_category_destination_defaults_to_none():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_link_category(message, ["discord", "src-id"])
+
+    assert category_linker.link_category_calls[0]["destination_id"] is None
+
+
+async def test_link_category_wrong_arg_count_sends_usage():
+    sender = _make_sender(category_linker=FakeCategoryLinker())
+    message = _admin_message()
+
+    await sender._handle_link_category(message, ["discord"])
+
+    assert message.channel.sent[0]["content"] == "Usage: /link-category <source> <source_id> [<destination_id>]"
+
+
+async def test_link_category_without_a_configured_category_linker():
+    sender = _make_sender(category_linker=None)
+    message = _admin_message()
+
+    await sender._handle_link_category(message, ["discord", "src-id"])
+
+    assert message.channel.sent[0]["content"] == "Category linking isn't configured."
+
+
+async def test_link_category_when_invoking_channel_has_no_category():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=None)
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_link_category(message, ["discord", "src-id"])
+
+    assert message.channel.sent[0]["content"] == "This channel isn't in a Category."
+    assert category_linker.link_category_calls == []
+
+
+async def test_link_category_reports_a_link_error():
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=FakeCategoryLinker(raises=LinkError("that Category is used for thread mirroring")))
+    message = _admin_message(channel=channel)
+
+    await sender._handle_link_category(message, ["discord", "src-id"])
+
+    assert channel.sent[0]["content"] == "that Category is used for thread mirroring"
+
+
+# ---------------------------------------------------------------- _handle_unlink_category
+
+
+async def test_unlink_category_defaults_to_all():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_unlink_category(message, [])
+
+    assert category_linker.unlink_category_calls == [
+        {"local_connector": "stoat", "local_category_id": "cat-1", "destination": None}
+    ]
+    assert channel.sent[0]["content"] == "category unlinked ok"
+
+
+async def test_unlink_category_with_a_specific_destination():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_unlink_category(message, ["discord"])
+
+    assert category_linker.unlink_category_calls == [
+        {"local_connector": "stoat", "local_category_id": "cat-1", "destination": "discord"}
+    ]
+
+
+async def test_unlink_category_without_a_configured_category_linker():
+    sender = _make_sender(category_linker=None)
+    message = _admin_message()
+
+    await sender._handle_unlink_category(message, [])
+
+    assert message.channel.sent[0]["content"] == "Category linking isn't configured."
+
+
+async def test_unlink_category_when_invoking_channel_has_no_category():
+    category_linker = FakeCategoryLinker()
+    channel = FakeChannel(id="c1", category=None)
+    sender = _make_sender(category_linker=category_linker)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_unlink_category(message, [])
+
+    assert message.channel.sent[0]["content"] == "This channel isn't in a Category."
+    assert category_linker.unlink_category_calls == []
+
+
+async def test_unlink_category_reports_a_link_error():
+    channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
+    sender = _make_sender(category_linker=FakeCategoryLinker(raises=LinkError("this Category isn't linked to anything.")))
+    message = _admin_message(channel=channel)
+
+    await sender._handle_unlink_category(message, [])
+
+    assert channel.sent[0]["content"] == "this Category isn't linked to anything."
+
+
+# ---------------------------------------------------------------- _handle_channel_create
+
+
+async def test_handle_channel_create_syncs_a_new_channel_in_a_linked_category():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(category_linker=category_linker, server_id="s1")
+    category = FakeCategory(id="cat-1", title="Team")
+    channel = FakeChannel(id="c2", name="general-2", server_id="s1", category=category)
+
+    await sender._handle_channel_create(channel)
+
+    assert category_linker.sync_new_channel_calls == [
+        {
+            "local_connector": "stoat",
+            "local_category_id": "cat-1",
+            "channel_id": "c2",
+            "channel_name": "general-2",
+        }
+    ]
+
+
+async def test_handle_channel_create_noop_without_a_configured_category_linker():
+    sender = _make_sender(category_linker=None, server_id="s1")
+    category = FakeCategory(id="cat-1", title="Team")
+    channel = FakeChannel(id="c2", name="general-2", server_id="s1", category=category)
+
+    await sender._handle_channel_create(channel)  # would raise if it tried to use a None category_linker
+
+
+async def test_handle_channel_create_noop_for_a_channel_on_a_different_server():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(category_linker=category_linker, server_id="s1")
+    category = FakeCategory(id="cat-1", title="Team")
+    channel = FakeChannel(id="c2", name="general-2", server_id="other-server", category=category)
+
+    await sender._handle_channel_create(channel)
+
+    assert category_linker.sync_new_channel_calls == []
+
+
+async def test_handle_channel_create_noop_for_a_channel_with_no_category():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(category_linker=category_linker, server_id="s1")
+    channel = FakeChannel(id="c2", name="general-2", server_id="s1", category=None)
+
+    await sender._handle_channel_create(channel)
+
+    assert category_linker.sync_new_channel_calls == []

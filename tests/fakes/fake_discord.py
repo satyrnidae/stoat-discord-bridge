@@ -160,6 +160,29 @@ class FakeThread(discord.Thread):
         return self._parent
 
 
+class FakeGuildChannel(discord.TextChannel):
+    """Stands in for discord.TextChannel - used to test
+    DiscordSenderService._handle_channel_create, which does an
+    isinstance(channel, (discord.TextChannel, discord.VoiceChannel)) check
+    that a plain duck-typed FakeChannel can't satisfy. Subclasses the real
+    discord.TextChannel (same pattern as FakeThread above), skipping its real
+    __init__ - which needs a real guild/state/payload - and setting only
+    id/name/guild/category directly.
+    """
+
+    def __init__(
+        self, id: int, *, name: str = "general", guild: FakeGuild | None = None, category: FakeChannel | None = None
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.guild = guild
+        self._category = category
+
+    @property
+    def category(self) -> FakeChannel | None:
+        return self._category
+
+
 class FakeEmoji:
     def __init__(self, id: int, name: str, *, url: str = "https://cdn.example/emoji.png", animated: bool = False) -> None:
         self.id = id

@@ -28,6 +28,7 @@ from stoat_discord_bridge.services.discord_service import (
     _normalize_channel_id,
 )
 from stoat_discord_bridge.status import HealthTracker
+from tests.fakes.fake_discord import FakeGuild, FakeGuildChannel
 
 
 def _discord_config(**overrides):
@@ -85,10 +86,40 @@ class FakeLinker:
         return "user unlinked ok"
 
 
+class FakeCategoryLinker:
+    def __init__(self, connectors: dict | None = None):
+        self.link_category_calls: list[dict] = []
+        self.list_linked_categories_calls: list[dict] = []
+        self.unlink_category_calls: list[dict] = []
+        self.sync_new_channel_calls: list[dict] = []
+        self.connectors = connectors or {}
+
+    async def link_category(self, **kwargs):
+        self.link_category_calls.append(kwargs)
+        return "category linked ok"
+
+    async def list_linked_categories(self, **kwargs):
+        self.list_linked_categories_calls.append(kwargs)
+        return "Linked categories:\nDiscord: Team (999) (this Category)"
+
+    async def unlink_category(self, **kwargs):
+        self.unlink_category_calls.append(kwargs)
+        return "category unlinked ok"
+
+    async def sync_new_channel(self, **kwargs):
+        self.sync_new_channel_calls.append(kwargs)
+
+
 class FakeInteraction:
-    def __init__(self, channel_id: int = 999, channel_name: str = "current-channel", user_id: int = 1):
+    def __init__(
+        self,
+        channel_id: int = 999,
+        channel_name: str = "current-channel",
+        user_id: int = 1,
+        category: SimpleNamespace | None = None,
+    ):
         self.channel_id = channel_id
-        self.channel = SimpleNamespace(name=channel_name)
+        self.channel = SimpleNamespace(name=channel_name, category=category)
         self.user = SimpleNamespace(id=user_id)
         self.sent: list[str] = []
         self.response = SimpleNamespace(send_message=self._send_message)
@@ -97,7 +128,9 @@ class FakeInteraction:
         self.sent.append(content)
 
 
-def _make_sender(linker: FakeLinker, *, emote_linker=None, user_linker=None) -> DiscordSenderService:
+def _make_sender(
+    linker: FakeLinker, *, emote_linker=None, user_linker=None, category_linker=None
+) -> DiscordSenderService:
     return DiscordSenderService(
         _discord_config(),
         on_message=_noop,
@@ -105,6 +138,7 @@ def _make_sender(linker: FakeLinker, *, emote_linker=None, user_linker=None) -> 
         linker=linker,
         emote_linker=emote_linker,
         user_linker=user_linker,
+        category_linker=category_linker,
     )
 
 
@@ -453,6 +487,248 @@ async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_co
     choices = await callback(FakeInteraction(), "stoat")
 
     assert [c.value for c in choices] == ["stoat-public"]
+
+
+async def test_link_category_source_autocomplete_is_wired_to_the_category_linker(sample_connectors):
+    sender = _make_sender(FakeLinker(), category_linker=FakeCategoryLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link-category", "source")
+
+    choices = await callback(FakeInteraction(), "stoat")
+
+    assert [c.value for c in choices] == ["stoat-public"]
+
+
+# ---------------------------------------------------------------- _handle_linked_categories
+
+
+async def test_linked_categories_reports_the_invoking_categorys_id():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_linked_categories(interaction)
+
+    assert category_linker.list_linked_categories_calls == [{"local_connector": "discord", "local_category_id": "777"}]
+    assert interaction.sent == ["Linked categories:\nDiscord: Team (999) (this Category)"]
+
+
+async def test_linked_categories_without_a_configured_category_linker():
+    sender = _make_sender(FakeLinker(), category_linker=None)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_linked_categories(interaction)
+
+    assert interaction.sent == ["Category linking isn't configured."]
+
+
+async def test_linked_categories_when_invoking_channel_has_no_category():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=None)
+
+    await sender._handle_linked_categories(interaction)
+
+    assert interaction.sent == ["This channel isn't inside a Category."]
+    assert category_linker.list_linked_categories_calls == []
+
+
+# ---------------------------------------------------------------- _handle_link_category
+
+
+async def test_link_category_uses_the_invoking_channels_category_id_and_name():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_link_category(interaction, "stoat", "s-cat", None)
+
+    assert category_linker.link_category_calls == [
+        {
+            "local_connector": "discord",
+            "local_category_id": "777",
+            "local_category_name": "Team",
+            "source": "stoat",
+            "source_id": "s-cat",
+            "destination_id": None,
+        }
+    ]
+    assert interaction.sent == ["category linked ok"]
+
+
+async def test_link_category_normalizes_a_pasted_mention_in_source_and_destination_id():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_link_category(interaction, "discord", "<#111>", "<#222>")
+
+    call = category_linker.link_category_calls[0]
+    assert call["source_id"] == "111"
+    assert call["destination_id"] == "222"
+
+
+async def test_link_category_without_a_configured_category_linker():
+    sender = _make_sender(FakeLinker(), category_linker=None)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_link_category(interaction, "stoat", "s-cat", None)
+
+    assert interaction.sent == ["Category linking isn't configured."]
+
+
+async def test_link_category_when_invoking_channel_has_no_category():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=None)
+
+    await sender._handle_link_category(interaction, "stoat", "s-cat", None)
+
+    assert interaction.sent == ["This channel isn't inside a Category."]
+    assert category_linker.link_category_calls == []
+
+
+async def test_link_category_reports_a_link_error_instead_of_raising():
+    class RejectingCategoryLinker(FakeCategoryLinker):
+        async def link_category(self, **kwargs):
+            from stoat_discord_bridge.admin_commands import LinkError
+
+            raise LinkError("that Category is used for thread mirroring and can't be linked")
+
+    sender = _make_sender(FakeLinker(), category_linker=RejectingCategoryLinker())
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Threads"))
+
+    await sender._handle_link_category(interaction, "stoat", "s-cat", None)
+
+    assert interaction.sent == ["that Category is used for thread mirroring and can't be linked"]
+
+
+# ---------------------------------------------------------------- _handle_unlink_category
+
+
+async def test_unlink_category_defaults_destination_to_none():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_unlink_category(interaction, None)
+
+    assert category_linker.unlink_category_calls == [
+        {"local_connector": "discord", "local_category_id": "777", "destination": None}
+    ]
+    assert interaction.sent == ["category unlinked ok"]
+
+
+async def test_unlink_category_with_a_specific_destination():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_unlink_category(interaction, "stoat")
+
+    assert category_linker.unlink_category_calls == [
+        {"local_connector": "discord", "local_category_id": "777", "destination": "stoat"}
+    ]
+
+
+async def test_unlink_category_without_a_configured_category_linker():
+    sender = _make_sender(FakeLinker(), category_linker=None)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_unlink_category(interaction, None)
+
+    assert interaction.sent == ["Category linking isn't configured."]
+
+
+async def test_unlink_category_when_invoking_channel_has_no_category():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=None)
+
+    await sender._handle_unlink_category(interaction, None)
+
+    assert interaction.sent == ["This channel isn't inside a Category."]
+    assert category_linker.unlink_category_calls == []
+
+
+async def test_unlink_category_reports_a_link_error_instead_of_raising():
+    class RejectingCategoryLinker(FakeCategoryLinker):
+        async def unlink_category(self, **kwargs):
+            from stoat_discord_bridge.admin_commands import LinkError
+
+            raise LinkError("this Category isn't linked")
+
+    sender = _make_sender(FakeLinker(), category_linker=RejectingCategoryLinker())
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_unlink_category(interaction, None)
+
+    assert interaction.sent == ["this Category isn't linked"]
+
+
+# ---------------------------------------------------------------- _handle_channel_create
+
+
+async def test_handle_channel_create_syncs_a_new_channel_in_a_linked_category():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    guild = FakeGuild(id=123)
+    category = FakeGuildChannel(id=555, name="Team", guild=guild)
+    channel = FakeGuildChannel(id=888, name="general-2", guild=guild, category=category)
+
+    await sender._handle_channel_create(channel)
+
+    assert category_linker.sync_new_channel_calls == [
+        {
+            "local_connector": "discord",
+            "local_category_id": "555",
+            "channel_id": "888",
+            "channel_name": "general-2",
+        }
+    ]
+
+
+async def test_handle_channel_create_noop_without_a_configured_category_linker():
+    sender = _make_sender(FakeLinker(), category_linker=None)
+    guild = FakeGuild(id=123)
+    category = FakeGuildChannel(id=555, name="Team", guild=guild)
+    channel = FakeGuildChannel(id=888, name="general-2", guild=guild, category=category)
+
+    await sender._handle_channel_create(channel)  # would raise if it tried to use a None category_linker
+
+
+async def test_handle_channel_create_noop_for_a_channel_outside_the_configured_guild():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    guild = FakeGuild(id=999)  # not this sender's configured guild_id (123)
+    category = FakeGuildChannel(id=555, name="Team", guild=guild)
+    channel = FakeGuildChannel(id=888, name="general-2", guild=guild, category=category)
+
+    await sender._handle_channel_create(channel)
+
+    assert category_linker.sync_new_channel_calls == []
+
+
+async def test_handle_channel_create_noop_for_a_channel_with_no_category():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    guild = FakeGuild(id=123)
+    channel = FakeGuildChannel(id=888, name="general-2", guild=guild, category=None)
+
+    await sender._handle_channel_create(channel)
+
+    assert category_linker.sync_new_channel_calls == []
+
+
+async def test_handle_channel_create_noop_for_a_non_text_or_voice_channel():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    guild = FakeGuild(id=123)
+    category = FakeGuildChannel(id=555, name="Team", guild=guild)
+    not_a_channel = SimpleNamespace(id=888, name="whatever", guild=guild, category=category)
+
+    await sender._handle_channel_create(not_a_channel)
+
+    assert category_linker.sync_new_channel_calls == []
 
 
 async def test_link_channel_source_autocomplete_handles_no_configured_linker():

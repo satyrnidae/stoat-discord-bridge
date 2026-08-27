@@ -108,20 +108,34 @@ itself drops only once every connector's copy has been deleted.
 
 ### Admin & status commands
 
-Every admin/status command (`/status`, `/link-channel`, `/linked-channels`,
-`/link-user`, `/linked-users`, `/link-emote`, `/mirror-channel`,
-`/mirror-channels`) and how to reach it on each connector is documented in
-`COMMANDS.md`, not duplicated here — shared logic lives in
-`admin_commands.py` (`ChannelLinker` / `EmoteLinker` / `UserLinker` /
-`StructureMirrorer`), called identically from each connector's own
-`services/*.py` module. Nothing is bridged (or mention-linked) automatically
-— every pair is linked explicitly via those commands.
+Every admin/status command (`/status`, `/link-channel`, `/unlink-channel`,
+`/linked-channels`, `/link-user`, `/unlink-user`, `/linked-users`,
+`/link-emote`, `/mirror-channel`, `/mirror-channels`, `/link-category`,
+`/unlink-category`, `/linked-categories`) and how to reach it on each
+connector is documented in `COMMANDS.md`, not duplicated here — shared logic
+lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
+`EmoteLinker` / `UserLinker` / `StructureMirrorer`), called identically from
+each connector's own `services/*.py` module. Nothing is bridged (or
+mention-linked) automatically — every pair is linked explicitly via those
+commands.
+
+Category linking (`/link-category`) is Discord/Stoat-only (IRC has no
+Category concept) and, unlike channel linking, has an automatic-sync side
+effect: once two Categories are linked, a new channel created inside either
+one is auto-mirrored (created + linked) into every other connector's own
+linked Category, via the same `ChannelLinker.mirror_channel` logic
+`/mirror-channel` uses. `CategoryLinker.link_category` refuses to link a
+Category that `ThreadCategoryRepository` has marked as a thread category
+(see below) — those stay outside the bridge.
 
 ### Discord threads
 
 Discord threads have no IRC/Stoat equivalent. Design intent: treat a Discord
 thread as a new Stoat channel under a "Threads" category rather than trying
-to map it onto IRC/Stoat's flat channel model.
+to map it onto IRC/Stoat's flat channel model. The Stoat-side "Threads"
+Category created this way is marked via `CategoryLinker.mark_thread_category`
+(backed by `storage/category_mappings.py`'s `ThreadCategoryRepository`), which
+`/link-category` checks to refuse ever linking it into the bridge.
 
 ## Layout
 
@@ -133,7 +147,7 @@ src/stoat_discord_bridge/
   config.py                    # loads config.yaml, layering env vars over it per-field (see its docstring)
   models.py                    # StandardMessage - the platform-neutral message format
   channel_structure.py         # GuildStructure snapshot used by the /mirror-channels command
-  admin_commands.py            # ChannelLinker / StructureMirrorer - shared /link-channel & /mirror-channels logic
+  admin_commands.py            # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / StructureMirrorer - shared linking & /mirror-channels logic
   bridge.py                    # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
   status.py                    # HealthTracker: per-connector sync target health, read by the /status commands
   services/
@@ -145,6 +159,7 @@ src/stoat_discord_bridge/
   storage/
     mongo.py                   # MongoDB connection (motor)
     channel_mappings.py        # which channels, across connectors, are bridged together
+    category_mappings.py       # which categories, across connectors, are bridged together; ThreadCategoryRepository marks thread-only categories as unlinkable
     message_sync.py            # cross-connector message ID references, for edit/delete sync
     emoji_mappings.py          # cross-connector custom emoji ID references, for reaction sync
 ```

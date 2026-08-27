@@ -24,7 +24,14 @@ import aiohttp
 import discord
 from discord import app_commands
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, EmoteLinker, LinkError, UserLinker
+from stoat_discord_bridge.admin_commands import (
+    CategoryLinker,
+    ChannelLinker,
+    ConnectorInfo,
+    EmoteLinker,
+    LinkError,
+    UserLinker,
+)
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure, clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.models import (
@@ -123,6 +130,9 @@ class _DiscordClient(discord.Client):
     async def on_thread_create(self, thread: discord.Thread) -> None:
         await self._owner._handle_thread_create(thread)
 
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
+        await self._owner._handle_channel_create(channel)
+
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         await self._owner._handle_raw_reaction(payload, added=True)
 
@@ -147,10 +157,12 @@ class DiscordSenderService(SenderService):
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
+        category_linker: "CategoryLinker | None" = None,
     ) -> None:
-        # linker/emote_linker/user_linker are only needed to serve
-        # `/link-channel`/`/link-emote`/`/link-user`; None is accepted (e.g.
-        # for tests) but those commands will then report themselves unconfigured.
+        # linker/emote_linker/user_linker/category_linker are only needed to
+        # serve `/link-channel`/`/link-emote`/`/link-user`/`/link-category`;
+        # None is accepted (e.g. for tests) but those commands will then
+        # report themselves unconfigured.
         SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
         self._config = config
         self.connector_id = config.id
@@ -158,6 +170,7 @@ class DiscordSenderService(SenderService):
         self._linker = linker
         self._emote_linker = emote_linker
         self._user_linker = user_linker
+        self._category_linker = category_linker
         self._commands_synced = False
         # Discord thread ids whose auto-mirror (_handle_thread_create) has
         # fired but whose starter message hasn't arrived through
@@ -180,6 +193,14 @@ class DiscordSenderService(SenderService):
         )
         async def linked_channels_command(interaction: discord.Interaction) -> None:
             await self._handle_linked_channels(interaction)
+
+        @self.tree.command(
+            name="linked-categories",
+            description="List every Category linked to this channel's Category across the bridge",
+            guild=self._guild,
+        )
+        async def linked_categories_command(interaction: discord.Interaction) -> None:
+            await self._handle_linked_categories(interaction)
 
         @self.tree.command(
             name="linked-users",
@@ -214,6 +235,29 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None = None
         ) -> None:
             await self._handle_link_channel(interaction, source, source_id, destination_id)
+
+        async def link_category_source_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._category_linker.connectors if self._category_linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors)
+
+        @self.tree.command(
+            name="link-category",
+            description="Link a Category from another connector to this channel's Category - new channels in either sync automatically",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            source="Connector id to link from (see /status for configured connectors)",
+            source_id="Category id on that connector",
+            destination_id="Category id on this connector (defaults to the current channel's Category)",
+        )
+        @app_commands.autocomplete(source=link_category_source_autocomplete)
+        async def link_category_command(
+            interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None = None
+        ) -> None:
+            await self._handle_link_category(interaction, source, source_id, destination_id)
 
         async def link_emote_source_autocomplete(
             interaction: discord.Interaction, current: str
@@ -304,6 +348,25 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, destination: str | None = None, local_channel_id: str | None = None
         ) -> None:
             await self._handle_unlink_channel(interaction, destination, local_channel_id)
+
+        async def unlink_category_destination_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._category_linker.connectors if self._category_linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors, include_all=True)
+
+        @self.tree.command(
+            name="unlink-category",
+            description="Unlink this channel's Category's bridge - one connector, or the whole group (default: all)",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            destination="Connector id to unlink, or 'all' to dissolve the whole bridge group (default: all)",
+        )
+        @app_commands.autocomplete(destination=unlink_category_destination_autocomplete)
+        async def unlink_category_command(interaction: discord.Interaction, destination: str | None = None) -> None:
+            await self._handle_unlink_category(interaction, destination)
 
         async def unlink_user_destination_autocomplete(
             interaction: discord.Interaction, current: str
@@ -405,6 +468,7 @@ class DiscordSenderService(SenderService):
                 local_channel_id=str(thread.id),
                 local_channel_name=clip_name(thread.name),
                 local_channel_category=clip_name(parent.name),
+                is_thread_category=True,
             )
         except Exception:
             logger.exception("[discord:%s] failed to auto-mirror thread %s", self.connector_id, thread.id)
@@ -427,6 +491,29 @@ class DiscordSenderService(SenderService):
                 message_id=f"thread-created-{thread.id}",
             )
         )
+
+    async def _handle_channel_create(self, channel: discord.abc.GuildChannel) -> None:
+        """A new channel appeared in this guild - if it landed inside a
+        Category that's linked via /link-category, auto-sync it onto the
+        other connectors' own linked Categories (CategoryLinker.sync_new_channel).
+        No-op for a channel outside any Category, or one whose Category was
+        never linked - see that method's own no-op behavior."""
+        if self._category_linker is None or channel.guild.id != self._config.guild_id:
+            return
+        if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel)):
+            return
+        category = getattr(channel, "category", None)
+        if category is None:
+            return
+        try:
+            await self._category_linker.sync_new_channel(
+                local_connector=self.connector_id,
+                local_category_id=str(category.id),
+                channel_id=str(channel.id),
+                channel_name=channel.name,
+            )
+        except Exception:
+            logger.exception("[discord:%s] failed to auto-sync new channel %s", self.connector_id, channel.id)
 
     async def _handle_raw_reaction(self, payload: discord.RawReactionActionEvent, *, added: bool) -> None:
         if self._on_reaction is None or payload.guild_id != self._config.guild_id:
@@ -511,6 +598,19 @@ class DiscordSenderService(SenderService):
             logger.debug("[discord:%s] couldn't resolve channel category for %s", self.connector_id, channel_id)
             return None
         return category.name if category is not None else None
+
+    async def get_category_name(self, category_id: str) -> str | None:
+        """Best-effort Category-id -> name lookup, used as this connector's
+        `ConnectorInfo.resolve_category_name` for `/link-category`'s
+        destination-name resolution. Discord Categories are themselves
+        channels (`discord.CategoryChannel`), so the same get_channel-or-
+        fetch_channel pattern as get_channel_name resolves them directly."""
+        try:
+            category = self._client.get_channel(int(category_id)) or await self._client.fetch_channel(int(category_id))
+        except Exception:
+            logger.debug("[discord:%s] couldn't resolve category name for %s", self.connector_id, category_id)
+            return None
+        return getattr(category, "name", None)
 
     async def get_user_name(self, user_id: str) -> str | None:
         """Best-effort user-id -> display-name lookup, used as this
@@ -613,6 +713,79 @@ class DiscordSenderService(SenderService):
             )
         except LinkError as exc:
             logger.info("[discord:%s] /link-channel rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_linked_categories(self, interaction: discord.Interaction) -> None:
+        if self._category_linker is None:
+            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+            return
+        category = getattr(interaction.channel, "category", None)
+        if category is None:
+            await interaction.response.send_message("This channel isn't inside a Category.", ephemeral=True)
+            return
+        summary = await self._category_linker.list_linked_categories(
+            local_connector=self.connector_id, local_category_id=str(category.id)
+        )
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_link_category(
+        self, interaction: discord.Interaction, source: str, source_id: str, destination_id: str | None
+    ) -> None:
+        if self._category_linker is None:
+            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+            return
+        category = getattr(interaction.channel, "category", None)
+        if category is None:
+            await interaction.response.send_message("This channel isn't inside a Category.", ephemeral=True)
+            return
+        source_id = _normalize_channel_id(source_id)
+        if destination_id is not None:
+            destination_id = _normalize_channel_id(destination_id)
+        logger.info(
+            "[discord:%s] %s ran /link-category source=%s source_id=%s destination_id=%s",
+            self.connector_id,
+            interaction.user.id,
+            source,
+            source_id,
+            destination_id,
+        )
+        try:
+            summary = await self._category_linker.link_category(
+                local_connector=self.connector_id,
+                local_category_id=str(category.id),
+                local_category_name=category.name,
+                source=source,
+                source_id=source_id,
+                destination_id=destination_id,
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /link-category rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_unlink_category(self, interaction: discord.Interaction, destination: str | None) -> None:
+        if self._category_linker is None:
+            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+            return
+        category = getattr(interaction.channel, "category", None)
+        if category is None:
+            await interaction.response.send_message("This channel isn't inside a Category.", ephemeral=True)
+            return
+        logger.info(
+            "[discord:%s] %s ran /unlink-category destination=%s",
+            self.connector_id,
+            interaction.user.id,
+            destination,
+        )
+        try:
+            summary = await self._category_linker.unlink_category(
+                local_connector=self.connector_id, local_category_id=str(category.id), destination=destination
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /unlink-category rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
