@@ -316,7 +316,7 @@ async def test_unlink_channel_defaults_destination_to_none():
     sender = _make_sender(linker)
     interaction = FakeInteraction(channel_id=999)
 
-    await sender._handle_unlink_channel(interaction, None)
+    await sender._handle_unlink_channel(interaction, None, None)
 
     assert linker.unlink_channel_calls == [{"local_connector": "discord", "local_channel_id": "999", "destination": None}]
     assert interaction.sent == ["unlinked ok"]
@@ -327,16 +327,26 @@ async def test_unlink_channel_with_a_specific_destination():
     sender = _make_sender(linker)
     interaction = FakeInteraction(channel_id=999)
 
-    await sender._handle_unlink_channel(interaction, "stoat")
+    await sender._handle_unlink_channel(interaction, "stoat", None)
 
     assert linker.unlink_channel_calls == [{"local_connector": "discord", "local_channel_id": "999", "destination": "stoat"}]
+
+
+async def test_unlink_channel_with_a_specific_local_channel_id():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=999)
+
+    await sender._handle_unlink_channel(interaction, "stoat", "555")
+
+    assert linker.unlink_channel_calls == [{"local_connector": "discord", "local_channel_id": "555", "destination": "stoat"}]
 
 
 async def test_unlink_channel_without_a_configured_linker():
     sender = _make_sender(None)
     interaction = FakeInteraction()
 
-    await sender._handle_unlink_channel(interaction, None)
+    await sender._handle_unlink_channel(interaction, None, None)
 
     assert interaction.sent == ["Linking isn't configured."]
 

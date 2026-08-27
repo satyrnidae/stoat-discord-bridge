@@ -518,6 +518,18 @@ async def test_unlink_channel_with_a_specific_destination():
     assert linker.unlink_channel_calls == [{"local_connector": "stoat", "local_channel_id": "c1", "destination": "discord"}]
 
 
+async def test_unlink_channel_with_a_specific_local_channel_id():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    message = _admin_message(channel=FakeChannel(id="c1"))
+
+    await sender._handle_unlink_channel(message, ["discord", "other-channel"])
+
+    assert linker.unlink_channel_calls == [
+        {"local_connector": "stoat", "local_channel_id": "other-channel", "destination": "discord"}
+    ]
+
+
 async def test_unlink_channel_without_a_configured_linker():
     sender = _make_sender(linker=None)
     message = _admin_message()

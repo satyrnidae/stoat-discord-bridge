@@ -284,16 +284,19 @@ class DiscordSenderService(SenderService):
 
         @self.tree.command(
             name="unlink-channel",
-            description="Unlink this channel's bridge - one connector, or the whole group (default: all)",
+            description="Unlink a channel's bridge - one connector, or the whole group (default: all)",
             guild=self._guild,
         )
         @app_commands.default_permissions(manage_guild=True)
         @app_commands.describe(
             destination="Connector id to unlink, or 'all' to dissolve the whole bridge group (default: all)",
+            local_channel_id="Channel id on this connector (defaults to the current channel)",
         )
         @app_commands.autocomplete(destination=unlink_channel_destination_autocomplete)
-        async def unlink_channel_command(interaction: discord.Interaction, destination: str | None = None) -> None:
-            await self._handle_unlink_channel(interaction, destination)
+        async def unlink_channel_command(
+            interaction: discord.Interaction, destination: str | None = None, local_channel_id: str | None = None
+        ) -> None:
+            await self._handle_unlink_channel(interaction, destination, local_channel_id)
 
         async def unlink_user_destination_autocomplete(
             interaction: discord.Interaction, current: str
@@ -617,16 +620,23 @@ class DiscordSenderService(SenderService):
             return
         await interaction.response.send_message(summary, ephemeral=True)
 
-    async def _handle_unlink_channel(self, interaction: discord.Interaction, destination: str | None) -> None:
+    async def _handle_unlink_channel(
+        self, interaction: discord.Interaction, destination: str | None, local_channel_id: str | None
+    ) -> None:
         if self._linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
+        channel_id = _normalize_channel_id(local_channel_id) if local_channel_id is not None else str(interaction.channel_id)
         logger.info(
-            "[discord:%s] %s ran /unlink-channel destination=%s", self.connector_id, interaction.user.id, destination
+            "[discord:%s] %s ran /unlink-channel destination=%s local_channel_id=%s",
+            self.connector_id,
+            interaction.user.id,
+            destination,
+            channel_id,
         )
         try:
             summary = await self._linker.unlink_channel(
-                local_connector=self.connector_id, local_channel_id=str(interaction.channel_id), destination=destination
+                local_connector=self.connector_id, local_channel_id=channel_id, destination=destination
             )
         except LinkError as exc:
             logger.info("[discord:%s] /unlink-channel rejected: %s", self.connector_id, exc)

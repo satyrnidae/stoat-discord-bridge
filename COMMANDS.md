@@ -158,23 +158,28 @@ its own group named after the forum, with one channel per currently active
   onto itself; IRC networks don't offer bot-driven channel creation the way
   this command needs).
 
-## `/unlink-channel [destination|all]`
+## `/unlink-channel [destination|all] [local_channel_id]`
 
-Removes members from the invoking channel's bridge group. Given a specific
-`destination` (a connector id), kicks just that one member out - the rest of
-the group, including the invoking channel itself, stays linked to each
-other. With no argument, or `all` (the default), dissolves the whole group
-instead - every member is unlinked. There's no separate "just leave, don't
-destroy the group for everyone else" form beyond passing your own connector
-as `destination`, which does exactly that.
+Removes members from `local_channel_id`'s (or the invoking channel, if
+omitted) bridge group. Given a specific `destination` (a connector id),
+kicks just that one member out - the rest of the group, including the
+channel itself, stays linked to each other. With no argument, or `all` (the
+default), dissolves the whole group instead - every member is unlinked.
+There's no separate "just leave, don't destroy the group for everyone else"
+form beyond passing your own connector as `destination`, which does exactly
+that.
 
-- **Discord**: `/unlink-channel [destination]` slash command (Manage
-  Server); `destination`'s autocomplete includes the literal `all` choice,
-  same as `/mirror-channel`. Acts on the current channel.
-- **Stoat**: `/unlink-channel [destination]` message command (Manage
-  Server). Acts on the current channel.
-- **IRC**: `UNLINK_CHANNEL <local_channel_id> [destination]`, DM
-  (IRC-operator; channel always required, `destination` optional)
+- **Discord**: `/unlink-channel [destination] [local_channel_id]` slash
+  command (Manage Server); `destination`'s autocomplete includes the
+  literal `all` choice, same as `/mirror-channel`. `local_channel_id`
+  defaults to the current channel.
+- **Stoat**: `/unlink-channel [destination|all] [local_channel_id]` message
+  command (Manage Server). `local_channel_id` defaults to the current
+  channel.
+- **IRC**: `UNLINK_CHANNEL [destination|all] <local_channel_id>`, DM
+  (IRC-operator; channel always required - no "current channel" to default
+  to - `destination` optional, and comes *before* the channel id when
+  given)
 
 ## `/unlink-user [destination|all] [user]`
 

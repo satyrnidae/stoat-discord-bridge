@@ -60,7 +60,7 @@ _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /link-emote <source> <source_id> <local_id> - link a custom emoji (Manage Server)
   /mirror-channel <destination|all> [local_channel_id] - create+link a matching channel (Manage Server)
   /mirror-channels <source> - recreate a Discord guild's structure here (Manage Server)
-  /unlink-channel [destination|all] - unlink this channel from one connector, or the whole group (Manage Server)
+  /unlink-channel [destination|all] [local_channel_id] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   /unlink-user [destination|all] [user_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
@@ -648,20 +648,28 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_unlink_channel(self, message, args: list[str], /) -> None:
+        """`/unlink-channel [destination|all] [local_channel_id]`: destination
+        defaults to "all" (dissolving the whole bridge group);
+        local_channel_id defaults to the invoking channel."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         destination = args[0] if args else None
+        channel_id = args[1] if len(args) > 1 else str(message.channel.id)
 
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /unlink-channel destination=%s", self.connector_id, message.author.id, destination
+            "[stoat:%s] %s ran /unlink-channel destination=%s local_channel_id=%s",
+            self.connector_id,
+            message.author.id,
+            destination,
+            channel_id,
         )
         try:
             summary = await self._linker.unlink_channel(
-                local_connector=self.connector_id, local_channel_id=str(message.channel.id), destination=destination
+                local_connector=self.connector_id, local_channel_id=channel_id, destination=destination
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink-channel rejected: %s", self.connector_id, exc)

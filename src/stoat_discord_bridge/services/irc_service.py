@@ -60,7 +60,7 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   LINK_USER <source> <user_id> <local_user_id> - link a user for mentions/masquerading (IRC-operator)
   LINK_EMOTE <source> <source_id> <local_id> - link a custom emoji (IRC-operator)
   MIRROR_CHANNEL <destination|all> <local_channel_id> - create+link a matching channel (IRC-operator)
-  UNLINK_CHANNEL <local_channel_id> [destination|all] - unlink a channel from one connector, or the whole group (IRC-operator)
+  UNLINK_CHANNEL [destination|all] <local_channel_id> - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK_USER [destination|all] [local_user_id] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
   HELP - this message"""
 
@@ -470,13 +470,18 @@ class IrcSenderService(SenderService):
             self._notify(nick, summary)
         elif command == "UNLINK_CHANNEL":
             # Same "no current channel" reasoning as MIRROR_CHANNEL -
-            # local_channel_id is always required; destination is optional
-            # and defaults to "all" (dissolving the whole bridge group).
-            if len(args) not in (1, 2):
-                self._notify(nick, "Usage: UNLINK_CHANNEL <local_channel_id> [destination|all]")
+            # local_channel_id is always required. destination is optional
+            # and defaults to "all" (dissolving the whole bridge group); when
+            # given, it comes *before* local_channel_id (same order as
+            # Discord/Stoat), so 1 arg is just the channel and 2 args are
+            # destination then channel.
+            if len(args) == 1:
+                destination, local_channel_id = None, args[0]
+            elif len(args) == 2:
+                destination, local_channel_id = args
+            else:
+                self._notify(nick, "Usage: UNLINK_CHANNEL [destination|all] <local_channel_id>")
                 return
-            local_channel_id = args[0]
-            destination = args[1] if len(args) > 1 else None
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")
                 return
