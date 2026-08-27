@@ -24,10 +24,52 @@ from __future__ import annotations
 
 import re
 
+from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 _DISCORD_MENTION = re.compile(r"<@!?(\d+)>")
 _STOAT_MENTION = re.compile(r"<@([A-Za-z0-9]{26})>")
+
+_DISCORD_CHANNEL_MENTION = re.compile(r"<#(\d+)>")
+_STOAT_CHANNEL_MENTION = re.compile(r"<#([A-Za-z0-9]{26})>")
+
+
+async def rewrite_channel_mentions(
+    content: str,
+    *,
+    origin_connector_id: str,
+    target_connector_id: str,
+    target_kind: str,
+    channel_mappings: ChannelMappingRepository,
+) -> str:
+    """Rewrite a `<#channel-id>` mention of a cross-connector-linked channel
+    into the target connector's own copy of that channel - its native
+    `<#id>` syntax on Discord/Stoat, or `#name` on IRC. A mention of a
+    channel with no mapping to the target connector is left exactly as it
+    appeared (same rule as user mentions). Both id shapes are always tried;
+    Discord's numeric ids and Stoat's 26-char ULIDs never collide."""
+    for pattern in (_DISCORD_CHANNEL_MENTION, _STOAT_CHANNEL_MENTION):
+        for match in list(pattern.finditer(content)):
+            bridge_group = await channel_mappings.get_bridge_group(origin_connector_id, match.group(1))
+            if bridge_group is None:
+                continue
+            target = next(
+                (
+                    m
+                    for m in await channel_mappings.get_mapped_channels(bridge_group)
+                    if m.connector_id == target_connector_id
+                ),
+                None,
+            )
+            if target is None:
+                continue
+            if target_kind == "irc":
+                # On IRC the channel id literally *is* the `#channel` name.
+                replacement = target.channel_id if target.channel_id.startswith("#") else f"#{target.channel_id}"
+            else:
+                replacement = f"<#{target.channel_id}>"
+            content = content.replace(match.group(0), replacement)
+    return content
 
 
 async def rewrite_mentions(

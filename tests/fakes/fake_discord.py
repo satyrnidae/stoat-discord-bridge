@@ -145,10 +145,21 @@ class FakeThread(discord.Thread):
     its own.
     """
 
-    def __init__(self, id: int, *, parent: FakeChannel, name: str = "thread", guild: FakeGuild | None = None) -> None:
+    def __init__(
+        self,
+        id: int,
+        *,
+        parent: FakeChannel,
+        name: str = "thread",
+        guild: FakeGuild | None = None,
+        starter_message: Any = None,
+    ) -> None:
         self.id = id
         self.name = name
         self._parent = parent
+        # `starter_message` on the real Thread is a cache-backed property with
+        # no setter (like `parent`) - shadow it so tests can supply one.
+        self._starter_message = starter_message
         # `guild` is a plain instance attribute on the real Thread (not a
         # property), set in its real __init__ - which this fake skips - so
         # it's assigned directly here rather than shadowed via a property
@@ -158,6 +169,10 @@ class FakeThread(discord.Thread):
     @property
     def parent(self) -> FakeChannel:
         return self._parent
+
+    @property
+    def starter_message(self) -> Any:
+        return self._starter_message
 
 
 class FakeGuildChannel(discord.TextChannel):

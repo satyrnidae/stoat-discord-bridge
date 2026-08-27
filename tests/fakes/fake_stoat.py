@@ -11,6 +11,7 @@ matches that method shape.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -126,6 +127,8 @@ class FakeServer:
         self._raises = raises
         self.created_channels: list[str] = []
         self.created_categories: list[dict] = []
+        self.server_edits: list[dict] = []
+        self.state = SimpleNamespace(http=SimpleNamespace(request=self._http_request))
         self.created_emoji_calls: list[dict] = []
         self._members: dict[str, Any] = {}
         self._next_emoji_id = 1
@@ -154,6 +157,16 @@ class FakeServer:
     async def edit_category(self, category, *, channels: list[str]):
         category.channels = list(channels)
         return category
+
+    async def _http_request(self, compiled_route, *, json=None, **kwargs):
+        # Older-Stoat fallback path: PATCH /servers/{id} with a hand-built
+        # {categories: [{id,title,channels}]} payload.
+        self.server_edits.append(json)
+        if json and "categories" in json:
+            self.categories = [
+                FakeCategory(id=c["id"], title=c["title"], channels=list(c["channels"])) for c in json["categories"]
+            ]
+        return json
 
     async def create_emoji(self, *, name: str, image: bytes):
         if self._raises is not None:
@@ -188,6 +201,12 @@ class FakeClient:
         return channel
 
     def get_server(self, server_id: str, *, partial: bool = False) -> FakeServer:
+        server = self._servers.get(server_id)
+        if server is None:
+            raise LookupError(f"no such server: {server_id}")
+        return server
+
+    async def fetch_server(self, server_id: str, *, populate_channels: bool = False) -> FakeServer:
         server = self._servers.get(server_id)
         if server is None:
             raise LookupError(f"no such server: {server_id}")

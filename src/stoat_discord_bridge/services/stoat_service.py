@@ -10,10 +10,13 @@ from __future__ import annotations
 import json
 import logging
 import urllib.request
+from types import SimpleNamespace
 
 import aiohttp
 
 import stoat
+from stoat import routes as stoat_routes
+from stoat.core import ulid_new
 
 from stoat_discord_bridge.admin_commands import (
     CategoryLinker,
@@ -45,8 +48,9 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     content_with_attachments,
 )
-from stoat_discord_bridge.services.mentions import rewrite_mentions
+from stoat_discord_bridge.services.mentions import rewrite_channel_mentions, rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -387,8 +391,23 @@ class StoatSenderService(SenderService):
         CategoryLinker.mark_thread_category) as one Discord's thread/forum-
         post auto-mirroring created, so `/link-category` later refuses to
         link it - see DiscordSenderService._handle_thread_create."""
-        server = self._client.get_server(self.server_id, partial=True)
-        for channel in server.channels:
+        # _ensure_channel_in_category needs a full Server (`.categories` /
+        # `.channels`) - a BaseServer (what get_server(partial=True) yields
+        # when the server isn't in cache) has neither, which silently
+        # defeated category placement. Fetch the real thing if the cache
+        # doesn't already hold it.
+        server = self._client.get_server(self.server_id, partial=False)
+        if not isinstance(server, stoat.Server):
+            try:
+                server = await self._client.fetch_server(self.server_id, populate_channels=True)
+            except Exception:
+                logger.exception(
+                    "[stoat:%s] couldn't fetch full server %s; channel/category placement may be incomplete",
+                    self.connector_id,
+                    self.server_id,
+                )
+                server = self._client.get_server(self.server_id, partial=True)
+        for channel in getattr(server, "channels", []):
             if channel.name == name:
                 channel_id = channel.id
                 break
@@ -409,19 +428,92 @@ class StoatSenderService(SenderService):
         the bottom of the server's channel list with no extra work needed
         here."""
         try:
-            existing = next((c for c in (server.categories or []) if c.title == category), None)
-            if existing is None:
-                resolved = await server.create_category(category, channels=[channel_id])
-            else:
-                resolved = existing
-                if channel_id not in existing.channels:
-                    await server.edit_category(existing, channels=[*existing.channels, channel_id])
-            if is_thread_category and self._category_linker is not None:
-                await self._category_linker.mark_thread_category(self.connector_id, resolved.id)
-        except Exception as exc:
-            logger.warning(
-                "[stoat:%s] failed to place channel %s into category %r: %s", self.connector_id, channel_id, category, exc
+            resolved = await self._place_in_category(server, channel_id, category)
+        except Exception:
+            # A stale cached Server (categories/channels out of date - e.g. a
+            # category created on an earlier run that isn't in this snapshot,
+            # so create_category hits a duplicate) is the likeliest cause.
+            # Re-fetch the real server once and retry against fresh state.
+            logger.exception(
+                "[stoat:%s] category placement for %r failed; re-fetching server and retrying",
+                self.connector_id,
+                category,
             )
+            try:
+                server = await self._client.fetch_server(self.server_id, populate_channels=True)
+                resolved = await self._place_in_category(server, channel_id, category)
+            except Exception:
+                logger.exception(
+                    "[stoat:%s] category placement for %r failed on retry; channel %s left uncategorised",
+                    self.connector_id,
+                    category,
+                    channel_id,
+                )
+                return
+        logger.debug(
+            "[stoat:%s] placed channel %s into category %r (%s)",
+            self.connector_id,
+            channel_id,
+            category,
+            resolved.id,
+        )
+        if is_thread_category and self._category_linker is not None:
+            try:
+                await self._category_linker.mark_thread_category(self.connector_id, resolved.id)
+            except Exception:
+                logger.exception(
+                    "[stoat:%s] failed to mark category %s as a thread category", self.connector_id, resolved.id
+                )
+
+    async def _place_in_category(self, server, channel_id: str, category: str):
+        """Find the Category titled `category` on `server` and ensure
+        `channel_id` is in it, creating the Category if there's none. Returns
+        the resolved Category. Raises on API failure (the caller retries).
+
+        Tries the dedicated create/edit-category endpoints first; every Stoat
+        deployment tested (incl. "latest") 404s them - the installed stoat.py
+        ships those routes ahead of the servers - so we fall back to PATCHing
+        the whole category list onto the server."""
+        existing = next((c for c in (getattr(server, "categories", None) or []) if c.title == category), None)
+        try:
+            if existing is None:
+                return await server.create_category(category, channels=[channel_id])
+            if channel_id not in existing.channels:
+                await server.edit_category(existing, channels=[*existing.channels, channel_id])
+            return existing
+        except stoat.HTTPException as exc:
+            # Both of the user's servers (incl. "latest") 404 the dedicated
+            # categories endpoints - stoat.py ships routes ahead of the
+            # deployed API - so this fallback is the normal path, not an error.
+            logger.debug(
+                "[stoat:%s] dedicated category endpoint unavailable (%s); using whole-server edit",
+                self.connector_id,
+                exc,
+            )
+            return await self._place_via_server_edit(server, channel_id, category)
+
+    async def _place_via_server_edit(self, server, channel_id: str, category: str):
+        """Category placement for Stoat servers without the dedicated categories
+        endpoint: PATCH the server with the full category list. The payload is
+        built by hand (`{id, title, channels}` only) and sent straight through
+        the HTTP layer - the installed stoat.py's `Category.to_dict()` trips
+        over `default_permissions` on categories it parsed from an older
+        server's payload, so `server.edit(categories=...)` can't be used."""
+        raw_categories = [
+            {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
+            for c in (getattr(server, "categories", None) or [])
+        ]
+        resolved = next((c for c in raw_categories if c["title"] == category), None)
+        if resolved is None:
+            resolved = {"id": ulid_new(), "title": category, "channels": [channel_id]}
+            raw_categories.append(resolved)
+        elif channel_id not in resolved["channels"]:
+            resolved["channels"].append(channel_id)
+        await server.state.http.request(
+            stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
+            json={"categories": raw_categories},
+        )
+        return SimpleNamespace(id=resolved["id"], title=resolved["title"], channels=resolved["channels"])
 
     async def _handle_channel_create(self, channel) -> None:
         """`_StoatClient.on_server_channel_create`'s target - auto-syncs a
@@ -1033,10 +1125,16 @@ class StoatReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
 
-    def __init__(self, sender: StoatSenderService, user_mappings: UserMappingRepository | None = None) -> None:
+    def __init__(
+        self,
+        sender: StoatSenderService,
+        user_mappings: UserMappingRepository | None = None,
+        channel_mappings: ChannelMappingRepository | None = None,
+    ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
         self._user_mappings = user_mappings
+        self._channel_mappings = channel_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         channel = self._sender.get_channel(target_channel_id, partial=True)
@@ -1062,6 +1160,14 @@ class StoatReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="stoat",
                 user_mappings=self._user_mappings,
+            )
+        if self._channel_mappings is not None:
+            content = await rewrite_channel_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                channel_mappings=self._channel_mappings,
             )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):

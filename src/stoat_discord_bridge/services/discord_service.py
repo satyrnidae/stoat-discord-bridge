@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 
 import aiohttp
 import discord
@@ -55,8 +56,9 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     content_with_attachments,
 )
-from stoat_discord_bridge.services.mentions import rewrite_mentions
+from stoat_discord_bridge.services.mentions import rewrite_channel_mentions, rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -172,10 +174,14 @@ class DiscordSenderService(SenderService):
         self._user_linker = user_linker
         self._category_linker = category_linker
         self._commands_synced = False
-        # Discord thread ids whose auto-mirror (_handle_thread_create) has
-        # fired but whose starter message hasn't arrived through
-        # _handle_message yet - see both methods' docstrings.
-        self._pending_thread_intro: set[int] = set()
+        # Discord thread auto-mirror (_handle_thread_create) bookkeeping - see
+        # both methods' docstrings. _pending_thread_starter maps a thread id
+        # whose mirror is in flight to its buffered starter message (None until
+        # _handle_message sees it); _thread_ready holds thread ids whose mirror
+        # finished before the starter message arrived, so the next in-thread
+        # message relays normally instead of being buffered.
+        self._pending_thread_starter: dict[int, "discord.Message | None"] = {}
+        self._thread_ready: set[int] = set()
         self._guild = discord.Object(id=config.guild_id)
         self._client = _DiscordClient(self)
         self.tree = discord.app_commands.CommandTree(self._client)
@@ -413,13 +419,21 @@ class DiscordSenderService(SenderService):
             return
         if message.guild is None or message.guild.id != self._config.guild_id:
             return
-        if message.channel.id in self._pending_thread_intro:
-            # The starter message of a thread _handle_thread_create just
-            # auto-mirrored - it already announced the new channel, so drop
-            # this one instead of relaying its raw content (usually just the
-            # thread name again) into the freshly-linked channels.
-            self._pending_thread_intro.discard(message.channel.id)
+        if message.type is discord.MessageType.thread_created:
+            # Discord's own "<user> started a thread" system message in the
+            # parent channel - suppressed here; _handle_thread_create posts the
+            # bot notice itself, once the thread's mirror channel exists and is
+            # linked so the <#thread> mention can resolve to it.
             return
+        if message.channel.id in self._pending_thread_starter:
+            # The starter message of a thread _handle_thread_create is still
+            # mirroring - buffer it so that handler can relay it (as this
+            # user) once the destination channel actually exists and is linked.
+            self._pending_thread_starter[message.channel.id] = message
+            return
+        # If the mirror finished before the starter arrived, _thread_ready
+        # holds the thread id; drop it and relay this message normally.
+        self._thread_ready.discard(message.channel.id)
         logger.debug(
             "[discord:%s] message %s in channel %s from %s",
             self.connector_id,
@@ -434,17 +448,19 @@ class DiscordSenderService(SenderService):
         see _get_or_create_webhook's docstring) has no IRC/Stoat equivalent,
         so instead of relaying its starter message as plain text, bundle a
         `/mirror-channel all`-style request: ensure a same-named channel
-        exists and is linked on every other connector, then announce that in
-        the newly-linked channels rather than the raw starter message
-        (suppressed via _pending_thread_intro - see _handle_message). Only
+        exists and is linked on every other connector, then relay the
+        thread's own starter message into it as the originating user. Only
         fires for a thread whose parent channel is itself already bridged,
         so this doesn't auto-mirror every thread created anywhere in the
         guild. One-way (Discord -> Stoat/IRC) only; Stoat/IRC have no
-        equivalent "created a thread" event of their own yet.
+        equivalent "created a thread" event of their own yet. The parent
+        channel's own "<user> started a thread" system message is turned
+        into a bot notice separately - see _relay_thread_created_notice.
 
-        `thread.id` is recorded *before* any `await` below so _handle_message
-        is guaranteed to see it in time for the thread's own starter
-        message: discord.py dispatches gateway events (and so schedules each
+        `thread.id` is recorded in _pending_thread_starter *before* any
+        `await` below so _handle_message buffers the thread's starter
+        message instead of relaying it into a channel that isn't linked
+        yet: discord.py dispatches gateway events (and so schedules each
         handler's task) in the order they're received, and THREAD_CREATE
         always precedes the MESSAGE_CREATE for a new thread's first message.
 
@@ -461,9 +477,9 @@ class DiscordSenderService(SenderService):
         if parent is None or not await self._linker.is_linked(self.connector_id, str(parent.id)):
             return  # this thread's parent was never bridged - leave the thread alone
 
-        self._pending_thread_intro.add(thread.id)
+        self._pending_thread_starter[thread.id] = None
         try:
-            await self._linker.mirror_channel_all(
+            result = await self._linker.mirror_channel_all(
                 local_connector=self.connector_id,
                 local_channel_id=str(thread.id),
                 local_channel_name=clip_name(thread.name),
@@ -472,25 +488,93 @@ class DiscordSenderService(SenderService):
             )
         except Exception:
             logger.exception("[discord:%s] failed to auto-mirror thread %s", self.connector_id, thread.id)
-            self._pending_thread_intro.discard(thread.id)
+            self._pending_thread_starter.pop(thread.id, None)
+            self._thread_ready.discard(thread.id)
             return
+        logger.info(
+            "[discord:%s] auto-mirrored thread %s (%s): %s",
+            self.connector_id,
+            thread.id,
+            thread.name,
+            result.replace("\n", " | "),
+        )
 
+        starter = self._pending_thread_starter.pop(thread.id, None)
+        if starter is None:
+            try:  # thread created from an existing message: no fresh MESSAGE_CREATE fires
+                starter = thread.starter_message or await thread.fetch_message(thread.id)
+            except Exception:  # noqa: BLE001 - best-effort; fall back to _thread_ready below
+                starter = None
+        starter_author = getattr(starter, "author", None)
+        if starter is not None and getattr(starter, "type", discord.MessageType.default) not in (
+            discord.MessageType.default,
+            discord.MessageType.reply,
+        ):
+            # A thread opened without a starting message (a standalone thread, or
+            # a forum post's system row) has no real first message - fetch_message
+            # hands back the "started this thread" system message, whose content
+            # is just the thread name. Keep its author for the notice, but don't
+            # relay the row itself as if the user typed it.
+            starter = None
+
+        if starter is None:
+            # No starter message to relay yet - let _handle_message relay the
+            # next in-thread message normally now that the channel exists.
+            self._thread_ready.add(thread.id)
+        else:
+            msg = _to_standard_message(starter, self.connector_id)
+            await self._on_message(replace(msg, origin_channel_id=str(thread.id), channel_name=thread.name))
+
+        await self._relay_thread_created_notice(thread, starter_author)
+
+    async def _relay_thread_created_notice(self, thread: discord.Thread, starter_author: object) -> None:
+        """Post a bot-authored "<user> started a thread: <#thread>" notice into
+        the thread's parent channel, standing in for Discord's own system
+        message (which _handle_message suppresses).
+
+        Called only after the thread has been mirrored + linked, so each
+        receiver's rewrite_channel_mentions can turn the `<#thread-id>` mention
+        into its own linked copy of the mirrored channel (`#<thread name>` on
+        IRC), falling back to `#<thread name>` only if it still can't resolve."""
+        parent = thread.parent
+        if parent is None:
+            return
         bot_user = self._client.user
-        link = f"https://discord.com/channels/{thread.guild.id}/{thread.id}"
+        who = await self._thread_starter_name(thread, starter_author)
         await self._on_message(
             StandardMessage(
                 origin_connector_id=self.connector_id,
-                origin_channel_id=str(thread.id),
-                channel_name=thread.name,
+                origin_channel_id=str(parent.id),
+                channel_name=getattr(parent, "name", str(parent.id)),
                 sender_name=bot_user.display_name if bot_user is not None else "Bridge",
                 sender_avatar_url=(
                     str(bot_user.display_avatar.url) if bot_user is not None and bot_user.display_avatar else None
                 ),
                 sender_user_id=str(bot_user.id) if bot_user is not None else "",
-                content_markdown=f"Created a new channel {link}",
-                message_id=f"thread-created-{thread.id}",
+                content_markdown=f"{who} started a thread: <#{thread.id}>",
+                message_id=f"thread-created:{thread.id}",
             )
         )
+
+    async def _thread_starter_name(self, thread: discord.Thread, starter_author: object) -> str:
+        """Best-effort display name of whoever opened the thread: the starter
+        message's author if we have one, else the thread owner (from cache, then
+        a fetch), else a neutral fallback."""
+        name = getattr(starter_author, "display_name", None)
+        if name:
+            return name
+        owner = getattr(thread, "owner", None)
+        if owner is not None and getattr(owner, "display_name", None):
+            return owner.display_name
+        owner_id = getattr(thread, "owner_id", None)
+        if owner_id:
+            try:
+                member = thread.guild.get_member(owner_id) or await thread.guild.fetch_member(owner_id)
+                if member is not None:
+                    return member.display_name
+            except Exception:  # noqa: BLE001 - best-effort display name only
+                pass
+        return "Someone"
 
     async def _handle_channel_create(self, channel: discord.abc.GuildChannel) -> None:
         """A new channel appeared in this guild - if it landed inside a
@@ -951,11 +1035,13 @@ class DiscordReceiverService(ReceiverService):
         connector_id: str,
         user_mappings: UserMappingRepository | None = None,
         enable_local_user_masquerade: bool = True,
+        channel_mappings: ChannelMappingRepository | None = None,
     ) -> None:
         self._client = client
         self._guild_id = guild_id
         self.connector_id = connector_id
         self._user_mappings = user_mappings
+        self._channel_mappings = channel_mappings
         self._enable_local_user_masquerade = enable_local_user_masquerade
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
@@ -984,6 +1070,14 @@ class DiscordReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="discord",
                 user_mappings=self._user_mappings,
+            )
+        if self._channel_mappings is not None:
+            content = await rewrite_channel_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                channel_mappings=self._channel_mappings,
             )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):

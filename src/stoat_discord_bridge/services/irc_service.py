@@ -28,8 +28,9 @@ from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import OnMessage, PartialRelayError, ReceiverService, SenderService
 from stoat_discord_bridge.services.formatting import chunk_content
-from stoat_discord_bridge.services.mentions import rewrite_mentions
+from stoat_discord_bridge.services.mentions import rewrite_channel_mentions, rewrite_mentions
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -628,11 +629,13 @@ class IrcReceiverService(ReceiverService):
         sender: IrcSenderService,
         user_mappings: UserMappingRepository | None = None,
         enable_local_user_masquerade: bool = True,
+        channel_mappings: ChannelMappingRepository | None = None,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
         self._user_mappings = user_mappings
         self._enable_local_user_masquerade = enable_local_user_masquerade
+        self._channel_mappings = channel_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
@@ -668,6 +671,14 @@ class IrcReceiverService(ReceiverService):
                     self.connector_id,
                     message.sender_user_id,
                 )
+        if self._channel_mappings is not None:
+            content = await rewrite_channel_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="irc",
+                channel_mappings=self._channel_mappings,
+            )
         prefix = f"<{sender_name}> "
         limit = max(1, _LINE_LIMIT - len(prefix))
         ids: list[str] = []

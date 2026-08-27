@@ -289,6 +289,7 @@ async def run(config: BridgeConfig) -> None:
             connector_id=dc.id,
             user_mappings=user_mappings,
             enable_local_user_masquerade=dc.enable_local_user_masquerade,
+            channel_mappings=channel_mappings,
         )
         coordinator.register_receiver(receiver)
         # No ensure_channel: Discord has no channel-creation capability in
@@ -318,7 +319,9 @@ async def run(config: BridgeConfig) -> None:
             user_linker=user_linker,
             category_linker=category_linker,
         )
-        coordinator.register_receiver(StoatReceiverService(sender, user_mappings=user_mappings))
+        coordinator.register_receiver(
+            StoatReceiverService(sender, user_mappings=user_mappings, channel_mappings=channel_mappings)
+        )
         connector_infos[sc.id] = ConnectorInfo(
             id=sc.id,
             label=sc.label,
@@ -343,7 +346,10 @@ async def run(config: BridgeConfig) -> None:
         )
         coordinator.register_receiver(
             IrcReceiverService(
-                sender, user_mappings=user_mappings, enable_local_user_masquerade=ic.enable_local_user_masquerade
+                sender,
+                user_mappings=user_mappings,
+                enable_local_user_masquerade=ic.enable_local_user_masquerade,
+                channel_mappings=channel_mappings,
             )
         )
         connector_infos[ic.id] = ConnectorInfo(

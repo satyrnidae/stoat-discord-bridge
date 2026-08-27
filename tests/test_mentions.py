@@ -1,4 +1,5 @@
-from stoat_discord_bridge.services.mentions import rewrite_mentions
+from stoat_discord_bridge.services.mentions import rewrite_channel_mentions, rewrite_mentions
+from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 
 
@@ -94,3 +95,43 @@ async def test_multiple_mentions_in_one_message(fake_db):
         target_kind="stoat", user_mappings=repo,
     )
     assert result == "<@s1> and <@s2> both said hi"
+
+
+async def _linked_channels(fake_db, *mappings):
+    repo = ChannelMappingRepository(fake_db)
+    for bridge_group, connector_id, channel_id in mappings:
+        await repo.upsert(
+            ChannelMapping(
+                bridge_group=bridge_group, connector_id=connector_id, channel_id=channel_id, channel_name=channel_id
+            )
+        )
+    return repo
+
+
+async def test_channel_mention_discord_to_stoat(fake_db):
+    repo = await _linked_channels(fake_db, ("g1", "discord", "777"), ("g1", "stoat", "01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", channel_mappings=repo,
+    )
+    assert result == "see <#01ARZ3NDEKTSV4RRFFQ69G5FAV>"
+
+
+async def test_channel_mention_renders_hash_channel_on_irc(fake_db):
+    repo = ChannelMappingRepository(fake_db)
+    await repo.upsert(ChannelMapping(bridge_group="g1", connector_id="discord", channel_id="777", channel_name="thread"))
+    await repo.upsert(ChannelMapping(bridge_group="g1", connector_id="irc", channel_id="#thread", channel_name="#thread"))
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="irc",
+        target_kind="irc", channel_mappings=repo,
+    )
+    assert result == "see #thread"
+
+
+async def test_channel_mention_unmapped_left_untouched(fake_db):
+    repo = ChannelMappingRepository(fake_db)
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", channel_mappings=repo,
+    )
+    assert result == "see <#777>"

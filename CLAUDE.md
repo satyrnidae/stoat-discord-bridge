@@ -130,11 +130,27 @@ Category that `ThreadCategoryRepository` has marked as a thread category
 
 ### Discord threads
 
-Discord threads have no IRC/Stoat equivalent. Design intent: treat a Discord
-thread as a new Stoat channel under a "Threads" category rather than trying
-to map it onto IRC/Stoat's flat channel model. The Stoat-side "Threads"
-Category created this way is marked via `CategoryLinker.mark_thread_category`
-(backed by `storage/category_mappings.py`'s `ThreadCategoryRepository`), which
+Discord threads have no IRC/Stoat equivalent. `_handle_thread_create`
+(`services/discord_service.py`) treats a Discord thread/forum-post as a new
+Stoat/IRC channel rather than trying to map it onto their flat channel model:
+it auto-mirrors (creates + links) the channel on every other connector via
+`ChannelLinker.mirror_channel_all`, placed under a Category named after the
+thread's **parent channel** (so every thread under one parent groups together
+on the destination), then relays the thread's own starter message into it as
+the originating user. Discord's own "<user> started a thread" system message in
+the parent channel is suppressed (`_handle_message`); `_handle_thread_create`
+instead posts its own bot notice — `"<user> started a thread: <#thread>"` — but
+only *after* the mirror+link finishes, so the `<#thread>` mention resolves. Each
+receiver rewrites that mention (`services/mentions.py`'s
+`rewrite_channel_mentions`, run alongside the user-mention rewrite) into its own
+linked copy of the mirrored channel — `<#id>` on Discord/Stoat, `#channel` on
+IRC — falling back to `#<thread name>` if it still can't resolve. A thread with
+no real starter message (standalone thread / forum-post system row) skips the
+starter relay but keeps that row's author for the notice. Only
+fires when the thread's parent channel is itself already bridged; one-way
+(Discord → Stoat/IRC). The destination Category is marked via
+`CategoryLinker.mark_thread_category` (backed by
+`storage/category_mappings.py`'s `ThreadCategoryRepository`), which
 `/link-category` checks to refuse ever linking it into the bridge.
 
 ## Layout

@@ -15,6 +15,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import stoat
 
 from stoat_discord_bridge.admin_commands import LinkError
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure
@@ -489,6 +490,71 @@ async def test_ensure_channel_reports_channel_even_if_category_placement_fails()
     channel_id = await sender.ensure_channel("general", "Team Alpha")
 
     assert channel_id == "chan-general"  # channel creation itself still succeeded
+
+
+async def test_ensure_channel_falls_back_to_server_edit_when_the_category_endpoint_404s():
+    class OldStoatServer(FakeServer):
+        async def create_category(self, name, *, channels):
+            raise stoat.HTTPException.__new__(stoat.NotFound)  # older API: POST /servers/{id}/categories 404s
+
+    server = OldStoatServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("general", "Team Alpha")
+
+    assert channel_id == "chan-general"
+    assert server.created_categories == []
+    [payload] = server.server_edits
+    [category] = payload["categories"]
+    assert category["title"] == "Team Alpha"
+    assert category["channels"] == ["chan-general"]
+    assert category["id"]  # a generated id
+
+
+async def test_ensure_channel_server_edit_fallback_adds_to_an_existing_category():
+    class OldStoatServer(FakeServer):
+        async def create_category(self, name, *, channels):
+            raise stoat.HTTPException.__new__(stoat.NotFound)
+
+        async def edit_category(self, category, *, channels):
+            raise stoat.HTTPException.__new__(stoat.NotFound)
+
+    server = OldStoatServer(id="s1")
+    server.categories.append(FakeCategory(id="cat-1", title="Bot Config", channels=["chan-other"]))
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    await sender.ensure_channel("general", "Bot Config")
+
+    [payload] = server.server_edits
+    [category] = payload["categories"]
+    assert category["id"] == "cat-1"  # reused, not recreated
+    assert category["channels"] == ["chan-other", "chan-general"]
+
+
+async def test_ensure_channel_retries_category_placement_against_a_refetched_server():
+    attempts = []
+
+    class FlakyServer(FakeServer):
+        async def create_category(self, name, *, channels):
+            attempts.append(name)
+            if len(attempts) == 1:
+                raise RuntimeError("stale cache: duplicate category")
+            return await super().create_category(name, channels=channels)
+
+    server = FlakyServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("general", "Team Alpha")
+
+    assert channel_id == "chan-general"
+    assert attempts == ["Team Alpha", "Team Alpha"]  # failed once, retried after re-fetch
+    assert [c.title for c in server.categories] == ["Team Alpha"]
 
 
 # ---------------------------------------------------------------- _handle_mirror_channels
