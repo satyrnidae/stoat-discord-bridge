@@ -404,7 +404,7 @@ class StoatSenderService(SenderService):
                 origin_connector_id=self.connector_id,
                 origin_channel_id=str(message.channel.id),
                 channel_name=getattr(message.channel, "name", str(message.channel.id)),
-                sender_name=_display_name(message.author),
+                sender_name=await self._resolve_sender_name(message),
                 sender_avatar_url=await self._resolve_avatar_url(message),
                 sender_user_id=str(message.author.id),
                 content_markdown=message.content,
@@ -412,6 +412,36 @@ class StoatSenderService(SenderService):
                 attachments=[],  # TODO: map stoat.py attachment objects to Attachment once confirmed
             )
         )
+
+    async def _resolve_sender_name(self, message) -> str:
+        """Resolve `message.author`'s display name, fetching a fresh
+        Member/User from the API when the cached copy on the message hasn't
+        got one populated yet.
+
+        Same cache-miss gap `_resolve_avatar_url` below already accounts
+        for, just for the name rather than the avatar: a Member's underlying
+        User isn't always cached by the time its message arrives, so
+        `_display_name` can read the name as unset (stoat.py's
+        Member.name/display_name silently return ""/None rather than the
+        real value in that case - see get_masquerade_identity's docstring
+        above) even though the sender has a real one set - relaying every
+        message with a blank sender name until the cache happens to catch up
+        on its own. Await the real lookup instead, same as the avatar: only
+        taken when the cache is already known to be missing the name.
+        """
+        author = message.author
+        name = _display_name(author)
+        if name:
+            return name
+        try:
+            server_id = getattr(message.channel, "server_id", None)
+            if server_id is not None:
+                fresh = await self._client.get_server(server_id, partial=True).fetch_member(author.id)
+            else:
+                fresh = await self._client.fetch_user(author.id)
+        except Exception:
+            return name
+        return _display_name(fresh) or name
 
     async def _resolve_avatar_url(self, message) -> str | None:
         """Resolve `message.author`'s avatar, fetching a fresh Member/User
