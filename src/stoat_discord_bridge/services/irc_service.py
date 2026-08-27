@@ -615,10 +615,16 @@ def _synthetic_message_id(channel: str, nick: str, content: str) -> str:
 
 
 class IrcReceiverService(ReceiverService):
-    def __init__(self, sender: IrcSenderService, user_mappings: UserMappingRepository | None = None) -> None:
+    def __init__(
+        self,
+        sender: IrcSenderService,
+        user_mappings: UserMappingRepository | None = None,
+        enable_local_user_masquerade: bool = True,
+    ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
         self._user_mappings = user_mappings
+        self._enable_local_user_masquerade = enable_local_user_masquerade
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
@@ -632,14 +638,28 @@ class IrcReceiverService(ReceiverService):
                 target_kind="irc",
                 user_mappings=self._user_mappings,
             )
-            # A linked sender's user_id on IRC IS the nick (see
-            # storage/user_mappings.py's UserMapping.user_id docstring), so
-            # unlike Discord/Stoat this needs no further identity lookup.
-            local_nick = await self._user_mappings.find_linked_user_id(
-                message.origin_connector_id, message.sender_user_id, self.connector_id
-            )
-            if local_nick is not None:
-                sender_name = local_nick
+            if self._enable_local_user_masquerade:
+                # A linked sender's user_id on IRC IS the nick (see
+                # storage/user_mappings.py's UserMapping.user_id docstring), so
+                # unlike Discord/Stoat this needs no further identity lookup.
+                local_nick = await self._user_mappings.find_linked_user_id(
+                    message.origin_connector_id, message.sender_user_id, self.connector_id
+                )
+                if local_nick is not None:
+                    logger.debug(
+                        "[irc:%s] resolved local user masquerade identity for %s: nick=%r",
+                        self.connector_id,
+                        message.sender_user_id,
+                        local_nick,
+                    )
+                    sender_name = local_nick
+            else:
+                logger.debug(
+                    "[irc:%s] local user masquerade disabled (enable_local_user_masquerade=false), "
+                    "not resolving local nick for sender %s",
+                    self.connector_id,
+                    message.sender_user_id,
+                )
         prefix = f"<{sender_name}> "
         limit = max(1, _LINE_LIMIT - len(prefix))
         ids: list[str] = []

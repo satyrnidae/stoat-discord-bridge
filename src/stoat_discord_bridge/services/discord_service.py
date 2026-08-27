@@ -679,11 +679,13 @@ class DiscordReceiverService(ReceiverService):
         guild_id: int,
         connector_id: str,
         user_mappings: UserMappingRepository | None = None,
+        enable_local_user_masquerade: bool = True,
     ) -> None:
         self._client = client
         self._guild_id = guild_id
         self.connector_id = connector_id
         self._user_mappings = user_mappings
+        self._enable_local_user_masquerade = enable_local_user_masquerade
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
 
@@ -691,10 +693,17 @@ class DiscordReceiverService(ReceiverService):
         webhook = await self._get_or_create_webhook(target_channel_id)
         sender_name = message.sender_name
         avatar_url = message.sender_avatar_url
-        if self._user_mappings is not None:
+        if self._user_mappings is not None and self._enable_local_user_masquerade:
             local_identity = await self._resolve_local_identity(message)
             if local_identity is not None:
                 sender_name, avatar_url = local_identity
+        elif self._user_mappings is not None:
+            logger.debug(
+                "[discord:%s] local user masquerade disabled (enable_local_user_masquerade=false), "
+                "not resolving local identity for sender %s",
+                self.connector_id,
+                message.sender_user_id,
+            )
         username = _sanitize_username(sender_name)
         content = content_with_attachments(message)
         if self._user_mappings is not None:
@@ -775,12 +784,31 @@ class DiscordReceiverService(ReceiverService):
             return None
         identity = await self._fetch_member(local_user_id) or await self._fetch_user(local_user_id)
         if identity is None:
+            logger.warning(
+                "[discord:%s] local user masquerade failed: linked user %s couldn't be resolved to a "
+                "guild member or a global user",
+                self.connector_id,
+                local_user_id,
+            )
             return None
         name = getattr(identity, "display_name", None)
         if not name:
+            logger.warning(
+                "[discord:%s] local user masquerade failed: linked user %s resolved but has no usable display name",
+                self.connector_id,
+                local_user_id,
+            )
             return None
         avatar = getattr(identity, "display_avatar", None)
-        return name, str(avatar.url) if avatar else None
+        avatar_url = str(avatar.url) if avatar else None
+        logger.debug(
+            "[discord:%s] resolved local user masquerade identity for %s: name=%r avatar_url=%r",
+            self.connector_id,
+            local_user_id,
+            name,
+            avatar_url,
+        )
+        return name, avatar_url
 
     async def _fetch_member(self, user_id: str) -> discord.Member | None:
         guild = self._client.get_guild(self._guild_id)

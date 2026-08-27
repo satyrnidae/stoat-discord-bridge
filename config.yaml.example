@@ -30,6 +30,12 @@ discord:
   - id: discord
     label: Discord
     # guild_id, token: set DISCORD__0__GUILD_ID / DISCORD__0__TOKEN
+    # Whether a /link-user'd sender is relayed as their linked local Discord
+    # identity (nickname + avatar) rather than their remote one. Defaults to
+    # true; set false (or DISCORD__0__ENABLE_LOCAL_USER_MASQUERADE=false) to
+    # always show the remote identity instead, e.g. while diagnosing
+    # local-user masquerade failures.
+    enable_local_user_masquerade: true
 
 stoat:
   - id: stoat_public
@@ -38,6 +44,13 @@ stoat:
   - id: stoat_selfhosted
     label: Stoat (self-hosted)
     # server_id, api_url, token: set STOAT__1__SERVER_ID / STOAT__1__API_URL / STOAT__1__TOKEN
+    # Whether a /link-user'd sender is relayed as their linked local Stoat
+    # identity (masqueraded name + avatar) rather than their remote one.
+    # Defaults to true; set false (or
+    # STOAT__1__ENABLE_LOCAL_USER_MASQUERADE=false) to always show the
+    # remote identity instead - useful here since local-user masquerade is
+    # known to be flaky against some self-hosted Stoat instances.
+    enable_local_user_masquerade: true
 
 irc:
   - id: irc
@@ -63,3 +76,9 @@ irc:
     # they vary per environment:
     client_cert_file: certs/irc-client.pem
     client_key_file: certs/irc-client.key
+    #
+    # Whether a /link-user'd sender is relayed under their linked local IRC
+    # nick rather than their remote (Discord/Stoat) display name. Defaults
+    # to true; set false (or IRC__0__ENABLE_LOCAL_USER_MASQUERADE=false) to
+    # always show the remote identity instead.
+    enable_local_user_masquerade: true

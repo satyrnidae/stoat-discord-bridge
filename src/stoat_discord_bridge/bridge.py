@@ -272,7 +272,11 @@ async def run(config: BridgeConfig) -> None:
         )
         structure_providers[dc.id] = sender.snapshot_guild_structure
         receiver = DiscordReceiverService(
-            client=sender.client, guild_id=dc.guild_id, connector_id=dc.id, user_mappings=user_mappings
+            client=sender.client,
+            guild_id=dc.guild_id,
+            connector_id=dc.id,
+            user_mappings=user_mappings,
+            enable_local_user_masquerade=dc.enable_local_user_masquerade,
         )
         coordinator.register_receiver(receiver)
         # No ensure_channel: Discord has no channel-creation capability in
@@ -319,7 +323,11 @@ async def run(config: BridgeConfig) -> None:
             emote_linker=emote_linker,
             user_linker=user_linker,
         )
-        coordinator.register_receiver(IrcReceiverService(sender, user_mappings=user_mappings))
+        coordinator.register_receiver(
+            IrcReceiverService(
+                sender, user_mappings=user_mappings, enable_local_user_masquerade=ic.enable_local_user_masquerade
+            )
+        )
         connector_infos[ic.id] = ConnectorInfo(
             id=ic.id, label=ic.label, on_channel_linked=sender.join_channel, ensure_channel=sender.ensure_channel
         )

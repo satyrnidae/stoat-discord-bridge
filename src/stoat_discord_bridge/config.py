@@ -46,6 +46,12 @@ class DiscordConnectorConfig:
     label: str
     guild_id: int
     bot_token: str
+    # Whether a /link-user'd sender should be masqueraded (via webhook
+    # username/avatar override) as their linked local Discord identity
+    # rather than their remote (Stoat/IRC) one. Defaults on; set false to
+    # fall back to always showing the remote identity, e.g. while
+    # diagnosing local-user masquerade failures.
+    enable_local_user_masquerade: bool = True
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,12 @@ class StoatConnectorConfig:
     server_id: str
     api_url: str
     bot_token: str
+    # Whether a /link-user'd sender should be masqueraded as their linked
+    # local Stoat identity (display name + avatar) rather than their remote
+    # (Discord/IRC) one. Defaults on; set false to fall back to always
+    # masquerading as the remote identity, e.g. while diagnosing
+    # local-user masquerade failures on a self-hosted Stoat instance.
+    enable_local_user_masquerade: bool = True
 
 
 @dataclass(frozen=True)
@@ -78,6 +90,11 @@ class IrcConnectorConfig:
     oper_password: str | None
     client_cert_file: str | None
     client_key_file: str | None
+    # Whether a /link-user'd sender should be relayed under their linked
+    # local IRC nick rather than their remote (Discord/Stoat) display name.
+    # Defaults on; set false to fall back to always showing the remote
+    # identity, e.g. while diagnosing local-user masquerade failures.
+    enable_local_user_masquerade: bool = True
 
 
 @dataclass(frozen=True)
@@ -195,6 +212,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 label=entry.get("label", connector_id),
                 guild_id=int(guild_id),
                 bot_token=bot_token,
+                enable_local_user_masquerade=_as_bool(
+                    _resolve(entry, section="discord", index=index, field="enable_local_user_masquerade"),
+                    default=True,
+                ),
             )
         )
 
@@ -229,6 +250,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 server_id=server_id,
                 api_url=api_url,
                 bot_token=bot_token,
+                enable_local_user_masquerade=_as_bool(
+                    _resolve(entry, section="stoat", index=index, field="enable_local_user_masquerade"),
+                    default=True,
+                ),
             )
         )
 
@@ -262,6 +287,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 oper_password=_resolve(entry, section="irc", index=index, field="oper_password"),
                 client_cert_file=_resolve(entry, section="irc", index=index, field="client_cert_file"),
                 client_key_file=_resolve(entry, section="irc", index=index, field="client_key_file"),
+                enable_local_user_masquerade=_as_bool(
+                    _resolve(entry, section="irc", index=index, field="enable_local_user_masquerade"),
+                    default=True,
+                ),
             )
         )
 

@@ -237,19 +237,53 @@ class StoatSenderService(SenderService):
         populated server_id at all. Returns None if `user_id` can't be
         resolved to a real name at all (never falls back to displaying the
         bare id - the caller should keep the remote identity instead)."""
+        if not self._config.enable_local_user_masquerade:
+            logger.debug(
+                "[stoat:%s] local user masquerade disabled (enable_local_user_masquerade=false), "
+                "not resolving local identity for user %s",
+                self.connector_id,
+                user_id,
+            )
+            return None
         try:
             member_or_user = await self._client.get_server(self.server_id, partial=True).fetch_member(user_id)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "[stoat:%s] couldn't fetch server member %s for local user masquerade: %s",
+                self.connector_id,
+                user_id,
+                exc,
+            )
             member_or_user = None
         if member_or_user is None:
             try:
                 member_or_user = await self._client.fetch_user(user_id)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "[stoat:%s] local user masquerade failed: couldn't resolve linked user %s to a "
+                    "server member or a global user: %s",
+                    self.connector_id,
+                    user_id,
+                    exc,
+                )
                 return None
         name = _display_name(member_or_user)
         if not name:
+            logger.warning(
+                "[stoat:%s] local user masquerade failed: user %s resolved but has no usable display name",
+                self.connector_id,
+                user_id,
+            )
             return None
-        return name, _avatar_url(member_or_user)
+        avatar_url = _avatar_url(member_or_user)
+        logger.debug(
+            "[stoat:%s] resolved local user masquerade identity for %s: name=%r avatar_url=%r",
+            self.connector_id,
+            user_id,
+            name,
+            avatar_url,
+        )
+        return name, avatar_url
 
     async def get_channel_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> name lookup, used as this connector's

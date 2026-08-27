@@ -27,10 +27,17 @@ class _FakeSender:
     it's plain client-reading logic with no network-touching __init__ of its
     own to avoid."""
 
-    def __init__(self, client: FakeClient, connector_id: str = "stoat", server_id: str = "srv-1") -> None:
+    def __init__(
+        self,
+        client: FakeClient,
+        connector_id: str = "stoat",
+        server_id: str = "srv-1",
+        enable_local_user_masquerade: bool = True,
+    ) -> None:
         self.connector_id = connector_id
         self.server_id = server_id
         self._client = client
+        self._config = SimpleNamespace(enable_local_user_masquerade=enable_local_user_masquerade)
 
     def get_channel(self, channel_id: str, *, partial: bool = True):
         return self._client.get_channel(channel_id, partial=partial)
