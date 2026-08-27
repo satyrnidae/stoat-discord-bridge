@@ -759,10 +759,19 @@ class StoatReceiverService(ReceiverService):
             )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):
+            logger.debug(
+                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r): %r",
+                self.connector_id,
+                target_channel_id,
+                masquerade.name,
+                masquerade.avatar,
+                chunk,
+            )
             try:
                 sent = await channel.send(chunk, masquerade=masquerade)
             except Exception as exc:
                 raise PartialRelayError(ids, exc) from exc
+            logger.debug("[stoat:%s] masqueraded message sent, id=%s", self.connector_id, sent.id)
             ids.append(str(sent.id))
         return ids
 

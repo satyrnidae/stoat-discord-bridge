@@ -707,6 +707,14 @@ class DiscordReceiverService(ReceiverService):
             )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):
+            logger.debug(
+                "[discord:%s] sending webhook message to channel %s as %r (avatar_url=%r): %r",
+                self.connector_id,
+                target_channel_id,
+                username,
+                avatar_url,
+                chunk,
+            )
             try:
                 sent = await webhook.send(
                     content=chunk,
@@ -716,6 +724,7 @@ class DiscordReceiverService(ReceiverService):
                 )
             except Exception as exc:
                 raise PartialRelayError(ids, exc) from exc
+            logger.debug("[discord:%s] webhook message sent, id=%s", self.connector_id, sent.id)
             ids.append(str(sent.id))
         return ids
 
