@@ -340,11 +340,11 @@ async def test_get_user_name_returns_none_on_a_non_numeric_id():
 # ---------------------------------------------------------------- _handle_thread_create
 
 
-async def _stoat_ensure_channel(name: str) -> str:
+async def _stoat_ensure_channel(name: str, category: str | None = None) -> str:
     return f"stoat_{name}"
 
 
-async def _irc_ensure_channel(name: str) -> str:
+async def _irc_ensure_channel(name: str, category: str | None = None) -> str:
     return f"irc_{name}"
 
 
@@ -383,6 +383,34 @@ async def test_handle_thread_create_mirrors_and_announces_when_parent_is_bridged
     assert message.content_markdown == "Created a new channel https://discord.com/channels/123/777"
     assert message.sender_name == "Bridge"
     assert message.message_id == "thread-created-777"
+
+
+async def test_handle_thread_create_uses_parent_channel_name_as_category(fake_db):
+    calls = []
+
+    async def stoat_ensure_channel(name, category=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=stoat_ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=9, display_name="Bridge", display_avatar=FakeAsset("https://cdn.example/bot.png")))
+    sender = _make_sender(recorder, client, linker=linker)
+    parent = FakeChannel(id=42, name="Announcements")
+    thread = FakeThread(id=777, parent=parent, name="Test Thread", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    assert calls == [("Test Thread", "Announcements")]  # category = parent's name, not any real Discord Category
 
 
 async def test_handle_thread_create_skips_when_parent_isnt_bridged(fake_db):

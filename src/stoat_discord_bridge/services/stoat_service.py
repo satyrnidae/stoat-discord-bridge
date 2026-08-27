@@ -330,17 +330,60 @@ class StoatSenderService(SenderService):
             return None
         return getattr(channel, "name", None)
 
-    async def ensure_channel(self, name: str) -> str:
+    async def get_channel_category_name(self, channel_id: str) -> str | None:
+        """Best-effort channel-id -> Category-title lookup, for `/mirror-
+        channel` to carry a channel's Category across to the destination
+        connector. `.category` can raise NoData on a cache miss, same
+        best-effort pattern as get_channel_name/get_masquerade_identity
+        elsewhere in this class.
+
+        TODO: verify stoat.py's get_channel(partial=False) semantics - see
+        get_channel_name's TODO above.
+        """
+        try:
+            channel = self._client.get_channel(channel_id, partial=False)
+            category = channel.category
+        except Exception:
+            return None
+        return category.title if category is not None else None
+
+    async def ensure_channel(self, name: str, category: str | None = None) -> str:
         """Idempotent get-or-create by name, for `/mirror-channel`'s
         `ConnectorInfo.ensure_channel` hook - same "match existing by name,
         else create" logic `_mirror_guild_structure` already uses in bulk,
-        just for a single channel outside that flow."""
+        just for a single channel outside that flow. If `category` is given,
+        the matched-or-created channel is placed into a same-named Category
+        (creating it if needed) - best-effort, never raises, since the
+        channel itself has already been secured by this point."""
         server = self._client.get_server(self.server_id, partial=True)
         for channel in server.channels:
             if channel.name == name:
-                return channel.id
-        channel = await server.create_channel(name=name)
-        return channel.id
+                channel_id = channel.id
+                break
+        else:
+            channel = await server.create_channel(name=name)
+            channel_id = channel.id
+        if category is not None:
+            await self._ensure_channel_in_category(server, channel_id, category)
+        return channel_id
+
+    async def _ensure_channel_in_category(self, server, channel_id: str, category: str) -> None:
+        """Places `channel_id` into a Category named `category` on `server`,
+        creating the Category if none by that name exists yet. Neither
+        stoat.py's create_category nor edit_category takes a `position` -
+        so a freshly-created Category is necessarily appended, landing at
+        the bottom of the server's channel list with no extra work needed
+        here."""
+        try:
+            existing = next((c for c in (server.categories or []) if c.title == category), None)
+            if existing is None:
+                await server.create_category(category, channels=[channel_id])
+            elif channel_id not in existing.channels:
+                await server.edit_category(existing, channels=[*existing.channels, channel_id])
+        except Exception as exc:
+            logger.warning(
+                "[stoat:%s] failed to place channel %s into category %r: %s", self.connector_id, channel_id, category, exc
+            )
 
     async def _handle_ready(self, event) -> None:
         self._health.mark_connected(self.connector_id)
@@ -717,6 +760,7 @@ class StoatSenderService(SenderService):
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
+        channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
             "[stoat:%s] %s ran /mirror-channel destination=%s local_channel_id=%s",
             self.connector_id,
@@ -727,7 +771,10 @@ class StoatSenderService(SenderService):
         try:
             if destination.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
-                    local_connector=self.connector_id, local_channel_id=channel_id, local_channel_name=channel_name
+                    local_connector=self.connector_id,
+                    local_channel_id=channel_id,
+                    local_channel_name=channel_name,
+                    local_channel_category=channel_category,
                 )
             else:
                 summary = await self._linker.mirror_channel(
@@ -735,6 +782,7 @@ class StoatSenderService(SenderService):
                     local_channel_id=channel_id,
                     local_channel_name=channel_name,
                     destination=destination,
+                    local_channel_category=channel_category,
                 )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror-channel rejected: %s", self.connector_id, exc)

@@ -58,11 +58,13 @@ class ConnectorInfo:
     on_channel_linked: Callable[[str], Awaitable[None]] | None = None
     # Idempotent get-or-create: ensures a channel named `name` exists on
     # this connector, returning its native id (existing or newly created).
-    # None if this connector kind doesn't support channel creation (e.g.
-    # Discord has no channel-creation capability in this codebase at all -
-    # /mirror-channel then reports that connector as unsupported rather than
-    # calling this).
-    ensure_channel: Callable[[str], Awaitable[str]] | None = None
+    # The second argument is an optional Category name - if given, the
+    # matched-or-created channel should end up inside a same-named Category
+    # on this connector (creating it if needed). None if this connector kind
+    # doesn't support channel creation (e.g. Discord has no channel-creation
+    # capability in this codebase at all - /mirror-channel then reports that
+    # connector as unsupported rather than calling this).
+    ensure_channel: Callable[[str, str | None], Awaitable[str]] | None = None
     # Best-effort native-user-id -> display-name lookup, for `/linked-users`
     # to show real names instead of raw ids. None, an exception, or a falsy
     # return all fall back to the raw id, same as resolve_channel_name.
@@ -148,7 +150,13 @@ class ChannelLinker:
         )
 
     async def mirror_channel(
-        self, *, local_connector: str, local_channel_id: str, local_channel_name: str, destination: str
+        self,
+        *,
+        local_connector: str,
+        local_channel_id: str,
+        local_channel_name: str,
+        destination: str,
+        local_channel_category: str | None = None,
     ) -> str:
         """Ensure `local_channel_id` (on `local_connector`) has a linked
         counterpart on `destination`: reuses an existing same-name channel
@@ -157,7 +165,10 @@ class ChannelLinker:
         already synced there, and reports (rather than raises for) a
         destination that can't create channels or a link conflict - the
         caller (a bulk "mirror to every connector" loop) shouldn't have one
-        bad destination abort the rest."""
+        bad destination abort the rest. `local_channel_category`, if given,
+        is the Category the source channel belongs to on `local_connector` -
+        `destination`'s ensure_channel() places the mirrored channel into a
+        same-named Category there too."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
@@ -174,7 +185,7 @@ class ChannelLinker:
             return f"{dest_info.label}: doesn't support channel creation - link it manually with /link-channel."
 
         try:
-            destination_channel_id = await dest_info.ensure_channel(local_channel_name)
+            destination_channel_id = await dest_info.ensure_channel(local_channel_name, local_channel_category)
         except Exception as exc:
             logger.warning("mirror-channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
             return f"{dest_info.label}: failed to create/find a channel: {exc}"
@@ -192,7 +203,12 @@ class ChannelLinker:
             return f"{dest_info.label}: {exc}"
 
     async def mirror_channel_all(
-        self, *, local_connector: str, local_channel_id: str, local_channel_name: str
+        self,
+        *,
+        local_connector: str,
+        local_channel_id: str,
+        local_channel_name: str,
+        local_channel_category: str | None = None,
     ) -> str:
         """`/mirror-channel all` - mirror_channel() against every other
         configured connector, one line of summary/skip/error per connector
@@ -203,6 +219,7 @@ class ChannelLinker:
                 local_channel_id=local_channel_id,
                 local_channel_name=local_channel_name,
                 destination=destination,
+                local_channel_category=local_channel_category,
             )
             for destination in self._connectors
             if destination != local_connector

@@ -73,7 +73,15 @@ class FakeStoatMessage:
 
 
 class FakeChannel:
-    def __init__(self, id: str, *, name: str = "general", server_id: str | None = None, raises: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        id: str,
+        *,
+        name: str = "general",
+        server_id: str | None = None,
+        raises: BaseException | None = None,
+        category: Any = None,
+    ) -> None:
         self.id = id
         self.name = name
         self.server_id = server_id
@@ -81,6 +89,7 @@ class FakeChannel:
         self._raises = raises
         self._messages: dict[str, FakeStoatMessage] = {}
         self._next_message_id = 1
+        self.category = category
 
     async def send(self, content: str, *, masquerade=None) -> FakeSentMessage:
         if self._raises is not None:
@@ -92,6 +101,13 @@ class FakeChannel:
 
     def get_message(self, message_id: str, *, partial: bool = True) -> FakeStoatMessage:
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
+
+
+class FakeCategory:
+    def __init__(self, id: str, title: str, *, channels: list[str] | None = None) -> None:
+        self.id = id
+        self.title = title
+        self.channels = channels or []
 
 
 class FakeEmoji:
@@ -131,6 +147,13 @@ class FakeServer:
 
     async def create_category(self, name: str, *, channels: list[str]):
         self.created_categories.append({"name": name, "channels": channels})
+        category = FakeCategory(id=f"cat-{name}", title=name, channels=list(channels))
+        self.categories.append(category)
+        return category
+
+    async def edit_category(self, category, *, channels: list[str]):
+        category.channels = list(channels)
+        return category
 
     async def create_emoji(self, *, name: str, image: bytes):
         if self._raises is not None:

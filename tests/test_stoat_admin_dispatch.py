@@ -19,7 +19,7 @@ import pytest
 from stoat_discord_bridge.admin_commands import LinkError
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure
 from stoat_discord_bridge.services.stoat_service import StoatSenderService
-from tests.fakes.fake_stoat import FakeChannel, FakeServer
+from tests.fakes.fake_stoat import FakeCategory, FakeChannel, FakeClient, FakeServer
 
 
 class FakeLinker:
@@ -115,6 +115,8 @@ def _make_sender(
     mirrorer: FakeMirrorer | None = None,
     emote_linker: FakeEmoteLinker | None = None,
     user_linker: FakeUserLinker | None = None,
+    client: FakeClient | None = None,
+    server_id: str | None = "s1",
 ) -> StoatSenderService:
     sender = object.__new__(StoatSenderService)
     sender.connector_id = "stoat"
@@ -122,6 +124,9 @@ def _make_sender(
     sender._mirrorer = mirrorer
     sender._emote_linker = emote_linker
     sender._user_linker = user_linker
+    sender.server_id = server_id
+    if client is not None:
+        sender._client = client
     return sender
 
 
@@ -307,9 +312,28 @@ async def test_mirror_channel_to_a_single_destination():
     await sender._handle_mirror_channel(message, ["discord"])
 
     assert linker.mirror_channel_calls == [
-        {"local_connector": "stoat", "local_channel_id": "c1", "local_channel_name": "general", "destination": "discord"}
+        {
+            "local_connector": "stoat",
+            "local_channel_id": "c1",
+            "local_channel_name": "general",
+            "destination": "discord",
+            "local_channel_category": None,
+        }
     ]
     assert message.channel.sent[0]["content"] == "mirrored ok"
+
+
+async def test_mirror_channel_resolves_and_forwards_the_channels_category():
+    linker = FakeLinker()
+    channel = FakeChannel(id="c1", name="general", category=FakeCategory(id="cat-1", title="Team Alpha"))
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(linker=linker, client=client)
+    message = _admin_message(channel=channel)
+
+    await sender._handle_mirror_channel(message, ["discord"])
+
+    assert linker.mirror_channel_calls[0]["local_channel_category"] == "Team Alpha"
 
 
 async def test_mirror_channel_to_all_is_case_insensitive():
@@ -353,6 +377,82 @@ async def test_mirror_channel_without_a_configured_linker():
     assert message.channel.sent[0]["content"] == "Linking isn't configured."
 
 
+# ---------------------------------------------------------------- ensure_channel / Category placement
+
+
+async def test_ensure_channel_creates_a_new_category_when_none_matches():
+    server = FakeServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("general", "Team Alpha")
+
+    assert channel_id == "chan-general"
+    assert server.created_categories == [{"name": "Team Alpha", "channels": ["chan-general"]}]
+    [category] = server.categories
+    assert category.title == "Team Alpha"
+    assert category.channels == ["chan-general"]
+
+
+async def test_ensure_channel_adds_to_an_existing_category_by_title():
+    server = FakeServer(id="s1")
+    server.categories.append(FakeCategory(id="cat-1", title="Team Alpha", channels=["chan-other"]))
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("general", "Team Alpha")
+
+    assert channel_id == "chan-general"
+    assert server.created_categories == []  # matched the existing one - no new Category created
+    [category] = server.categories
+    assert category.channels == ["chan-other", "chan-general"]
+
+
+async def test_ensure_channel_is_idempotent_when_channel_already_in_category():
+    server = FakeServer(id="s1")
+    server.categories.append(FakeCategory(id="cat-1", title="Team Alpha", channels=["chan-general"]))
+    channel = FakeChannel(id="chan-general", name="general")
+    server.channels.append(channel)
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    await sender.ensure_channel("general", "Team Alpha")
+
+    [category] = server.categories
+    assert category.channels == ["chan-general"]  # not duplicated
+
+
+async def test_ensure_channel_without_a_category_leaves_categories_untouched():
+    server = FakeServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("general")
+
+    assert channel_id == "chan-general"
+    assert server.categories == []
+    assert server.created_categories == []
+
+
+async def test_ensure_channel_reports_channel_even_if_category_placement_fails():
+    class ExplodingServer(FakeServer):
+        async def create_category(self, name, *, channels):
+            raise RuntimeError("category creation failed")
+
+    server = ExplodingServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("general", "Team Alpha")
+
+    assert channel_id == "chan-general"  # channel creation itself still succeeded
+
+
 # ---------------------------------------------------------------- _handle_mirror_channels
 
 
@@ -364,7 +464,7 @@ async def test_mirror_channels_success_creates_and_links():
     mirrorer = FakeMirrorer(structure=structure)
     linker = FakeLinker()
     sender = _make_sender(mirrorer=mirrorer, linker=linker)
-    server = FakeServer(id="srv-1")
+    server = FakeServer(id="s1")
     channel = FakeChannel(id="c1")
     channel.server = server
     message = _admin_message(channel=channel)

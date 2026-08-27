@@ -384,6 +384,13 @@ class DiscordSenderService(SenderService):
         message: discord.py dispatches gateway events (and so schedules each
         handler's task) in the order they're received, and THREAD_CREATE
         always precedes the MESSAGE_CREATE for a new thread's first message.
+
+        The mirrored channel is placed into a Category named after the
+        thread's *parent channel* - not any real Discord Category the parent
+        itself belongs to - so every thread/forum-post under the same parent
+        groups together on the destination, deliberately overriding the
+        general "mirror the source's own Category" rule /mirror-channel
+        otherwise follows.
         """
         if self._linker is None or thread.guild.id != self._config.guild_id:
             return
@@ -394,7 +401,10 @@ class DiscordSenderService(SenderService):
         self._pending_thread_intro.add(thread.id)
         try:
             await self._linker.mirror_channel_all(
-                local_connector=self.connector_id, local_channel_id=str(thread.id), local_channel_name=clip_name(thread.name)
+                local_connector=self.connector_id,
+                local_channel_id=str(thread.id),
+                local_channel_name=clip_name(thread.name),
+                local_channel_category=clip_name(parent.name),
             )
         except Exception:
             logger.exception("[discord:%s] failed to auto-mirror thread %s", self.connector_id, thread.id)
@@ -484,6 +494,23 @@ class DiscordSenderService(SenderService):
             logger.debug("[discord:%s] couldn't resolve channel name for %s", self.connector_id, channel_id)
             return None
         return getattr(channel, "name", None)
+
+    async def get_channel_category_name(self, channel_id: str) -> str | None:
+        """Best-effort channel-id -> Category-name lookup, used by
+        `/mirror-channel` to carry a channel's Category across to the
+        destination connector. Catches broadly (not just discord.py's own
+        HTTPException/NotFound) since an id that isn't a real channel this
+        client can see - e.g. a bare Stoat/IRC-style name typed into
+        /mirror-channel's local_channel_id option - can fail in ways short
+        of a clean discord.py exception (fetch_channel(), unlike
+        get_channel_name's other call sites, isn't otherwise guarded here)."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+            category = getattr(channel, "category", None)
+        except Exception:
+            logger.debug("[discord:%s] couldn't resolve channel category for %s", self.connector_id, channel_id)
+            return None
+        return category.name if category is not None else None
 
     async def get_user_name(self, user_id: str) -> str | None:
         """Best-effort user-id -> display-name lookup, used as this
@@ -661,6 +688,7 @@ class DiscordSenderService(SenderService):
         else:
             channel_id = str(interaction.channel_id)
             channel_name = getattr(interaction.channel, "name", channel_id)
+        channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
             "[discord:%s] %s ran /mirror-channel destination=%s local_channel_id=%s",
             self.connector_id,
@@ -671,7 +699,10 @@ class DiscordSenderService(SenderService):
         try:
             if destination.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
-                    local_connector=self.connector_id, local_channel_id=channel_id, local_channel_name=channel_name
+                    local_connector=self.connector_id,
+                    local_channel_id=channel_id,
+                    local_channel_name=channel_name,
+                    local_channel_category=channel_category,
                 )
             else:
                 summary = await self._linker.mirror_channel(
@@ -679,6 +710,7 @@ class DiscordSenderService(SenderService):
                     local_channel_id=channel_id,
                     local_channel_name=channel_name,
                     destination=destination,
+                    local_channel_category=channel_category,
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror-channel rejected: %s", self.connector_id, exc)

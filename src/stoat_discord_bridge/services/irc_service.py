@@ -574,7 +574,7 @@ class IrcSenderService(SenderService):
                 # we don't handle - a silent no-op from the bridge's side.
                 self._client.connection.mode(channel, self._config.default_channel_modes)
 
-    async def ensure_channel(self, name: str) -> str:
+    async def ensure_channel(self, name: str, category: str | None = None) -> str:
         """IRC has no separate channel-creation call - JOINing a channel
         that doesn't exist yet creates it (see join_channel, which already
         handles that + applying default_channel_modes to a freshly-created
@@ -584,7 +584,9 @@ class IrcSenderService(SenderService):
         and are lowercased with runs of whitespace turned into single
         hyphens, since unlike a regular (already-kebab-case) Discord channel
         name, a Discord thread name can contain spaces/capitals, which IRC
-        channel names can't."""
+        channel names can't. `category` is accepted (for signature
+        compatibility with ConnectorInfo.ensure_channel) and ignored - IRC
+        has no Category concept."""
         normalized = re.sub(r"\s+", "-", name.strip().lower())
         channel = normalized if normalized.startswith("#") else f"#{normalized}"
         await self.join_channel(channel)
