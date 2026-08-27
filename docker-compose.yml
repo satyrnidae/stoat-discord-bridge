@@ -16,6 +16,11 @@ services:
     logging: *default-logging
     volumes:
       - mongo-data:/data/db
+      # mongo:7's image declares VOLUME /data/configdb too (used only for
+      # sharded config servers, unused here) - without an explicit bind,
+      # Docker creates a fresh anonymous (hash-named) volume for it on every
+      # container recreation instead of reusing one.
+      - mongo-configdb:/data/configdb
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -60,3 +65,4 @@ services:
 
 volumes:
   mongo-data:
+  mongo-configdb:
