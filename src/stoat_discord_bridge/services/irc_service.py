@@ -56,7 +56,7 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   STATUS - sync target health, read-only
   LINKED_CHANNELS <local_channel_id> - channels bridged to <local_channel_id>, read-only
   LINKED_USERS [local_user_id] - cross-connector user links, read-only
-  LINK_CHANNEL <local_id> <source> <source_id> - bridge a channel (IRC-operator)
+  LINK_CHANNEL <source> <source_id> <local_id> - bridge a channel (IRC-operator)
   LINK_USER <source> <user_id> <local_user_id> - link a user for mentions/masquerading (IRC-operator)
   LINK_EMOTE <source> <source_id> <local_id> - link a custom emoji (IRC-operator)
   MIRROR_CHANNEL <local_channel_id> <destination|all> - create+link a matching channel (IRC-operator)
@@ -380,14 +380,10 @@ class IrcSenderService(SenderService):
             return
         logger.info("[irc:%s] %s ran %s %s", self.connector_id, nick, command, " ".join(args))
         if command == "LINK_CHANNEL":
-            # local_id is optional on Discord/Stoat (defaults to the current
-            # channel) but always required on IRC (no "current channel" for
-            # a DM) - hoisted to the first arg so IRC's one always-required
-            # id leads, same convention as MIRROR_CHANNEL/UNLINK_CHANNEL.
             if len(args) != 3:
-                self._notify(nick, "Usage: LINK_CHANNEL <local_id> <source> <source_id>")
+                self._notify(nick, "Usage: LINK_CHANNEL <source> <source_id> <local_id>")
                 return
-            local_id, source, source_id = args
+            source, source_id, local_id = args
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")
                 return

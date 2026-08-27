@@ -198,7 +198,7 @@ async def test_link_channel_success():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord src-id")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id local-id")
 
     assert linker.link_channel_calls == [
         {
@@ -216,15 +216,15 @@ async def test_link_channel_success():
 async def test_link_channel_wrong_arg_count_sends_usage():
     sender, conn = _make_sender(linker=FakeLinker())
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id")
 
-    assert conn.notice_calls == [("alice", "Usage: LINK_CHANNEL <local_id> <source> <source_id>")]
+    assert conn.notice_calls == [("alice", "Usage: LINK_CHANNEL <source> <source_id> <local_id>")]
 
 
 async def test_link_channel_without_a_configured_linker():
     sender, conn = _make_sender(linker=None)
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord src-id")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id local-id")
 
     assert conn.notice_calls == [("alice", "Linking isn't configured.")]
 
@@ -232,7 +232,7 @@ async def test_link_channel_without_a_configured_linker():
 async def test_link_channel_reports_a_link_error():
     sender, conn = _make_sender(linker=FakeLinker(raises=LinkError("already linked elsewhere")))
 
-    await sender._handle_dm_command("alice", "LINK_CHANNEL local-id discord src-id")
+    await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id local-id")
 
     assert conn.notice_calls == [("alice", "already linked elsewhere")]
 
