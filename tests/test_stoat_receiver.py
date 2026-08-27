@@ -211,6 +211,34 @@ async def test_receive_uses_the_remote_identity_when_the_sender_isnt_linked(fake
     assert masquerade.avatar == "https://cdn.example/alice.png"
 
 
+async def test_receive_falls_back_to_fetch_user_when_the_resolved_member_has_no_usable_name(fake_db):
+    # stoat.py's Member.name/display_name silently return ""/None (rather
+    # than raising or returning the real username) when the Member's
+    # internal_user reference isn't a locally cached full User object - a
+    # gap in that resolution, not evidence the user has no name. This must
+    # not be treated as an unresolvable local user: it should fall through
+    # to fetching the User object directly, which always has a real name.
+    user_mappings = UserMappingRepository(fake_db)
+    await user_mappings.upsert(
+        UserMapping(link_group="g1", connector_id="discord", user_id="discord-alice", display_name="discord-alice")
+    )
+    await user_mappings.upsert(UserMapping(link_group="g1", connector_id="stoat", user_id="u1", display_name="u1"))
+    client = FakeClient()
+    server = client.add_server(FakeServer(id="srv-1"))
+    server.add_member("u1", FakeAuthor(id="u1", name="", tag="", display_name=None, nick=None))
+    client.add_user(
+        "u1", FakeAuthor(id="u1", name="alice", tag="alice#0000", display_name="Local Alice", avatar=FakeAsset("https://cdn.example/local.png"))
+    )
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client, user_mappings)
+
+    await receiver.receive(_message(), target_channel_id="42")
+
+    masquerade = channel.sent[0]["masquerade"]
+    assert masquerade.name == "Local Alice"
+    assert masquerade.avatar == "https://cdn.example/local.png"
+
+
 async def test_receive_falls_back_to_the_remote_identity_when_the_linked_stoat_user_cant_be_resolved(fake_db):
     user_mappings = UserMappingRepository(fake_db)
     await user_mappings.upsert(
