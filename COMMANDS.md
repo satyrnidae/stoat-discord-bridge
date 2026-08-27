@@ -6,6 +6,11 @@ connector. Shared logic lives in `src/stoat_discord_bridge/admin_commands.py`
 connector's own `services/*.py` module just wires its native command syntax
 to that shared logic, so behavior is identical everywhere except where noted.
 
+Discord has native slash-command discoverability, so it has no dedicated
+help command. Stoat and IRC don't, hence `/bridge-help` (Stoat) and `HELP`
+(IRC) - both just print a compact copy of this file's per-connector command
+list.
+
 A `<source>`/`destination` argument below is a connector `id` from
 `config.yaml` (see its `id` field) — not a platform name, since there can be
 any number of connectors of each kind. On Discord, every such argument has
@@ -152,3 +157,50 @@ its own group named after the forum, with one channel per currently active
   not available on Discord or IRC (Discord doesn't need to mirror structure
   onto itself; IRC networks don't offer bot-driven channel creation the way
   this command needs).
+
+## `/unlink-channel [destination|all]`
+
+Removes members from the invoking channel's bridge group. Given a specific
+`destination` (a connector id), kicks just that one member out - the rest of
+the group, including the invoking channel itself, stays linked to each
+other. With no argument, or `all` (the default), dissolves the whole group
+instead - every member is unlinked. There's no separate "just leave, don't
+destroy the group for everyone else" form beyond passing your own connector
+as `destination`, which does exactly that.
+
+- **Discord**: `/unlink-channel [destination]` slash command (Manage
+  Server); `destination`'s autocomplete includes the literal `all` choice,
+  same as `/mirror-channel`. Acts on the current channel.
+- **Stoat**: `/unlink-channel [destination]` message command (Manage
+  Server). Acts on the current channel.
+- **IRC**: `UNLINK_CHANNEL <local_channel_id> [destination]`, DM
+  (IRC-operator; channel always required, `destination` optional)
+
+## `/unlink-user [destination|all] [user]`
+
+Removes identities from a user's cross-connector link group. Given a
+specific `destination` (a connector id), kicks just that one identity out -
+the rest of the group stays linked to each other. With no `destination`, or
+`all` (the default), dissolves the whole group instead. `user` defaults to
+whoever ran the command.
+
+- **Discord**: `/unlink-user [destination] [user]` slash command (Manage
+  Server); `destination`'s autocomplete includes the literal `all` choice.
+  `user` is a real `discord.Member`, same picker as `/link-user`'s local
+  side and `/linked-users`.
+- **Stoat**: `/unlink-user [destination|all] [user_id]` message command
+  (Manage Server) - `user_id` is still plain text (no member-picker
+  equivalent exists there, same caveat as `/link-user`'s local side).
+- **IRC**: `UNLINK_USER [destination|all] [local_user_id]`, DM
+  (IRC-operator; both arguments optional, `local_user_id` defaults to the
+  nick running the command)
+
+## `HELP` (IRC) / `/bridge-help` (Stoat)
+
+Prints a compact copy of this file's command list for that connector, since
+neither has Discord's native slash-command discoverability. Read-only, no
+permission gate.
+
+- **Discord**: not needed - slash commands are self-documenting.
+- **Stoat**: `/bridge-help` message command.
+- **IRC**: `HELP`, sent as a DM to the bot.

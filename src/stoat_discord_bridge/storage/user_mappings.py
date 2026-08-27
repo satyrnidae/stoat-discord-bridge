@@ -80,6 +80,20 @@ class UserMappingRepository:
             upsert=True,
         )
 
+    async def delete_mapping(self, connector_id: str, user_id: str) -> bool:
+        """Removes just this one identity from its link group - the rest of
+        the group (if any) stays linked to each other. For `/unlink-user
+        <destination>`, which kicks a single member rather than dissolving
+        the whole group."""
+        result = await self._collection.delete_one({"connector_id": connector_id, "user_id": user_id})
+        return result.deleted_count > 0
+
+    async def delete_link_group(self, link_group: str) -> int:
+        """Dissolves an entire link group - every linked identity, not just
+        one. For `/unlink-user`'s default ("all") behavior."""
+        result = await self._collection.delete_many({"link_group": link_group})
+        return result.deleted_count
+
 
 def _from_doc(doc: dict) -> UserMapping:
     return UserMapping(

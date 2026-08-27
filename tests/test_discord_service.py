@@ -48,6 +48,8 @@ class FakeLinker:
         self.list_linked_channels_calls: list[dict] = []
         self.link_user_calls: list[dict] = []
         self.list_linked_users_calls: list[dict] = []
+        self.unlink_channel_calls: list[dict] = []
+        self.unlink_user_calls: list[dict] = []
         self.connectors = connectors or {}
 
     async def link_user(self, **kwargs):
@@ -73,6 +75,14 @@ class FakeLinker:
     async def list_linked_channels(self, **kwargs):
         self.list_linked_channels_calls.append(kwargs)
         return "Linked channels:\nDiscord: general (999) (this channel)"
+
+    async def unlink_channel(self, **kwargs):
+        self.unlink_channel_calls.append(kwargs)
+        return "unlinked ok"
+
+    async def unlink_user(self, **kwargs):
+        self.unlink_user_calls.append(kwargs)
+        return "user unlinked ok"
 
 
 class FakeInteraction:
@@ -294,6 +304,73 @@ async def test_linked_users_without_a_configured_user_linker():
     interaction = FakeInteraction()
 
     await sender._handle_linked_users(interaction, None)
+
+    assert interaction.sent == ["User linking isn't configured."]
+
+
+# ---------------------------------------------------------------- _handle_unlink_channel
+
+
+async def test_unlink_channel_defaults_destination_to_none():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=999)
+
+    await sender._handle_unlink_channel(interaction, None)
+
+    assert linker.unlink_channel_calls == [{"local_connector": "discord", "local_channel_id": "999", "destination": None}]
+    assert interaction.sent == ["unlinked ok"]
+
+
+async def test_unlink_channel_with_a_specific_destination():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=999)
+
+    await sender._handle_unlink_channel(interaction, "stoat")
+
+    assert linker.unlink_channel_calls == [{"local_connector": "discord", "local_channel_id": "999", "destination": "stoat"}]
+
+
+async def test_unlink_channel_without_a_configured_linker():
+    sender = _make_sender(None)
+    interaction = FakeInteraction()
+
+    await sender._handle_unlink_channel(interaction, None)
+
+    assert interaction.sent == ["Linking isn't configured."]
+
+
+# ---------------------------------------------------------------- _handle_unlink_user
+
+
+async def test_unlink_user_defaults_to_the_invoking_member():
+    user_linker = FakeLinker()
+    sender = _make_sender(FakeLinker(), user_linker=user_linker)
+    interaction = FakeInteraction(user_id=111)
+
+    await sender._handle_unlink_user(interaction, None, None)
+
+    assert user_linker.unlink_user_calls == [{"local_connector": "discord", "local_user_id": "111", "destination": None}]
+    assert interaction.sent == ["user unlinked ok"]
+
+
+async def test_unlink_user_with_a_specific_destination_and_target():
+    user_linker = FakeLinker()
+    sender = _make_sender(FakeLinker(), user_linker=user_linker)
+    interaction = FakeInteraction(user_id=111)
+    member = SimpleNamespace(id=222)
+
+    await sender._handle_unlink_user(interaction, "stoat", member)
+
+    assert user_linker.unlink_user_calls == [{"local_connector": "discord", "local_user_id": "222", "destination": "stoat"}]
+
+
+async def test_unlink_user_without_a_configured_user_linker():
+    sender = _make_sender(FakeLinker(), user_linker=None)
+    interaction = FakeInteraction()
+
+    await sender._handle_unlink_user(interaction, None, None)
 
     assert interaction.sent == ["User linking isn't configured."]
 

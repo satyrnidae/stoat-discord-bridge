@@ -46,7 +46,23 @@ _LINE_LIMIT = 400
 # or "!" - unlike Discord/Stoat's slash commands, since many IRC clients
 # swallow a leading "/" as a local client command). See
 # _handle_privmsg/_handle_dm_command.
-_ADMIN_DM_COMMANDS = frozenset({"LINK_CHANNEL", "LINK_EMOTE", "LINK_USER", "MIRROR_CHANNEL"})
+_ADMIN_DM_COMMANDS = frozenset(
+    {"LINK_CHANNEL", "LINK_EMOTE", "LINK_USER", "MIRROR_CHANNEL", "UNLINK_CHANNEL", "UNLINK_USER"}
+)
+
+# IRC has no slash-command discoverability at all, hence HELP. See
+# COMMANDS.md for full per-command detail - this is a compact pointer to it.
+_HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full detail):
+  STATUS - sync target health, read-only
+  LINKED_CHANNELS <local_channel_id> - channels bridged to <local_channel_id>, read-only
+  LINKED_USERS [local_user_id] - cross-connector user links, read-only
+  LINK_CHANNEL <source> <source_id> <local_id> - bridge a channel (IRC-operator)
+  LINK_USER <source> <user_id> <local_user_id> - link a user for mentions/masquerading (IRC-operator)
+  LINK_EMOTE <source> <source_id> <local_id> - link a custom emoji (IRC-operator)
+  MIRROR_CHANNEL <destination|all> <local_channel_id> - create+link a matching channel (IRC-operator)
+  UNLINK_CHANNEL <local_channel_id> [destination|all] - unlink a channel from one connector, or the whole group (IRC-operator)
+  UNLINK_USER [destination|all] [local_user_id] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
+  HELP - this message"""
 
 # irc.satyrn.dev (InspIRCd-4 + a chanhistory-style module, enabled via the
 # `H` in default_channel_modes) replays recent history to a channel right
@@ -264,6 +280,9 @@ class IrcSenderService(SenderService):
             for line in self._health.render().splitlines():
                 connection.notice(event.source.nick, line)
             return
+        if content.strip().upper() == "HELP":
+            self._notify(event.source.nick, _HELP_TEXT)
+            return
         words = content.split()
         if words and words[0].upper() == "LINKED_CHANNELS":
             self._schedule(self._handle_linked_channels_command(event.source.nick, words[1:]))
@@ -444,6 +463,49 @@ class IrcSenderService(SenderService):
                         local_channel_name=local_channel_id,
                         destination=destination,
                     )
+            except LinkError as exc:
+                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
+                self._notify(nick, str(exc))
+                return
+            self._notify(nick, summary)
+        elif command == "UNLINK_CHANNEL":
+            # Same "no current channel" reasoning as MIRROR_CHANNEL -
+            # local_channel_id is always required; destination is optional
+            # and defaults to "all" (dissolving the whole bridge group).
+            if len(args) not in (1, 2):
+                self._notify(nick, "Usage: UNLINK_CHANNEL <local_channel_id> [destination|all]")
+                return
+            local_channel_id = args[0]
+            destination = args[1] if len(args) > 1 else None
+            if self._linker is None:
+                self._notify(nick, "Linking isn't configured.")
+                return
+            try:
+                summary = await self._linker.unlink_channel(
+                    local_connector=self.connector_id, local_channel_id=local_channel_id, destination=destination
+                )
+            except LinkError as exc:
+                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
+                self._notify(nick, str(exc))
+                return
+            self._notify(nick, summary)
+        elif command == "UNLINK_USER":
+            # Unlike UNLINK_CHANNEL, both args are optional here: destination
+            # defaults to "all", and local_user_id defaults to the nick
+            # running the command - IRC has no "current channel" to fall
+            # back to, but it does always know who's asking.
+            if len(args) > 2:
+                self._notify(nick, "Usage: UNLINK_USER [destination|all] [local_user_id]")
+                return
+            destination = args[0] if args else None
+            local_user_id = args[1] if len(args) > 1 else nick
+            if self._user_linker is None:
+                self._notify(nick, "User linking isn't configured.")
+                return
+            try:
+                summary = await self._user_linker.unlink_user(
+                    local_connector=self.connector_id, local_user_id=local_user_id, destination=destination
+                )
             except LinkError as exc:
                 logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
                 self._notify(nick, str(exc))

@@ -43,6 +43,7 @@ class FakeLinker:
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
+        self.unlink_channel_calls: list[dict] = []
 
     async def link_channel(self, **kwargs):
         self.link_channel_calls.append(kwargs)
@@ -66,6 +67,12 @@ class FakeLinker:
             raise self._raises
         return "mirrored to all ok"
 
+    async def unlink_channel(self, **kwargs):
+        self.unlink_channel_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "unlinked ok"
+
 
 class FakeEmoteLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
@@ -84,6 +91,7 @@ class FakeUserLinker:
         self._raises = raises
         self.calls: list[dict] = []
         self.list_linked_users_calls: list[dict] = []
+        self.unlink_user_calls: list[dict] = []
 
     async def link_user(self, **kwargs):
         self.calls.append(kwargs)
@@ -94,6 +102,12 @@ class FakeUserLinker:
     async def list_linked_users(self, **kwargs):
         self.list_linked_users_calls.append(kwargs)
         return "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
+
+    async def unlink_user(self, **kwargs):
+        self.unlink_user_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "user unlinked ok"
 
 
 def _make_sender(
@@ -415,3 +429,127 @@ async def test_linked_users_needs_no_oper_status():
     await sender._handle_linked_users_command("alice", [])  # must not be rejected
 
     assert user_linker.list_linked_users_calls
+
+
+# ---------------------------------------------------------------- UNLINK_CHANNEL
+
+
+async def test_unlink_channel_defaults_destination_to_none():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "UNLINK_CHANNEL #general")
+
+    assert linker.unlink_channel_calls == [
+        {"local_connector": "irc", "local_channel_id": "#general", "destination": None}
+    ]
+    assert conn.notice_calls == [("alice", "unlinked ok")]
+
+
+async def test_unlink_channel_with_a_specific_destination():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "UNLINK_CHANNEL #general discord")
+
+    assert linker.unlink_channel_calls == [
+        {"local_connector": "irc", "local_channel_id": "#general", "destination": "discord"}
+    ]
+
+
+async def test_unlink_channel_wrong_arg_count_sends_usage():
+    sender, conn = _make_sender(linker=FakeLinker())
+
+    await sender._handle_dm_command("alice", "UNLINK_CHANNEL")
+
+    assert conn.notice_calls == [("alice", "Usage: UNLINK_CHANNEL <local_channel_id> [destination|all]")]
+
+
+async def test_unlink_channel_without_a_configured_linker():
+    sender, conn = _make_sender(linker=None)
+
+    await sender._handle_dm_command("alice", "UNLINK_CHANNEL #general")
+
+    assert conn.notice_calls == [("alice", "Linking isn't configured.")]
+
+
+async def test_unlink_channel_rejects_a_non_oper():
+    sender, conn = _make_sender(is_oper=False, linker=FakeLinker())
+
+    await sender._handle_dm_command("alice", "UNLINK_CHANNEL #general")
+
+    assert conn.notice_calls == [("alice", "You need to be an IRC operator to do that.")]
+
+
+# ---------------------------------------------------------------- UNLINK_USER
+
+
+async def test_unlink_user_defaults_to_all_and_self():
+    user_linker = FakeUserLinker()
+    sender, conn = _make_sender(user_linker=user_linker)
+
+    await sender._handle_dm_command("alice", "UNLINK_USER")
+
+    assert user_linker.unlink_user_calls == [{"local_connector": "irc", "local_user_id": "alice", "destination": None}]
+    assert conn.notice_calls == [("alice", "user unlinked ok")]
+
+
+async def test_unlink_user_with_a_specific_destination_and_target():
+    user_linker = FakeUserLinker()
+    sender, conn = _make_sender(user_linker=user_linker)
+
+    await sender._handle_dm_command("alice", "UNLINK_USER discord bob")
+
+    assert user_linker.unlink_user_calls == [{"local_connector": "irc", "local_user_id": "bob", "destination": "discord"}]
+
+
+async def test_unlink_user_too_many_args_sends_usage():
+    sender, conn = _make_sender(user_linker=FakeUserLinker())
+
+    await sender._handle_dm_command("alice", "UNLINK_USER discord bob extra")
+
+    assert conn.notice_calls == [("alice", "Usage: UNLINK_USER [destination|all] [local_user_id]")]
+
+
+async def test_unlink_user_without_a_configured_linker():
+    sender, conn = _make_sender(user_linker=None)
+
+    await sender._handle_dm_command("alice", "UNLINK_USER")
+
+    assert conn.notice_calls == [("alice", "User linking isn't configured.")]
+
+
+async def test_unlink_user_rejects_a_non_oper():
+    sender, conn = _make_sender(is_oper=False, user_linker=FakeUserLinker())
+
+    await sender._handle_dm_command("alice", "UNLINK_USER")
+
+    assert conn.notice_calls == [("alice", "You need to be an IRC operator to do that.")]
+
+
+# ---------------------------------------------------------------- HELP
+
+
+async def test_privmsg_help_replies_directly_without_scheduling():
+    sender, conn = _make_sender()
+    scheduled = []
+    sender._schedule = lambda coro: scheduled.append(coro)
+
+    sender._handle_privmsg(None, FakeIrcEvent(text="HELP", nick="alice"))
+
+    assert scheduled == []
+    assert conn.notice_calls
+    assert conn.notice_calls[0][0] == "alice"
+
+
+async def test_privmsg_help_is_case_insensitive():
+    sender, conn = _make_sender()
+    sender._handle_privmsg(None, FakeIrcEvent(text="  help  ", nick="alice"))
+    assert conn.notice_calls
+
+
+async def test_privmsg_help_needs_no_oper_status():
+    sender, conn = _make_sender(is_oper=False)
+    sender._handle_privmsg(None, FakeIrcEvent(text="HELP", nick="alice"))
+    assert conn.notice_calls
+    assert "operator" not in conn.notice_calls[0][1].lower()

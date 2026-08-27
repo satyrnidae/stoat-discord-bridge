@@ -77,16 +77,20 @@ class FakeCollection:
             new_doc["_id"] = ObjectId()
             self.docs[str(new_doc["_id"])] = new_doc
 
-    async def delete_one(self, query: dict) -> None:
+    async def delete_one(self, query: dict):
         for key, doc in list(self.docs.items()):
             if _matches(doc, query):
                 del self.docs[key]
-                return
+                return type("DeleteResult", (), {"deleted_count": 1})()
+        return type("DeleteResult", (), {"deleted_count": 0})()
 
-    async def delete_many(self, query: dict) -> None:
+    async def delete_many(self, query: dict):
+        count = 0
         for key, doc in list(self.docs.items()):
             if _matches(doc, query):
                 del self.docs[key]
+                count += 1
+        return type("DeleteResult", (), {"deleted_count": count})()
 
 
 def _matches(doc: dict, query: dict) -> bool:

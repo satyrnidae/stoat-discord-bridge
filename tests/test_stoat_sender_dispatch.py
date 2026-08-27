@@ -120,6 +120,45 @@ async def test_handle_message_linked_users_command_routes_to_its_handler():
     assert channel.sent == [{"content": "User linking isn't configured.", "masquerade": None}]
 
 
+async def test_handle_message_bridge_help_command_replies_in_channel_and_doesnt_relay():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    author = FakeAuthor(id="u1")
+
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/bridge-help"))
+
+    assert recorder.messages == []
+    assert len(channel.sent) == 1
+    assert "/status" in channel.sent[0]["content"]
+
+
+async def test_handle_message_unlink_channel_command_routes_to_its_handler():
+    # Full behavior is covered in test_stoat_admin_dispatch.py; this only
+    # proves _handle_message actually routes "/unlink-channel" there.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    author = FakeAuthor(id="u1")
+
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink-channel"))
+
+    assert recorder.messages == []
+    assert channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}]
+
+
+async def test_handle_message_unlink_user_command_routes_to_its_handler():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    author = FakeAuthor(id="u1")
+
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink-user"))
+
+    assert recorder.messages == []
+    assert channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}]
+
+
 async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar():
     recorder = _Recorder()
     client = FakeClient()

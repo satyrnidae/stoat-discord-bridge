@@ -184,6 +184,76 @@ async def test_list_linked_channels_falls_back_to_the_raw_id_for_an_unknown_conn
     assert "webchat: general (w1)" in summary
 
 
+# ---------------------------------------------------------------- ChannelLinker.unlink_channel
+
+
+async def test_unlink_channel_unlinked_channel_raises(fake_db, connectors):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    with pytest.raises(LinkError, match="isn't linked"):
+        await linker.unlink_channel(local_connector="stoat", local_channel_id="s1", destination=None)
+
+
+async def test_unlink_channel_unknown_destination_raises(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    with pytest.raises(LinkError, match="isn't linked in this channel's bridge group"):
+        await linker.unlink_channel(local_connector="stoat", local_channel_id="s1", destination="irc")
+
+
+async def test_unlink_channel_specific_destination_kicks_only_that_member(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+    await linker.link_channel(
+        local_connector="irc", local_channel_id="#general", local_channel_name="#general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    summary = await linker.unlink_channel(local_connector="stoat", local_channel_id="s1", destination="discord")
+
+    assert "Unlinked Discord channel 'd1' (d1)" in summary
+    remaining = await linker.list_linked_channels(local_connector="stoat", local_channel_id="s1")
+    assert "Discord" not in remaining
+    assert "IRC: #general (#general)" in remaining
+    assert "Stoat: general (s1) (this channel)" in remaining
+
+
+async def test_unlink_channel_all_dissolves_the_whole_group(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    summary = await linker.unlink_channel(local_connector="stoat", local_channel_id="s1", destination="all")
+
+    assert "2 channel(s) removed" in summary
+    assert await channel_mappings.get_bridge_group("stoat", "s1") is None
+    assert await channel_mappings.get_bridge_group("discord", "d1") is None
+
+
+async def test_unlink_channel_defaults_to_all(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    await linker.unlink_channel(local_connector="stoat", local_channel_id="s1", destination=None)
+
+    assert await channel_mappings.get_bridge_group("discord", "d1") is None
+
+
 # ---------------------------------------------------------------- EmoteLinker.link_emote
 
 
@@ -238,6 +308,25 @@ async def test_link_user_to_themselves_raises(fake_db, connectors):
     linker = UserLinker(UserMappingRepository(fake_db), connectors)
     with pytest.raises(LinkError, match="themselves"):
         await linker.link_user(local_connector="discord", local_user_id="111", source="discord", source_user_id="111")
+
+
+async def test_link_user_strips_a_pasted_discord_mention(fake_db, connectors):
+    # Stoat/IRC's /link-user has no member-picker (unlike Discord's) - a
+    # Discord id typed/pasted there often arrives as a full "<@id>" mention
+    # rather than the bare snowflake.
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    summary = await linker.link_user(
+        local_connector="irc", local_user_id="Alice", source="discord", source_user_id="<@216591124222050304>"
+    )
+    assert "Linked Discord user '216591124222050304' to IRC user 'Alice'" in summary
+
+
+async def test_link_user_strips_a_pasted_discord_nickname_mention(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    summary = await linker.link_user(
+        local_connector="irc", local_user_id="Alice", source="discord", source_user_id="<@!216591124222050304>"
+    )
+    assert "Linked Discord user '216591124222050304' to IRC user 'Alice'" in summary
 
 
 async def test_link_user_conflicting_groups_raises(fake_db, connectors):
@@ -318,6 +407,71 @@ async def test_list_linked_users_with_no_target_lists_every_group(fake_db, conne
     assert len(lines) == 2
     assert any("111" in line and "s1" in line for line in lines)
     assert any("222" in line and "Bob" in line for line in lines)
+
+
+# ---------------------------------------------------------------- UserLinker.unlink_user
+
+
+async def test_unlink_user_unlinked_user_raises(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    with pytest.raises(LinkError, match="isn't linked"):
+        await linker.unlink_user(local_connector="irc", local_user_id="Alice", destination=None)
+
+
+async def test_unlink_user_unknown_destination_raises(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+
+    with pytest.raises(LinkError, match="isn't linked in this user's link group"):
+        await linker.unlink_user(local_connector="irc", local_user_id="Alice", destination="stoat")
+
+
+async def test_unlink_user_specific_destination_kicks_only_that_member(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+    await linker.link_user(local_connector="stoat", local_user_id="s1", source="discord", source_user_id="111")
+
+    summary = await linker.unlink_user(local_connector="irc", local_user_id="Alice", destination="discord")
+
+    assert "Unlinked Discord user '111'" in summary
+    remaining = await linker.list_linked_users(local_connector="irc", local_user_id="Alice")
+    assert "Discord" not in remaining
+    assert "Stoat: s1" in remaining
+
+
+async def test_unlink_user_all_dissolves_the_whole_group(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+
+    summary = await linker.unlink_user(local_connector="irc", local_user_id="Alice", destination="all")
+
+    assert "2 identity/identities removed" in summary
+    assert await user_mappings.get_link_group("irc", "Alice") is None
+    assert await user_mappings.get_link_group("discord", "111") is None
+
+
+async def test_unlink_user_defaults_to_all(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+
+    await linker.unlink_user(local_connector="irc", local_user_id="Alice", destination=None)
+
+    assert await user_mappings.get_link_group("discord", "111") is None
+
+
+async def test_unlink_user_strips_a_pasted_discord_mention(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+
+    summary = await linker.unlink_user(local_connector="discord", local_user_id="<@111>", destination="all")
+
+    assert "removed" in summary
+    assert await user_mappings.get_link_group("irc", "Alice") is None
 
 
 # ---------------------------------------------------------------- .connectors (Discord autocomplete)

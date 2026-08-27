@@ -51,6 +51,20 @@ class ChannelMappingRepository:
             upsert=True,
         )
 
+    async def delete_mapping(self, connector_id: str, channel_id: str) -> bool:
+        """Removes just this one channel from its bridge group - the rest of
+        the group (if any) stays linked to each other. For `/unlink-channel
+        <destination>`, which kicks a single member rather than dissolving
+        the whole group."""
+        result = await self._collection.delete_one({"platform": connector_id, "channel_id": channel_id})
+        return result.deleted_count > 0
+
+    async def delete_bridge_group(self, bridge_group: str) -> int:
+        """Dissolves an entire bridge group - every member channel, not just
+        one. For `/unlink-channel`'s default ("all") behavior."""
+        result = await self._collection.delete_many({"bridge_group": bridge_group})
+        return result.deleted_count
+
 
 def _from_doc(doc: dict) -> ChannelMapping:
     return ChannelMapping(

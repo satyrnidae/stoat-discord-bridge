@@ -48,6 +48,22 @@ logger = logging.getLogger(__name__)
 # doesn't expose its own constant, so this mirrors the documented server-side max).
 _CONTENT_LIMIT = 2000
 
+# Discord has native slash-command discoverability; Stoat's commands are
+# plain chat messages with no such affordance, hence /bridge-help. See
+# COMMANDS.md for full per-command detail - this is a compact pointer to it.
+_HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
+  /status - sync target health, read-only
+  /linked-channels - channels bridged to this one, read-only
+  /linked-users [user_id] - cross-connector user links, read-only
+  /link-channel <source> <source_id> [destination_id] - bridge a channel (Manage Server)
+  /link-user <source> <user_id> <local_user_id> - link a user for mentions/masquerading (Manage Server)
+  /link-emote <source> <source_id> <local_id> - link a custom emoji (Manage Server)
+  /mirror-channel <destination|all> [local_channel_id] - create+link a matching channel (Manage Server)
+  /mirror-channels <source> - recreate a Discord guild's structure here (Manage Server)
+  /unlink-channel [destination|all] - unlink this channel from one connector, or the whole group (Manage Server)
+  /unlink-user [destination|all] [user_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
+  /bridge-help - this message"""
+
 
 def _discover_node_config(http_base: str, *, connector_id: str = "stoat") -> dict | None:
     """Fetches the "NodeInfo"-style config document every stoat.py-compatible
@@ -281,6 +297,9 @@ class StoatSenderService(SenderService):
         if cmd == "/status":
             await message.channel.send(self._health.render())
             return
+        if cmd == "/bridge-help":
+            await message.channel.send(_HELP_TEXT)
+            return
         if cmd == "/linked-channels":
             await self._handle_linked_channels(message)
             return
@@ -301,6 +320,12 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/mirror-channel":
             await self._handle_mirror_channel(message, parts[1:])
+            return
+        if cmd == "/unlink-channel":
+            await self._handle_unlink_channel(message, parts[1:])
+            return
+        if cmd == "/unlink-user":
+            await self._handle_unlink_user(message, parts[1:])
             return
         logger.debug(
             "[stoat:%s] message %s in channel %s from %s",
@@ -618,6 +643,58 @@ class StoatSenderService(SenderService):
                 )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror-channel rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_unlink_channel(self, message, args: list[str], /) -> None:
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        destination = args[0] if args else None
+
+        if self._linker is None:
+            await message.channel.send("Linking isn't configured.")
+            return
+        logger.info(
+            "[stoat:%s] %s ran /unlink-channel destination=%s", self.connector_id, message.author.id, destination
+        )
+        try:
+            summary = await self._linker.unlink_channel(
+                local_connector=self.connector_id, local_channel_id=str(message.channel.id), destination=destination
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /unlink-channel rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_unlink_user(self, message, args: list[str], /) -> None:
+        """`/unlink-user [destination|all] [user_id]`: destination defaults
+        to "all" (dissolving the whole link group); user_id defaults to the
+        invoking user themselves."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        destination = args[0] if args else None
+        user_id = args[1] if len(args) > 1 else str(message.author.id)
+
+        if self._user_linker is None:
+            await message.channel.send("User linking isn't configured.")
+            return
+        logger.info(
+            "[stoat:%s] %s ran /unlink-user destination=%s user_id=%s",
+            self.connector_id,
+            message.author.id,
+            destination,
+            user_id,
+        )
+        try:
+            summary = await self._user_linker.unlink_user(
+                local_connector=self.connector_id, local_user_id=user_id, destination=destination
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /unlink-user rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)

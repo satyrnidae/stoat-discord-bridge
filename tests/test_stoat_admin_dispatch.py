@@ -29,6 +29,7 @@ class FakeLinker:
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
+        self.unlink_channel_calls: list[dict] = []
 
     async def link_channel(self, **kwargs):
         self.link_channel_calls.append(kwargs)
@@ -52,6 +53,12 @@ class FakeLinker:
             raise self._raises
         return "mirrored to all ok"
 
+    async def unlink_channel(self, **kwargs):
+        self.unlink_channel_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "unlinked ok"
+
 
 class FakeEmoteLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
@@ -70,6 +77,7 @@ class FakeUserLinker:
         self._raises = raises
         self.calls: list[dict] = []
         self.list_linked_users_calls: list[dict] = []
+        self.unlink_user_calls: list[dict] = []
 
     async def list_linked_users(self, **kwargs):
         self.list_linked_users_calls.append(kwargs)
@@ -80,6 +88,12 @@ class FakeUserLinker:
         if self._raises is not None:
             raise self._raises
         return "user linked ok"
+
+    async def unlink_user(self, **kwargs):
+        self.unlink_user_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "user unlinked ok"
 
 
 class FakeMirrorer:
@@ -150,8 +164,10 @@ async def test_each_admin_command_rejects_a_non_admin():
     await sender._handle_link_emote(message, ["discord", "s1", "l1"])
     await sender._handle_link_user(message, ["discord", "u1", "l1"])
     await sender._handle_mirror_channel(message, ["discord"])
+    await sender._handle_unlink_channel(message, [])
+    await sender._handle_unlink_user(message, [])
 
-    assert message.channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}] * 5
+    assert message.channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}] * 7
 
 
 # ---------------------------------------------------------------- _handle_link_channel
@@ -476,3 +492,89 @@ async def test_linked_users_needs_no_admin_permission():
     await sender._handle_linked_users(message, [])  # must not be rejected
 
     assert user_linker.list_linked_users_calls
+
+
+# ---------------------------------------------------------------- _handle_unlink_channel
+
+
+async def test_unlink_channel_defaults_to_all():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    message = _admin_message(channel=FakeChannel(id="c1"))
+
+    await sender._handle_unlink_channel(message, [])
+
+    assert linker.unlink_channel_calls == [{"local_connector": "stoat", "local_channel_id": "c1", "destination": None}]
+    assert message.channel.sent[0]["content"] == "unlinked ok"
+
+
+async def test_unlink_channel_with_a_specific_destination():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    message = _admin_message(channel=FakeChannel(id="c1"))
+
+    await sender._handle_unlink_channel(message, ["discord"])
+
+    assert linker.unlink_channel_calls == [{"local_connector": "stoat", "local_channel_id": "c1", "destination": "discord"}]
+
+
+async def test_unlink_channel_without_a_configured_linker():
+    sender = _make_sender(linker=None)
+    message = _admin_message()
+
+    await sender._handle_unlink_channel(message, [])
+
+    assert message.channel.sent[0]["content"] == "Linking isn't configured."
+
+
+async def test_unlink_channel_reports_a_link_error():
+    linker = FakeLinker(raises=LinkError("this channel isn't linked to anything."))
+    sender = _make_sender(linker=linker)
+    message = _admin_message()
+
+    await sender._handle_unlink_channel(message, [])
+
+    assert message.channel.sent[0]["content"] == "this channel isn't linked to anything."
+
+
+# ---------------------------------------------------------------- _handle_unlink_user
+
+
+async def test_unlink_user_defaults_to_all_and_self():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    message = _admin_message()
+
+    await sender._handle_unlink_user(message, [])
+
+    assert user_linker.unlink_user_calls == [{"local_connector": "stoat", "local_user_id": "admin-1", "destination": None}]
+    assert message.channel.sent[0]["content"] == "user unlinked ok"
+
+
+async def test_unlink_user_with_a_specific_destination_and_target():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    message = _admin_message()
+
+    await sender._handle_unlink_user(message, ["discord", "s1"])
+
+    assert user_linker.unlink_user_calls == [{"local_connector": "stoat", "local_user_id": "s1", "destination": "discord"}]
+
+
+async def test_unlink_user_without_a_configured_user_linker():
+    sender = _make_sender(user_linker=None)
+    message = _admin_message()
+
+    await sender._handle_unlink_user(message, [])
+
+    assert message.channel.sent[0]["content"] == "User linking isn't configured."
+
+
+async def test_unlink_user_reports_a_link_error():
+    user_linker = FakeUserLinker(raises=LinkError("this user isn't linked to anything."))
+    sender = _make_sender(user_linker=user_linker)
+    message = _admin_message()
+
+    await sender._handle_unlink_user(message, [])
+
+    assert message.channel.sent[0]["content"] == "this user isn't linked to anything."

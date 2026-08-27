@@ -11,6 +11,7 @@ channel created/matched, by the Stoat `/mirror-channels` handler.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -21,6 +22,21 @@ from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, 
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 
 logger = logging.getLogger(__name__)
+
+# Only Discord's `/link-user` uses a real member-picker (see
+# discord_service.py's _handle_link_user); Stoat's and IRC's equivalents take
+# the id as free text, and a Discord id typed/pasted there commonly comes in
+# as a full `<@id>`/`<@!id>` mention (e.g. copied straight out of Discord)
+# rather than the bare snowflake - which then never matches a real Discord
+# user and shows up unresolved (as the literal mention) in /linked-users.
+# No native id on any other connector kind looks like this, so stripping it
+# unconditionally here is safe regardless of which connector is involved.
+_DISCORD_MENTION_RE = re.compile(r"^<@!?(\d+)>$")
+
+
+def _strip_discord_mention(raw: str) -> str:
+    match = _DISCORD_MENTION_RE.match(raw.strip())
+    return match.group(1) if match else raw
 
 
 class LinkError(Exception):
@@ -217,6 +233,29 @@ class ChannelLinker:
             lines.append(f"{label}: {mapping.channel_name} ({mapping.channel_id}){marker}")
         return "Linked channels:\n" + "\n".join(lines)
 
+    async def unlink_channel(self, *, local_connector: str, local_channel_id: str, destination: str | None) -> str:
+        """`/unlink-channel`. `destination` (a connector id) kicks just that
+        one member out of `local_channel_id`'s bridge group - everyone else
+        (including this channel) stays linked to each other; None/"all"
+        (the default) dissolves the whole group instead, unlinking every
+        member. Raises LinkError if the channel isn't linked, or
+        `destination` isn't actually a member of its group."""
+        bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
+        if bridge_group is None:
+            raise LinkError("this channel isn't linked to anything.")
+
+        if destination is None or destination.lower() == "all":
+            count = await self._channel_mappings.delete_bridge_group(bridge_group)
+            return f"Unlinked this channel's entire bridge group ({count} channel(s) removed)."
+
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+        target = next((m for m in mapped if m.connector_id == destination), None)
+        if target is None:
+            raise LinkError(f"'{destination}' isn't linked in this channel's bridge group.")
+        await self._channel_mappings.delete_mapping(destination, target.channel_id)
+        label = self._connectors[destination].label if destination in self._connectors else destination
+        return f"Unlinked {label} channel '{target.channel_name}' ({target.channel_id}) from this bridge group."
+
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
         if info is None or info.resolve_channel_name is None:
@@ -293,6 +332,8 @@ class UserLinker:
         identity, or both already belong to two *different* existing link groups."""
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
+        source_user_id = _strip_discord_mention(source_user_id)
+        local_user_id = _strip_discord_mention(local_user_id)
         if source == local_connector and source_user_id == local_user_id:
             raise LinkError("can't link a user to themselves.")
 
@@ -350,6 +391,30 @@ class UserLinker:
                 parts.append(f"{label}: {name}" if name == mapping.user_id else f"{label}: {name} ({mapping.user_id})")
             lines.append(" ↔ ".join(parts))
         return "Linked users:\n" + "\n".join(lines)
+
+    async def unlink_user(self, *, local_connector: str, local_user_id: str, destination: str | None) -> str:
+        """`/unlink-user`. `destination` (a connector id) kicks just that one
+        identity out of `local_user_id`'s link group - everyone else
+        (including this identity) stays linked to each other; None/"all"
+        (the default) dissolves the whole group instead, unlinking every
+        identity. Raises LinkError if the user isn't linked, or
+        `destination` isn't actually a member of its group."""
+        local_user_id = _strip_discord_mention(local_user_id)
+        link_group = await self._user_mappings.get_link_group(local_connector, local_user_id)
+        if link_group is None:
+            raise LinkError("this user isn't linked to anything.")
+
+        if destination is None or destination.lower() == "all":
+            count = await self._user_mappings.delete_link_group(link_group)
+            return f"Unlinked this user's entire link group ({count} identity/identities removed)."
+
+        mapped = await self._user_mappings.get_mapped_users(link_group)
+        target = next((m for m in mapped if m.connector_id == destination), None)
+        if target is None:
+            raise LinkError(f"'{destination}' isn't linked in this user's link group.")
+        await self._user_mappings.delete_mapping(destination, target.user_id)
+        label = self._connectors[destination].label if destination in self._connectors else destination
+        return f"Unlinked {label} user '{target.user_id}' from this user's link group."
 
     async def _resolve_user_name(self, connector_id: str, user_id: str) -> str:
         info = self._connectors.get(connector_id)

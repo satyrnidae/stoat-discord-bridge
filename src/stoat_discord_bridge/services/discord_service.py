@@ -276,6 +276,47 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_mirror_channel(interaction, destination, local_channel_id)
 
+        async def unlink_channel_destination_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._linker.connectors if self._linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors, include_all=True)
+
+        @self.tree.command(
+            name="unlink-channel",
+            description="Unlink this channel's bridge - one connector, or the whole group (default: all)",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            destination="Connector id to unlink, or 'all' to dissolve the whole bridge group (default: all)",
+        )
+        @app_commands.autocomplete(destination=unlink_channel_destination_autocomplete)
+        async def unlink_channel_command(interaction: discord.Interaction, destination: str | None = None) -> None:
+            await self._handle_unlink_channel(interaction, destination)
+
+        async def unlink_user_destination_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._user_linker.connectors if self._user_linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors, include_all=True)
+
+        @self.tree.command(
+            name="unlink-user",
+            description="Unlink a user's cross-connector identity - one connector, or the whole group (default: all)",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            destination="Connector id to unlink, or 'all' to dissolve the whole link group (default: all)",
+            user="Member to unlink (defaults to yourself)",
+        )
+        @app_commands.autocomplete(destination=unlink_user_destination_autocomplete)
+        async def unlink_user_command(
+            interaction: discord.Interaction, destination: str | None = None, user: discord.Member | None = None
+        ) -> None:
+            await self._handle_unlink_user(interaction, destination, user)
+
     @property
     def client(self) -> discord.Client:
         return self._client
@@ -572,6 +613,47 @@ class DiscordSenderService(SenderService):
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror-channel rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_unlink_channel(self, interaction: discord.Interaction, destination: str | None) -> None:
+        if self._linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        logger.info(
+            "[discord:%s] %s ran /unlink-channel destination=%s", self.connector_id, interaction.user.id, destination
+        )
+        try:
+            summary = await self._linker.unlink_channel(
+                local_connector=self.connector_id, local_channel_id=str(interaction.channel_id), destination=destination
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /unlink-channel rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_unlink_user(
+        self, interaction: discord.Interaction, destination: str | None, user: discord.Member | None
+    ) -> None:
+        if self._user_linker is None:
+            await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
+            return
+        target = user or interaction.user
+        logger.info(
+            "[discord:%s] %s ran /unlink-user destination=%s user=%s",
+            self.connector_id,
+            interaction.user.id,
+            destination,
+            target.id,
+        )
+        try:
+            summary = await self._user_linker.unlink_user(
+                local_connector=self.connector_id, local_user_id=str(target.id), destination=destination
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /unlink-user rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
