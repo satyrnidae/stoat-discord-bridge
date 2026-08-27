@@ -580,8 +580,13 @@ class IrcSenderService(SenderService):
         handles that + applying default_channel_modes to a freshly-created
         one). Idempotent: joining an already-joined channel is a no-op on
         the server. Channel names get a `#` prefix if missing, since local
-        channel names on other connectors (Discord/Stoat) won't have one."""
-        channel = name if name.startswith("#") else f"#{name}"
+        channel names on other connectors (Discord/Stoat) won't have one -
+        and are lowercased with runs of whitespace turned into single
+        hyphens, since unlike a regular (already-kebab-case) Discord channel
+        name, a Discord thread name can contain spaces/capitals, which IRC
+        channel names can't."""
+        normalized = re.sub(r"\s+", "-", name.strip().lower())
+        channel = normalized if normalized.startswith("#") else f"#{normalized}"
         await self.join_channel(channel)
         return channel
 

@@ -120,6 +120,9 @@ class _DiscordClient(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         await self._owner._handle_message(message)
 
+    async def on_thread_create(self, thread: discord.Thread) -> None:
+        await self._owner._handle_thread_create(thread)
+
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         await self._owner._handle_raw_reaction(payload, added=True)
 
@@ -156,6 +159,10 @@ class DiscordSenderService(SenderService):
         self._emote_linker = emote_linker
         self._user_linker = user_linker
         self._commands_synced = False
+        # Discord thread ids whose auto-mirror (_handle_thread_create) has
+        # fired but whose starter message hasn't arrived through
+        # _handle_message yet - see both methods' docstrings.
+        self._pending_thread_intro: set[int] = set()
         self._guild = discord.Object(id=config.guild_id)
         self._client = _DiscordClient(self)
         self.tree = discord.app_commands.CommandTree(self._client)
@@ -343,6 +350,13 @@ class DiscordSenderService(SenderService):
             return
         if message.guild is None or message.guild.id != self._config.guild_id:
             return
+        if message.channel.id in self._pending_thread_intro:
+            # The starter message of a thread _handle_thread_create just
+            # auto-mirrored - it already announced the new channel, so drop
+            # this one instead of relaying its raw content (usually just the
+            # thread name again) into the freshly-linked channels.
+            self._pending_thread_intro.discard(message.channel.id)
+            return
         logger.debug(
             "[discord:%s] message %s in channel %s from %s",
             self.connector_id,
@@ -351,6 +365,58 @@ class DiscordSenderService(SenderService):
             message.author.id,
         )
         await self._on_message(_to_standard_message(message, self.connector_id))
+
+    async def _handle_thread_create(self, thread: discord.Thread) -> None:
+        """A Discord thread (including a forum post, also a discord.Thread -
+        see _get_or_create_webhook's docstring) has no IRC/Stoat equivalent,
+        so instead of relaying its starter message as plain text, bundle a
+        `/mirror-channel all`-style request: ensure a same-named channel
+        exists and is linked on every other connector, then announce that in
+        the newly-linked channels rather than the raw starter message
+        (suppressed via _pending_thread_intro - see _handle_message). Only
+        fires for a thread whose parent channel is itself already bridged,
+        so this doesn't auto-mirror every thread created anywhere in the
+        guild. One-way (Discord -> Stoat/IRC) only; Stoat/IRC have no
+        equivalent "created a thread" event of their own yet.
+
+        `thread.id` is recorded *before* any `await` below so _handle_message
+        is guaranteed to see it in time for the thread's own starter
+        message: discord.py dispatches gateway events (and so schedules each
+        handler's task) in the order they're received, and THREAD_CREATE
+        always precedes the MESSAGE_CREATE for a new thread's first message.
+        """
+        if self._linker is None or thread.guild.id != self._config.guild_id:
+            return
+        parent = thread.parent
+        if parent is None or not await self._linker.is_linked(self.connector_id, str(parent.id)):
+            return  # this thread's parent was never bridged - leave the thread alone
+
+        self._pending_thread_intro.add(thread.id)
+        try:
+            await self._linker.mirror_channel_all(
+                local_connector=self.connector_id, local_channel_id=str(thread.id), local_channel_name=clip_name(thread.name)
+            )
+        except Exception:
+            logger.exception("[discord:%s] failed to auto-mirror thread %s", self.connector_id, thread.id)
+            self._pending_thread_intro.discard(thread.id)
+            return
+
+        bot_user = self._client.user
+        link = f"https://discord.com/channels/{thread.guild.id}/{thread.id}"
+        await self._on_message(
+            StandardMessage(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(thread.id),
+                channel_name=thread.name,
+                sender_name=bot_user.display_name if bot_user is not None else "Bridge",
+                sender_avatar_url=(
+                    str(bot_user.display_avatar.url) if bot_user is not None and bot_user.display_avatar else None
+                ),
+                sender_user_id=str(bot_user.id) if bot_user is not None else "",
+                content_markdown=f"Created a new channel {link}",
+                message_id=f"thread-created-{thread.id}",
+            )
+        )
 
     async def _handle_raw_reaction(self, payload: discord.RawReactionActionEvent, *, added: bool) -> None:
         if self._on_reaction is None or payload.guild_id != self._config.guild_id:

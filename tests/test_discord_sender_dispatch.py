@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.services.discord_service import DiscordSenderService
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 from tests.fakes.fake_discord import (
     FakeAsset,
     FakeAttachment,
@@ -21,6 +23,7 @@ from tests.fakes.fake_discord import (
     FakeGuild,
     FakePartialEmoji,
     FakeRawReactionActionEvent,
+    FakeThread,
     FakeUser,
 )
 
@@ -51,7 +54,7 @@ class _Recorder:
         self.emoji_deleted.append(deleted)
 
 
-def _make_sender(recorder: _Recorder, client: FakeClient, **config_overrides) -> DiscordSenderService:
+def _make_sender(recorder: _Recorder, client: FakeClient, *, linker=None, **config_overrides) -> DiscordSenderService:
     sender = DiscordSenderService(
         _discord_config(**config_overrides),
         on_message=recorder.on_message,
@@ -59,6 +62,7 @@ def _make_sender(recorder: _Recorder, client: FakeClient, **config_overrides) ->
         on_reaction=recorder.on_reaction,
         on_emoji_created=recorder.on_emoji_created,
         on_emoji_deleted=recorder.on_emoji_deleted,
+        linker=linker,
     )
     sender._client = client
     return sender
@@ -331,3 +335,120 @@ async def test_get_user_name_returns_none_on_a_non_numeric_id():
     sender = _make_sender(_Recorder(), client)
 
     assert await sender.get_user_name("not-a-number") is None
+
+
+# ---------------------------------------------------------------- _handle_thread_create
+
+
+async def _stoat_ensure_channel(name: str) -> str:
+    return f"stoat_{name}"
+
+
+async def _irc_ensure_channel(name: str) -> str:
+    return f"irc_{name}"
+
+
+def _linked_connectors():
+    return {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=_stoat_ensure_channel),
+        "irc": ConnectorInfo(id="irc", label="IRC", ensure_channel=_irc_ensure_channel),
+    }
+
+
+async def test_handle_thread_create_mirrors_and_announces_when_parent_is_bridged(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _linked_connectors())
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=9, display_name="Bridge", display_avatar=FakeAsset("https://cdn.example/bot.png")))
+    sender = _make_sender(recorder, client, linker=linker)
+    parent = FakeChannel(id=42)
+    thread = FakeThread(id=777, parent=parent, name="Test Thread", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    group = await channel_mappings.get_bridge_group("discord", "777")
+    assert group is not None
+    mapped = {m.connector_id: m.channel_id for m in await channel_mappings.get_mapped_channels(group)}
+    assert mapped["stoat"] == "stoat_Test Thread"
+    assert mapped["irc"] == "irc_Test Thread"
+
+    [message] = recorder.messages
+    assert message.origin_connector_id == "discord"
+    assert message.origin_channel_id == "777"
+    assert message.content_markdown == "Created a new channel https://discord.com/channels/123/777"
+    assert message.sender_name == "Bridge"
+    assert message.message_id == "thread-created-777"
+
+
+async def test_handle_thread_create_skips_when_parent_isnt_bridged(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _linked_connectors())
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client, linker=linker)
+    thread = FakeThread(id=777, parent=FakeChannel(id=42), name="Test Thread", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    assert recorder.messages == []
+    assert await channel_mappings.get_bridge_group("discord", "777") is None
+
+
+async def test_handle_thread_create_ignores_a_different_guild(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _linked_connectors())
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), linker=linker)
+    thread = FakeThread(id=777, parent=FakeChannel(id=42), name="Test Thread", guild=FakeGuild(id=999))
+
+    await sender._handle_thread_create(thread)
+
+    assert recorder.messages == []
+
+
+async def test_handle_thread_create_does_nothing_without_a_linker():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())  # linker defaults to None
+    thread = FakeThread(id=777, parent=FakeChannel(id=42), name="Test Thread", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    assert recorder.messages == []
+
+
+async def test_handle_message_suppresses_the_threads_starter_message(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _linked_connectors())
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), linker=linker)
+    guild = FakeGuild(id=123)
+    thread = FakeThread(id=777, parent=FakeChannel(id=42), name="Test Thread", guild=guild)
+    author = FakeUser(id=1, display_name="isabel")
+
+    await sender._handle_thread_create(thread)
+    await sender._handle_message(_discord_message(channel=thread, guild=guild, author=author, content="Test Thread"))
+
+    # only the "Created a new channel" announcement made it through - the
+    # thread's own starter message (which duplicates the thread name) was
+    # swallowed, not relayed a second time.
+    assert len(recorder.messages) == 1
+    assert recorder.messages[0].content_markdown.startswith("Created a new channel")
+
+    # a later, ordinary message in the same thread relays normally - the
+    # suppression is one-shot.
+    await sender._handle_message(_discord_message(channel=thread, guild=guild, author=author, content="follow-up"))
+    assert len(recorder.messages) == 2
+    assert recorder.messages[1].content_markdown == "follow-up"

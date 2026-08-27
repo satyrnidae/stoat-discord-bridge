@@ -145,10 +145,15 @@ class FakeThread(discord.Thread):
     its own.
     """
 
-    def __init__(self, id: int, *, parent: FakeChannel, name: str = "thread") -> None:
+    def __init__(self, id: int, *, parent: FakeChannel, name: str = "thread", guild: FakeGuild | None = None) -> None:
         self.id = id
         self.name = name
         self._parent = parent
+        # `guild` is a plain instance attribute on the real Thread (not a
+        # property), set in its real __init__ - which this fake skips - so
+        # it's assigned directly here rather than shadowed via a property
+        # like `parent` below.
+        self.guild = guild
 
     @property
     def parent(self) -> FakeChannel:

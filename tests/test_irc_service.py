@@ -221,6 +221,20 @@ async def test_ensure_channel_leaves_existing_hash_prefix_alone(monkeypatch):
     assert conn.join_calls == ["#general"]
 
 
+async def test_ensure_channel_lowercases_and_hyphenates_a_thread_style_name(monkeypatch):
+    # Discord thread names can have spaces/capitals (unlike a regular,
+    # already-kebab-case Discord channel name) - IRC channel names can't
+    # contain spaces, so ensure_channel has to normalize those itself.
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    result = await sender.ensure_channel("Test Thread")
+
+    assert result == "#test-thread"
+    assert conn.join_calls == ["#test-thread"]
+
+
 # ---------------------------------------------------------------- history-replay suppression
 
 

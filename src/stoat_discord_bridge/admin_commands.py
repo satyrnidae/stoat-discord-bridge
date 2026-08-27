@@ -256,6 +256,14 @@ class ChannelLinker:
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} channel '{target.channel_name}' ({target.channel_id}) from this bridge group."
 
+    async def is_linked(self, connector_id: str, channel_id: str) -> bool:
+        """Whether `channel_id` (on `connector_id`) already belongs to a
+        bridge group - used by Discord's thread-creation auto-mirror (see
+        DiscordSenderService._handle_thread_create) to gate on the thread's
+        parent channel already being bridged, rather than mirroring every
+        thread created anywhere in the guild."""
+        return await self._channel_mappings.get_bridge_group(connector_id, channel_id) is not None
+
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
         if info is None or info.resolve_channel_name is None:
