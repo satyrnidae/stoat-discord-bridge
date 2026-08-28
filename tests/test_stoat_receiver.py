@@ -266,11 +266,15 @@ async def test_receive_falls_back_to_the_remote_identity_when_the_linked_stoat_u
 
 
 class _ThreadCats:
-    def __init__(self, ids: set[str]) -> None:
+    def __init__(self, ids: set[str], parents: dict[str, str] | None = None) -> None:
         self._ids = set(ids)
+        self._parents = dict(parents or {})  # category_id -> parent_channel_id
 
     async def is_thread_category(self, connector_id: str, category_id: str) -> bool:
         return category_id in self._ids
+
+    async def thread_category_parent(self, connector_id: str, category_id: str) -> str | None:
+        return self._parents.get(category_id)
 
 
 def _thread_grouping_server() -> FakeServer:
@@ -299,6 +303,26 @@ async def test_receive_groups_the_parent_channel_atop_the_thread_category():
     cats = {c["title"]: c["channels"] for c in payload["categories"]}
     assert cats["Admin"] == []  # parent pulled out of its old category
     assert cats["bot-config"] == ["parent-1", "thread-1"]  # parent first, then the thread
+
+
+async def test_receive_groups_the_parent_by_binding_after_a_rename():
+    client = FakeClient()
+    server = _thread_grouping_server()
+    # User renamed both the parent channel and the thread Category on Stoat -
+    # name match would fail, but the (parent-1 -> cat-bc) binding still resolves.
+    server.channels[0].name = "renamed-parent"
+    server.categories[1].title = "Renamed Category"
+    client.add_server(server)
+    client.add_channel(FakeChannel(id="thread-1"))
+    receiver = _make_receiver(client)
+    receiver._sender._category_linker = _ThreadCats({"cat-bc"}, {"cat-bc": "parent-1"})
+
+    await receiver.receive(_message(), target_channel_id="thread-1")
+
+    [payload] = server.server_edits
+    cats = {c["id"]: c["channels"] for c in payload["categories"]}
+    assert cats["cat-admin"] == []
+    assert cats["cat-bc"] == ["parent-1", "thread-1"]
 
 
 async def test_receive_doesnt_group_when_the_option_is_off():

@@ -89,7 +89,7 @@ async def test_link_category_conflicting_groups_raises(fake_db, connectors):
 
 async def test_link_category_rejects_a_thread_category_as_source(fake_db, connectors):
     linker, _, thread_categories, _ = _make_linker(fake_db, connectors)
-    await thread_categories.mark("discord", "thread-cat")
+    await thread_categories.bind("discord", "parent-x", "thread-cat")
 
     with pytest.raises(LinkError, match="thread mirroring"):
         await linker.link_category(
@@ -100,7 +100,7 @@ async def test_link_category_rejects_a_thread_category_as_source(fake_db, connec
 
 async def test_link_category_rejects_a_thread_category_as_destination(fake_db, connectors):
     linker, _, thread_categories, _ = _make_linker(fake_db, connectors)
-    await thread_categories.mark("stoat", "s-thread-cat")
+    await thread_categories.bind("stoat", "parent-y", "s-thread-cat")
 
     with pytest.raises(LinkError, match="thread mirroring"):
         await linker.link_category(
@@ -196,7 +196,7 @@ async def test_sync_new_channel_noop_when_category_unlinked(fake_db, connectors)
 async def test_sync_new_channel_mirrors_onto_every_other_linked_category_by_its_own_name(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
         return f"created-{name}"
 
@@ -228,7 +228,7 @@ async def test_sync_new_channel_mirrors_onto_every_other_linked_category_by_its_
 async def test_sync_new_channel_skips_the_local_connector(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
         return f"created-{name}"
 
@@ -255,7 +255,7 @@ async def test_sync_new_channel_skips_the_local_connector(fake_db):
 async def test_sync_new_channel_uses_destination_own_category_name_not_source_name(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
         return f"created-{name}"
 
@@ -277,10 +277,26 @@ async def test_sync_new_channel_uses_destination_own_category_name_not_source_na
     assert calls == [("announcements", "Alpha Squad")]
 
 
-# ---------------------------------------------------------------- CategoryLinker.mark_thread_category
+# ---------------------------------------------------------------- CategoryLinker thread-category binding
 
 
-async def test_mark_thread_category_delegates_to_repository(fake_db, connectors):
+async def test_bind_thread_category_delegates_to_repository(fake_db, connectors):
     linker, _, thread_categories, _ = _make_linker(fake_db, connectors)
-    await linker.mark_thread_category("discord", "thread-cat")
+    await linker.bind_thread_category("discord", "parent-1", "thread-cat")
     assert await thread_categories.is_thread_category("discord", "thread-cat") is True
+    assert await thread_categories.get_category_id("discord", "parent-1") == "thread-cat"
+
+
+async def test_thread_category_id_and_parent_lookups_delegate(fake_db, connectors):
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+    await linker.bind_thread_category("stoat", "parent-1", "cat-1")
+    assert await linker.thread_category_id("stoat", "parent-1") == "cat-1"
+    assert await linker.thread_category_parent("stoat", "cat-1") == "parent-1"
+    assert await linker.thread_category_id("stoat", "missing") is None
+
+
+async def test_forget_thread_category_delegates(fake_db, connectors):
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+    await linker.bind_thread_category("stoat", "parent-1", "cat-1")
+    await linker.forget_thread_category("stoat", "parent-1")
+    assert await linker.thread_category_id("stoat", "parent-1") is None

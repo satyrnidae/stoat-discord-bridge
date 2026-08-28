@@ -78,10 +78,16 @@ class ConnectorInfo:
     # The third argument, is_thread_category, marks the matched/created
     # Category (if any) as one Discord's thread/forum-post auto-mirroring
     # created (see DiscordSenderService._handle_thread_create), via
-    # CategoryLinker.mark_thread_category - so `/link-category` later
+    # CategoryLinker.bind_thread_category - so `/link-category` later
     # refuses to link it. False for every other caller (regular
     # /mirror-channel, and CategoryLinker.sync_new_channel's own auto-sync).
-    ensure_channel: Callable[[str, str | None, bool], Awaitable[str]] | None = None
+    # The fourth argument, category_parent_channel_id, is this connector's
+    # own channel id for the thread's parent channel (only set from the
+    # thread auto-mirror). It keys the persistent parent->thread-Category
+    # binding (ThreadCategoryRepository), so the Category is resolved by id
+    # rather than by title on later threads - surviving a Category rename.
+    # None for every other caller.
+    ensure_channel: Callable[[str, str | None, bool, str | None], Awaitable[str]] | None = None
     # Best-effort native-user-id -> display-name lookup, for `/linked-users`
     # to show real names instead of raw ids. None, an exception, or a falsy
     # return all fall back to the raw id, same as resolve_channel_name.
@@ -220,16 +226,19 @@ class ChannelLinker:
             return f"{dest_info.label}: doesn't support channel creation - link it manually with /link-channel."
 
         category = local_channel_category
+        category_parent_channel_id: str | None = None
         if category_from_channel_id is not None:
-            linked_parent_name = await self._linked_channel_name(
+            linked_parent = await self._linked_channel(
                 local_connector, category_from_channel_id, destination
             )
-            if linked_parent_name is not None:
-                category = linked_parent_name
+            if linked_parent is not None:
+                category_parent_channel_id = linked_parent.channel_id
+                if linked_parent.channel_name:
+                    category = linked_parent.channel_name
 
         try:
             destination_channel_id = await dest_info.ensure_channel(
-                local_channel_name, category, is_thread_category
+                local_channel_name, category, is_thread_category, category_parent_channel_id
             )
         except Exception as exc:
             logger.warning("mirror-channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
@@ -330,18 +339,19 @@ class ChannelLinker:
         thread created anywhere in the guild."""
         return await self._channel_mappings.get_bridge_group(connector_id, channel_id) is not None
 
-    async def _linked_channel_name(self, local_connector: str, channel_id: str, destination: str) -> str | None:
-        """Name of `channel_id`'s linked counterpart on `destination` (from
+    async def _linked_channel(
+        self, local_connector: str, channel_id: str, destination: str
+    ) -> ChannelMapping | None:
+        """`channel_id`'s linked counterpart mapping on `destination` (from
         the channel bridge group `channel_id` belongs to on
         `local_connector`), or None if it isn't linked there. Used by
-        mirror_channel to name a thread Category after the destination's own
-        copy of the thread's parent channel."""
+        mirror_channel to name a thread Category after - and bind it to - the
+        destination's own copy of the thread's parent channel."""
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, channel_id)
         if bridge_group is None:
             return None
         mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
-        match = next((m for m in mapped if m.connector_id == destination), None)
-        return match.channel_name if match is not None and match.channel_name else None
+        return next((m for m in mapped if m.connector_id == destination), None)
 
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
@@ -532,18 +542,39 @@ class CategoryLinker:
                 result,
             )
 
-    async def mark_thread_category(self, connector_id: str, category_id: str) -> None:
-        """Marks `category_id` on `connector_id` as auto-created for Discord
-        thread/forum-post mirroring - called from a connector's
-        ensure_channel() when it was itself called with is_thread_category=
-        True (ultimately from DiscordSenderService._handle_thread_create)."""
-        await self._thread_categories.mark(connector_id, category_id)
+    async def bind_thread_category(
+        self, connector_id: str, parent_channel_id: str, category_id: str
+    ) -> None:
+        """Bind `parent_channel_id` (on `connector_id`) to the Stoat Category
+        `category_id` auto-created for its Discord threads - called from a
+        connector's ensure_channel() when it was itself called with
+        is_thread_category=True (ultimately from
+        DiscordSenderService._handle_thread_create). Later threads for the
+        same parent resolve the Category by this id, not by title."""
+        await self._thread_categories.bind(connector_id, parent_channel_id, category_id)
+
+    async def thread_category_id(self, connector_id: str, parent_channel_id: str) -> str | None:
+        """The Category id bound to `parent_channel_id` on `connector_id`, or
+        None if no thread Category has been created for it yet."""
+        return await self._thread_categories.get_category_id(connector_id, parent_channel_id)
+
+    async def thread_category_parent(self, connector_id: str, category_id: str) -> str | None:
+        """The parent channel id bound to thread Category `category_id` on
+        `connector_id` - the reverse lookup, used to group the parent channel
+        into its thread Category by id rather than by name match."""
+        return await self._thread_categories.get_parent_channel_id(connector_id, category_id)
+
+    async def forget_thread_category(self, connector_id: str, parent_channel_id: str) -> None:
+        """Drop `parent_channel_id`'s binding on `connector_id` - its bound
+        Category is gone from the server, so the next thread rebinds it."""
+        await self._thread_categories.forget(connector_id, parent_channel_id)
 
     async def is_thread_category(self, connector_id: str, category_id: str) -> bool:
         """Whether `category_id` on `connector_id` was auto-created for
         Discord thread/forum-post mirroring - the read side of
-        mark_thread_category, used by StoatSenderService to decide whether to
-        group a thread Category's parent channel into it."""
+        bind_thread_category, used by `/link-category` to refuse linking it
+        and by StoatSenderService to decide whether to group a thread
+        Category's parent channel into it."""
         return await self._thread_categories.is_thread_category(connector_id, category_id)
 
     async def _resolve_name(self, connector_id: str, category_id: str) -> str:

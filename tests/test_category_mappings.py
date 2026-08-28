@@ -73,18 +73,42 @@ async def test_delete_bridge_group_removes_every_member(fake_db):
     assert await repo.get_mapped_categories("g1") == []
 
 
-async def test_thread_category_mark_and_check(fake_db):
+async def test_thread_category_bind_and_lookups(fake_db):
     repo = ThreadCategoryRepository(fake_db)
+    assert await repo.get_category_id("stoat", "parent1") is None
     assert await repo.is_thread_category("stoat", "cat1") is False
 
-    await repo.mark("stoat", "cat1")
+    await repo.bind("stoat", "parent1", "cat1")
+    assert await repo.get_category_id("stoat", "parent1") == "cat1"
+    assert await repo.get_parent_channel_id("stoat", "cat1") == "parent1"
     assert await repo.is_thread_category("stoat", "cat1") is True
     assert await repo.is_thread_category("stoat", "other") is False
     assert await repo.is_thread_category("discord", "cat1") is False
 
 
-async def test_thread_category_mark_is_idempotent(fake_db):
+async def test_thread_category_bind_rebinds_in_place(fake_db):
     repo = ThreadCategoryRepository(fake_db)
-    await repo.mark("stoat", "cat1")
-    await repo.mark("stoat", "cat1")
-    assert await repo.is_thread_category("stoat", "cat1") is True
+    await repo.bind("stoat", "parent1", "cat1")
+    await repo.bind("stoat", "parent1", "cat2")  # self-heal: same parent, new category
+    assert await repo.get_category_id("stoat", "parent1") == "cat2"
+    assert await repo.get_parent_channel_id("stoat", "cat2") == "parent1"
+
+
+async def test_thread_category_forget(fake_db):
+    repo = ThreadCategoryRepository(fake_db)
+    await repo.bind("stoat", "parent1", "cat1")
+    await repo.forget("stoat", "parent1")
+    assert await repo.get_category_id("stoat", "parent1") is None
+    assert await repo.is_thread_category("stoat", "cat1") is False
+
+
+async def test_thread_category_legacy_row_still_reads_as_thread_category(fake_db):
+    # A row written by the pre-binding version: (connector_id, category_id), no parent.
+    await fake_db["thread_categories"].update_one(
+        {"connector_id": "stoat", "category_id": "legacy"},
+        {"$set": {"connector_id": "stoat", "category_id": "legacy"}},
+        upsert=True,
+    )
+    repo = ThreadCategoryRepository(fake_db)
+    assert await repo.is_thread_category("stoat", "legacy") is True
+    assert await repo.get_parent_channel_id("stoat", "legacy") is None

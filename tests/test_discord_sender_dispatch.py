@@ -350,11 +350,11 @@ async def test_get_user_name_returns_none_on_a_non_numeric_id():
 # ---------------------------------------------------------------- _handle_thread_create
 
 
-async def _stoat_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False) -> str:
+async def _stoat_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False, category_parent_channel_id: str | None = None) -> str:
     return f"stoat_{name}"
 
 
-async def _irc_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False) -> str:
+async def _irc_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False, category_parent_channel_id: str | None = None) -> str:
     return f"irc_{name}"
 
 
@@ -432,8 +432,8 @@ async def test_handle_thread_create_marks_ready_when_the_starter_message_hasnt_a
 async def test_handle_thread_create_names_category_after_the_destinations_linked_parent(fake_db):
     calls = []
 
-    async def stoat_ensure_channel(name, category=None, is_thread_category=False):
-        calls.append((name, category))
+    async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category, category_parent_channel_id))
         return f"stoat_{name}"
 
     async def resolve_channel_name(channel_id):
@@ -460,14 +460,15 @@ async def test_handle_thread_create_names_category_after_the_destinations_linked
     await sender._handle_thread_create(thread)
 
     # category = Stoat's own name for the linked parent channel, not the
-    # Discord parent's name ("Announcements")
-    assert calls == [("Test Thread", "Bot Config")]
+    # Discord parent's name ("Announcements"); Stoat's own channel id for the
+    # parent is forwarded too, to key the persistent thread-Category binding.
+    assert calls == [("Test Thread", "Bot Config", "s-general")]
 
 
 async def test_handle_thread_create_marks_destination_category_as_thread_category(fake_db):
     calls = []
 
-    async def stoat_ensure_channel(name, category=None, is_thread_category=False):
+    async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append(is_thread_category)
         return f"stoat_{name}"
 

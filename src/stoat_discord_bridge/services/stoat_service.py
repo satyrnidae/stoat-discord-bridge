@@ -379,7 +379,13 @@ class StoatSenderService(SenderService):
             return None
         return category.title if category is not None else None
 
-    async def ensure_channel(self, name: str, category: str | None = None, is_thread_category: bool = False) -> str:
+    async def ensure_channel(
+        self,
+        name: str,
+        category: str | None = None,
+        is_thread_category: bool = False,
+        category_parent_channel_id: str | None = None,
+    ) -> str:
         """Idempotent get-or-create by name, for `/mirror-channel`'s
         `ConnectorInfo.ensure_channel` hook - same "match existing by name,
         else create" logic `_mirror_guild_structure` already uses in bulk,
@@ -387,10 +393,13 @@ class StoatSenderService(SenderService):
         the matched-or-created channel is placed into a same-named Category
         (creating it if needed) - best-effort, never raises, since the
         channel itself has already been secured by this point.
-        `is_thread_category`, when True, marks that Category (via
-        CategoryLinker.mark_thread_category) as one Discord's thread/forum-
-        post auto-mirroring created, so `/link-category` later refuses to
-        link it - see DiscordSenderService._handle_thread_create."""
+        `is_thread_category`, when True, binds that Category (via
+        CategoryLinker.bind_thread_category) to `category_parent_channel_id`
+        - this connector's own channel id for the thread's parent - as one
+        Discord's thread/forum-post auto-mirroring created, so
+        `/link-category` later refuses to link it and later threads for the
+        same parent resolve the Category by id rather than title (surviving a
+        rename). See DiscordSenderService._handle_thread_create."""
         # _ensure_channel_in_category needs a full Server (`.categories` /
         # `.channels`) - a BaseServer (what get_server(partial=True) yields
         # when the server isn't in cache) has neither, which silently
@@ -415,20 +424,51 @@ class StoatSenderService(SenderService):
             channel = await server.create_channel(name=name)
             channel_id = channel.id
         if category is not None:
-            await self._ensure_channel_in_category(server, channel_id, category, is_thread_category)
+            await self._ensure_channel_in_category(
+                server, channel_id, category, is_thread_category, category_parent_channel_id
+            )
         return channel_id
 
     async def _ensure_channel_in_category(
-        self, server, channel_id: str, category: str, is_thread_category: bool = False
+        self,
+        server,
+        channel_id: str,
+        category: str,
+        is_thread_category: bool = False,
+        parent_channel_id: str | None = None,
     ) -> None:
-        """Places `channel_id` into a Category named `category` on `server`,
-        creating the Category if none by that name exists yet. Neither
-        stoat.py's create_category nor edit_category takes a `position` -
-        so a freshly-created Category is necessarily appended, landing at
-        the bottom of the server's channel list with no extra work needed
-        here."""
+        """Places `channel_id` into a Category on `server`, creating it if
+        needed. When `parent_channel_id` is given and it's already bound to a
+        thread Category (ThreadCategoryRepository), that Category is resolved
+        by its stored id - so a Category rename on Stoat doesn't spawn a new
+        one; a bound id that's since vanished from the server self-heals by
+        forgetting the binding and falling back to the by-title path. Neither
+        stoat.py's create_category nor edit_category takes a `position` - so a
+        freshly-created Category is necessarily appended, landing at the
+        bottom of the server's channel list with no extra work needed here."""
+        bound_category_id: str | None = None
+        if parent_channel_id is not None and self._category_linker is not None:
+            try:
+                bound = await self._category_linker.thread_category_id(self.connector_id, parent_channel_id)
+            except Exception:
+                logger.exception("[stoat:%s] couldn't look up bound thread category", self.connector_id)
+                bound = None
+            if bound is not None:
+                if any(str(c.id) == bound for c in (getattr(server, "categories", None) or [])):
+                    bound_category_id = bound
+                else:
+                    logger.info(
+                        "[stoat:%s] bound thread category %s for parent %s is gone; rebinding",
+                        self.connector_id,
+                        bound,
+                        parent_channel_id,
+                    )
+                    try:
+                        await self._category_linker.forget_thread_category(self.connector_id, parent_channel_id)
+                    except Exception:
+                        logger.exception("[stoat:%s] couldn't forget stale thread category", self.connector_id)
         try:
-            resolved = await self._place_in_category(server, channel_id, category)
+            resolved = await self._place_in_category(server, channel_id, category, bound_category_id)
         except Exception:
             # A stale cached Server (categories/channels out of date - e.g. a
             # category created on an earlier run that isn't in this snapshot,
@@ -441,7 +481,7 @@ class StoatSenderService(SenderService):
             )
             try:
                 server = await self._client.fetch_server(self.server_id, populate_channels=True)
-                resolved = await self._place_in_category(server, channel_id, category)
+                resolved = await self._place_in_category(server, channel_id, category, bound_category_id)
             except Exception:
                 logger.exception(
                     "[stoat:%s] category placement for %r failed on retry; channel %s left uncategorised",
@@ -457,24 +497,35 @@ class StoatSenderService(SenderService):
             category,
             resolved.id,
         )
-        if is_thread_category and self._category_linker is not None:
+        if is_thread_category and parent_channel_id is not None and self._category_linker is not None:
             try:
-                await self._category_linker.mark_thread_category(self.connector_id, resolved.id)
+                await self._category_linker.bind_thread_category(
+                    self.connector_id, parent_channel_id, str(resolved.id)
+                )
             except Exception:
                 logger.exception(
-                    "[stoat:%s] failed to mark category %s as a thread category", self.connector_id, resolved.id
+                    "[stoat:%s] failed to bind category %s to parent %s",
+                    self.connector_id,
+                    resolved.id,
+                    parent_channel_id,
                 )
 
-    async def _place_in_category(self, server, channel_id: str, category: str):
-        """Find the Category titled `category` on `server` and ensure
-        `channel_id` is in it, creating the Category if there's none. Returns
-        the resolved Category. Raises on API failure (the caller retries).
+    async def _place_in_category(self, server, channel_id: str, category: str, category_id: str | None = None):
+        """Ensure `channel_id` is in a Category on `server`, creating one
+        titled `category` if there's none. When `category_id` is given, the
+        existing Category is matched by that id (title ignored - it may have
+        been renamed); otherwise by title. Returns the resolved Category.
+        Raises on API failure (the caller retries).
 
         Tries the dedicated create/edit-category endpoints first; every Stoat
         deployment tested (incl. "latest") 404s them - the installed stoat.py
         ships those routes ahead of the servers - so we fall back to PATCHing
         the whole category list onto the server."""
-        existing = next((c for c in (getattr(server, "categories", None) or []) if c.title == category), None)
+        categories = getattr(server, "categories", None) or []
+        if category_id is not None:
+            existing = next((c for c in categories if str(c.id) == category_id), None)
+        else:
+            existing = next((c for c in categories if c.title == category), None)
         try:
             if existing is None:
                 return await server.create_category(category, channels=[channel_id])
@@ -490,20 +541,28 @@ class StoatSenderService(SenderService):
                 self.connector_id,
                 exc,
             )
-            return await self._place_via_server_edit(server, channel_id, category)
+            return await self._place_via_server_edit(server, channel_id, category, category_id)
 
-    async def _place_via_server_edit(self, server, channel_id: str, category: str):
+    async def _place_via_server_edit(
+        self, server, channel_id: str, category: str, category_id: str | None = None
+    ):
         """Category placement for Stoat servers without the dedicated categories
         endpoint: PATCH the server with the full category list. The payload is
         built by hand (`{id, title, channels}` only) and sent straight through
         the HTTP layer - the installed stoat.py's `Category.to_dict()` trips
         over `default_permissions` on categories it parsed from an older
-        server's payload, so `server.edit(categories=...)` can't be used."""
+        server's payload, so `server.edit(categories=...)` can't be used.
+
+        `category_id`, if given, matches the existing Category by id rather
+        than title (see _place_in_category)."""
         raw_categories = [
             {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
             for c in (getattr(server, "categories", None) or [])
         ]
-        resolved = next((c for c in raw_categories if c["title"] == category), None)
+        if category_id is not None:
+            resolved = next((c for c in raw_categories if str(c["id"]) == category_id), None)
+        else:
+            resolved = next((c for c in raw_categories if c["title"] == category), None)
         if resolved is None:
             resolved = {"id": ulid_new(), "title": category, "channels": [channel_id]}
             raw_categories.append(resolved)
@@ -546,7 +605,15 @@ class StoatSenderService(SenderService):
                 return
             if not await self._category_linker.is_thread_category(self.connector_id, str(thread_cat.id)):
                 return
-            parent = next((ch for ch in getattr(server, "channels", []) if ch.name == thread_cat.title), None)
+            channels = getattr(server, "channels", [])
+            bound_parent_id = await self._category_linker.thread_category_parent(
+                self.connector_id, str(thread_cat.id)
+            )
+            if bound_parent_id is not None:
+                parent = next((ch for ch in channels if str(ch.id) == bound_parent_id), None)
+            else:
+                # Legacy row with no parent binding - fall back to name match.
+                parent = next((ch for ch in channels if ch.name == thread_cat.title), None)
             if parent is None:
                 return
             if list(getattr(thread_cat, "channels", None) or [])[:1] == [parent.id]:

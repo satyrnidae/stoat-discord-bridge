@@ -523,7 +523,7 @@ async def test_mirror_channel_without_ensure_channel_reports_unsupported(fake_db
 async def test_mirror_channel_creates_and_links(fake_db):
     created = {}
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         created.setdefault(name, f"stoat_{name}")
         return created[name]
 
@@ -544,7 +544,7 @@ async def test_mirror_channel_creates_and_links(fake_db):
 async def test_mirror_channel_skips_if_already_synced(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append(name)
         return f"stoat_{name}"
 
@@ -565,7 +565,7 @@ async def test_mirror_channel_skips_if_already_synced(fake_db):
 
 
 async def test_mirror_channel_reports_link_conflict_instead_of_raising(fake_db):
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         return "stoat_existing"  # always resolves to an already-linked-elsewhere channel
 
     connectors = {
@@ -595,7 +595,7 @@ async def test_mirror_channel_reports_link_conflict_instead_of_raising(fake_db):
 
 
 async def test_mirror_channel_all_skips_local_connector_and_reports_each(fake_db):
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         return f"stoat_{name}"
 
     connectors = {
@@ -617,7 +617,7 @@ async def test_mirror_channel_all_skips_local_connector_and_reports_each(fake_db
 async def test_mirror_channel_forwards_category_to_ensure_channel(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
         return f"stoat_{name}"
 
@@ -640,7 +640,7 @@ async def test_mirror_channel_forwards_category_to_ensure_channel(fake_db):
 async def test_mirror_channel_forwards_is_thread_category_to_ensure_channel(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category, is_thread_category))
         return f"stoat_{name}"
 
@@ -664,7 +664,7 @@ async def test_mirror_channel_forwards_is_thread_category_to_ensure_channel(fake
 async def test_mirror_channel_defaults_is_thread_category_to_false(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append(is_thread_category)
         return f"stoat_{name}"
 
@@ -683,7 +683,7 @@ async def test_mirror_channel_defaults_is_thread_category_to_false(fake_db):
 async def test_mirror_channel_names_category_after_the_destinations_linked_parent(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
         return f"stoat_{name}"
 
@@ -711,10 +711,42 @@ async def test_mirror_channel_names_category_after_the_destinations_linked_paren
     assert calls == [("cool thread", "Bot Config")]  # Stoat's own name for the parent, not "bot-config"
 
 
+async def test_mirror_channel_forwards_parent_channel_id_to_ensure_channel(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category, category_parent_channel_id))
+        return f"stoat_{name}"
+
+    async def resolve_channel_name(channel_id):
+        return {"s-parent": "Bot Config"}.get(channel_id)
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", ensure_channel=ensure_channel, resolve_channel_name=resolve_channel_name
+        ),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="d-parent", local_channel_name="bot-config",
+        source="stoat", source_id="s-parent", destination_id=None,
+    )
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d-thread", local_channel_name="cool thread",
+        destination="stoat", local_channel_category="bot-config", category_from_channel_id="d-parent",
+    )
+
+    # Stoat's own channel id for the parent reaches ensure_channel, keying the binding.
+    assert calls == [("cool thread", "Bot Config", "s-parent")]
+
+
 async def test_mirror_channel_category_falls_back_when_parent_isnt_linked_to_destination(fake_db):
     calls = []
 
-    async def ensure_channel(name, category=None, is_thread_category=False):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
         return f"stoat_{name}"
 

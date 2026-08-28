@@ -155,10 +155,19 @@ IRC — falling back to `#<thread name>` if it still can't resolve. A thread wit
 no real starter message (standalone thread / forum-post system row) skips the
 starter relay but keeps that row's author for the notice. Only
 fires when the thread's parent channel is itself already bridged; one-way
-(Discord → Stoat/IRC). The destination Category is marked via
-`CategoryLinker.mark_thread_category` (backed by
-`storage/category_mappings.py`'s `ThreadCategoryRepository`), which
-`/link-category` checks to refuse ever linking it into the bridge.
+(Discord → Stoat/IRC). The destination Category is bound to the destination's
+own parent channel id via `CategoryLinker.bind_thread_category` (backed by
+`storage/category_mappings.py`'s `ThreadCategoryRepository`, keyed by
+`(connector, parent_channel_id)`), which `/link-category` checks to refuse ever
+linking it into the bridge. That binding is what later threads resolve the
+Category by — **by id, not by title** — so renaming the Category on Stoat no
+longer spawns a fresh one, and `group_parent_channel_with_threads` finds the
+parent channel by its bound id rather than a name match. A bound Category that
+has since been deleted self-heals: the next thread forgets the binding, creates
+a fresh Category by the linked parent name, and rebinds (orphaned thread
+channels are left where they are). Pre-binding rows (no `parent_channel_id`)
+still register as thread categories and are rewritten to the bound shape on the
+next thread for that parent.
 
 ## Layout
 
@@ -182,7 +191,7 @@ src/stoat_discord_bridge/
   storage/
     mongo.py                   # MongoDB connection (motor)
     channel_mappings.py        # which channels, across connectors, are bridged together
-    category_mappings.py       # which categories, across connectors, are bridged together; ThreadCategoryRepository marks thread-only categories as unlinkable
+    category_mappings.py       # which categories, across connectors, are bridged together; ThreadCategoryRepository binds a thread's parent channel to its (unlinkable) thread-only category id
     message_sync.py            # cross-connector message ID references, for edit/delete sync
     emoji_mappings.py          # cross-connector custom emoji ID references, for reaction sync
 ```

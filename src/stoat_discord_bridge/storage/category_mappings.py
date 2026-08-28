@@ -11,12 +11,23 @@ CategoryLinker.sync_new_channel, called from each connector's own
 channel-create event handler, is what does that.
 
 ThreadCategoryRepository is a separate, unrelated concern that happens to
-live in this module: it marks a (connector_id, category_id) as one Discord's
-thread/forum-post auto-mirroring created (see
-DiscordSenderService._handle_thread_create), so `/link-category` can refuse
-to link it - such a Category is dedicated to that per-thread-parent mirroring
-flow, and manually linking it would create a second, conflicting sync path
-onto the same channels.
+live in this module: it persistently binds a Discord thread's parent channel
+(as its linked counterpart on a Stoat connector) to the Stoat Category that
+Discord's thread/forum-post auto-mirroring created for it (see
+DiscordSenderService._handle_thread_create). Two jobs:
+
+- `/link-category` refuses to link a Category the repo knows is a thread
+  Category (`is_thread_category`) - such a Category is dedicated to the
+  per-thread-parent mirroring flow, and manually linking it would create a
+  second, conflicting sync path onto the same channels.
+- Category placement resolves the thread Category by its stored id, not by
+  title, so renaming (or deleting) the Category on Stoat no longer spawns a
+  fresh one on the next thread - a missing bound id self-heals into a rebind.
+
+Rows are keyed by (connector_id, parent_channel_id). Legacy rows written by
+an earlier version carry only (connector_id, category_id) and no parent link;
+they still answer `is_thread_category`, and the next thread for that parent
+rewrites them into the current shape.
 """
 
 from __future__ import annotations
@@ -81,11 +92,38 @@ class ThreadCategoryRepository:
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
         self._collection = db["thread_categories"]
 
-    async def mark(self, connector_id: str, category_id: str) -> None:
+    async def bind(self, connector_id: str, parent_channel_id: str, category_id: str) -> None:
+        """Record that `parent_channel_id` (on `connector_id`) is grouped by
+        Stoat Category `category_id`. Keyed by (connector_id,
+        parent_channel_id), so re-binding the same parent to a new Category
+        (after a self-heal) overwrites in place."""
         await self._collection.update_one(
-            {"connector_id": connector_id, "category_id": category_id},
-            {"$set": {"connector_id": connector_id, "category_id": category_id}},
+            {"connector_id": connector_id, "parent_channel_id": parent_channel_id},
+            {
+                "$set": {
+                    "connector_id": connector_id,
+                    "parent_channel_id": parent_channel_id,
+                    "category_id": category_id,
+                }
+            },
             upsert=True,
+        )
+
+    async def get_category_id(self, connector_id: str, parent_channel_id: str) -> str | None:
+        doc = await self._collection.find_one(
+            {"connector_id": connector_id, "parent_channel_id": parent_channel_id}
+        )
+        return doc["category_id"] if doc else None
+
+    async def get_parent_channel_id(self, connector_id: str, category_id: str) -> str | None:
+        doc = await self._collection.find_one({"connector_id": connector_id, "category_id": category_id})
+        return doc.get("parent_channel_id") if doc else None
+
+    async def forget(self, connector_id: str, parent_channel_id: str) -> None:
+        """Drop the binding for a parent whose bound Category no longer exists
+        on the server - the next thread event rebinds it to a fresh one."""
+        await self._collection.delete_one(
+            {"connector_id": connector_id, "parent_channel_id": parent_channel_id}
         )
 
     async def is_thread_category(self, connector_id: str, category_id: str) -> bool:

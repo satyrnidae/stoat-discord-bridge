@@ -557,6 +557,74 @@ async def test_ensure_channel_retries_category_placement_against_a_refetched_ser
     assert [c.title for c in server.categories] == ["Team Alpha"]
 
 
+# --------------------------------- thread-Category binding (parent <-> category id)
+
+
+class _BindingLinker:
+    def __init__(self, bound: dict[str, str] | None = None) -> None:
+        self.bound = dict(bound or {})  # parent_channel_id -> category_id
+        self.binds: list[tuple[str, str]] = []
+        self.forgotten: list[str] = []
+
+    async def thread_category_id(self, connector_id, parent_channel_id):
+        return self.bound.get(parent_channel_id)
+
+    async def bind_thread_category(self, connector_id, parent_channel_id, category_id):
+        self.bound[parent_channel_id] = category_id
+        self.binds.append((parent_channel_id, category_id))
+
+    async def forget_thread_category(self, connector_id, parent_channel_id):
+        self.bound.pop(parent_channel_id, None)
+        self.forgotten.append(parent_channel_id)
+
+    async def is_thread_category(self, connector_id, category_id):
+        return category_id in self.bound.values()
+
+
+async def test_ensure_channel_binds_parent_to_category_on_first_thread():
+    server = FakeServer(id="s1")
+    server.categories.append(FakeCategory(id="cat-1", title="Bot Config", channels=[]))
+    client = FakeClient()
+    client.add_server(server)
+    linker = _BindingLinker()
+    sender = _make_sender(client=client, category_linker=linker)
+
+    await sender.ensure_channel("general", "Bot Config", True, "p1")
+
+    assert linker.binds == [("p1", "cat-1")]  # matched the existing Category by title, then bound it
+
+
+async def test_ensure_channel_reuses_the_bound_category_by_id_after_a_rename():
+    server = FakeServer(id="s1")
+    server.categories.append(FakeCategory(id="cat-1", title="Renamed On Stoat", channels=["chan-other"]))
+    client = FakeClient()
+    client.add_server(server)
+    linker = _BindingLinker({"p1": "cat-1"})
+    sender = _make_sender(client=client, category_linker=linker)
+
+    await sender.ensure_channel("general", "Bot Config", True, "p1")
+
+    assert server.created_categories == []  # no new Category despite the title mismatch
+    [category] = server.categories
+    assert category.channels == ["chan-other", "chan-general"]
+
+
+async def test_ensure_channel_self_heals_when_the_bound_category_is_gone():
+    server = FakeServer(id="s1")  # nothing with id "cat-gone"
+    client = FakeClient()
+    client.add_server(server)
+    linker = _BindingLinker({"p1": "cat-gone"})
+    sender = _make_sender(client=client, category_linker=linker)
+
+    await sender.ensure_channel("general", "Bot Config", True, "p1")
+
+    assert linker.forgotten == ["p1"]  # stale binding dropped
+    [category] = server.categories
+    assert category.title == "Bot Config"  # fresh Category created by the linked parent name
+    assert linker.bound["p1"] == category.id  # and rebound to the new id
+    assert linker.binds == [("p1", category.id)]
+
+
 # ---------------------------------------------------------------- _handle_mirror_channels
 
 
