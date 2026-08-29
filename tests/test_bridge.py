@@ -218,6 +218,49 @@ async def test_reaction_forwards_only_to_connectors_that_support_it(coordinator_
     assert irc_receiver.reactions == []
 
 
+async def test_reaction_add_skipped_when_another_origin_user_already_reacted(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record("general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1")])
+    receiver = FakeReceiver("stoat", supports_reactions=True)
+    coordinator.register_receiver(receiver)
+
+    await coordinator.handle_reaction(
+        StandardReaction(
+            origin_connector_id="discord",
+            origin_channel_id="100",
+            origin_message_id="m1",
+            emoji="\U0001f600",
+            added=True,
+            origin_reactor_count=2,
+        )
+    )
+
+    assert receiver.reactions == []
+
+
+async def test_reaction_remove_held_until_last_origin_reactor_leaves(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record("general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1")])
+    receiver = FakeReceiver("stoat", supports_reactions=True)
+    coordinator.register_receiver(receiver)
+
+    def _remove(count):
+        return StandardReaction(
+            origin_connector_id="discord",
+            origin_channel_id="100",
+            origin_message_id="m1",
+            emoji="\U0001f600",
+            added=False,
+            origin_reactor_count=count,
+        )
+
+    await coordinator.handle_reaction(_remove(1))  # one user still holds it
+    assert receiver.reactions == []
+
+    await coordinator.handle_reaction(_remove(0))  # last one gone
+    assert receiver.reactions == [("remove", "200", "s1", "\U0001f600")]
+
+
 async def test_reaction_is_a_noop_for_an_untracked_message(coordinator_parts):
     coordinator, _channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
     receiver = FakeReceiver("stoat", supports_reactions=True)

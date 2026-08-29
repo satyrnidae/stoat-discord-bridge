@@ -36,6 +36,7 @@ class _FakeSender:
     ) -> None:
         self.connector_id = connector_id
         self.server_id = server_id
+        self.self_id = "bridge-bot-id"
         self._client = client
         self._category_linker = None
         self._config = SimpleNamespace(
@@ -380,11 +381,34 @@ async def test_add_reaction_targets_the_right_message():
 async def test_remove_reaction_targets_the_right_message():
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))
+    channel.get_message("7").reactions["\U0001f600"] = ("bridge-bot-id",)
     receiver = _make_receiver(client)
 
     await receiver.remove_reaction(target_channel_id="42", target_message_id="7", emoji="\U0001f600")
 
     assert channel.get_message("7").removed_reactions == ["\U0001f600"]
+
+
+async def test_add_reaction_skips_when_the_bot_already_reacted():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    channel.get_message("7").reactions["\U0001f600"] = ("someone", "bridge-bot-id")
+    receiver = _make_receiver(client)
+
+    await receiver.add_reaction(target_channel_id="42", target_message_id="7", emoji="\U0001f600")
+
+    assert channel.get_message("7").added_reactions == []
+
+
+async def test_remove_reaction_skips_when_the_bot_isnt_reacting():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    channel.get_message("7").reactions["\U0001f600"] = ("someone-else",)
+    receiver = _make_receiver(client)
+
+    await receiver.remove_reaction(target_channel_id="42", target_message_id="7", emoji="\U0001f600")
+
+    assert channel.get_message("7").removed_reactions == []
 
 
 async def test_add_reaction_translates_a_custom_emoji_to_its_native_id():

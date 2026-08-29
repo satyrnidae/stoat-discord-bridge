@@ -57,19 +57,22 @@ class FakeSentMessage:
 
 
 class FakeStoatMessage:
-    """Stands in for a stoat.Message with a live add_reaction/remove_reaction
-    handle - what StoatReceiverService.add_reaction/remove_reaction operate
-    on via channel.get_message(id, partial=True)."""
+    """Stands in for a stoat.Message with a live react/unreact handle - what
+    StoatReceiverService.add_reaction/remove_reaction operate on via
+    channel.get_message(id, partial=True) - plus a `reactions` dict
+    (emoji -> reactor user ids) that channel.fetch_message exposes for the
+    receiver's own-reaction idempotency check."""
 
-    def __init__(self, id: str) -> None:
+    def __init__(self, id: str, *, reactions: dict[str, tuple[str, ...]] | None = None) -> None:
         self.id = id
+        self.reactions: dict[str, tuple[str, ...]] = dict(reactions or {})
         self.added_reactions: list[Any] = []
         self.removed_reactions: list[Any] = []
 
-    async def add_reaction(self, emoji) -> None:
+    async def react(self, emoji) -> None:
         self.added_reactions.append(emoji)
 
-    async def remove_reaction(self, emoji) -> None:
+    async def unreact(self, emoji) -> None:
         self.removed_reactions.append(emoji)
 
 
@@ -101,6 +104,11 @@ class FakeChannel:
         return FakeSentMessage(id=message_id)
 
     def get_message(self, message_id: str, *, partial: bool = True) -> FakeStoatMessage:
+        return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
+
+    async def fetch_message(self, message_id: str) -> FakeStoatMessage:
+        if self._raises is not None:
+            raise self._raises
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
 
 

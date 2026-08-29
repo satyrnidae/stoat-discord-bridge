@@ -21,7 +21,9 @@ from tests.fakes.fake_discord import (
     FakeAsset,
     FakeChannel,
     FakeClient,
+    FakeFullMessage,
     FakeGuild,
+    FakeReaction,
     FakeThread,
     FakeUser,
     FakeWebhook,
@@ -197,12 +199,35 @@ async def test_remove_reaction_uses_the_bots_own_identity():
     bot_user = FakeUser(id=99)
     client = FakeClient(user=bot_user)
     channel = client.add_channel(FakeChannel(id=42))
+    channel.full_messages[7] = FakeFullMessage(7, reactions=[FakeReaction("\U0001f600", me=True)])
     receiver = _make_receiver(client)
 
     await receiver.remove_reaction(target_channel_id="42", target_message_id="7", emoji="\U0001f600")
 
     removed = channel.get_partial_message(7).removed_reactions
     assert removed == [("\U0001f600", bot_user)]
+
+
+async def test_add_reaction_skips_when_the_bot_already_reacted():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    channel.full_messages[7] = FakeFullMessage(7, reactions=[FakeReaction("\U0001f600", count=2, me=True)])
+    receiver = _make_receiver(client)
+
+    await receiver.add_reaction(target_channel_id="42", target_message_id="7", emoji="\U0001f600")
+
+    assert channel.get_partial_message(7).added_reactions == []
+
+
+async def test_remove_reaction_skips_when_the_bot_isnt_reacting():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    channel.full_messages[7] = FakeFullMessage(7, reactions=[FakeReaction("\U0001f600", count=1, me=False)])
+    receiver = _make_receiver(client)
+
+    await receiver.remove_reaction(target_channel_id="42", target_message_id="7", emoji="\U0001f600")
+
+    assert channel.get_partial_message(7).removed_reactions == []
 
 
 async def test_add_reaction_translates_a_custom_emoji():

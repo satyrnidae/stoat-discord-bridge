@@ -90,13 +90,18 @@ class ReceiverService(ABC):
         """
 
     async def add_reaction(self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji) -> None:
-        """Add `emoji` to `target_message_id`. Only called when `supports_reactions`."""
+        """Add `emoji` to `target_message_id`. Only called when
+        `supports_reactions`. Should be idempotent (no-op if the bridge has
+        already reacted with `emoji`) so a second origin user reacting with
+        the same emoji doesn't double-add."""
         raise NotImplementedError
 
     async def remove_reaction(
         self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji
     ) -> None:
-        """Remove the bridge's own `emoji` reaction from `target_message_id`. Only called when `supports_reactions`."""
+        """Remove the bridge's own `emoji` reaction from `target_message_id`.
+        Only called when `supports_reactions`. Should be idempotent (no-op if
+        the bridge isn't currently reacting with `emoji`)."""
         raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:

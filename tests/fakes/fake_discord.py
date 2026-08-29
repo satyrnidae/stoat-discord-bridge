@@ -85,6 +85,25 @@ class FakePartialMessage:
         self.removed_reactions.append((emoji, user))
 
 
+class FakeReaction:
+    """Stands in for a discord.Reaction on a fetched full message."""
+
+    def __init__(self, emoji: Any, *, count: int = 1, me: bool = False) -> None:
+        self.emoji = emoji
+        self.count = count
+        self.me = me
+
+
+class FakeFullMessage:
+    """Stands in for the discord.Message returned by channel.fetch_message -
+    carries `.reactions` (used by _reactor_count and the receiver's
+    own-reaction idempotency check)."""
+
+    def __init__(self, id: int, *, reactions: list[FakeReaction] | None = None) -> None:
+        self.id = id
+        self.reactions: list[FakeReaction] = reactions or []
+
+
 class FakeWebhook:
     def __init__(self, id: int, *, user: FakeUser | None = None, raises: BaseException | None = None) -> None:
         self.id = id
@@ -117,6 +136,7 @@ class FakeChannel:
         self._webhooks = webhooks or []
         self.created_webhooks: list[FakeWebhook] = []
         self.partial_messages: dict[int, FakePartialMessage] = {}
+        self.full_messages: dict[int, FakeFullMessage] = {}
 
     async def webhooks(self) -> list[FakeWebhook]:
         return list(self._webhooks)
@@ -130,6 +150,9 @@ class FakeChannel:
 
     def get_partial_message(self, message_id: int) -> FakePartialMessage:
         return self.partial_messages.setdefault(message_id, FakePartialMessage())
+
+    async def fetch_message(self, message_id: int) -> FakeFullMessage:
+        return self.full_messages.setdefault(message_id, FakeFullMessage(message_id))
 
 
 class FakeThread(discord.Thread):
@@ -291,6 +314,9 @@ class FakePartialEmoji:
 
     def is_custom_emoji(self) -> bool:
         return self.id is not None
+
+    def __str__(self) -> str:
+        return self.name or ""
 
 
 class FakeRawReactionActionEvent:

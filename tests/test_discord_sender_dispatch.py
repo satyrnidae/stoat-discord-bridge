@@ -235,6 +235,30 @@ async def test_handle_raw_reaction_with_a_custom_emoji():
     assert reaction.emoji.animated is True
 
 
+async def test_handle_raw_reaction_carries_the_reactor_count():
+    from tests.fakes.fake_discord import FakeChannel, FakeFullMessage, FakeReaction
+
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=1))
+    channel = client.add_channel(FakeChannel(id=42))
+    channel.full_messages[7] = FakeFullMessage(7, reactions=[FakeReaction("\U0001f600", count=3, me=True)])
+    sender = _make_sender(recorder, client)
+
+    await sender._handle_raw_reaction(_reaction_payload(), added=True)
+
+    assert recorder.reactions[0].origin_reactor_count == 3
+
+
+async def test_handle_raw_reaction_reactor_count_is_none_when_the_fetch_fails():
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=1))  # no channel registered -> fetch raises
+    sender = _make_sender(recorder, client)
+
+    await sender._handle_raw_reaction(_reaction_payload(), added=True)
+
+    assert recorder.reactions[0].origin_reactor_count is None
+
+
 # ---------------------------------------------------------------- _handle_guild_emojis_update
 
 
