@@ -3,7 +3,7 @@
 Every admin/status command the bridge exposes, and how to reach it on each
 connector. Shared logic lives in `src/stoat_discord_bridge/admin_commands.py`
 (`ChannelLinker` / `CategoryLinker` / `EmoteLinker` / `UserLinker` /
-`StructureMirrorer`); each
+`RoleLinker` / `StructureMirrorer`); each
 connector's own `services/*.py` module just wires its native command syntax
 to that shared logic, so behavior is identical everywhere except where noted.
 
@@ -216,6 +216,54 @@ its own group named after the forum, with one channel per currently active
   not available on Discord or IRC (Discord doesn't need to mirror structure
   onto itself; IRC networks don't offer bot-driven channel creation the way
   this command needs).
+
+## Roles: `/link role`, `/mirror role`, `/linked roles`, `/unlink role`
+
+**Discord and Stoat only** (IRC has no role concept, same as Categories).
+These use a new space-separated subcommand syntax with the **local** id
+first, and every id argument also accepts a bare **role name** (resolved
+case-insensitively; first match wins, since Discord role names aren't
+unique - pass an id when a name is ambiguous). Same already-linked /
+conflicting-group rules as `/link-channel`.
+
+On Discord these are the flat slash commands `/link-role`, `/mirror-role`,
+`/linked-roles`, `/unlink-role` with the argument order below; on Stoat they
+are the literal message commands shown.
+
+### `/link role <local_id|name> <service> <external_id|name>`
+
+Links `service`'s role to a local role. Manage Server (Discord) / Manage
+Server (Stoat).
+
+### `/mirror role <local_id|name> [<service>|all]`
+
+Ensures a linked counterpart of the role exists on `service` (or every other
+connector, if `all` - the default): reuses a same-named role there or creates
+a bare one (name only - color/permissions are not copied), then links it. A
+connector that can't create roles is reported per-connector. Manage Server.
+
+### `/linked roles [<local_id|name>]`
+
+Read-only. With a role, lists its linked counterparts; with no argument,
+lists every linked-role group.
+
+### `/unlink role <local_id|name> [<service>|all]`
+
+Removes members from the role's bridge group - a specific `service` kicks
+just that one, `all` (the default) dissolves the whole group. A kick that
+would stand a lone survivor dissolves the group instead. The roles
+themselves are never deleted. Manage Server.
+
+- **Discord**: `/link-role` / `/mirror-role` / `/linked-roles` /
+  `/unlink-role` slash commands.
+- **Stoat**: `/link role …` etc. message commands.
+- **IRC**: not available - IRC has no role concept.
+
+> Auto-grant (linked user gains/loses a linked role -> mirror the grant to
+> their linked identity) and per-channel permission mirroring for linked
+> roles are planned follow-ups; only the link layer and role-mention
+> rewriting (`<@&id>` / `<%id>` -> the target's linked role, `@Name` on IRC)
+> ship in this step.
 
 ## `/unlink-channel [service|all] [local_id]`
 

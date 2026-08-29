@@ -138,6 +138,40 @@ class FakeMirrorer:
         return self._structure
 
 
+class FakeRoleLinker:
+    def __init__(self, *, raises: LinkError | None = None) -> None:
+        self._raises = raises
+        self.link_role_calls: list[dict] = []
+        self.unlink_role_calls: list[dict] = []
+        self.list_linked_roles_calls: list[dict] = []
+        self.mirror_role_calls: list[dict] = []
+        self.mirror_role_all_calls: list[dict] = []
+
+    async def link_role(self, **kwargs):
+        self.link_role_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "role linked ok"
+
+    async def unlink_role(self, **kwargs):
+        self.unlink_role_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "role unlinked ok"
+
+    async def list_linked_roles(self, **kwargs):
+        self.list_linked_roles_calls.append(kwargs)
+        return "Linked roles:\nDiscord: Mods ↔ Stoat: Moderators"
+
+    async def mirror_role(self, **kwargs):
+        self.mirror_role_calls.append(kwargs)
+        return "role mirrored ok"
+
+    async def mirror_role_all(self, **kwargs):
+        self.mirror_role_all_calls.append(kwargs)
+        return "role mirrored to all ok"
+
+
 def _make_sender(
     *,
     linker: FakeLinker | None = None,
@@ -145,6 +179,7 @@ def _make_sender(
     emote_linker: FakeEmoteLinker | None = None,
     user_linker: FakeUserLinker | None = None,
     category_linker: FakeCategoryLinker | None = None,
+    role_linker: "FakeRoleLinker | None" = None,
     client: FakeClient | None = None,
     server_id: str | None = "s1",
 ) -> StoatSenderService:
@@ -155,6 +190,7 @@ def _make_sender(
     sender._emote_linker = emote_linker
     sender._user_linker = user_linker
     sender._category_linker = category_linker
+    sender._role_linker = role_linker
     sender.server_id = server_id
     if client is not None:
         sender._client = client
@@ -1095,3 +1131,59 @@ async def test_handle_channel_create_noop_for_a_channel_with_no_category():
     await sender._handle_channel_create(channel)
 
     assert category_linker.sync_new_channel_calls == []
+
+
+# ---------------------------------------------------------------- /link role ... two-token routing
+
+
+def _cmd_message(content: str, *, manage_server: bool = True):
+    msg = _admin_message(manage_server=manage_server)
+    msg.content = content
+    msg.id = "m1"
+    return msg
+
+
+async def test_two_token_link_role_routes():
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(role_linker=role_linker)
+    await sender._handle_message(_cmd_message("/link role Mods discord 111"))
+    assert role_linker.link_role_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "source": "discord", "source_role": "111"}
+    ]
+
+
+async def test_two_token_mirror_and_linked_and_unlink_route():
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(role_linker=role_linker)
+    await sender._handle_message(_cmd_message("/mirror role Mods"))
+    await sender._handle_message(_cmd_message("/mirror role Mods stoat"))
+    await sender._handle_message(_cmd_message("/linked roles"))
+    await sender._handle_message(_cmd_message("/unlink role Mods all"))
+    assert role_linker.mirror_role_all_calls == [{"local_connector": "stoat", "local_role": "Mods"}]
+    assert role_linker.mirror_role_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "destination": "stoat"}
+    ]
+    assert role_linker.list_linked_roles_calls == [
+        {"local_connector": "stoat", "local_role": None, "service": None}
+    ]
+    assert role_linker.unlink_role_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "destination": "all"}
+    ]
+
+
+async def test_link_role_non_admin_rejected_linked_roles_allowed():
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(role_linker=role_linker)
+    await sender._handle_message(_cmd_message("/link role Mods discord 111", manage_server=False))
+    await sender._handle_message(_cmd_message("/linked roles Mods", manage_server=False))
+    assert role_linker.link_role_calls == []
+    assert role_linker.list_linked_roles_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "service": None}
+    ]
+
+
+async def test_two_token_routing_does_not_shadow_hyphenated_link_channel():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker, role_linker=FakeRoleLinker())
+    await sender._handle_message(_cmd_message("/link-channel discord src dest"))
+    assert linker.link_channel_calls and linker.link_channel_calls[0]["source"] == "discord"

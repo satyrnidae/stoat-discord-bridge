@@ -21,6 +21,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.storage.category_mappings import (
@@ -30,7 +31,11 @@ from stoat_discord_bridge.storage.category_mappings import (
 )
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
+from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
+
+if TYPE_CHECKING:
+    from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +113,41 @@ class ConnectorInfo:
     # counterpart of resolve_channel_name, used by CategoryLinker for
     # `/link-category`. None on IRC (no Category concept there).
     resolve_category_name: Callable[[str], Awaitable[str | None]] | None = None
+    # --- Role hooks (Discord/Stoat only; None everywhere on IRC, which has
+    # no role concept). See RoleLinker below and bridge.py's
+    # RoleGrantCoordinator. ---
+    # Best-effort native-role-id -> name lookup, the role counterpart of
+    # resolve_channel_name (same None/exception/falsy -> raw-id fallback).
+    resolve_role_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Best-effort native-role-NAME -> id lookup, so `/link role` / `/mirror
+    # role` / `/unlink role` accept a bare role name anywhere an id is
+    # expected. None/exception/falsy return all mean "treat the token as an
+    # id already" (RoleLinker._resolve_to_id).
+    resolve_role_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Idempotent get-or-create by name: ensures a role named `name` exists on
+    # this connector, returning its native id (existing or newly created).
+    # None if this connector kind can't create roles - `/mirror role` then
+    # reports that connector as unsupported rather than calling this (mirrors
+    # ensure_channel).
+    ensure_role: Callable[[str], Awaitable[str]] | None = None
+    # Rename the role `role_id` to `new_name` on this connector - used to keep
+    # linked copies coherent when a linked role is renamed on one side.
+    rename_role: Callable[[str, str], Awaitable[None]] | None = None
+    # Grant / revoke role `role_id` for user `user_id` on this connector.
+    # Both are idempotent (no-op if already in the desired state) so the
+    # bridge's own write doesn't echo back into an auto-grant loop.
+    grant_role: Callable[[str, str], Awaitable[None]] | None = None
+    revoke_role: Callable[[str, str], Awaitable[None]] | None = None
+    # Read / write the permission override for role `role_id` on channel
+    # `channel_id`, as a neutral RolePermissionOverride
+    # (services/role_sync.py). The setter is idempotent. Used by the
+    # per-channel permission-mirror flow.
+    get_channel_role_permission: (
+        Callable[[str, str], Awaitable["RolePermissionOverride | None"]] | None
+    ) = None
+    set_channel_role_permission: (
+        Callable[[str, str, "RolePermissionOverride"], Awaitable[None]] | None
+    ) = None
 
 
 class ChannelLinker:
@@ -786,6 +826,210 @@ class UserLinker:
             logger.debug("couldn't resolve user name for %s on %s", user_id, connector_id, exc_info=True)
             return user_id
         return name or user_id
+
+
+class RoleLinker:
+    """`/link role` / `/mirror role` / `/unlink role` / `/linked roles` - the
+    role-level counterpart of ChannelLinker, modeled on UserLinker (for the
+    list/unlink/name-resolution shape) and ChannelLinker.mirror_channel (for
+    the ensure-then-link, report-don't-raise-per-destination shape).
+
+    Roles are Discord/Stoat only; IRC has no role concept, so no connector
+    there registers any of the role hooks and `/link role` isn't offered.
+
+    Every id argument also accepts a bare role NAME - resolved to an id via
+    the connector's resolve_role_id_by_name hook, falling back to treating
+    the token as an id if the hook is absent or comes up empty.
+    """
+
+    def __init__(self, role_mappings: RoleMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+        self._role_mappings = role_mappings
+        self._connectors = connectors
+
+    @property
+    def connectors(self) -> dict[str, ConnectorInfo]:
+        return self._connectors
+
+    async def link_role(
+        self,
+        *,
+        local_connector: str,
+        local_role: str,
+        source: str,
+        source_role: str,
+        destination_role: str | None = None,
+    ) -> str:
+        """Link `source`'s `source_role` to `destination_role` (or
+        `local_role`) on `local_connector`. Both role arguments accept an id
+        or a bare name. Raises LinkError if `source` is unknown, the two are
+        the same role, or both are already linked to two different bridge
+        groups."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+
+        source_id = await self._resolve_to_id(source, source_role)
+        local_id = await self._resolve_to_id(local_connector, destination_role or local_role)
+
+        if source == local_connector and source_id == local_id:
+            raise LinkError("can't link a role to itself.")
+
+        source_group = await self._role_mappings.get_bridge_group(source, source_id)
+        local_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
+        if source_group and local_group and source_group != local_group:
+            raise LinkError(
+                "both roles are already linked, but to different bridge groups - unlink one before relinking."
+            )
+        bridge_group = source_group or local_group or uuid.uuid4().hex
+
+        source_name = await self._resolve_name(source, source_id)
+        local_name = await self._resolve_name(local_connector, local_id)
+        await self._role_mappings.upsert(
+            RoleMapping(bridge_group=bridge_group, connector_id=source, role_id=source_id, role_name=source_name)
+        )
+        await self._role_mappings.upsert(
+            RoleMapping(
+                bridge_group=bridge_group, connector_id=local_connector, role_id=local_id, role_name=local_name
+            )
+        )
+
+        source_label = self._connectors[source].label
+        local_info = self._connectors.get(local_connector)
+        local_label = local_info.label if local_info else local_connector
+        return (
+            f"Linked {source_label} role '{source_name}' ({source_id}) to "
+            f"{local_label} role '{local_name}' ({local_id})."
+        )
+
+    async def mirror_role(self, *, local_connector: str, local_role: str, destination: str) -> str:
+        """Ensure `local_role` (on `local_connector`) has a linked
+        counterpart on `destination`: reuses/creates a same-named role there
+        via `destination`'s ensure_role() hook, then links it. Reports rather
+        than raises for an already-synced pair, a destination that can't
+        create roles, or a link conflict - the bulk `mirror_role_all` caller
+        shouldn't have one bad destination abort the rest."""
+        if destination not in self._connectors:
+            raise LinkError(f"'{destination}' isn't a known connector.")
+        if destination == local_connector:
+            raise LinkError("can't mirror a role to its own connector.")
+
+        local_id = await self._resolve_to_id(local_connector, local_role)
+        local_name = await self._resolve_name(local_connector, local_id)
+
+        bridge_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
+        if bridge_group is not None:
+            existing = await self._role_mappings.get_mapped_roles(bridge_group)
+            if any(m.connector_id == destination for m in existing):
+                return f"{self._connectors[destination].label}: already synced - skipped."
+
+        dest_info = self._connectors[destination]
+        if dest_info.ensure_role is None:
+            return f"{dest_info.label}: doesn't support role creation - link it manually with /link role."
+
+        try:
+            destination_role_id = await dest_info.ensure_role(local_name)
+        except Exception as exc:
+            logger.warning("mirror-role: %s.ensure_role(%r) failed: %s", destination, local_name, exc)
+            return f"{dest_info.label}: failed to create/find a role: {exc}"
+
+        try:
+            return await self.link_role(
+                local_connector=destination,
+                local_role=destination_role_id,
+                source=local_connector,
+                source_role=local_id,
+            )
+        except LinkError as exc:
+            return f"{dest_info.label}: {exc}"
+
+    async def mirror_role_all(self, *, local_connector: str, local_role: str) -> str:
+        """`/mirror role <local> all` - mirror_role() against every other
+        configured connector, one line of summary/skip/error per connector."""
+        results = [
+            await self.mirror_role(local_connector=local_connector, local_role=local_role, destination=destination)
+            for destination in self._connectors
+            if destination != local_connector
+        ]
+        return "\n".join(results) if results else "no other connectors configured."
+
+    async def list_linked_roles(
+        self, *, local_connector: str, local_role: str | None = None, service: str | None = None
+    ) -> str:
+        """Read-only listing, for `/linked roles` - never raises LinkError.
+        With a `local_role`, shows just that role's group; without one (or
+        with `service == "all"`), lists every group."""
+        if local_role is not None and (service is None or service.lower() != "all"):
+            local_id = await self._resolve_to_id(local_connector, local_role)
+            bridge_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
+            if bridge_group is None:
+                return "This role isn't linked to any others."
+            groups = [await self._role_mappings.get_mapped_roles(bridge_group)]
+        else:
+            groups_by_id: dict[str, list[RoleMapping]] = {}
+            for mapping in await self._role_mappings.get_all():
+                groups_by_id.setdefault(mapping.bridge_group, []).append(mapping)
+            if not groups_by_id:
+                return "No roles are linked yet."
+            groups = list(groups_by_id.values())
+
+        lines = []
+        for group_mappings in groups:
+            parts = []
+            for mapping in sorted(group_mappings, key=lambda m: (m.connector_id, m.role_id)):
+                info = self._connectors.get(mapping.connector_id)
+                label = info.label if info else mapping.connector_id
+                name = await self._resolve_name(mapping.connector_id, mapping.role_id)
+                parts.append(f"{label}: {name}" if name == mapping.role_id else f"{label}: {name} ({mapping.role_id})")
+            lines.append(" ↔ ".join(parts))
+        return "Linked roles:\n" + "\n".join(lines)
+
+    async def unlink_role(self, *, local_connector: str, local_role: str, destination: str | None) -> str:
+        """`/unlink role`. `destination` (a connector id) kicks just that one
+        member out of the role's bridge group; None/"all" (the default)
+        dissolves the whole group. A kick that would strand a lone survivor
+        dissolves the group instead (a group of one isn't a bridge)."""
+        local_id = await self._resolve_to_id(local_connector, local_role)
+        bridge_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
+        if bridge_group is None:
+            raise LinkError("this role isn't linked to anything.")
+
+        if destination is None or destination.lower() == "all":
+            count = await self._role_mappings.delete_bridge_group(bridge_group)
+            return f"Unlinked this role's entire bridge group ({count} role(s) removed)."
+
+        mapped = await self._role_mappings.get_mapped_roles(bridge_group)
+        target = next((m for m in mapped if m.connector_id == destination), None)
+        if target is None:
+            raise LinkError(f"'{destination}' isn't linked in this role's bridge group.")
+        await self._role_mappings.delete_mapping(destination, target.role_id)
+        survivors = [m for m in mapped if m.connector_id != destination]
+        if len(survivors) <= 1:
+            for m in survivors:
+                await self._role_mappings.delete_mapping(m.connector_id, m.role_id)
+        label = self._connectors[destination].label if destination in self._connectors else destination
+        return f"Unlinked {label} role '{target.role_name}' ({target.role_id}) from this bridge group."
+
+    async def _resolve_to_id(self, connector: str, token: str) -> str:
+        info = self._connectors.get(connector)
+        if info is not None and info.resolve_role_id_by_name is not None:
+            try:
+                role_id = await info.resolve_role_id_by_name(token)
+            except Exception:
+                logger.debug("couldn't resolve role name %r on %s", token, connector, exc_info=True)
+                role_id = None
+            if role_id:
+                return role_id
+        return token
+
+    async def _resolve_name(self, connector_id: str, role_id: str) -> str:
+        info = self._connectors.get(connector_id)
+        if info is None or info.resolve_role_name is None:
+            return role_id
+        try:
+            name = await info.resolve_role_name(role_id)
+        except Exception:
+            logger.debug("couldn't resolve role name for %s on %s", role_id, connector_id, exc_info=True)
+            return role_id
+        return name or role_id
 
 
 class StructureMirrorer:

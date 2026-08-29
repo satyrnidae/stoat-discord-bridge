@@ -1,6 +1,59 @@
-from stoat_discord_bridge.services.mentions import rewrite_channel_mentions, rewrite_mentions
+from stoat_discord_bridge.services.mentions import (
+    rewrite_channel_mentions,
+    rewrite_mentions,
+    rewrite_role_mentions,
+)
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
+from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
+
+
+_ULID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+
+async def _linked_roles(fake_db, *mappings):
+    repo = RoleMappingRepository(fake_db)
+    for bridge_group, connector_id, role_id, role_name in mappings:
+        await repo.upsert(
+            RoleMapping(bridge_group=bridge_group, connector_id=connector_id, role_id=role_id, role_name=role_name)
+        )
+    return repo
+
+
+async def test_discord_role_mention_rewritten_to_stoat(fake_db):
+    repo = await _linked_roles(fake_db, ("g1", "discord", "111", "Mods"), ("g1", "stoat", _ULID, "Moderators"))
+    result = await rewrite_role_mentions(
+        "ping <@&111>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", role_mappings=repo,
+    )
+    assert result == f"ping <%{_ULID}>"
+
+
+async def test_stoat_role_mention_rewritten_to_discord(fake_db):
+    repo = await _linked_roles(fake_db, ("g1", "stoat", _ULID, "Moderators"), ("g1", "discord", "111", "Mods"))
+    result = await rewrite_role_mentions(
+        f"ping <%{_ULID}>", origin_connector_id="stoat", target_connector_id="discord",
+        target_kind="discord", role_mappings=repo,
+    )
+    assert result == "ping <@&111>"
+
+
+async def test_role_mention_to_irc_uses_name(fake_db):
+    repo = await _linked_roles(fake_db, ("g1", "discord", "111", "Mods"), ("g1", "irc", "irc-mods", "Mods"))
+    result = await rewrite_role_mentions(
+        "ping <@&111>", origin_connector_id="discord", target_connector_id="irc",
+        target_kind="irc", role_mappings=repo,
+    )
+    assert result == "ping @Mods"
+
+
+async def test_unmapped_role_mention_left_untouched(fake_db):
+    repo = await _linked_roles(fake_db, ("g1", "discord", "111", "Mods"))
+    result = await rewrite_role_mentions(
+        "ping <@&111> and <@&222>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", role_mappings=repo,
+    )
+    assert result == "ping <@&111> and <@&222>"
 
 
 async def _linked(fake_db, *mappings):

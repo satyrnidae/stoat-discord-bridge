@@ -31,6 +31,7 @@ from stoat_discord_bridge.admin_commands import (
     ConnectorInfo,
     EmoteLinker,
     LinkError,
+    RoleLinker,
     UserLinker,
 )
 from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure, clip_name
@@ -56,9 +57,14 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     content_with_attachments,
 )
-from stoat_discord_bridge.services.mentions import rewrite_channel_mentions, rewrite_mentions
+from stoat_discord_bridge.services.mentions import (
+    rewrite_channel_mentions,
+    rewrite_mentions,
+    rewrite_role_mentions,
+)
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -71,6 +77,14 @@ _USERNAME_LIMIT = 80
 _FORBIDDEN_USERNAME_SUBSTRINGS = ("clyde", "discord")
 
 _CHANNEL_MENTION_RE = re.compile(r"^<#(\d+)>$")
+_ROLE_MENTION_RE = re.compile(r"^<@&(\d+)>$")
+
+
+def _normalize_role_id(raw: str) -> str:
+    """Strip a pasted `<@&id>` role mention down to the bare id; leave a bare
+    id or a role name untouched (RoleLinker resolves a name itself)."""
+    match = _ROLE_MENTION_RE.match(raw.strip())
+    return match.group(1) if match else raw.strip()
 
 
 def _connector_autocomplete_choices(
@@ -160,11 +174,12 @@ class DiscordSenderService(SenderService):
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
         category_linker: "CategoryLinker | None" = None,
+        role_linker: "RoleLinker | None" = None,
     ) -> None:
-        # linker/emote_linker/user_linker/category_linker are only needed to
-        # serve `/link-channel`/`/link-emote`/`/link-user`/`/link-category`;
-        # None is accepted (e.g. for tests) but those commands will then
-        # report themselves unconfigured.
+        # linker/emote_linker/user_linker/category_linker/role_linker are only
+        # needed to serve the corresponding `/link-*` commands; None is
+        # accepted (e.g. for tests) but those commands will then report
+        # themselves unconfigured.
         SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
         self._config = config
         self.connector_id = config.id
@@ -173,6 +188,7 @@ class DiscordSenderService(SenderService):
         self._emote_linker = emote_linker
         self._user_linker = user_linker
         self._category_linker = category_linker
+        self._role_linker = role_linker
         self._commands_synced = False
         # Discord thread auto-mirror (_handle_thread_create) bookkeeping - see
         # both methods' docstrings. _pending_thread_starter maps a thread id
@@ -395,6 +411,81 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, service: str | None = None, local_id: discord.Member | None = None
         ) -> None:
             await self._handle_unlink_user(interaction, service, local_id)
+
+        async def role_service_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._role_linker.connectors if self._role_linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors, include_all=True)
+
+        async def link_role_service_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            connectors = self._role_linker.connectors if self._role_linker is not None else {}
+            return _connector_autocomplete_choices(current, connectors)
+
+        @self.tree.command(
+            name="link-role",
+            description="Link a role from another connector to a local role (accepts a role name or id)",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            local_id="Role id or name on this connector",
+            service="Connector id to link from (see /status for configured connectors)",
+            external_id="Role id or name on that connector",
+        )
+        @app_commands.autocomplete(service=link_role_service_autocomplete)
+        async def link_role_command(
+            interaction: discord.Interaction, local_id: str, service: str, external_id: str
+        ) -> None:
+            await self._handle_link_role(interaction, local_id, service, external_id)
+
+        @self.tree.command(
+            name="unlink-role",
+            description="Unlink a role's bridge - one connector, or the whole group (default: all)",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            local_id="Role id or name on this connector",
+            service="Connector id to unlink, or 'all' to dissolve the whole bridge group (default: all)",
+        )
+        @app_commands.autocomplete(service=role_service_autocomplete)
+        async def unlink_role_command(
+            interaction: discord.Interaction, local_id: str, service: str | None = None
+        ) -> None:
+            await self._handle_unlink_role(interaction, local_id, service)
+
+        @self.tree.command(
+            name="linked-roles",
+            description="List every role linked to a given role across the bridge (omit the role to list all)",
+            guild=self._guild,
+        )
+        @app_commands.describe(
+            local_id="Role id or name on this connector (omit to list every linked role)",
+            service="Unused filter placeholder; pass 'all' or omit",
+        )
+        async def linked_roles_command(
+            interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        ) -> None:
+            await self._handle_linked_roles(interaction, local_id, service)
+
+        @self.tree.command(
+            name="mirror-role",
+            description="Ensure a linked counterpart of a role exists on another connector (or all of them)",
+            guild=self._guild,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            local_id="Role id or name on this connector",
+            service="Connector id to mirror to, or 'all' for every configured connector (default: all)",
+        )
+        @app_commands.autocomplete(service=role_service_autocomplete)
+        async def mirror_role_command(
+            interaction: discord.Interaction, local_id: str, service: str | None = None
+        ) -> None:
+            await self._handle_mirror_role(interaction, local_id, service)
 
     @property
     def client(self) -> discord.Client:
@@ -722,6 +813,51 @@ class DiscordSenderService(SenderService):
             return None
         return getattr(user, "display_name", None)
 
+    def _guild_or_none(self) -> "discord.Guild | None":
+        return self._client.get_guild(self._config.guild_id)
+
+    async def get_role_name(self, role_id: str) -> str | None:
+        """Best-effort role-id -> name lookup, this connector's
+        `ConnectorInfo.resolve_role_name`."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            role = guild.get_role(int(role_id))
+        except ValueError:
+            return None
+        return role.name if role is not None else None
+
+    async def resolve_role_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare role name to its id so `/link-role` etc. accept
+        either. A token that's already a real role id is returned as-is; an
+        unrecognized token yields None (RoleLinker then treats it as a
+        literal id). Case-insensitive; first match wins (Discord role names
+        aren't unique)."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        if token.isdigit() and guild.get_role(int(token)) is not None:
+            return token
+        lowered = token.casefold()
+        for role in guild.roles:
+            if role.name.casefold() == lowered:
+                return str(role.id)
+        return None
+
+    async def ensure_role(self, name: str) -> str:
+        """Get-or-create a role named `name`, returning its id - this
+        connector's `ConnectorInfo.ensure_role` for `/mirror role`."""
+        guild = self._guild_or_none()
+        if guild is None:
+            raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
+        lowered = name.casefold()
+        for role in guild.roles:
+            if role.name.casefold() == lowered:
+                return str(role.id)
+        role = await guild.create_role(name=name, reason="bridge role mirror")
+        return str(role.id)
+
     def snapshot_guild_structure(self) -> GuildStructure:
         """Build a platform-neutral snapshot of the bridged guild's current
         categories/channels, for the Stoat `/mirror-channels` command.
@@ -890,6 +1026,101 @@ class DiscordSenderService(SenderService):
             return
         await interaction.response.send_message(summary, ephemeral=True)
 
+    async def _handle_link_role(
+        self, interaction: discord.Interaction, local_id: str, service: str, external_id: str
+    ) -> None:
+        if self._role_linker is None:
+            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+            return
+        local_id = _normalize_role_id(local_id)
+        external_id = _normalize_role_id(external_id)
+        logger.info(
+            "[discord:%s] %s ran /link-role local_id=%s service=%s external_id=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+            external_id,
+        )
+        try:
+            summary = await self._role_linker.link_role(
+                local_connector=self.connector_id,
+                local_role=local_id,
+                source=service,
+                source_role=external_id,
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /link-role rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_unlink_role(
+        self, interaction: discord.Interaction, local_id: str, service: str | None
+    ) -> None:
+        if self._role_linker is None:
+            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+            return
+        local_id = _normalize_role_id(local_id)
+        logger.info(
+            "[discord:%s] %s ran /unlink-role local_id=%s service=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+        )
+        try:
+            summary = await self._role_linker.unlink_role(
+                local_connector=self.connector_id, local_role=local_id, destination=service
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /unlink-role rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_linked_roles(
+        self, interaction: discord.Interaction, local_id: str | None, service: str | None
+    ) -> None:
+        if self._role_linker is None:
+            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+            return
+        summary = await self._role_linker.list_linked_roles(
+            local_connector=self.connector_id,
+            local_role=_normalize_role_id(local_id) if local_id else None,
+            service=service,
+        )
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_mirror_role(
+        self, interaction: discord.Interaction, local_id: str, service: str | None
+    ) -> None:
+        if self._role_linker is None:
+            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+            return
+        local_id = _normalize_role_id(local_id)
+        logger.info(
+            "[discord:%s] %s ran /mirror-role local_id=%s service=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+        )
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._role_linker.mirror_role_all(
+                    local_connector=self.connector_id, local_role=local_id
+                )
+            else:
+                summary = await self._role_linker.mirror_role(
+                    local_connector=self.connector_id, local_role=local_id, destination=service
+                )
+        except LinkError as exc:
+            logger.info("[discord:%s] /mirror-role rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
     async def _handle_link_emote(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: str
     ) -> None:
@@ -1052,12 +1283,14 @@ class DiscordReceiverService(ReceiverService):
         user_mappings: UserMappingRepository | None = None,
         enable_local_user_masquerade: bool = True,
         channel_mappings: ChannelMappingRepository | None = None,
+        role_mappings: RoleMappingRepository | None = None,
     ) -> None:
         self._client = client
         self._guild_id = guild_id
         self.connector_id = connector_id
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
+        self._role_mappings = role_mappings
         self._enable_local_user_masquerade = enable_local_user_masquerade
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
@@ -1094,6 +1327,14 @@ class DiscordReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="discord",
                 channel_mappings=self._channel_mappings,
+            )
+        if self._role_mappings is not None:
+            content = await rewrite_role_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                role_mappings=self._role_mappings,
             )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):

@@ -18,6 +18,7 @@ from stoat_discord_bridge.admin_commands import (
     ChannelLinker,
     ConnectorInfo,
     EmoteLinker,
+    RoleLinker,
     StructureMirrorer,
     UserLinker,
 )
@@ -53,6 +54,7 @@ from stoat_discord_bridge.storage.channel_mappings import (
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
 from stoat_discord_bridge.storage.message_sync import MessageRef, MessageSyncRepository
 from stoat_discord_bridge.storage.mongo import MongoStore
+from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -243,6 +245,7 @@ async def run(config: BridgeConfig) -> None:
     user_mappings = UserMappingRepository(mongo.db)
     category_mappings = CategoryMappingRepository(mongo.db)
     thread_categories = ThreadCategoryRepository(mongo.db)
+    role_mappings = RoleMappingRepository(mongo.db)
 
     all_connectors = (*config.discord, *config.stoat, *config.irc)
     logger.info(
@@ -265,6 +268,7 @@ async def run(config: BridgeConfig) -> None:
     emote_linker = EmoteLinker(emoji_mappings, connector_infos)
     user_linker = UserLinker(user_mappings, connector_infos)
     category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
+    role_linker = RoleLinker(role_mappings, connector_infos)
 
     senders: list = []
     closables: list = []
@@ -281,6 +285,7 @@ async def run(config: BridgeConfig) -> None:
             emote_linker=emote_linker,
             user_linker=user_linker,
             category_linker=category_linker,
+            role_linker=role_linker,
         )
         structure_providers[dc.id] = sender.snapshot_guild_structure
         receiver = DiscordReceiverService(
@@ -290,6 +295,7 @@ async def run(config: BridgeConfig) -> None:
             user_mappings=user_mappings,
             enable_local_user_masquerade=dc.enable_local_user_masquerade,
             channel_mappings=channel_mappings,
+            role_mappings=role_mappings,
         )
         coordinator.register_receiver(receiver)
         # No ensure_channel: Discord has no channel-creation capability in
@@ -301,6 +307,9 @@ async def run(config: BridgeConfig) -> None:
             resolve_channel_name=sender.get_channel_name,
             resolve_user_name=sender.get_user_name,
             resolve_category_name=sender.get_category_name,
+            resolve_role_name=sender.get_role_name,
+            resolve_role_id_by_name=sender.resolve_role_id_by_name,
+            ensure_role=sender.ensure_role,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -318,9 +327,15 @@ async def run(config: BridgeConfig) -> None:
             emote_linker=emote_linker,
             user_linker=user_linker,
             category_linker=category_linker,
+            role_linker=role_linker,
         )
         coordinator.register_receiver(
-            StoatReceiverService(sender, user_mappings=user_mappings, channel_mappings=channel_mappings)
+            StoatReceiverService(
+                sender,
+                user_mappings=user_mappings,
+                channel_mappings=channel_mappings,
+                role_mappings=role_mappings,
+            )
         )
         connector_infos[sc.id] = ConnectorInfo(
             id=sc.id,
@@ -329,6 +344,9 @@ async def run(config: BridgeConfig) -> None:
             ensure_channel=sender.ensure_channel,
             resolve_user_name=sender.get_user_name,
             resolve_category_name=sender.get_category_name,
+            resolve_role_name=sender.get_role_name,
+            resolve_role_id_by_name=sender.resolve_role_id_by_name,
+            ensure_role=sender.ensure_role,
         )
         senders.append(sender)
         closables.append(sender)
@@ -350,6 +368,7 @@ async def run(config: BridgeConfig) -> None:
                 user_mappings=user_mappings,
                 enable_local_user_masquerade=ic.enable_local_user_masquerade,
                 channel_mappings=channel_mappings,
+                role_mappings=role_mappings,
             )
         )
         connector_infos[ic.id] = ConnectorInfo(

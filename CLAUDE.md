@@ -120,13 +120,28 @@ itself drops only once every connector's copy has been deleted.
 Every admin/status command (`/status`, `/link-channel`, `/unlink-channel`,
 `/linked-channels`, `/link-user`, `/unlink-user`, `/linked-users`,
 `/link-emote`, `/mirror-channel`, `/mirror-channels`, `/link-category`,
-`/unlink-category`, `/linked-categories`) and how to reach it on each
+`/unlink-category`, `/linked-categories`, and the role commands `/link role` /
+`/mirror role` / `/linked roles` / `/unlink role` — Discord/Stoat only, flat
+`/link-role` etc. on Discord) and how to reach it on each
 connector is documented in `COMMANDS.md`, not duplicated here — shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
-`EmoteLinker` / `UserLinker` / `StructureMirrorer`), called identically from
-each connector's own `services/*.py` module. Nothing is bridged (or
-mention-linked) automatically — every pair is linked explicitly via those
-commands.
+`EmoteLinker` / `UserLinker` / `RoleLinker` / `StructureMirrorer`), called
+identically from each connector's own `services/*.py` module. Nothing is
+bridged (or mention-linked) automatically — every pair is linked explicitly
+via those commands.
+
+`RoleLinker` (`storage/role_mappings.py`) is the role-level counterpart of
+`ChannelLinker`. Every id argument also accepts a bare role name via each
+connector's `resolve_role_id_by_name` hook; `/mirror role` creates-or-matches
+a same-named role via the `ensure_role` hook (name only — color/permissions
+aren't copied). Linked-role `<@&id>` / `<%id>` mentions are rewritten into the
+target's linked role (`@Name` on IRC) alongside the user/channel mention
+rewrites. Auto-granting a linked role to a linked user, and mirroring a linked
+role's per-channel permission overrides, are planned follow-ups — the
+`ConnectorInfo` hook fields (`grant_role` / `revoke_role` / `rename_role` /
+`get_channel_role_permission` / `set_channel_role_permission`) and the
+`services/role_sync.py` permission-translation helpers exist but aren't wired
+to events yet.
 
 `ChannelLinker.unlink_channel` dissolves a bridge group down to nothing
 rather than leaving a lone member (a group of one isn't a bridge), and fires
@@ -203,7 +218,7 @@ src/stoat_discord_bridge/
   config.py                    # loads config.yaml, layering env vars over it per-field (see its docstring)
   models.py                    # StandardMessage - the platform-neutral message format
   channel_structure.py         # GuildStructure snapshot used by the /mirror-channels command
-  admin_commands.py            # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / StructureMirrorer - shared linking & /mirror-channels logic
+  admin_commands.py            # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker / StructureMirrorer - shared linking & /mirror-channels logic
   bridge.py                    # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
   status.py                    # HealthTracker: per-connector sync target health, read by the /status commands
   services/
@@ -216,6 +231,8 @@ src/stoat_discord_bridge/
     mongo.py                   # MongoDB connection (motor)
     channel_mappings.py        # which channels, across connectors, are bridged together
     category_mappings.py       # which categories, across connectors, are bridged together; ThreadCategoryRepository binds a thread's parent channel to its (unlinkable) thread-only category id
+    role_mappings.py           # which roles, across connectors, are linked (Discord/Stoat only); backs /link role and role-mention rewriting
     message_sync.py            # cross-connector message ID references, for edit/delete sync
     emoji_mappings.py          # cross-connector custom emoji ID references, for reaction sync
+  services/role_sync.py        # network-free helpers for the (planned) role auto-grant & permission-mirror flows
 ```

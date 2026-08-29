@@ -23,6 +23,7 @@ from stoat_discord_bridge.admin_commands import (
     ChannelLinker,
     EmoteLinker,
     LinkError,
+    RoleLinker,
     StructureMirrorer,
     UserLinker,
 )
@@ -48,9 +49,14 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     content_with_attachments,
 )
-from stoat_discord_bridge.services.mentions import rewrite_channel_mentions, rewrite_mentions
+from stoat_discord_bridge.services.mentions import (
+    rewrite_channel_mentions,
+    rewrite_mentions,
+    rewrite_role_mentions,
+)
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -76,6 +82,10 @@ _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /unlink-channel [service|all] [local_id] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   /unlink-category [service|all] - unlink this channel's Category (default: whole group) from one connector, or the whole group (Manage Server)
   /unlink-user [service|all] [local_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
+  /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
+  /mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
+  /linked roles [local_id|name] - roles linked across the bridge, read-only
+  /unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
 
@@ -209,11 +219,12 @@ class StoatSenderService(SenderService):
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
         category_linker: "CategoryLinker | None" = None,
+        role_linker: "RoleLinker | None" = None,
     ) -> None:
-        # linker/mirrorer/emote_linker/user_linker/category_linker are only
-        # needed to serve `/link-channel`, `/mirror-channels`, `/link-emote`,
-        # `/link-user`, and `/link-category`; None is accepted (e.g. for
-        # tests) but those commands will then report themselves unconfigured.
+        # linker/mirrorer/emote_linker/user_linker/category_linker/role_linker
+        # are only needed to serve the corresponding `/link-*` / `/link ...`
+        # commands; None is accepted (e.g. for tests) but those commands will
+        # then report themselves unconfigured.
         SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
         self._config = config
         self.server_id = config.server_id
@@ -224,6 +235,7 @@ class StoatSenderService(SenderService):
         self._emote_linker = emote_linker
         self._user_linker = user_linker
         self._category_linker = category_linker
+        self._role_linker = role_linker
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
 
@@ -697,6 +709,19 @@ class StoatSenderService(SenderService):
         raw = message.content.strip()
         parts = raw.split()
         cmd = parts[0].lower() if parts else ""
+        two = f"{parts[0].lower()} {parts[1].lower()}" if len(parts) > 1 else ""
+        if two == "/link role":
+            await self._handle_link_role(message, parts[2:])
+            return
+        if two == "/unlink role":
+            await self._handle_unlink_role(message, parts[2:])
+            return
+        if two == "/linked roles":
+            await self._handle_linked_roles(message, parts[2:])
+            return
+        if two == "/mirror role":
+            await self._handle_mirror_role(message, parts[2:])
+            return
         if cmd == "/status":
             await message.channel.send(self._health.render())
             return
@@ -1245,6 +1270,153 @@ class StoatSenderService(SenderService):
             return
         await message.channel.send(summary)
 
+    async def _handle_link_role(self, message, args: list[str], /) -> None:
+        """`/link role <local_id|name> <service> <external_id|name>`."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if self._role_linker is None:
+            await message.channel.send("Role linking isn't configured.")
+            return
+        if len(args) < 3:
+            await message.channel.send("Usage: /link role <local_id|name> <service> <external_id|name>")
+            return
+        local_id, service, external_id = args[0], args[1], args[2]
+        logger.info(
+            "[stoat:%s] %s ran /link role local=%s service=%s external=%s",
+            self.connector_id,
+            message.author.id,
+            local_id,
+            service,
+            external_id,
+        )
+        try:
+            summary = await self._role_linker.link_role(
+                local_connector=self.connector_id,
+                local_role=local_id,
+                source=service,
+                source_role=external_id,
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /link role rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_unlink_role(self, message, args: list[str], /) -> None:
+        """`/unlink role <local_id|name> [<service>|all]`."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if self._role_linker is None:
+            await message.channel.send("Role linking isn't configured.")
+            return
+        if not args:
+            await message.channel.send("Usage: /unlink role <local_id|name> [<service>|all]")
+            return
+        local_id = args[0]
+        service = args[1] if len(args) > 1 else None
+        try:
+            summary = await self._role_linker.unlink_role(
+                local_connector=self.connector_id, local_role=local_id, destination=service
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /unlink role rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_linked_roles(self, message, args: list[str], /) -> None:
+        """`/linked roles [<local_id|name>] [<service>|all]` - read-only."""
+        if self._role_linker is None:
+            await message.channel.send("Role linking isn't configured.")
+            return
+        local_id = args[0] if args else None
+        service = args[1] if len(args) > 1 else None
+        summary = await self._role_linker.list_linked_roles(
+            local_connector=self.connector_id, local_role=local_id, service=service
+        )
+        await message.channel.send(summary)
+
+    async def _handle_mirror_role(self, message, args: list[str], /) -> None:
+        """`/mirror role <local_id|name> [<service>|all]`."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if self._role_linker is None:
+            await message.channel.send("Role linking isn't configured.")
+            return
+        if not args:
+            await message.channel.send("Usage: /mirror role <local_id|name> [<service>|all]")
+            return
+        local_id = args[0]
+        service = args[1] if len(args) > 1 else None
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._role_linker.mirror_role_all(
+                    local_connector=self.connector_id, local_role=local_id
+                )
+            else:
+                summary = await self._role_linker.mirror_role(
+                    local_connector=self.connector_id, local_role=local_id, destination=service
+                )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /mirror role rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def get_role_name(self, role_id: str) -> str | None:
+        """Best-effort role-id -> name lookup, this connector's
+        `ConnectorInfo.resolve_role_name`."""
+        try:
+            role = self._role_by_id(role_id)
+        except Exception:
+            return None
+        return getattr(role, "name", None) if role is not None else None
+
+    async def resolve_role_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare role name to its id (case-insensitive, first match);
+        a token that's already a role id is returned as-is, an unknown token
+        yields None."""
+        try:
+            roles = self._all_roles()
+        except Exception:
+            return None
+        for role in roles:
+            if str(getattr(role, "id", "")) == token:
+                return token
+        lowered = token.casefold()
+        for role in roles:
+            if str(getattr(role, "name", "")).casefold() == lowered:
+                return str(role.id)
+        return None
+
+    async def ensure_role(self, name: str) -> str:
+        """Get-or-create a role named `name`, returning its id - this
+        connector's `ConnectorInfo.ensure_role` for `/mirror role`."""
+        server = self._client.get_server(self.server_id, partial=False)
+        if not isinstance(server, stoat.Server):
+            server = await self._client.fetch_server(self.server_id)
+        lowered = name.casefold()
+        for role in self._roles_of(server):
+            if str(getattr(role, "name", "")).casefold() == lowered:
+                return str(role.id)
+        role = await server.create_role(name=name)
+        return str(role.id)
+
+    @staticmethod
+    def _roles_of(server):
+        roles = getattr(server, "roles", None) or []
+        return list(roles.values()) if isinstance(roles, dict) else list(roles)
+
+    def _all_roles(self):
+        server = self._client.get_server(self.server_id, partial=True)
+        return self._roles_of(server)
+
+    def _role_by_id(self, role_id: str):
+        return next((r for r in self._all_roles() if str(getattr(r, "id", "")) == role_id), None)
+
     def _is_admin(self, message) -> bool:
         try:
             return bool(message.author_as_member.server_permissions.manage_server)
@@ -1270,11 +1442,13 @@ class StoatReceiverService(ReceiverService):
         sender: StoatSenderService,
         user_mappings: UserMappingRepository | None = None,
         channel_mappings: ChannelMappingRepository | None = None,
+        role_mappings: RoleMappingRepository | None = None,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
+        self._role_mappings = role_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         channel = self._sender.get_channel(target_channel_id, partial=True)
@@ -1308,6 +1482,14 @@ class StoatReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="stoat",
                 channel_mappings=self._channel_mappings,
+            )
+        if self._role_mappings is not None:
+            content = await rewrite_role_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                role_mappings=self._role_mappings,
             )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):

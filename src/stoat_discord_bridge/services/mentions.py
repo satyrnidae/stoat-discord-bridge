@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 _DISCORD_MENTION = re.compile(r"<@!?(\d+)>")
@@ -32,6 +33,11 @@ _STOAT_MENTION = re.compile(r"<@([A-Za-z0-9]{26})>")
 
 _DISCORD_CHANNEL_MENTION = re.compile(r"<#(\d+)>")
 _STOAT_CHANNEL_MENTION = re.compile(r"<#([A-Za-z0-9]{26})>")
+
+_DISCORD_ROLE_MENTION = re.compile(r"<@&(\d+)>")
+# Stoat/Revolt role-mention syntax - TODO: unverified against a live server,
+# same caveat as the user-mention shape above.
+_STOAT_ROLE_MENTION = re.compile(r"<%([A-Za-z0-9]{26})>")
 
 
 async def rewrite_channel_mentions(
@@ -68,6 +74,45 @@ async def rewrite_channel_mentions(
                 replacement = target.channel_id if target.channel_id.startswith("#") else f"#{target.channel_id}"
             else:
                 replacement = f"<#{target.channel_id}>"
+            content = content.replace(match.group(0), replacement)
+    return content
+
+
+async def rewrite_role_mentions(
+    content: str,
+    *,
+    origin_connector_id: str,
+    target_connector_id: str,
+    target_kind: str,
+    role_mappings: RoleMappingRepository,
+) -> str:
+    """Rewrite a `<@&role-id>` (Discord) / `<%role-id>` (Stoat) mention of a
+    cross-connector-linked role into the target connector's own copy of that
+    role - native syntax on Discord/Stoat, or `@name` on IRC. A mention of a
+    role with no mapping to the target connector is left exactly as it
+    appeared (same rule as user/channel mentions). Both id shapes are always
+    tried; Discord's numeric ids and Stoat's 26-char ULIDs never collide."""
+    for pattern in (_DISCORD_ROLE_MENTION, _STOAT_ROLE_MENTION):
+        for match in list(pattern.finditer(content)):
+            bridge_group = await role_mappings.get_bridge_group(origin_connector_id, match.group(1))
+            if bridge_group is None:
+                continue
+            target = next(
+                (
+                    m
+                    for m in await role_mappings.get_mapped_roles(bridge_group)
+                    if m.connector_id == target_connector_id
+                ),
+                None,
+            )
+            if target is None:
+                continue
+            if target_kind == "discord":
+                replacement = f"<@&{target.role_id}>"
+            elif target_kind == "stoat":
+                replacement = f"<%{target.role_id}>"
+            else:
+                replacement = f"@{target.role_name}"
             content = content.replace(match.group(0), replacement)
     return content
 
