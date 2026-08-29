@@ -61,16 +61,27 @@ class FakeStoatMessage:
     handle - what StoatReceiverService.add_reaction/remove_reaction operate
     on via channel.get_message(id, partial=True)."""
 
-    def __init__(self, id: str) -> None:
+    def __init__(self, id: str, *, pinned: bool = False) -> None:
         self.id = id
         self.added_reactions: list[Any] = []
         self.removed_reactions: list[Any] = []
+        self.pinned = pinned
+        self.pin_calls = 0
+        self.unpin_calls = 0
 
     async def add_reaction(self, emoji) -> None:
         self.added_reactions.append(emoji)
 
     async def remove_reaction(self, emoji) -> None:
         self.removed_reactions.append(emoji)
+
+    async def pin(self) -> None:
+        self.pin_calls += 1
+        self.pinned = True
+
+    async def unpin(self) -> None:
+        self.unpin_calls += 1
+        self.pinned = False
 
 
 class FakeChannel:
@@ -101,6 +112,11 @@ class FakeChannel:
         return FakeSentMessage(id=message_id)
 
     def get_message(self, message_id: str, *, partial: bool = True) -> FakeStoatMessage:
+        return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
+
+    async def fetch_message(self, message_id: str) -> FakeStoatMessage:
+        if self._raises is not None:
+            raise self._raises
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
 
 

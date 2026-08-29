@@ -20,6 +20,7 @@ from stoat_discord_bridge.models import (
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
+    StandardPin,
     StandardReaction,
 )
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
@@ -36,6 +37,7 @@ class FakeReceiver(ReceiverService):
         *,
         supports_reactions: bool = False,
         supports_emoji: bool = False,
+        supports_pins: bool = False,
         native_ids: list[str] | None = None,
         raises: BaseException | None = None,
         created_emoji: CustomEmoji | None = None,
@@ -43,12 +45,14 @@ class FakeReceiver(ReceiverService):
         self.connector_id = connector_id
         self.supports_reactions = supports_reactions
         self.supports_emoji = supports_emoji
+        self.supports_pins = supports_pins
         self._native_ids = native_ids if native_ids is not None else ["native-1"]
         self._raises = raises
         self._created_emoji = created_emoji
         self.received: list[tuple] = []
         self.reactions: list[tuple] = []
         self.created_calls: list[CustomEmoji] = []
+        self.pins: list[tuple] = []
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         self.received.append((message, target_channel_id))
@@ -71,6 +75,11 @@ class FakeReceiver(ReceiverService):
         if self._raises is not None:
             raise self._raises
         return self._created_emoji
+
+    async def set_pinned(self, *, target_channel_id, target_message_id, pinned) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.pins.append((target_channel_id, target_message_id, pinned))
 
 
 def _message(**overrides) -> StandardMessage:
@@ -374,6 +383,76 @@ async def test_emoji_deleted_forgets_only_the_deleted_connectors_ref(coordinator
 
     assert await emoji_mappings.get_group_id("discord", "e1") is None
     assert await emoji_mappings.get_group_id("stoat", "e1s") is not None
+
+
+# ---------------------------------------------------------------- handle_pin
+
+
+async def test_pin_forwards_only_to_connectors_that_support_it(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    stoat_receiver = FakeReceiver("stoat", supports_pins=True)
+    irc_receiver = FakeReceiver("irc", supports_pins=False)
+    coordinator.register_receiver(stoat_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    await coordinator.handle_pin(
+        StandardPin(origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1", pinned=True)
+    )
+
+    assert stoat_receiver.pins == [("200", "s1", True)]
+    assert irc_receiver.pins == []
+
+
+async def test_pin_is_a_noop_for_an_untracked_message(coordinator_parts):
+    coordinator, _channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    receiver = FakeReceiver("stoat", supports_pins=True)
+    coordinator.register_receiver(receiver)
+
+    await coordinator.handle_pin(
+        StandardPin(origin_connector_id="discord", origin_channel_id="100", origin_message_id="nope", pinned=False)
+    )
+
+    assert receiver.pins == []
+
+
+async def test_pin_echo_from_our_own_write_is_dropped(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record("general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1")])
+    discord_receiver = FakeReceiver("discord", supports_pins=True)
+    stoat_receiver = FakeReceiver("stoat", supports_pins=True)
+    coordinator.register_receiver(discord_receiver)
+    coordinator.register_receiver(stoat_receiver)
+
+    # discord-origin pin fans out to stoat, recording that write...
+    await coordinator.handle_pin(
+        StandardPin(origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1", pinned=True)
+    )
+    assert stoat_receiver.pins == [("200", "s1", True)]
+    # ...and the stoat side's resulting pin event echoes back but is suppressed.
+    await coordinator.handle_pin(
+        StandardPin(origin_connector_id="stoat", origin_channel_id="200", origin_message_id="s1", pinned=True)
+    )
+    assert discord_receiver.pins == []
+
+
+async def test_pin_relay_that_raises_is_swallowed(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    failing = FakeReceiver("stoat", supports_pins=True, raises=RuntimeError("boom"))
+    working = FakeReceiver("irc", supports_pins=True)
+    coordinator.register_receiver(failing)
+    coordinator.register_receiver(working)
+
+    await coordinator.handle_pin(
+        StandardPin(origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1", pinned=False)
+    )  # must not raise
+
+    assert working.pins == [("300", "i1", False)]
 
 
 # ---------------------------------------------------------------- helpers

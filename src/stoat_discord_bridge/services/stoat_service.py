@@ -34,6 +34,7 @@ from stoat_discord_bridge.models import (
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
+    StandardPin,
     StandardReaction,
 )
 from stoat_discord_bridge.services.base import (
@@ -42,6 +43,7 @@ from stoat_discord_bridge.services.base import (
     OnMemberRolesChanged,
     OnChannelRolePermissionChanged,
     OnMessage,
+    OnPin,
     OnReaction,
     OnRoleDeleted,
     OnRoleRenamed,
@@ -241,6 +243,7 @@ class StoatSenderService(SenderService):
         on_reaction: OnReaction | None = None,
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
+        on_pin: OnPin | None = None,
         linker: ChannelLinker | None = None,
         mirrorer: StructureMirrorer | None = None,
         emote_linker: "EmoteLinker | None" = None,
@@ -256,7 +259,7 @@ class StoatSenderService(SenderService):
         # are only needed to serve the corresponding `/link-*` / `/link ...`
         # commands; None is accepted (e.g. for tests) but those commands will
         # then report themselves unconfigured.
-        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
+        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin)
         self._config = config
         self.server_id = config.server_id
         self.connector_id = config.id
@@ -740,6 +743,28 @@ class StoatSenderService(SenderService):
 
     async def _handle_message(self, message) -> None:
         if getattr(message.author, "bot", False):
+            return
+        # A pin/unpin produces a system message (message_pinned /
+        # message_unpinned) delivered here like any other. Turn it into a
+        # StandardPin and don't relay it (otherwise it goes out as a blank
+        # message). `.pinned_message_id` / `.unpinned_message_id` confirmed
+        # against the installed stoat.py; the rest of the Stoat integration
+        # is still assumed-against-a-live-server (see this module's TODOs).
+        system_event = getattr(message, "system_event", None)
+        if isinstance(system_event, (stoat.MessagePinnedSystemEvent, stoat.MessageUnpinnedSystemEvent)):
+            pinned = isinstance(system_event, stoat.MessagePinnedSystemEvent)
+            target_id = (
+                system_event.pinned_message_id if pinned else system_event.unpinned_message_id
+            )
+            if self._on_pin is not None:
+                await self._on_pin(
+                    StandardPin(
+                        origin_connector_id=self.connector_id,
+                        origin_channel_id=str(message.channel.id),
+                        origin_message_id=str(target_id),
+                        pinned=pinned,
+                    )
+                )
             return
         raw = message.content.strip()
         parts = raw.split()
@@ -1623,6 +1648,7 @@ class StoatReceiverService(ReceiverService):
 
     supports_reactions = True
     supports_emoji = True
+    supports_pins = True
 
     def __init__(
         self,
@@ -1719,6 +1745,28 @@ class StoatReceiverService(ReceiverService):
         # (bot's) own reaction, not every user's - so this call should be safe
         # as-is if stoat.py matches revolt.py's default here.
         await message.remove_reaction(_to_stoat_emoji(emoji))
+
+    async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
+        if getattr(message, "pinned", None) == pinned:
+            return  # already in the desired state - avoids a needless API call and echo
+        try:
+            if pinned:
+                await message.pin()
+            else:
+                await message.unpin()
+        except stoat.HTTPException:
+            logger.warning(
+                "[stoat:%s] couldn't %s message %s in channel %s",
+                self.connector_id,
+                "pin" if pinned else "unpin",
+                target_message_id,
+                target_channel_id,
+            )
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         try:

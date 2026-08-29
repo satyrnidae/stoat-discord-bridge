@@ -798,6 +798,16 @@ class IrcReceiverService(ReceiverService):
                 target_kind="irc",
                 role_mappings=self._role_mappings,
             )
+        if not content.strip():
+            # A synced message with no textual content (after attachment
+            # inlining and mention/timestamp rewrites) has nothing to show on
+            # IRC. This is how IRC ignores pin/unpin notifications, which
+            # Discord/Stoat relay as content-less messages - IRC has no
+            # message-pin concept, so it just drops them.
+            logger.debug(
+                "[irc:%s] dropping content-less synced message into %s", self.connector_id, target_channel_id
+            )
+            return []
         prefix = f"<{sender_name}> "
         limit = max(1, _LINE_LIMIT - len(prefix))
         ids: list[str] = []

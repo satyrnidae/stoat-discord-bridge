@@ -81,6 +81,20 @@ class StandardEmojiDeleted:
 
 
 @dataclass(frozen=True)
+class StandardPin:
+    """A message pin/unpin event, in the platform-neutral shape senders/
+    receivers pass around. Relayed only onto connectors that advertise
+    `ReceiverService.supports_pins` and only for a message the bridge
+    previously relayed (tracked via MessageSyncRepository) — see
+    BridgeCoordinator.handle_pin."""
+
+    origin_connector_id: ConnectorId
+    origin_channel_id: str
+    origin_message_id: str  # the message being (un)pinned, native id on the origin platform
+    pinned: bool  # True = pinned, False = unpinned
+
+
+@dataclass(frozen=True)
 class StandardReaction:
     """A reaction add/remove event, in the platform-neutral shape senders/
     receivers pass around. `emoji` is a bare unicode string (universal across

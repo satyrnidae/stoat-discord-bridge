@@ -21,6 +21,7 @@ from tests.fakes.fake_discord import (
     FakeAsset,
     FakeChannel,
     FakeClient,
+    FakeFullMessage,
     FakeGuild,
     FakeThread,
     FakeUser,
@@ -372,3 +373,32 @@ async def test_receive_posts_into_a_thread_through_its_parents_webhook():
         {"content": "hello", "username": "Alice", "avatar_url": "https://cdn.example/alice.png", "thread": thread}
     ]
     assert ids == ["1000"]
+
+
+# ---------------------------------------------------------------- set_pinned
+
+
+async def test_set_pinned_pins_and_unpins_the_message():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.set_pinned(target_channel_id="42", target_message_id="7", pinned=True)
+    msg = await channel.fetch_message(7)
+    assert msg.pinned is True
+    assert msg.pin_calls == ["bridge pin sync"]
+
+    await receiver.set_pinned(target_channel_id="42", target_message_id="7", pinned=False)
+    assert msg.pinned is False
+    assert msg.unpin_calls == ["bridge pin sync"]
+
+
+async def test_set_pinned_is_a_noop_when_already_in_the_target_state():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    channel.full_messages[7] = pinned_msg = FakeFullMessage(id=7, pinned=True)
+    receiver = _make_receiver(client)
+
+    await receiver.set_pinned(target_channel_id="42", target_message_id="7", pinned=True)
+
+    assert pinned_msg.pin_calls == []

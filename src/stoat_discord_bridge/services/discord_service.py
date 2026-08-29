@@ -42,6 +42,7 @@ from stoat_discord_bridge.models import (
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
+    StandardPin,
     StandardReaction,
 )
 from stoat_discord_bridge.services.base import (
@@ -50,6 +51,7 @@ from stoat_discord_bridge.services.base import (
     OnMemberRolesChanged,
     OnChannelRolePermissionChanged,
     OnMessage,
+    OnPin,
     OnReaction,
     OnRoleDeleted,
     OnRoleRenamed,
@@ -158,6 +160,9 @@ class _DiscordClient(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         await self._owner._handle_message(message)
 
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        await self._owner._handle_raw_message_edit(payload)
+
     async def on_thread_create(self, thread: discord.Thread) -> None:
         await self._owner._handle_thread_create(thread)
 
@@ -199,6 +204,7 @@ class DiscordSenderService(SenderService):
         on_reaction: OnReaction | None = None,
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
+        on_pin: OnPin | None = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -213,7 +219,7 @@ class DiscordSenderService(SenderService):
         # needed to serve the corresponding `/link-*` commands; None is
         # accepted (e.g. for tests) but those commands will then report
         # themselves unconfigured.
-        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted)
+        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin)
         self._config = config
         self.connector_id = config.id
         self._health = health
@@ -551,6 +557,11 @@ class DiscordSenderService(SenderService):
             return
         if message.guild is None or message.guild.id != self._config.guild_id:
             return
+        if message.type is discord.MessageType.pins_add:
+            # Discord's own "<user> pinned a message to this channel" system
+            # message - suppressed here so it isn't relayed as a blank
+            # message. The pin itself is synced via _handle_raw_message_edit.
+            return
         if message.type is discord.MessageType.thread_created:
             # Discord's own "<user> started a thread" system message in the
             # parent channel - suppressed here; _handle_thread_create posts the
@@ -574,6 +585,33 @@ class DiscordSenderService(SenderService):
             message.author.id,
         )
         await self._on_message(_to_standard_message(message, self.connector_id))
+
+    async def _handle_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        """MESSAGE_UPDATE fires both when a message is pinned and when it's
+        unpinned (Discord has a `pins_add` system message but no `pins_remove`
+        one, so this is the only event that covers both directions). Emit a
+        StandardPin whenever the payload carries a `pinned` field.
+
+        Heuristic: a pin toggle sends a minimal payload
+        (`{id, channel_id, guild_id, pinned}`) while a content edit carries
+        `content`/`edited_timestamp` and no `pinned` - so `"pinned" in data`
+        distinguishes them. A stray resync (e.g. a future payload shape that
+        includes `pinned` on every edit) is harmless: the receiver's
+        set_pinned() is idempotent and BridgeCoordinator suppresses the echo.
+        """
+        if self._on_pin is None or payload.guild_id != self._config.guild_id:
+            return
+        data = payload.data or {}
+        if "pinned" not in data:
+            return
+        await self._on_pin(
+            StandardPin(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(payload.channel_id),
+                origin_message_id=str(payload.message_id),
+                pinned=bool(data["pinned"]),
+            )
+        )
 
     async def _handle_thread_create(self, thread: discord.Thread) -> None:
         """A Discord thread (including a forum post, also a discord.Thread -
@@ -1446,6 +1484,7 @@ class DiscordSenderService(SenderService):
 class DiscordReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
+    supports_pins = True
 
     def __init__(
         self,
@@ -1541,6 +1580,30 @@ class DiscordReceiverService(ReceiverService):
     ) -> None:
         message = await self._get_partial_message(target_channel_id, target_message_id)
         await message.remove_reaction(_to_discord_emoji(emoji), self._client.user)
+
+    async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
+        channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
+            int(target_channel_id)
+        )
+        try:
+            message = await channel.fetch_message(int(target_message_id))
+        except discord.HTTPException:
+            return  # message gone, or we can't see it - best-effort
+        if message.pinned == pinned:
+            return  # already in the desired state - avoids a needless API call and echo
+        try:
+            if pinned:
+                await message.pin(reason="bridge pin sync")
+            else:
+                await message.unpin(reason="bridge pin sync")
+        except discord.HTTPException:
+            logger.warning(
+                "[discord:%s] couldn't %s message %s in channel %s",
+                self.connector_id,
+                "pin" if pinned else "unpin",
+                target_message_id,
+                target_channel_id,
+            )
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         guild = self._client.get_guild(self._guild_id)
