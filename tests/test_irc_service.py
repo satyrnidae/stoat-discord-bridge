@@ -48,6 +48,8 @@ class FakeConnection:
     def __init__(self, connected: bool = True, nickname: str = "bot"):
         self.whois_calls: list = []
         self.join_calls: list[str] = []
+        self.part_calls: list[str] = []
+        self.privmsg_calls: list[tuple[str, str]] = []
         self.mode_calls: list[tuple[str, str]] = []
         self._connected = connected
         self._nickname = nickname
@@ -57,6 +59,12 @@ class FakeConnection:
 
     def join(self, channel: str) -> None:
         self.join_calls.append(channel)
+
+    def part(self, channel: str, message: str = "") -> None:
+        self.part_calls.append(channel)
+
+    def privmsg(self, target: str, text: str) -> None:
+        self.privmsg_calls.append((target, text))
 
     def mode(self, channel: str, modes: str) -> None:
         self.mode_calls.append((channel, modes))
@@ -194,6 +202,135 @@ async def test_join_channel_does_nothing_while_disconnected(monkeypatch):
     assert conn.join_calls == []
     assert conn.mode_calls == []
     assert "#newchan" in sender._channels  # still tracked for a later reconnect
+
+
+# ---------------------------------------------------------------- part_channel
+
+
+async def test_part_channel_parts_a_tracked_channel_and_forgets_it(monkeypatch):
+    sender = _make_sender()
+    sender._channels.append("#synced")
+    sender._pending_permanent_modes.add("#synced")
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    await sender.part_channel("#synced", "Discord 'general'")
+
+    assert conn.part_calls == ["#synced"]
+    assert conn.privmsg_calls == [("#synced", "This channel was unlinked from Discord 'general'.")]
+    assert "#synced" not in sender._channels
+    assert sender._pending_permanent_modes == set()
+
+
+async def test_part_channel_unknown_channel_is_a_noop(monkeypatch):
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    await sender.part_channel("#never-joined")
+
+    assert conn.part_calls == []
+
+
+async def test_part_channel_while_disconnected_still_forgets_channel(monkeypatch):
+    sender = _make_sender()
+    sender._channels.append("#synced")
+    conn = FakeConnection(connected=False)
+    _patch_connection(monkeypatch, sender, conn)
+
+    await sender.part_channel("#synced")
+
+    assert conn.part_calls == []
+    assert "#synced" not in sender._channels
+
+
+# ---------------------------------------------------------------- +P permanent-mode handling
+
+
+async def test_permanent_mode_deferred_until_oper_then_applied(monkeypatch):
+    sender = _make_sender(default_channel_modes="+HtnPR")
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    await sender.join_channel("#synced")
+
+    # base modes go out immediately; +P is held back until OPER confirms
+    assert conn.mode_calls == [("#synced", "+HtnR")]
+    assert sender._pending_permanent_modes == {"#synced"}
+
+    sender._handle_youreoper()
+
+    assert sender._is_oper is True
+    assert conn.mode_calls == [("#synced", "+HtnR"), ("#synced", "+P")]
+    assert sender._pending_permanent_modes == set()
+
+
+async def test_permanent_mode_applied_inline_when_already_oper(monkeypatch):
+    sender = _make_sender(default_channel_modes="+ntP")
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+    sender._is_oper = True
+
+    await sender.join_channel("#synced")
+
+    assert conn.mode_calls == [("#synced", "+nt"), ("#synced", "+P")]
+    assert sender._pending_permanent_modes == set()
+
+
+async def test_permanent_mode_skipped_for_thread_channels(monkeypatch):
+    sender = _make_sender(default_channel_modes="+ntP")
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+    sender._is_oper = True
+
+    channel = await sender.ensure_channel("My Thread", is_thread_category=True)
+
+    assert channel == "#my-thread"
+    assert conn.mode_calls == [("#my-thread", "+nt")]  # no +P
+    assert sender._pending_permanent_modes == set()
+
+
+async def test_no_permanent_mode_when_p_not_configured(monkeypatch):
+    sender = _make_sender(default_channel_modes="+nt")
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    await sender.join_channel("#synced")
+    sender._handle_youreoper()
+
+    assert conn.mode_calls == [("#synced", "+nt")]
+    assert sender._pending_permanent_modes == set()
+
+
+async def test_permanent_mode_p_only_config_sends_no_base_mode(monkeypatch):
+    sender = _make_sender(default_channel_modes="+P")
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    await sender.join_channel("#synced")
+
+    assert conn.mode_calls == []
+    assert sender._pending_permanent_modes == {"#synced"}
+
+
+async def test_handle_youreoper_with_nothing_pending_is_a_noop(monkeypatch):
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    sender._handle_youreoper()
+
+    assert sender._is_oper is True
+    assert conn.mode_calls == []
+
+
+async def test_disconnect_clears_oper_flag(monkeypatch):
+    sender = _make_sender()
+    sender._is_oper = True
+
+    sender._handle_disconnect()
+
+    assert sender._is_oper is False
 
 
 # ---------------------------------------------------------------- ensure_channel

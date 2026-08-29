@@ -128,6 +128,21 @@ each connector's own `services/*.py` module. Nothing is bridged (or
 mention-linked) automatically — every pair is linked explicitly via those
 commands.
 
+`ChannelLinker.unlink_channel` dissolves a bridge group down to nothing
+rather than leaving a lone member (a group of one isn't a bridge), and fires
+`ConnectorInfo.on_channel_unlinked(channel_id, unlinked_from)` for every
+channel left with no linked counterparts — regardless of which connector ran
+the command. Only IRC wires it (`IrcSenderService.part_channel`): it posts a
+`This channel was unlinked from …` notice and PARTs. Discord/Stoat leave
+their channels alone.
+
+On IRC, a channel the bridge's own JOIN created gets
+`default_channel_modes` applied; the `P` (InspIRCd permanent-channel) mode,
+if configured, is split off and applied separately once the OPER handshake
+is confirmed (`on_youreoper` — it's oper-only, and channels created before
+then are parked in `_pending_permanent_modes`), and is withheld from
+ephemeral Discord-thread channels (`ensure_channel`'s `is_thread_category`).
+
 Category linking (`/link-category`) is Discord/Stoat-only (IRC has no
 Category concept) and, unlike channel linking, has an automatic-sync side
 effect: once two Categories are linked, a new channel created inside either

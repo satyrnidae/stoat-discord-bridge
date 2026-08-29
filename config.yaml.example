@@ -71,7 +71,10 @@ irc:
     port: 6697
     use_tls: true
     # Applied (best-effort) to a channel only when the bridge's own JOIN is
-    # what created it - see IrcSenderService.join_channel.
+    # what created it - see IrcSenderService.join_channel. If `P`
+    # (InspIRCd permanent-channel) is among them it's split out and applied
+    # separately, once the OPER handshake is confirmed (it's oper-only), and
+    # is withheld entirely from ephemeral Discord-thread channels.
     default_channel_modes: "+HtnPR"
     # nick, nickserv_password: set IRC__0__NICK / IRC__0__NICKSERV_PASSWORD
     #

@@ -241,6 +241,81 @@ async def test_unlink_channel_all_dissolves_the_whole_group(fake_db, connectors)
     assert await channel_mappings.get_bridge_group("discord", "d1") is None
 
 
+async def test_unlink_channel_notifies_on_channel_unlinked_hook_for_one_member(fake_db):
+    parted = []
+
+    async def on_unlinked(channel_id, unlinked_from):
+        parted.append((channel_id, unlinked_from))
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "irc": ConnectorInfo(id="irc", label="IRC", on_channel_unlinked=on_unlinked),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await linker.link_channel(
+        local_connector="irc", local_channel_id="#general", local_channel_name="#general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    await linker.unlink_channel(local_connector="discord", local_channel_id="d1", destination="irc")
+
+    assert parted == [("#general", "Discord 'd1'")]
+
+
+async def test_unlink_channel_all_notifies_on_channel_unlinked_hook_per_member(fake_db):
+    parted = []
+
+    async def on_unlinked(channel_id, unlinked_from):
+        parted.append((channel_id, unlinked_from))
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "irc": ConnectorInfo(id="irc", label="IRC", on_channel_unlinked=on_unlinked),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await linker.link_channel(
+        local_connector="irc", local_channel_id="#general", local_channel_name="#general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    await linker.unlink_channel(local_connector="discord", local_channel_id="d1", destination="all")
+
+    assert parted == [("#general", "Discord 'd1'")]  # only IRC has the hook; Discord's absence is silently skipped
+
+
+async def test_unlink_channel_kick_that_strands_a_lone_survivor_dissolves_and_announces(fake_db):
+    parted = []
+
+    async def on_unlinked(channel_id, unlinked_from):
+        parted.append((channel_id, unlinked_from))
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat"),
+        "irc": ConnectorInfo(id="irc", label="IRC", on_channel_unlinked=on_unlinked),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="irc", local_channel_id="#general", local_channel_name="#general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    # kicking discord leaves irc + stoat linked (2 members) - no announce
+    await linker.unlink_channel(local_connector="discord", local_channel_id="d1", destination="stoat")
+    assert parted == []
+
+    # kicking stoat now strands irc alone - dissolve the group, announce irc
+    await linker.unlink_channel(local_connector="discord", local_channel_id="d1", destination="irc")
+    assert parted == [("#general", "Discord 'd1'")]
+    assert await channel_mappings.get_bridge_group("irc", "#general") is None
+    assert await channel_mappings.get_bridge_group("discord", "d1") is None
+
+
 async def test_unlink_channel_defaults_to_all(fake_db, connectors):
     channel_mappings = ChannelMappingRepository(fake_db)
     linker = ChannelLinker(channel_mappings, connectors)

@@ -228,6 +228,14 @@ There's no separate "just leave, don't destroy the group for everyone else"
 form beyond passing your own connector as `service`, which does exactly
 that.
 
+When a kick leaves a single member alone, that lone member isn't a bridge
+anymore, so the group is dissolved outright rather than left as a group of
+one. Any channel that ends up with no linked counterparts is announced to
+its connector; **IRC** acts on that by posting a `This channel was unlinked
+from ...` notice into the channel and then leaving it (PART) - it applies no
+matter which connector ran the `/unlink-channel`. Discord/Stoat leave their
+channels in place (they're real, human-created channels there).
+
 - **Discord**: `/unlink-channel [service] [local_id]` slash
   command (Manage Server); `service`'s autocomplete includes the
   literal `all` choice, same as `/mirror-channel`. `local_id`

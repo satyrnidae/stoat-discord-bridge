@@ -42,6 +42,30 @@ logger = logging.getLogger(__name__)
 # this receiver prepends to each line.
 _LINE_LIMIT = 400
 
+# InspIRCd's +P keeps a channel (and its modes/topic/bans) alive on the
+# server even while it's empty, so a synced channel mirrored here doesn't
+# evaporate between messages. It's an oper-only mode, so it can only be set
+# once our OPER handshake (_handle_welcome) has been confirmed by the server
+# (RPL_YOUREOPER -> on_youreoper); a synced channel created before then is
+# parked in _pending_permanent_modes and gets +P the moment we're opered.
+# Applied only when `P` is one of the connector's configured
+# default_channel_modes, and never to Discord-thread channels
+# (ensure_channel's is_thread_category) - threads are ephemeral, so their
+# mirror channel should be free to disappear when empty like any other.
+_PERMANENT_CHANNEL_MODE = "+P"
+
+
+def _split_permanent_mode(modes: str) -> tuple[str | None, bool]:
+    """Split a MODE string like `+HtnPR` into (`+HtnR`, True) - the modes to
+    apply to a channel immediately on creation, and whether `P` (handled
+    separately, oper-gated) was among them. Returns (None, ...) when nothing
+    but a bare sign is left."""
+    had_p = "P" in modes
+    if not had_p:
+        return modes, False
+    stripped = modes.replace("P", "")
+    return (None if stripped.strip(" +-") == "" else stripped), True
+
 # Admin commands (LINK_CHANNEL, LINK_EMOTE, LINK_USER, MIRROR_CHANNEL)
 # arrive as a DM to the bot's own nick, bare and uppercase (no leading "/"
 # or "!" - unlike Discord/Stoat's slash commands, since many IRC clients
@@ -162,6 +186,11 @@ class _IrcClient(irc.bot.SingleServerIRCBot):
         # instead would just cause a harmless spurious rejoin attempt here.
         self._owner._handle_join_blocked(event)
 
+    def on_youreoper(self, connection, event) -> None:
+        # Numeric 381 (RPL_YOUREOPER) - the server confirming the OPER
+        # command _handle_welcome sent succeeded.
+        self._owner._handle_youreoper()
+
     def on_whoisoperator(self, connection, event) -> None:
         # Fired only if the WHOIS target IS an oper - always arrives before
         # on_endofwhois for the same WHOIS exchange.
@@ -216,6 +245,16 @@ class IrcSenderService(SenderService):
         # dropped by the server and never retried, so the bridge looks
         # "connected" while never actually being in the channel.
         self._blocked_channels: set[str] = set()
+        # Set once the server confirms our OPER (on_youreoper). Gates
+        # _PERMANENT_CHANNEL_MODE, which is oper-only.
+        self._is_oper = False
+        # Synced channels created before our OPER was confirmed, awaiting
+        # +P once it is - see _apply_permanent_mode/_handle_youreoper.
+        # Touched from both the asyncio thread (_apply_permanent_mode, via
+        # join_channel) and the reactor thread (_handle_youreoper); set
+        # operations are individually atomic under the GIL and a lost/
+        # doubled entry only costs a missed or repeated harmless MODE.
+        self._pending_permanent_modes: set[str] = set()
 
     @property
     def connection(self):
@@ -233,8 +272,20 @@ class IrcSenderService(SenderService):
         for channel in self._channels:
             connection.join(channel)
 
+    def _handle_youreoper(self) -> None:
+        self._is_oper = True
+        if not self._pending_permanent_modes:
+            logger.info("[irc:%s] OPER confirmed", self.connector_id)
+            return
+        pending = sorted(self._pending_permanent_modes)
+        self._pending_permanent_modes.clear()
+        logger.info("[irc:%s] OPER confirmed - applying %s to %s", self.connector_id, _PERMANENT_CHANNEL_MODE, ", ".join(pending))
+        for channel in pending:
+            self.connection.mode(channel, _PERMANENT_CHANNEL_MODE)
+
     def _handle_disconnect(self) -> None:
         self._health.mark_disconnected(self.connector_id)
+        self._is_oper = False  # a reconnect re-runs the OPER handshake in _handle_welcome
         logger.warning("[irc:%s] disconnected", self.connector_id)
 
     def _handle_join(self, connection, event) -> None:
@@ -554,10 +605,13 @@ class IrcSenderService(SenderService):
         for line in text.splitlines():
             self.connection.notice(nick, line)
 
-    async def join_channel(self, channel: str) -> None:
+    async def join_channel(self, channel: str, *, permanent: bool = True) -> None:
         """Called by ChannelLinker right after a fresh mapping involving this
         connector is created, so a newly-linked channel is joined immediately
-        instead of waiting for a restart to pick it up from Mongo."""
+        instead of waiting for a restart to pick it up from Mongo. `permanent`
+        is False for a Discord-thread channel (see ensure_channel), which
+        must never get _PERMANENT_CHANNEL_MODE even when `P` is in
+        default_channel_modes."""
         is_new = channel not in self._channels
         if is_new:
             self._channels.append(channel)
@@ -573,7 +627,45 @@ class IrcSenderService(SenderService):
                 # channel that already existed, we won't have ops and the
                 # server just bounces this with ERR_CHANOPRIVSNEEDED, which
                 # we don't handle - a silent no-op from the bridge's side.
-                self._client.connection.mode(channel, self._config.default_channel_modes)
+                base_modes, wants_permanent = _split_permanent_mode(self._config.default_channel_modes)
+                if base_modes:
+                    self._client.connection.mode(channel, base_modes)
+                # `P` is oper-only and, for threads, deliberately withheld -
+                # so it's split out of the line above and routed through
+                # _apply_permanent_mode (which defers it until OPER lands).
+                if wants_permanent and permanent:
+                    self._apply_permanent_mode(channel)
+
+    def _apply_permanent_mode(self, channel: str) -> None:
+        """Set _PERMANENT_CHANNEL_MODE on a freshly-created synced channel,
+        or (if the server hasn't confirmed our OPER yet) park it for
+        _handle_youreoper to set once it does."""
+        if self._is_oper:
+            logger.info("[irc:%s] applying %s to synced channel %s", self.connector_id, _PERMANENT_CHANNEL_MODE, channel)
+            self._client.connection.mode(channel, _PERMANENT_CHANNEL_MODE)
+        else:
+            logger.debug("[irc:%s] deferring %s for %s until OPER is confirmed", self.connector_id, _PERMANENT_CHANNEL_MODE, channel)
+            self._pending_permanent_modes.add(channel)
+
+    async def part_channel(self, channel: str, unlinked_from: str = "") -> None:
+        """Called by ChannelLinker when `channel` has lost its last linked
+        counterpart (`/unlink-channel`, from any connector) - it's no longer
+        bridged, so post a notice saying what it was unlinked from and leave
+        it. Idempotent: parting a channel we're not in is a harmless no-op
+        on the server."""
+        was_tracked = channel in self._channels
+        self._channels = [c for c in self._channels if c != channel]
+        self._blocked_channels.discard(channel)
+        self._pending_permanent_modes.discard(channel)
+        if was_tracked and self._client.connection.is_connected():
+            logger.info("[irc:%s] parting %s (unlinked from %s)", self.connector_id, channel, unlinked_from or "everything")
+            notice = (
+                f"This channel was unlinked from {unlinked_from}."
+                if unlinked_from
+                else "This channel is no longer bridged."
+            )
+            self._client.connection.privmsg(channel, notice)
+            self._client.connection.part(channel, notice)
 
     async def ensure_channel(
         self,
@@ -591,13 +683,15 @@ class IrcSenderService(SenderService):
         and are lowercased with runs of whitespace turned into single
         hyphens, since unlike a regular (already-kebab-case) Discord channel
         name, a Discord thread name can contain spaces/capitals, which IRC
-        channel names can't. `category`, `is_thread_category` and
-        `category_parent_channel_id` are accepted (for signature
-        compatibility with ConnectorInfo.ensure_channel) and ignored - IRC
-        has no Category concept."""
+        channel names can't. `category` and `category_parent_channel_id` are
+        accepted (for signature compatibility with
+        ConnectorInfo.ensure_channel) and ignored - IRC has no Category
+        concept. `is_thread_category` is honoured only to withhold
+        _PERMANENT_CHANNEL_MODE from a thread channel (threads are ephemeral
+        - see join_channel's `permanent`)."""
         normalized = re.sub(r"\s+", "-", name.strip().lower())
         channel = normalized if normalized.startswith("#") else f"#{normalized}"
-        await self.join_channel(channel)
+        await self.join_channel(channel, permanent=not is_thread_category)
         return channel
 
     def _schedule(self, coro: Awaitable[None]) -> None:

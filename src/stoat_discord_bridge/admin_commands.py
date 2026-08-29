@@ -67,6 +67,15 @@ class ConnectorInfo:
     # connectors set this, to JOIN the channel immediately instead of
     # waiting for a restart to pick up the new mapping.
     on_channel_linked: Callable[[str], Awaitable[None]] | None = None
+    # Called (channel_id, unlinked_from) when a channel on this connector has
+    # just lost its last linked counterpart - via /unlink-channel on any
+    # connector, whether the whole group was dissolved or a kick stranded
+    # this channel alone. `unlinked_from` is a human-readable list of the
+    # channels it was bridged to. Only IRC connectors set this, to post a
+    # notice and PART - it's no longer bridged, so there's no reason to sit
+    # in it. Discord/Stoat leave the channel in place (it's a real,
+    # human-created channel there, not one the bridge necessarily made).
+    on_channel_unlinked: Callable[[str, str], Awaitable[None]] | None = None
     # Idempotent get-or-create: ensures a channel named `name` exists on
     # this connector, returning its native id (existing or newly created).
     # The second argument is an optional Category name - if given, the
@@ -314,22 +323,52 @@ class ChannelLinker:
         (including this channel) stays linked to each other; None/"all"
         (the default) dissolves the whole group instead, unlinking every
         member. Raises LinkError if the channel isn't linked, or
-        `destination` isn't actually a member of its group."""
+        `destination` isn't actually a member of its group.
+
+        Every channel that ends up with *no* linked counterparts left - the
+        kicked one, and any lone survivor a kick strands - is announced to
+        its connector via the on_channel_unlinked hook (IRC uses it to post a
+        "this channel was unlinked from ..." notice and PART); a channel that
+        still has other links stays untouched and unannounced."""
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is None:
             raise LinkError("this channel isn't linked to anything.")
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
 
         if destination is None or destination.lower() == "all":
             count = await self._channel_mappings.delete_bridge_group(bridge_group)
+            await self._announce_unlinked(mapped, removed=mapped)
             return f"Unlinked this channel's entire bridge group ({count} channel(s) removed)."
 
-        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
         target = next((m for m in mapped if m.connector_id == destination), None)
         if target is None:
             raise LinkError(f"'{destination}' isn't linked in this channel's bridge group.")
         await self._channel_mappings.delete_mapping(destination, target.channel_id)
+        survivors = [m for m in mapped if m.connector_id != destination]
+        if len(survivors) <= 1:
+            # only one member (or none) would be left - a group of one isn't a
+            # bridge, so dissolve it fully and announce every former member.
+            for m in survivors:
+                await self._channel_mappings.delete_mapping(m.connector_id, m.channel_id)
+            await self._announce_unlinked(mapped, removed=mapped)
+        else:
+            await self._announce_unlinked(mapped, removed=[target])
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} channel '{target.channel_name}' ({target.channel_id}) from this bridge group."
+
+    async def _announce_unlinked(self, members: list[ChannelMapping], *, removed: list[ChannelMapping]) -> None:
+        """Fire the on_channel_unlinked hook for each channel in `removed`,
+        telling it which of the other `members` it's no longer bridged to."""
+        for m in removed:
+            others = [
+                x for x in members if (x.connector_id, x.channel_id) != (m.connector_id, m.channel_id)
+            ]
+            labels = ", ".join(
+                f"{self._connectors[x.connector_id].label if x.connector_id in self._connectors else x.connector_id}"
+                f" '{x.channel_name}'"
+                for x in others
+            )
+            await self._notify_unlinked(m.connector_id, m.channel_id, labels)
 
     async def is_linked(self, connector_id: str, channel_id: str) -> bool:
         """Whether `channel_id` (on `connector_id`) already belongs to a
@@ -369,6 +408,12 @@ class ChannelLinker:
         if info is None or info.on_channel_linked is None:
             return
         await info.on_channel_linked(channel_id)
+
+    async def _notify_unlinked(self, connector_id: str, channel_id: str, unlinked_from: str) -> None:
+        info = self._connectors.get(connector_id)
+        if info is None or info.on_channel_unlinked is None:
+            return
+        await info.on_channel_unlinked(channel_id, unlinked_from)
 
 
 class CategoryLinker:

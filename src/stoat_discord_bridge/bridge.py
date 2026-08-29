@@ -353,7 +353,11 @@ async def run(config: BridgeConfig) -> None:
             )
         )
         connector_infos[ic.id] = ConnectorInfo(
-            id=ic.id, label=ic.label, on_channel_linked=sender.join_channel, ensure_channel=sender.ensure_channel
+            id=ic.id,
+            label=ic.label,
+            on_channel_linked=sender.join_channel,
+            on_channel_unlinked=sender.part_channel,
+            ensure_channel=sender.ensure_channel,
         )
         senders.append(sender)
         closables.append(sender)
