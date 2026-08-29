@@ -85,12 +85,26 @@ class FakePartialMessage:
         self.removed_reactions.append((emoji, user))
 
 
-class FakeFullMessage:
-    """Stands in for a fetched discord.Message - the handle
-    DiscordReceiverService.set_pinned operates on."""
+class FakeReaction:
+    """Stands in for a discord.Reaction on a fetched full message."""
 
-    def __init__(self, id: int, *, pinned: bool = False) -> None:
+    def __init__(self, emoji: Any, *, count: int = 1, me: bool = False) -> None:
+        self.emoji = emoji
+        self.count = count
+        self.me = me
+
+
+class FakeFullMessage:
+    """Stands in for the discord.Message returned by channel.fetch_message -
+    carries `.reactions` (used by _reactor_count and the receiver's
+    own-reaction idempotency check) and the pin handle DiscordReceiverService.set_pinned
+    operates on."""
+
+    def __init__(
+        self, id: int, *, reactions: list[FakeReaction] | None = None, pinned: bool = False
+    ) -> None:
         self.id = id
+        self.reactions: list[FakeReaction] = reactions or []
         self.pinned = pinned
         self.pin_calls: list[str | None] = []
         self.unpin_calls: list[str | None] = []
@@ -152,7 +166,7 @@ class FakeChannel:
         return self.partial_messages.setdefault(message_id, FakePartialMessage())
 
     async def fetch_message(self, message_id: int) -> FakeFullMessage:
-        return self.full_messages.setdefault(message_id, FakeFullMessage(id=message_id))
+        return self.full_messages.setdefault(message_id, FakeFullMessage(message_id))
 
 
 class FakeThread(discord.Thread):
@@ -314,6 +328,9 @@ class FakePartialEmoji:
 
     def is_custom_emoji(self) -> bool:
         return self.id is not None
+
+    def __str__(self) -> str:
+        return self.name or ""
 
 
 class FakeRawReactionActionEvent:

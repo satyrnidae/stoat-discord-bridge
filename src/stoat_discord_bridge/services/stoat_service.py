@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.request
 from types import SimpleNamespace
 
@@ -233,6 +234,18 @@ class _StoatClient(stoat.Client):
         # TODO: unverified - stoat.events.ChannelUpdateEvent (.before / .after
         # channels, each with a .role_permissions dict[str, PermissionOverride]).
         await self._owner._handle_channel_update(event)
+
+    async def on_message_react(self, event, /) -> None:
+        await self._owner._handle_message_react(event, added=True)
+
+    async def on_message_unreact(self, event, /) -> None:
+        await self._owner._handle_message_react(event, added=False)
+
+    async def on_server_emoji_create(self, event, /) -> None:
+        await self._owner._handle_emoji_create(event.emoji)
+
+    async def on_server_emoji_delete(self, event, /) -> None:
+        await self._owner._handle_emoji_delete(getattr(event, "emoji_id", None) or event.emoji.id)
 
 
 class StoatSenderService(SenderService):
@@ -903,36 +916,44 @@ class StoatSenderService(SenderService):
             return _avatar_url(author)
         return _avatar_url(fresh)
 
-    # TODO: verify these event names/signatures against stoat.py - modeled on
-    # revolt.py's on_reaction_add(message, user_id, emoji_id) /
-    # on_reaction_remove(...), which stoat.py's masquerade-based API otherwise
-    # closely mirrors.
-    async def on_reaction_add(self, message, user_id, emoji_id, /) -> None:
-        logger.debug("[stoat:%s] on_reaction_add message=%s user=%s emoji=%s", self.connector_id, message.id, user_id, emoji_id)
-        await self._handle_reaction(message, user_id, emoji_id, added=True)
+    @property
+    def self_id(self) -> str | None:
+        """The bridge bot's own Stoat user id (set once on_ready fires),
+        exposed for the receiver's own-reaction idempotency check."""
+        return self._self_id
 
-    async def on_reaction_remove(self, message, user_id, emoji_id, /) -> None:
-        logger.debug("[stoat:%s] on_reaction_remove message=%s user=%s emoji=%s", self.connector_id, message.id, user_id, emoji_id)
-        await self._handle_reaction(message, user_id, emoji_id, added=False)
-
-    async def _handle_reaction(self, message, user_id, emoji_id, *, added: bool) -> None:
-        if self._on_reaction is None or str(user_id) == self._self_id:
+    async def _handle_message_react(self, event, *, added: bool) -> None:
+        """`stoat.events.MessageReactEvent` / `MessageUnreactEvent`: someone
+        added/removed a reaction. `event` carries `.channel_id`, `.message_id`,
+        `.user_id`, `.emoji` (Unicode char or 26-char custom-emoji ULID) and
+        an optional `.message` (state before the event, when cached)."""
+        if self._on_reaction is None or str(event.user_id) == self._self_id:
             return  # the bridge's own mirrored reaction landing back here - drop it, don't re-relay
+        emoji = _parse_stoat_emoji(event.emoji)
+        if emoji is None:
+            logger.debug(
+                "[stoat:%s] dropping reaction with non-portable builtin emoji %r", self.connector_id, event.emoji
+            )
+            return  # a Stoat/Revolt builtin shortcode - no equivalent on other connectors
+        message = getattr(event, "message", None)
+        reactions = getattr(message, "reactions", None) if message is not None else None
+        count = len(reactions.get(event.emoji, ())) if isinstance(reactions, dict) else None
         await self._on_reaction(
             StandardReaction(
                 origin_connector_id=self.connector_id,
-                origin_channel_id=str(message.channel.id),
-                origin_message_id=str(message.id),
-                emoji=_parse_stoat_emoji(emoji_id),
+                origin_channel_id=str(event.channel_id),
+                origin_message_id=str(event.message_id),
+                emoji=emoji,
                 added=added,
+                origin_reactor_count=count,
             )
         )
 
-    # TODO: verify this event name/payload against stoat.py - no confirmed
-    # equivalent yet; server-level emoji creation may instead surface via a
-    # generic on_server_update and require diffing `server.emojis`.
-    async def on_emoji_create(self, emoji, /) -> None:
-        logger.debug("[stoat:%s] on_emoji_create id=%s name=%r", self.connector_id, emoji.id, emoji.name)
+    async def _handle_emoji_create(self, emoji) -> None:
+        """`stoat.events.ServerEmojiCreateEvent.emoji` (a `stoat.ServerEmoji`):
+        a custom emoji was added to a server - mirror it onto every other
+        connector (see BridgeCoordinator.handle_emoji_created)."""
+        logger.debug("[stoat:%s] emoji created id=%s name=%r", self.connector_id, emoji.id, emoji.name)
         if self._on_emoji_created is None:
             return
         if getattr(emoji, "creator_id", None) is not None and str(emoji.creator_id) == self._self_id:
@@ -949,16 +970,16 @@ class StoatSenderService(SenderService):
             )
         )
 
-    # TODO: verify this event name/payload against stoat.py - guessed
-    # symmetric to on_emoji_create above; deletions are never mirrored onto
-    # other platforms (see BridgeCoordinator.handle_emoji_deleted), so unlike
-    # on_emoji_create there's no self-mirrored-echo to filter out here.
-    async def on_emoji_delete(self, emoji, /) -> None:
-        logger.debug("[stoat:%s] on_emoji_delete id=%s", self.connector_id, emoji.id)
-        if self._on_emoji_deleted is None:
+    async def _handle_emoji_delete(self, emoji_id) -> None:
+        """`stoat.events.ServerEmojiDeleteEvent`: a custom emoji was removed.
+        Deletions are never mirrored onto other platforms (see
+        BridgeCoordinator.handle_emoji_deleted), so - unlike create - there's
+        no self-mirrored echo to filter out here."""
+        logger.debug("[stoat:%s] emoji deleted id=%s", self.connector_id, emoji_id)
+        if self._on_emoji_deleted is None or emoji_id is None:
             return
         await self._on_emoji_deleted(
-            StandardEmojiDeleted(origin_connector_id=self.connector_id, native_id=str(emoji.id))
+            StandardEmojiDeleted(origin_connector_id=self.connector_id, native_id=str(emoji_id))
         )
 
     async def start(self) -> None:
@@ -1727,25 +1748,49 @@ class StoatReceiverService(ReceiverService):
         return ids
 
     async def add_reaction(self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji) -> None:
+        """Idempotent: skips the API call if the bridge bot has already
+        reacted with this emoji on the target message (a second origin user
+        reacting with the same emoji must not double-add)."""
+        native = _to_stoat_emoji(emoji)
+        if await self._bot_already_reacted(target_channel_id, target_message_id, native):
+            return
         message = self._sender.get_channel(target_channel_id, partial=True).get_message(
             target_message_id, partial=True
         )
-        await message.add_reaction(_to_stoat_emoji(emoji))
+        await message.react(native)
 
     async def remove_reaction(
         self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji
     ) -> None:
+        """Idempotent: skips the API call if the bridge bot isn't currently
+        reacting with this emoji. `message.unreact(emoji)` with no `user=`
+        removes only the caller's (bot's) own reaction."""
+        native = _to_stoat_emoji(emoji)
+        already = await self._bot_already_reacted(target_channel_id, target_message_id, native)
+        if already is False:
+            return
         message = self._sender.get_channel(target_channel_id, partial=True).get_message(
             target_message_id, partial=True
         )
-        # TODO: verify against stoat.py directly (not installable to check).
-        # revolt.py - the closest real analog, same masquerade-based API -
-        # has remove_reaction(emoji, user=None, remove_all=False), which
-        # without a user hits DELETE .../reactions/{emoji}?remove_all=false
-        # with no user_id: per the Revolt API that removes only the calling
-        # (bot's) own reaction, not every user's - so this call should be safe
-        # as-is if stoat.py matches revolt.py's default here.
-        await message.remove_reaction(_to_stoat_emoji(emoji))
+        await message.unreact(native)
+
+    async def _bot_already_reacted(
+        self, channel_id: str, message_id: str, native_emoji: str
+    ) -> bool | None:
+        """True/False if the bot's own reaction with `native_emoji` could be
+        determined from a fresh fetch of the message, None if it couldn't
+        (fetch failed / unknown self id) - callers treat None as "act anyway"."""
+        self_id = self._sender.self_id
+        if self_id is None:
+            return None
+        try:
+            message = await self._sender.get_channel(channel_id, partial=True).fetch_message(message_id)
+        except Exception:
+            return None
+        reactions = getattr(message, "reactions", None)
+        if not isinstance(reactions, dict):
+            return None
+        return self_id in {str(u) for u in reactions.get(native_emoji, ())}
 
     async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
         channel = self._sender.get_channel(target_channel_id, partial=True)
@@ -1864,19 +1909,26 @@ async def _download(url: str) -> bytes:
         return await resp.read()
 
 
-def _parse_stoat_emoji(emoji_id: str) -> str | CustomEmoji:
-    # TODO: verify how stoat.py distinguishes a unicode emoji from a custom
-    # emoji ID in reaction events - assumed here to mirror revolt.py, where
-    # unicode reactions carry the literal emoji character as the "ID" and
-    # custom emoji carry their (26-char, base32) ULID. isalnum() alone is
-    # the distinguishing check: a real unicode emoji - single codepoint,
-    # flag, ZWJ sequence, skin-tone modifier, whatever its length - is never
-    # alnum, while a ULID always is, so no length check is needed (and an
-    # earlier `len(emoji_id) > 8` guard here was wrong: every real 26-char
-    # ULID is longer than 8, so it made the CUSTOM branch unreachable).
-    if not emoji_id.isalnum():
-        return emoji_id  # unicode emoji, passed straight through
-    return CustomEmoji(native_id=emoji_id, name="", image_url="")
+_ULID_RE = re.compile(r"[0-9A-Za-z]{26}")
+
+
+def _parse_stoat_emoji(emoji_id: str) -> str | CustomEmoji | None:
+    """Classify a stoat reaction emoji string (`MessageReactEvent.emoji`):
+
+    - a real Unicode emoji (has non-ASCII codepoints) -> passed straight
+      through; every connector understands it.
+    - a 26-char base32 ULID -> a server custom emoji; translated to the
+      target's linked copy via EmojiMappingRepository downstream.
+    - anything else - an ASCII shortcode like `distorted_face`, `trollface`
+      - is a Stoat/Revolt *builtin* emoji pack entry with no Unicode
+      codepoint and no cross-platform equivalent. Return None so the caller
+      drops the reaction rather than relaying the literal text.
+    """
+    if not emoji_id.isascii():
+        return emoji_id
+    if _ULID_RE.fullmatch(emoji_id):
+        return CustomEmoji(native_id=emoji_id, name="", image_url="")
+    return None
 
 
 def _to_stoat_emoji(emoji: str | CustomEmoji) -> str:

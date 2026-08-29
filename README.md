@@ -128,6 +128,14 @@ than error:
 - a reaction using a custom emoji that was never successfully mirrored onto
   a given target (including the "couldn't create it" case above) is
   ignored for that target
+- a Stoat reaction using one of Stoat's *builtin* (non-Unicode, non-custom)
+  emoji — the `distorted_face` / `trollface` pack — has no equivalent on
+  other connectors and is dropped toward all of them
+
+The bridge adds its mirrored reaction once — a second user reacting with the
+same emoji on the origin is a no-op — and holds it until the **last** origin
+user removes theirs (tracked by reactor count on the origin message; the
+receiver hooks are independently idempotent as a backstop).
 
 Deleting a custom emoji is **never** mirrored onto other connectors — a copy
 still in use elsewhere keeps working. Deleting it only updates
@@ -174,7 +182,11 @@ senders, and the Discord and Stoat receivers post via webhook/masquerade
 respectively; IRC's receiver and its asyncio integration are implemented but
 unverified against a live server. Reaction and custom-emoji sync
 (`services/discord_service.py`, `services/stoat_service.py`, `bridge.py`) is
-implemented against a best guess at `stoat.py`'s event names and object
-shape, flagged with `TODO`s where unconfirmed — same caveat as the rest of
-the Stoat integration and the WHOIS-based IRC-operator check backing IRC's
-admin DM commands' permission gate.
+wired to `stoat.py`'s real event/method names
+(`on_message_react`/`on_message_unreact`,
+`on_server_emoji_create`/`on_server_emoji_delete`, `Message.react`/`unreact`,
+`Message.reactions`) as verified against the installed package, but the
+end-to-end flow still needs a manual check against a live Stoat + Discord
+deployment — same caveat as the rest of the Stoat integration and the
+WHOIS-based IRC-operator check backing IRC's admin DM commands' permission
+gate.

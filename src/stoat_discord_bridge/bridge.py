@@ -168,6 +168,11 @@ class BridgeCoordinator:
         if group is None:
             return  # this message isn't tracked as bridged
 
+        if reaction.added and reaction.origin_reactor_count is not None and reaction.origin_reactor_count > 1:
+            return  # someone already reacted with this on the origin - the bridge mirrored it then
+        if not reaction.added and reaction.origin_reactor_count:
+            return  # other origin users still hold this reaction - keep the mirror until the last one goes
+
         for ref in group:
             if ref.connector_id == reaction.origin_connector_id:
                 continue

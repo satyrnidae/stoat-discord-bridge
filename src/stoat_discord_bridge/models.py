@@ -105,3 +105,9 @@ class StandardReaction:
     origin_message_id: str
     emoji: str | CustomEmoji
     added: bool  # True = reaction added, False = reaction removed
+    # How many users still hold this emoji on the ORIGIN message after this
+    # event (includes the acting user on an add). Lets BridgeCoordinator skip
+    # a mirrored add when someone else already reacted with it, and hold the
+    # mirrored reaction until the last origin user removes theirs. None =
+    # the origin couldn't tell us - the coordinator then acts best-effort.
+    origin_reactor_count: int | None = None

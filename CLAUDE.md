@@ -14,10 +14,13 @@ than posting under the bridge bot's own identity.
 Discord/Stoat receivers (webhook/masquerade posting) work. IRC's receiver and
 asyncio integration are implemented but unverified against a live server.
 Reaction and custom-emoji sync (`services/discord_service.py`,
-`services/stoat_service.py`, `bridge.py`) is implemented against a best guess
-at `stoat.py`'s event names and object shape, flagged with `TODO`s where
-unconfirmed — same caveat applies to the rest of the Stoat integration and the
-WHOIS-based IRC-operator check backing IRC's admin DM commands' permission gate.
+`services/stoat_service.py`, `bridge.py`) is wired to `stoat.py`'s real
+event/method names (`on_message_react`/`on_message_unreact`,
+`on_server_emoji_create`/`on_server_emoji_delete`, `Message.react`/`unreact`,
+`Message.reactions`), verified against the installed package but not yet
+against a live server — same caveat applies to the rest of the Stoat
+integration and the WHOIS-based IRC-operator check backing IRC's admin DM
+commands' permission gate.
 
 ## Commands
 
@@ -109,7 +112,14 @@ best-effort and silently skip rather than error — a reaction on a message the
 bridge never relayed is dropped; a custom emoji a target connector can't
 create (slots full, name rejected, image too large, etc.) is skipped on that
 connector only; a reaction using a custom emoji never successfully mirrored
-onto a given target is ignored for that target. **Deleting** a custom emoji
+onto a given target is ignored for that target; a Stoat *builtin* emoji
+(the non-Unicode, non-custom `distorted_face`/`trollface` pack — classified
+by `_parse_stoat_emoji` returning `None`) is dropped toward every other
+connector. The bridge mirrors its reaction once (a second origin user
+reacting with the same emoji is a no-op via `StandardReaction.origin_reactor_count`
+in `BridgeCoordinator.handle_reaction`) and holds it until the last origin
+user removes theirs; the `add_reaction`/`remove_reaction` receiver hooks are
+independently idempotent as a backstop. **Deleting** a custom emoji
 is never mirrored onto other connectors (a copy still in use elsewhere keeps
 working) — it only updates `EmojiMappingRepository`'s bookkeeping via
 `forget()` for the connector it was deleted on; the cross-connector mapping

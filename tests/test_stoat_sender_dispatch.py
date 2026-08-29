@@ -1,7 +1,7 @@
 """Tests for StoatSenderService's gateway-event handlers - _handle_message
 (including its /status command short-circuit and avatar resolution),
-_handle_reaction, and on_emoji_create/on_emoji_delete - against the
-fake_stoat scaffolding.
+_handle_message_react, and _handle_emoji_create/_handle_emoji_delete - against
+the fake_stoat scaffolding.
 
 Constructs the service via object.__new__ rather than StoatSenderService(...)
 directly, same as test_stoat_resolve_avatar.py: __init__ builds a
@@ -301,108 +301,129 @@ async def test_handle_message_maps_attachments_onto_the_standard_message():
     assert message.attachments[0].size_bytes == 10
 
 
-# ---------------------------------------------------------------- _handle_reaction
+# ---------------------------------------------------------------- _handle_message_react
 
 
-async def test_handle_reaction_dispatches_add_and_remove():
+def _react_event(*, channel_id="42", message_id="m1", user_id="other-user", emoji="\U0001f600", message=None):
+    return SimpleNamespace(
+        channel_id=channel_id, message_id=message_id, user_id=user_id, emoji=emoji, message=message
+    )
+
+
+async def test_handle_message_react_dispatches_add_and_remove():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
-    message = _stoat_message(channel=FakeChannel(id="42"), author=FakeAuthor(id="u1"), id="m1")
 
-    await sender._handle_reaction(message, "other-user", "\U0001f600", added=True)
-    await sender._handle_reaction(message, "other-user", "\U0001f600", added=False)
+    await sender._handle_message_react(_react_event(), added=True)
+    await sender._handle_message_react(_react_event(), added=False)
 
     assert [r.added for r in recorder.reactions] == [True, False]
     assert recorder.reactions[0].origin_channel_id == "42"
     assert recorder.reactions[0].origin_message_id == "m1"
     assert recorder.reactions[0].emoji == "\U0001f600"
+    assert recorder.reactions[0].origin_reactor_count is None
 
 
-async def test_handle_reaction_drops_the_bridges_own_echoed_reaction():
+async def test_handle_message_react_drops_the_bridges_own_echoed_reaction():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient(), self_id="bridge-bot-id")
-    message = _stoat_message(channel=FakeChannel(id="42"), author=FakeAuthor(id="u1"))
 
-    await sender._handle_reaction(message, "bridge-bot-id", "\U0001f600", added=True)
+    await sender._handle_message_react(_react_event(user_id="bridge-bot-id"), added=True)
 
     assert recorder.reactions == []
 
 
-async def test_handle_reaction_is_a_noop_when_reactions_arent_wired_up():
+async def test_handle_message_react_is_a_noop_when_reactions_arent_wired_up():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient(), with_reactions=False)
-    message = _stoat_message(channel=FakeChannel(id="42"), author=FakeAuthor(id="u1"))
 
-    await sender._handle_reaction(message, "other-user", "\U0001f600", added=True)  # must not raise
+    await sender._handle_message_react(_react_event(), added=True)  # must not raise
 
     assert recorder.reactions == []
 
 
-async def test_handle_reaction_with_a_custom_emoji_id():
+async def test_handle_message_react_with_a_custom_emoji_ulid():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
-    message = _stoat_message(channel=FakeChannel(id="42"), author=FakeAuthor(id="u1"))
 
-    await sender._handle_reaction(message, "other-user", "01ARZ3NDEKTSV4RRFFQ69G5FAV", added=True)
+    await sender._handle_message_react(_react_event(emoji="01ARZ3NDEKTSV4RRFFQ69G5FAV"), added=True)
 
     [reaction] = recorder.reactions
     assert reaction.emoji.native_id == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
-# ---------------------------------------------------------------- on_emoji_create / on_emoji_delete
+async def test_handle_message_react_drops_a_stoat_builtin_shortcode():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_message_react(_react_event(emoji="distorted_face"), added=True)
+
+    assert recorder.reactions == []
 
 
-async def test_on_emoji_create_dispatches():
+async def test_handle_message_react_carries_the_origin_reactor_count():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    message = SimpleNamespace(reactions={"\U0001f600": ("u1", "u2")})
+
+    await sender._handle_message_react(_react_event(message=message), added=True)
+
+    [reaction] = recorder.reactions
+    assert reaction.origin_reactor_count == 2
+
+
+# ---------------------------------------------------------------- _handle_emoji_create / _handle_emoji_delete
+
+
+async def test_handle_emoji_create_dispatches():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     emoji = SimpleNamespace(id="e1", name="smile", image=FakeAsset("https://cdn.example/e1.png"), animated=False, creator_id=None)
 
-    await sender.on_emoji_create(emoji)
+    await sender._handle_emoji_create(emoji)
 
     [created] = recorder.emoji_created
     assert created.emoji.native_id == "e1"
     assert created.emoji.image_url == "https://cdn.example/e1.png"
 
 
-async def test_on_emoji_create_drops_the_bridges_own_mirrored_emoji():
+async def test_handle_emoji_create_drops_the_bridges_own_mirrored_emoji():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient(), self_id="bridge-bot-id")
     emoji = SimpleNamespace(
         id="e1", name="smile", image=FakeAsset("https://cdn.example/e1.png"), animated=False, creator_id="bridge-bot-id"
     )
 
-    await sender.on_emoji_create(emoji)
+    await sender._handle_emoji_create(emoji)
 
     assert recorder.emoji_created == []
 
 
-async def test_on_emoji_create_is_a_noop_when_emoji_sync_isnt_wired_up():
+async def test_handle_emoji_create_is_a_noop_when_emoji_sync_isnt_wired_up():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient(), with_emoji=False)
     emoji = SimpleNamespace(id="e1", name="smile", image=FakeAsset("https://cdn.example/e1.png"), animated=False, creator_id=None)
 
-    await sender.on_emoji_create(emoji)  # must not raise
+    await sender._handle_emoji_create(emoji)  # must not raise
 
     assert recorder.emoji_created == []
 
 
-async def test_on_emoji_delete_dispatches():
+async def test_handle_emoji_delete_dispatches():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
-    emoji = SimpleNamespace(id="e1")
 
-    await sender.on_emoji_delete(emoji)
+    await sender._handle_emoji_delete("e1")
 
     [deleted] = recorder.emoji_deleted
     assert deleted.native_id == "e1"
 
 
-async def test_on_emoji_delete_is_a_noop_when_emoji_sync_isnt_wired_up():
+async def test_handle_emoji_delete_is_a_noop_when_emoji_sync_isnt_wired_up():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient(), with_emoji=False)
-    emoji = SimpleNamespace(id="e1")
 
-    await sender.on_emoji_delete(emoji)  # must not raise
+    await sender._handle_emoji_delete("e1")  # must not raise
 
     assert recorder.emoji_deleted == []
 

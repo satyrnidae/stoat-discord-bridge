@@ -923,7 +923,25 @@ class DiscordSenderService(SenderService):
             return  # the bridge's own mirrored reaction landing back here - drop it, don't re-relay
         if self._is_other_bot(payload):
             return
-        await self._on_reaction(_to_standard_reaction(payload, self.connector_id, added=added))
+        count = await self._reactor_count(payload)
+        await self._on_reaction(_to_standard_reaction(payload, self.connector_id, added=added, reactor_count=count))
+
+    async def _reactor_count(self, payload: discord.RawReactionActionEvent) -> int | None:
+        """How many users hold `payload.emoji` on the message after this
+        event. `RawReactionActionEvent` doesn't carry it, so fetch the
+        message; a fetch failure returns None and the coordinator acts
+        best-effort."""
+        try:
+            channel = self._client.get_channel(payload.channel_id) or await self._client.fetch_channel(
+                payload.channel_id
+            )
+            message = await channel.fetch_message(payload.message_id)
+        except Exception:
+            return None
+        for reaction in message.reactions:
+            if _discord_reaction_matches(reaction.emoji, payload.emoji):
+                return reaction.count
+        return 0
 
     def _is_other_bot(self, payload: discord.RawReactionActionEvent) -> bool:
         # `payload.member` is only ever populated for REACTION_ADD - discord.py
@@ -1572,12 +1590,21 @@ class DiscordReceiverService(ReceiverService):
         return ids
 
     async def add_reaction(self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji) -> None:
+        """Idempotent: skips the API call if the bridge bot has already
+        reacted with this emoji (a second origin user reacting with the same
+        emoji must not double-add)."""
+        if await self._bot_has_reaction(target_channel_id, target_message_id, emoji) is True:
+            return
         message = await self._get_partial_message(target_channel_id, target_message_id)
         await message.add_reaction(_to_discord_emoji(emoji))
 
     async def remove_reaction(
         self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji
     ) -> None:
+        """Idempotent: skips the API call if the bridge bot isn't currently
+        reacting with this emoji."""
+        if await self._bot_has_reaction(target_channel_id, target_message_id, emoji) is False:
+            return
         message = await self._get_partial_message(target_channel_id, target_message_id)
         await message.remove_reaction(_to_discord_emoji(emoji), self._client.user)
 
@@ -1604,6 +1631,23 @@ class DiscordReceiverService(ReceiverService):
                 target_message_id,
                 target_channel_id,
             )
+
+    async def _bot_has_reaction(
+        self, channel_id: str, message_id: str, emoji: str | CustomEmoji
+    ) -> bool | None:
+        """True/False if the bot's own reaction with `emoji` on that message
+        could be determined from a fresh fetch, None if it couldn't - callers
+        treat None as "act anyway"."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+        except Exception:
+            return None
+        want = _to_discord_emoji(emoji)
+        for reaction in message.reactions:
+            if _discord_reaction_matches(reaction.emoji, want):
+                return bool(reaction.me)
+        return False
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         guild = self._client.get_guild(self._guild_id)
@@ -1742,7 +1786,9 @@ def _to_standard_message(message: discord.Message, connector_id: str) -> Standar
     )
 
 
-def _to_standard_reaction(payload: discord.RawReactionActionEvent, connector_id: str, *, added: bool) -> StandardReaction:
+def _to_standard_reaction(
+    payload: discord.RawReactionActionEvent, connector_id: str, *, added: bool, reactor_count: int | None = None
+) -> StandardReaction:
     emoji = payload.emoji
     emoji_repr: str | CustomEmoji
     if emoji.is_custom_emoji():
@@ -1757,6 +1803,7 @@ def _to_standard_reaction(payload: discord.RawReactionActionEvent, connector_id:
         origin_message_id=str(payload.message_id),
         emoji=emoji_repr,
         added=added,
+        origin_reactor_count=reactor_count,
     )
 
 
@@ -1764,6 +1811,18 @@ def _to_discord_emoji(emoji: str | CustomEmoji) -> str | discord.PartialEmoji:
     if isinstance(emoji, str):
         return emoji
     return discord.PartialEmoji(name=emoji.name, id=int(emoji.native_id), animated=emoji.animated)
+
+
+def _discord_reaction_matches(existing: object, want: object) -> bool:
+    """Whether `existing` (a `discord.Reaction.emoji` - str, Emoji, or
+    PartialEmoji) is the same emoji as `want` (a str or PartialEmoji from
+    `_to_discord_emoji` / a raw payload). Custom emoji compare by id;
+    unicode by string."""
+    want_id = getattr(want, "id", None)
+    existing_id = getattr(existing, "id", None)
+    if want_id is not None or existing_id is not None:
+        return want_id is not None and existing_id is not None and int(want_id) == int(existing_id)
+    return str(existing) == str(want)
 
 
 def _sanitize_emoji_name(name: str) -> str:
