@@ -27,7 +27,7 @@ from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, Link
 from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import OnMessage, PartialRelayError, ReceiverService, SenderService
-from stoat_discord_bridge.services.formatting import chunk_content
+from stoat_discord_bridge.services.formatting import chunk_content, render_discord_timestamps
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
     rewrite_mentions,
@@ -747,6 +747,10 @@ class IrcReceiverService(ReceiverService):
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
         content = message.content_markdown
+        # Discord/Stoat <t:...> dynamic timestamps have no IRC equivalent - render
+        # them to plain text (relative styles are relative to right now, i.e. when
+        # this handler runs).
+        content = render_discord_timestamps(content)
         sender_name = message.sender_name
         if self._user_mappings is not None:
             content = await rewrite_mentions(
