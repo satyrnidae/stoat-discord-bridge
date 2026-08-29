@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import stoat
+
 from stoat_discord_bridge.models import CustomEmoji
 from stoat_discord_bridge.services.stoat_service import StoatSenderService
 from stoat_discord_bridge.status import HealthTracker
@@ -25,9 +27,13 @@ class _Recorder:
         self.reactions: list = []
         self.emoji_created: list = []
         self.emoji_deleted: list = []
+        self.pins: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
+
+    async def on_pin(self, pin) -> None:
+        self.pins.append(pin)
 
     async def on_reaction(self, reaction) -> None:
         self.reactions.append(reaction)
@@ -58,6 +64,7 @@ def _make_sender(
     sender._on_reaction = recorder.on_reaction if with_reactions else None
     sender._on_emoji_created = recorder.on_emoji_created if with_emoji else None
     sender._on_emoji_deleted = recorder.on_emoji_deleted if with_emoji else None
+    sender._on_pin = recorder.on_pin
     return sender
 
 
@@ -78,6 +85,50 @@ async def test_handle_message_ignores_a_bot_author():
     await sender._handle_message(_stoat_message(channel=FakeChannel(id="42"), author=author))
 
     assert recorder.messages == []
+
+
+async def test_handle_message_pin_system_event_emits_a_pin_and_doesnt_relay():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    author = FakeAuthor(id="u1")
+    message = SimpleNamespace(
+        channel=channel,
+        author=author,
+        content="",
+        id="sys1",
+        system_event=stoat.MessagePinnedSystemEvent(pinned_message_id="pm1", internal_by="u1", message=None),
+    )
+
+    await sender._handle_message(message)
+
+    assert recorder.messages == []
+    [pin] = recorder.pins
+    assert (pin.origin_connector_id, pin.origin_channel_id, pin.origin_message_id, pin.pinned) == (
+        "stoat",
+        "42",
+        "pm1",
+        True,
+    )
+
+
+async def test_handle_message_unpin_system_event_emits_an_unpin():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    message = SimpleNamespace(
+        channel=channel,
+        author=FakeAuthor(id="u1"),
+        content="",
+        id="sys2",
+        system_event=stoat.MessageUnpinnedSystemEvent(unpinned_message_id="um1", internal_by="u1", message=None),
+    )
+
+    await sender._handle_message(message)
+
+    assert recorder.messages == []
+    [pin] = recorder.pins
+    assert (pin.origin_message_id, pin.pinned) == ("um1", False)
 
 
 async def test_handle_message_status_command_replies_in_channel_and_doesnt_relay():

@@ -447,3 +447,31 @@ async def test_create_emoji_returns_none_on_http_failure(monkeypatch):
     result = await receiver.create_emoji(CustomEmoji(native_id="e1", name="smile", image_url="https://cdn.example/e.png"))
 
     assert result is None
+
+
+# ---------------------------------------------------------------- set_pinned
+
+
+async def test_set_pinned_pins_and_unpins_the_message():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+
+    await receiver.set_pinned(target_channel_id="c-1", target_message_id="m7", pinned=True)
+    msg = await channel.fetch_message("m7")
+    assert msg.pinned is True and msg.pin_calls == 1
+
+    await receiver.set_pinned(target_channel_id="c-1", target_message_id="m7", pinned=False)
+    assert msg.pinned is False and msg.unpin_calls == 1
+
+
+async def test_set_pinned_is_a_noop_when_already_in_the_target_state():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    msg = await channel.fetch_message("m7")
+    msg.pinned = True
+    receiver = _make_receiver(client)
+
+    await receiver.set_pinned(target_channel_id="c-1", target_message_id="m7", pinned=True)
+
+    assert msg.pin_calls == 0

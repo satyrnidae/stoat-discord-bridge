@@ -42,9 +42,13 @@ class _Recorder:
         self.reactions: list = []
         self.emoji_created: list = []
         self.emoji_deleted: list = []
+        self.pins: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
+
+    async def on_pin(self, pin) -> None:
+        self.pins.append(pin)
 
     async def on_reaction(self, reaction) -> None:
         self.reactions.append(reaction)
@@ -66,6 +70,7 @@ def _make_sender(
         on_reaction=recorder.on_reaction,
         on_emoji_created=recorder.on_emoji_created,
         on_emoji_deleted=recorder.on_emoji_deleted,
+        on_pin=recorder.on_pin,
         linker=linker,
         category_linker=category_linker,
     )
@@ -147,6 +152,63 @@ async def test_handle_message_uses_none_avatar_when_the_author_has_no_avatar():
     await sender._handle_message(_discord_message(channel=channel, guild=guild, author=author))
 
     assert recorder.messages[0].sender_avatar_url is None
+
+
+async def test_handle_message_suppresses_the_pins_add_system_message():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author, content="", id=9,
+            type=discord.MessageType.pins_add,
+        )
+    )
+
+    assert recorder.messages == []
+
+
+# ---------------------------------------------------------------- _handle_raw_message_edit
+
+
+def _edit_payload(**overrides):
+    defaults = dict(guild_id=123, channel_id=42, message_id=7, data={})
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+async def test_handle_raw_message_edit_emits_a_pin_when_pinned_toggles():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_edit_payload(data={"pinned": True}))
+    await sender._handle_raw_message_edit(_edit_payload(data={"pinned": False}))
+
+    assert [(p.origin_channel_id, p.origin_message_id, p.pinned) for p in recorder.pins] == [
+        ("42", "7", True),
+        ("42", "7", False),
+    ]
+
+
+async def test_handle_raw_message_edit_ignores_a_plain_content_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_edit_payload(data={"content": "edited"}))
+
+    assert recorder.pins == []
+
+
+async def test_handle_raw_message_edit_ignores_a_different_guild():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_edit_payload(guild_id=999, data={"pinned": True}))
+
+    assert recorder.pins == []
 
 
 # ---------------------------------------------------------------- _handle_raw_reaction

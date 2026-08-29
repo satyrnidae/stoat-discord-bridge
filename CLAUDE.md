@@ -115,6 +115,28 @@ working) — it only updates `EmojiMappingRepository`'s bookkeeping via
 `forget()` for the connector it was deleted on; the cross-connector mapping
 itself drops only once every connector's copy has been deleted.
 
+### Message pin sync
+
+Pinning/unpinning a message in a bridged channel is mirrored onto every other
+connector's copy of that message (`BridgeCoordinator.handle_pin` →
+`ReceiverService.set_pinned`, gated by `supports_pins` and keyed off the same
+`MessageSyncRepository` group reaction sync uses). Discord ⇄ Stoat only —
+**IRC has no message-pin concept** (`supports_pins` stays `False`), so a pin
+never routes to it. Best-effort and silent (an untracked message, a missing
+`set_pinned` hook, or a raising one are all skipped); loop-safe the same two
+ways as role sync — `set_pinned` is idempotent (no-op if already in that
+state) and the coordinator keeps a ~10s record of writes it issued so the echo
+event is dropped.
+
+Each platform's pin action produces a *system message* that used to be relayed
+as a blank message: Discord's `MessageType.pins_add` (suppressed in
+`_handle_message`; the pin itself is picked up from `on_raw_message_edit`,
+which also covers unpins — Discord has no `pins_remove` system message) and
+Stoat's `message_pinned` / `message_unpinned` system events (detected via
+`message.system_event` in `_handle_message` and turned into a `StandardPin`).
+As a catch-all, `IrcReceiverService.receive` drops any synced message with no
+textual content — which is how IRC ignores pin notifications from both sides.
+
 ### Admin & status commands
 
 Every admin/status command (`/status`, `/link-channel`, `/unlink-channel`,

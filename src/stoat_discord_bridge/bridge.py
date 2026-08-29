@@ -32,6 +32,7 @@ from stoat_discord_bridge.models import (
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
+    StandardPin,
     StandardReaction,
 )
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
@@ -64,6 +65,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_PIN_SUPPRESS_TTL = 10.0
+
 
 class BridgeCoordinator:
     """Routes an incoming StandardMessage to every other connector's channel
@@ -81,6 +84,12 @@ class BridgeCoordinator:
         self._message_sync = message_sync
         self._emoji_mappings = emoji_mappings
         self._health = health
+        # A ~10s record of pin writes we just issued, keyed
+        # (connector_id, channel_id, message_id, pinned), so the pin/unpin
+        # event our own set_pinned() triggers is dropped rather than fanned
+        # back out - same two-layer loop guard (idempotent hook + short-TTL
+        # record) RoleSyncCoordinator uses.
+        self._recent_pins: dict[tuple[str, str, str, bool], float] = {}
 
     def register_receiver(self, receiver: ReceiverService) -> None:
         """Every bridged connector's receiver must be registered before any
@@ -179,6 +188,42 @@ class BridgeCoordinator:
                     )
             except Exception:
                 logger.exception("reaction relay from %s to %s failed", reaction.origin_connector_id, ref.connector_id)
+
+    async def handle_pin(self, pin: StandardPin) -> None:
+        """Relay a pin/unpin onto every other connector's copy of the same
+        message. Silently does nothing if the message was never bridged, or a
+        target connector doesn't advertise `supports_pins` (IRC) - both are
+        expected, not errors. Loop-safe: a `set_pinned` we issued is recorded
+        briefly so the resulting echo event is dropped here."""
+        now = time.monotonic()
+        self._recent_pins = {k: v for k, v in self._recent_pins.items() if now - v < _PIN_SUPPRESS_TTL}
+        if (
+            self._recent_pins.pop(
+                (pin.origin_connector_id, pin.origin_channel_id, pin.origin_message_id, pin.pinned), None
+            )
+            is not None
+        ):
+            return  # our own write echoing back
+
+        group = await self._message_sync.find_group(
+            pin.origin_connector_id, pin.origin_channel_id, pin.origin_message_id
+        )
+        if group is None:
+            return  # this message isn't tracked as bridged
+
+        for ref in group:
+            if ref.connector_id == pin.origin_connector_id:
+                continue
+            receiver = self._receivers.get(ref.connector_id)
+            if receiver is None or not receiver.supports_pins:
+                continue
+            self._recent_pins[(ref.connector_id, ref.channel_id, ref.message_id, pin.pinned)] = time.monotonic()
+            try:
+                await receiver.set_pinned(
+                    target_channel_id=ref.channel_id, target_message_id=ref.message_id, pinned=pin.pinned
+                )
+            except Exception:
+                logger.exception("pin relay from %s to %s failed", pin.origin_connector_id, ref.connector_id)
 
     async def _translate_emoji(
         self, origin_connector_id: str, emoji: str | CustomEmoji, target_connector_id: str
@@ -518,6 +563,7 @@ async def run(config: BridgeConfig) -> None:
             on_reaction=coordinator.handle_reaction,
             on_emoji_created=coordinator.handle_emoji_created,
             on_emoji_deleted=coordinator.handle_emoji_deleted,
+            on_pin=coordinator.handle_pin,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -568,6 +614,7 @@ async def run(config: BridgeConfig) -> None:
             on_reaction=coordinator.handle_reaction,
             on_emoji_created=coordinator.handle_emoji_created,
             on_emoji_deleted=coordinator.handle_emoji_deleted,
+            on_pin=coordinator.handle_pin,
             linker=linker,
             mirrorer=mirrorer,
             emote_linker=emote_linker,

@@ -85,6 +85,25 @@ class FakePartialMessage:
         self.removed_reactions.append((emoji, user))
 
 
+class FakeFullMessage:
+    """Stands in for a fetched discord.Message - the handle
+    DiscordReceiverService.set_pinned operates on."""
+
+    def __init__(self, id: int, *, pinned: bool = False) -> None:
+        self.id = id
+        self.pinned = pinned
+        self.pin_calls: list[str | None] = []
+        self.unpin_calls: list[str | None] = []
+
+    async def pin(self, *, reason: str | None = None) -> None:
+        self.pin_calls.append(reason)
+        self.pinned = True
+
+    async def unpin(self, *, reason: str | None = None) -> None:
+        self.unpin_calls.append(reason)
+        self.pinned = False
+
+
 class FakeWebhook:
     def __init__(self, id: int, *, user: FakeUser | None = None, raises: BaseException | None = None) -> None:
         self.id = id
@@ -117,6 +136,7 @@ class FakeChannel:
         self._webhooks = webhooks or []
         self.created_webhooks: list[FakeWebhook] = []
         self.partial_messages: dict[int, FakePartialMessage] = {}
+        self.full_messages: dict[int, FakeFullMessage] = {}
 
     async def webhooks(self) -> list[FakeWebhook]:
         return list(self._webhooks)
@@ -130,6 +150,9 @@ class FakeChannel:
 
     def get_partial_message(self, message_id: int) -> FakePartialMessage:
         return self.partial_messages.setdefault(message_id, FakePartialMessage())
+
+    async def fetch_message(self, message_id: int) -> FakeFullMessage:
+        return self.full_messages.setdefault(message_id, FakeFullMessage(id=message_id))
 
 
 class FakeThread(discord.Thread):

@@ -30,11 +30,13 @@ from stoat_discord_bridge.models import (
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
+    StandardPin,
     StandardReaction,
 )
 
 OnMessage = Callable[[StandardMessage], Awaitable[None]]
 OnReaction = Callable[[StandardReaction], Awaitable[None]]
+OnPin = Callable[[StandardPin], Awaitable[None]]
 OnEmojiCreated = Callable[[StandardEmojiCreated], Awaitable[None]]
 OnEmojiDeleted = Callable[[StandardEmojiDeleted], Awaitable[None]]
 # (origin_connector_id, user_id, added_role_ids, removed_role_ids) - a linked
@@ -60,11 +62,13 @@ class SenderService(ABC):
         on_reaction: OnReaction | None = None,
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
+        on_pin: OnPin | None = None,
     ) -> None:
         self._on_message = on_message
         self._on_reaction = on_reaction
         self._on_emoji_created = on_emoji_created
         self._on_emoji_deleted = on_emoji_deleted
+        self._on_pin = on_pin
 
     @abstractmethod
     async def start(self) -> None:
@@ -77,6 +81,7 @@ class ReceiverService(ABC):
     connector_id: str
     supports_reactions: bool = False
     supports_emoji: bool = False
+    supports_pins: bool = False
 
     @abstractmethod
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
@@ -97,6 +102,12 @@ class ReceiverService(ABC):
         self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji
     ) -> None:
         """Remove the bridge's own `emoji` reaction from `target_message_id`. Only called when `supports_reactions`."""
+        raise NotImplementedError
+
+    async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
+        """Pin (`pinned=True`) or unpin (`pinned=False`) `target_message_id`.
+        Idempotent — a no-op if the message is already in that state. Only
+        called when `supports_pins`."""
         raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
