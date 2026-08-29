@@ -92,6 +92,8 @@ class FakeCategoryLinker:
         self.list_linked_categories_calls: list[dict] = []
         self.unlink_category_calls: list[dict] = []
         self.sync_new_channel_calls: list[dict] = []
+        self.mirror_category_calls: list[dict] = []
+        self.mirror_category_all_calls: list[dict] = []
         self.connectors = connectors or {}
 
     async def link_category(self, **kwargs):
@@ -109,6 +111,14 @@ class FakeCategoryLinker:
     async def sync_new_channel(self, **kwargs):
         self.sync_new_channel_calls.append(kwargs)
 
+    async def mirror_category(self, **kwargs):
+        self.mirror_category_calls.append(kwargs)
+        return "mirrored ok"
+
+    async def mirror_category_all(self, **kwargs):
+        self.mirror_category_all_calls.append(kwargs)
+        return "mirrored all ok"
+
 
 class FakeInteraction:
     def __init__(
@@ -122,10 +132,15 @@ class FakeInteraction:
         self.channel = SimpleNamespace(name=channel_name, category=category)
         self.user = SimpleNamespace(id=user_id)
         self.sent: list[str] = []
-        self.response = SimpleNamespace(send_message=self._send_message)
+        self.response = SimpleNamespace(send_message=self._send_message, defer=self._defer)
+        self.followup = SimpleNamespace(send=self._send_message)
+        self.deferred = False
 
     async def _send_message(self, content, ephemeral=False):
         self.sent.append(content)
+
+    async def _defer(self, ephemeral=False, thinking=False):
+        self.deferred = True
 
 
 def _make_sender(
@@ -476,7 +491,12 @@ def test_autocomplete_choices_all_not_added_when_include_all_is_false(sample_con
 
 
 def _autocomplete_callback(sender: DiscordSenderService, command_name: str, param_name: str):
-    command = sender.tree.get_command(command_name, guild=sender._guild)
+    # `command_name` may be a flat name ("link-channel") or a subcommand-group
+    # path ("link category" -> group "link", subcommand "category").
+    parts = command_name.split()
+    command = sender.tree.get_command(parts[0], guild=sender._guild)
+    for part in parts[1:]:
+        command = command.get_command(part)
     return command._params[param_name].autocomplete
 
 
@@ -491,7 +511,7 @@ async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_co
 
 async def test_link_category_source_autocomplete_is_wired_to_the_category_linker(sample_connectors):
     sender = _make_sender(FakeLinker(), category_linker=FakeCategoryLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-category", "service")
+    callback = _autocomplete_callback(sender, "link category", "service")
 
     choices = await callback(FakeInteraction(), "stoat")
 
@@ -508,7 +528,9 @@ async def test_linked_categories_reports_the_invoking_categorys_id():
 
     await sender._handle_linked_categories(interaction)
 
-    assert category_linker.list_linked_categories_calls == [{"local_connector": "discord", "local_category_id": "777"}]
+    assert category_linker.list_linked_categories_calls == [
+        {"local_connector": "discord", "local_category_id": "777", "local_category": None}
+    ]
     assert interaction.sent == ["Linked categories:\nDiscord: Team (999) (this Category)"]
 
 
@@ -613,7 +635,7 @@ async def test_unlink_category_defaults_destination_to_none():
     await sender._handle_unlink_category(interaction, None)
 
     assert category_linker.unlink_category_calls == [
-        {"local_connector": "discord", "local_category_id": "777", "destination": None}
+        {"local_connector": "discord", "local_category_id": "777", "local_category": None, "destination": None}
     ]
     assert interaction.sent == ["category unlinked ok"]
 
@@ -623,10 +645,10 @@ async def test_unlink_category_with_a_specific_destination():
     sender = _make_sender(FakeLinker(), category_linker=category_linker)
     interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
 
-    await sender._handle_unlink_category(interaction, "stoat")
+    await sender._handle_unlink_category(interaction, None, "stoat")
 
     assert category_linker.unlink_category_calls == [
-        {"local_connector": "discord", "local_category_id": "777", "destination": "stoat"}
+        {"local_connector": "discord", "local_category_id": "777", "local_category": None, "destination": "stoat"}
     ]
 
 
@@ -663,6 +685,61 @@ async def test_unlink_category_reports_a_link_error_instead_of_raising():
     await sender._handle_unlink_category(interaction, None)
 
     assert interaction.sent == ["this Category isn't linked"]
+
+
+# ---------------------------------------------------------------- _handle_mirror_category
+
+
+async def test_mirror_category_all_dispatches_to_mirror_category_all():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
+
+    await sender._handle_mirror_category(interaction, None, None)
+
+    assert category_linker.mirror_category_all_calls == [
+        {"local_connector": "discord", "local_category_id": "777", "local_category": None}
+    ]
+    assert interaction.sent == ["mirrored all ok"]
+
+
+async def test_mirror_category_to_a_named_local_category_and_one_destination():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=None)
+
+    await sender._handle_mirror_category(interaction, "Team Chat", "stoat")
+
+    assert category_linker.mirror_category_calls == [
+        {"local_connector": "discord", "local_category_id": None, "local_category": "Team Chat", "destination": "stoat"}
+    ]
+    assert interaction.sent == ["mirrored ok"]
+
+
+async def test_mirror_category_without_a_category_or_token_errors():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction(category=None)
+
+    await sender._handle_mirror_category(interaction, None, None)
+
+    assert interaction.sent == ["This channel isn't inside a Category."]
+    assert category_linker.mirror_category_all_calls == []
+
+
+# ---------------------------------------------------------------- category-name hooks
+
+
+async def test_resolve_category_id_by_name_matches_by_name_and_passes_ids_through(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = SimpleNamespace(
+        categories=[SimpleNamespace(id=10, name="Team Chat"), SimpleNamespace(id=20, name="Ops")]
+    )
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    assert await sender.resolve_category_id_by_name("team chat") == "10"
+    assert await sender.resolve_category_id_by_name("10") == "10"
+    assert await sender.resolve_category_id_by_name("missing") is None
 
 
 # ---------------------------------------------------------------- _handle_channel_create

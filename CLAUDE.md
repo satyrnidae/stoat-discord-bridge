@@ -119,11 +119,13 @@ itself drops only once every connector's copy has been deleted.
 
 Every admin/status command (`/status`, `/link-channel`, `/unlink-channel`,
 `/linked-channels`, `/link-user`, `/unlink-user`, `/linked-users`,
-`/link-emote`, `/mirror-channel`, `/mirror-channels`, `/link-category`,
-`/unlink-category`, `/linked-categories`, and the role commands `/link role` /
+`/link-emote`, `/mirror-channel`, `/mirror-channels`, the category commands
+`/link category` / `/mirror category` / `/linked categories` /
+`/unlink category`, and the role commands `/link role` /
 `/mirror role` / `/linked roles` / `/unlink role` — Discord/Stoat only; on
-Discord these are real `app_commands` subcommand groups, unlike the flat
-`/link-channel` etc. a later step migrates onto the same shape) and how to
+Discord the category and role commands are real `app_commands` subcommand
+groups, unlike the still-flat `/link-channel` / `/link-user` / `/link-emote`
+etc.) and how to
 reach it on each connector is documented in `COMMANDS.md`, not duplicated
 here — shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
@@ -192,7 +194,7 @@ is confirmed (`on_youreoper` — it's oper-only, and channels created before
 then are parked in `_pending_permanent_modes`), and is withheld from
 ephemeral Discord-thread channels (`ensure_channel`'s `is_thread_category`).
 
-Category linking (`/link-category`) is Discord/Stoat-only (IRC has no
+Category linking (`/link category`) is Discord/Stoat-only (IRC has no
 Category concept) and, unlike channel linking, has an automatic-sync side
 effect: once two Categories are linked, a new channel created inside either
 one is auto-mirrored (created + linked) into every other connector's own
@@ -231,7 +233,7 @@ fires when the thread's parent channel is itself already bridged; one-way
 (Discord → Stoat/IRC). The destination Category is bound to the destination's
 own parent channel id via `CategoryLinker.bind_thread_category` (backed by
 `storage/category_mappings.py`'s `ThreadCategoryRepository`, keyed by
-`(connector, parent_channel_id)`), which `/link-category` checks to refuse ever
+`(connector, parent_channel_id)`), which `/link category` checks to refuse ever
 linking it into the bridge. That binding is what later threads resolve the
 Category by — **by id, not by title** — so renaming the Category on Stoat no
 longer spawns a fresh one, and `group_parent_channel_with_threads` finds the

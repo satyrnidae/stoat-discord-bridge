@@ -144,55 +144,60 @@ is reported per-connector rather than aborting the rest when `all` is used.
   to - and hoisted to the first arg since it's the one id IRC can't leave
   out)
 
-## `/link-category <service> <external_id> [<local_id>]`
+## Categories: `/link category`, `/mirror category`, `/linked categories`, `/unlink category`
 
-**Discord and Stoat only** (IRC has no Category concept). Links the invoking
-channel's Category to `external_id`'s Category on connector `<service>` - or to
-`<local_id>`'s Category on the connector the command is run on, if
-given. Same already-linked/conflicting-group rules as `/link-channel`. Once
-two Categories are linked, any **new channel** created inside either one is
-automatically mirrored (created + linked, via the same logic as
-`/mirror-channel`) into every other connector's own linked Category - no
-manual `/mirror-channel` needed per new channel.
+**Discord and Stoat only** (IRC has no Category concept). Like the role
+commands below, these use a space-separated subcommand syntax, and **every id
+argument also accepts a bare Category name** (resolved case-insensitively;
+first match wins - pass an id when a name is ambiguous). Same already-linked /
+conflicting-group rules as `/link-channel`.
+
+On Discord these are `app_commands` subcommand groups (`/link category`,
+`/mirror category`, `/linked categories`, `/unlink category` - typed exactly
+like that); on Stoat they are the same tokens as a plain chat message. The
+Category defaults to the invoking channel's own where an explicit
+`<local_id|name>` is omitted.
 
 A Category that Discord's thread/forum-post auto-mirroring created on Stoat
 (see the README's Discord threads section) can never be linked this way -
-`/link-category` rejects it as both a `service`/`local_id` and as the
-invoking channel's own Category, so thread mirroring's synthetic "Threads"
-Categories always stay outside the bridge.
+`/link category` rejects it, so thread mirroring's synthetic Categories always
+stay outside the bridge.
 
-- **Discord**: `/link-category` slash command (Manage Server); the Category
-  is always the invoking channel's own Category (the command must be run
-  from inside a channel that's in one).
-- **Stoat**: `/link-category <service> <external_id> [<local_id>]`
-  message command (Manage Server); same "invoking channel's own Category"
-  rule.
-- **IRC**: not available - IRC has no Category concept.
+### `/link category <service> <external_id|name> [<local_id|name>]`
 
-## `/linked-categories`
+Links the invoking channel's Category (or `<local_id|name>`'s Category on this
+connector, if given) to `<external_id|name>`'s Category on `<service>`. Once
+two Categories are linked, any **new channel** created inside either one is
+automatically mirrored (created + linked, same logic as `/mirror-channel`)
+into every other connector's own linked Category. Manage Server.
 
-Read-only listing of every Category linked to the invoking channel's own
-Category, across every connector in its bridge group.
+### `/mirror category [<local_id|name>] [<service>|all]`
 
-- **Discord**: `/linked-categories` slash command (defaults to the current
-  channel's Category)
-- **Stoat**: `/linked-categories` message command (defaults to the current
-  channel's Category)
-- **IRC**: not available - IRC has no Category concept.
+Ensures a linked counterpart of the Category exists on `<service>` (or every
+other connector, if `all` - the default): reuses the existing linked Category
+if the pair is already linked, otherwise creates a same-named one (name only)
+and links it. Then relocates the source Category's channels onto that
+destination Category - a child already linked to a `<service>` channel is
+*moved* into it, an unlinked child is mirrored (created + linked) there. A
+connector that can't create Categories is reported per-connector. Manage
+Server.
 
-## `/unlink-category [service|all]`
+### `/linked categories [<local_id|name>]`
 
-Removes members from the invoking channel's own Category's bridge group.
-Given a specific `service` (a connector id), kicks just that one member
-out - the rest of the group stays linked to each other. With no argument, or
-`all` (the default), dissolves the whole group instead. Existing channels
-already synced into the Category are left alone either way - only future
-auto-sync stops.
+Read-only listing of every Category linked to the given (or invoking) Category,
+across every connector in its bridge group.
 
-- **Discord**: `/unlink-category [service]` slash command (Manage
-  Server); `service`'s autocomplete includes the literal `all` choice.
-- **Stoat**: `/unlink-category [service|all]` message command (Manage
-  Server).
+### `/unlink category [<local_id|name>] [<service>|all]`
+
+Removes members from the Category's bridge group. A specific `<service>` kicks
+just that one member out; `all` (the default) dissolves the whole group.
+Existing channels already synced into the Category are left alone either way -
+only future auto-sync stops. Manage Server.
+
+- **Discord**: the `/link category` / `/mirror category` / `/linked categories`
+  / `/unlink category` slash subcommands (Manage Server on all but
+  `/linked categories`).
+- **Stoat**: the same tokens as message commands.
 - **IRC**: not available - IRC has no Category concept.
 
 ## `/mirror-channels <service>`
@@ -228,9 +233,9 @@ conflicting-group rules as `/link-channel`.
 
 On Discord these are `app_commands` subcommand groups (`/link role`,
 `/unlink role`, `/linked roles`, `/mirror role` - typed exactly like that);
-on Stoat they are the same tokens as a plain chat message. (The other link
-commands still use the flat `/link-channel` form; a later step migrates them
-onto this shape.)
+on Stoat they are the same tokens as a plain chat message. (Categories use
+the same subcommand shape - see above; the channel/user/emote link commands
+still use the flat `/link-channel` form.)
 
 ### `/link role <local_id|name> <service> <external_id|name>`
 
