@@ -413,6 +413,56 @@ async def test_link_user_conflicting_groups_raises(fake_db, connectors):
         await linker.link_user(local_connector="irc", local_user_id="Bob", source="discord", source_user_id="111")
 
 
+def _name_resolving_connectors(**overrides):
+    async def d_by_name(token):
+        return {"alice": "111", "bob": "222"}.get(token.casefold())
+
+    async def s_by_name(token):
+        return {"shriner": "01KH"}.get(token.casefold())
+
+    base = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_user_id_by_name=d_by_name),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", resolve_user_id_by_name=s_by_name),
+        "irc": ConnectorInfo(id="irc", label="IRC"),  # no hook - a nick already IS the id
+    }
+    base.update(overrides)
+    return base
+
+
+async def test_link_user_resolves_display_names_on_both_sides(fake_db):
+    linker = UserLinker(UserMappingRepository(fake_db), _name_resolving_connectors())
+    summary = await linker.link_user(
+        local_connector="stoat", local_user_id="Shriner", source="discord", source_user_id="Alice"
+    )
+    assert "Linked Discord user '111' to Stoat user '01KH'." == summary
+
+
+async def test_link_user_falls_back_to_the_literal_token_when_the_name_is_unknown(fake_db):
+    linker = UserLinker(UserMappingRepository(fake_db), _name_resolving_connectors())
+    summary = await linker.link_user(
+        local_connector="irc", local_user_id="Alice", source="discord", source_user_id="999"
+    )
+    assert "Linked Discord user '999' to IRC user 'Alice'." == summary
+
+
+async def test_unlink_user_resolves_a_display_name(fake_db):
+    connectors = _name_resolving_connectors()
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    await linker.link_user(local_connector="stoat", local_user_id="01KH", source="discord", source_user_id="111")
+
+    summary = await linker.unlink_user(local_connector="discord", local_user_id="Alice", destination="all")
+    assert "entire link group" in summary
+
+
+async def test_list_linked_users_resolves_a_display_name_target(fake_db):
+    connectors = _name_resolving_connectors()
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    await linker.link_user(local_connector="stoat", local_user_id="01KH", source="discord", source_user_id="111")
+
+    summary = await linker.list_linked_users(local_connector="discord", local_user_id="Alice")
+    assert "Discord" in summary and "Stoat" in summary
+
+
 # ---------------------------------------------------------------- UserLinker.list_linked_users
 
 

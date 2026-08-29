@@ -109,6 +109,13 @@ class ConnectorInfo:
     # storage/user_mappings.py's UserMapping.display_name docstring), so
     # there's nothing further to resolve.
     resolve_user_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Best-effort native-user-NAME -> id lookup (display name / username /
+    # nickname), so `/link user` / `/unlink user` / `/linked users` accept a
+    # bare name anywhere an id is expected. None/exception/falsy return all
+    # mean "treat the token as an id already" (UserLinker._resolve_to_id).
+    # IRC leaves this unset - a user_id there already IS the nick, so there's
+    # nothing to resolve.
+    resolve_user_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
     # Best-effort native-category-id -> title lookup, the Category
     # counterpart of resolve_channel_name, used by CategoryLinker for
     # `/link-category`. None on IRC (no Category concept there).
@@ -718,6 +725,16 @@ class EmoteLinker:
 
 
 class UserLinker:
+    """`/link user` / `/unlink user` / `/linked users` - links a user's
+    identity across connectors, for @mention rewriting and masquerade
+    override.
+
+    Every id argument also accepts a bare display name / username - resolved
+    to an id via the connector's resolve_user_id_by_name hook, falling back
+    to treating the token as an id if the hook is absent or comes up empty
+    (IRC has no such hook: a user_id there already IS the nick).
+    """
+
     def __init__(self, user_mappings: UserMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
         self._user_mappings = user_mappings
         self._connectors = connectors
@@ -732,8 +749,8 @@ class UserLinker:
         identity, or both already belong to two *different* existing link groups."""
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
-        source_user_id = _strip_discord_mention(source_user_id)
-        local_user_id = _strip_discord_mention(local_user_id)
+        source_user_id = await self._resolve_to_id(source, _strip_discord_mention(source_user_id))
+        local_user_id = await self._resolve_to_id(local_connector, _strip_discord_mention(local_user_id))
         if source == local_connector and source_user_id == local_user_id:
             raise LinkError("can't link a user to themselves.")
 
@@ -766,6 +783,7 @@ class UserLinker:
         than read off the stored mapping, since that's just the id it was
         linked with, never a real name (see UserMapping.display_name)."""
         if local_connector is not None and local_user_id is not None:
+            local_user_id = await self._resolve_to_id(local_connector, _strip_discord_mention(local_user_id))
             link_group = await self._user_mappings.get_link_group(local_connector, local_user_id)
             if link_group is None:
                 return "This user isn't linked to any others."
@@ -799,7 +817,7 @@ class UserLinker:
         (the default) dissolves the whole group instead, unlinking every
         identity. Raises LinkError if the user isn't linked, or
         `destination` isn't actually a member of its group."""
-        local_user_id = _strip_discord_mention(local_user_id)
+        local_user_id = await self._resolve_to_id(local_connector, _strip_discord_mention(local_user_id))
         link_group = await self._user_mappings.get_link_group(local_connector, local_user_id)
         if link_group is None:
             raise LinkError("this user isn't linked to anything.")
@@ -815,6 +833,21 @@ class UserLinker:
         await self._user_mappings.delete_mapping(destination, target.user_id)
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} user '{target.user_id}' from this user's link group."
+
+    async def _resolve_to_id(self, connector: str, token: str) -> str:
+        """A bare display name / username -> its id via the connector's
+        resolve_user_id_by_name hook; an absent/raising/empty hook (or an
+        already-an-id token) leaves the token untouched."""
+        info = self._connectors.get(connector)
+        if info is not None and info.resolve_user_id_by_name is not None:
+            try:
+                user_id = await info.resolve_user_id_by_name(token)
+            except Exception:
+                logger.debug("couldn't resolve user name %r on %s", token, connector, exc_info=True)
+                user_id = None
+            if user_id:
+                return user_id
+        return token
 
     async def _resolve_user_name(self, connector_id: str, user_id: str) -> str:
         info = self._connectors.get(connector_id)

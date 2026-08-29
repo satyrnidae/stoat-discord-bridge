@@ -71,27 +71,32 @@ def _split_permanent_mode(modes: str) -> tuple[str | None, bool]:
     stripped = modes.replace("P", "")
     return (None if stripped.strip(" +-") == "" else stripped), True
 
-# Admin commands (LINK_CHANNEL, LINK_EMOTE, LINK_USER, MIRROR_CHANNEL)
+# Admin commands (LINK_CHANNEL, LINK_EMOTE, LINK USER, MIRROR_CHANNEL, ...)
 # arrive as a DM to the bot's own nick, bare and uppercase (no leading "/"
 # or "!" - unlike Discord/Stoat's slash commands, since many IRC clients
 # swallow a leading "/" as a local client command). See
-# _handle_privmsg/_handle_dm_command.
+# _handle_privmsg/_handle_dm_command. The user commands use a two-word
+# `LINK USER` / `UNLINK USER` form (mirroring Stoat's `/link role`); the
+# rest stay single underscore-joined tokens.
 _ADMIN_DM_COMMANDS = frozenset(
-    {"LINK_CHANNEL", "LINK_EMOTE", "LINK_USER", "MIRROR_CHANNEL", "UNLINK_CHANNEL", "UNLINK_USER"}
+    {"LINK_CHANNEL", "LINK_EMOTE", "MIRROR_CHANNEL", "UNLINK_CHANNEL"}
 )
+# Two-word admin commands, matched on the first two whitespace-split tokens
+# (upper-cased) before the single-token set above.
+_ADMIN_DM_COMMANDS_TWO_WORD = frozenset({"LINK USER", "UNLINK USER"})
 
 # IRC has no slash-command discoverability at all, hence HELP. See
 # COMMANDS.md for full per-command detail - this is a compact pointer to it.
 _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full detail):
   STATUS - sync target health, read-only
   LINKED_CHANNELS <local_id> - channels bridged to <local_id>, read-only
-  LINKED_USERS [local_id] - cross-connector user links, read-only
+  LINKED USERS [local_id] - cross-connector user links, read-only
   LINK_CHANNEL <service> <external_id> <local_id> - bridge a channel (IRC-operator)
-  LINK_USER <service> <external_id> <local_id> - link a user for mentions/masquerading (IRC-operator)
+  LINK USER <service> <external_id> <local_id> - link a user for mentions/masquerading (IRC-operator)
   LINK_EMOTE <service> <external_id> <local_id> - link a custom emoji (IRC-operator)
   MIRROR_CHANNEL <local_id> <service|all> - create+link a matching channel (IRC-operator)
   UNLINK_CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
-  UNLINK_USER [service|all] [local_id] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
+  UNLINK USER [service|all] [local_id] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
   HELP - this message"""
 
 # irc.satyrn.dev (InspIRCd-4 + a chanhistory-style module, enabled via the
@@ -328,10 +333,10 @@ class IrcSenderService(SenderService):
             self.connection.join(channel)
 
     def _handle_privmsg(self, connection, event) -> None:
-        # DM to the bot. `STATUS`/`LINKED_CHANNELS`/`LINKED_USERS` are
-        # read-only, no permission gate. LINK_CHANNEL/LINK_EMOTE/LINK_USER/
-        # MIRROR_CHANNEL are oper-gated admin commands, dispatched to
-        # _handle_dm_command.
+        # DM to the bot. `STATUS`/`LINKED_CHANNELS`/`LINKED USERS` are
+        # read-only, no permission gate. LINK_CHANNEL/LINK_EMOTE/`LINK USER`/
+        # `UNLINK USER`/MIRROR_CHANNEL are oper-gated admin commands,
+        # dispatched to _handle_dm_command.
         content = event.arguments[0]
         if content.strip().upper() == "STATUS":
             for line in self._health.render().splitlines():
@@ -341,13 +346,14 @@ class IrcSenderService(SenderService):
             self._notify(event.source.nick, _HELP_TEXT)
             return
         words = content.split()
+        two = f"{words[0].upper()} {words[1].upper()}" if len(words) > 1 else ""
         if words and words[0].upper() == "LINKED_CHANNELS":
             self._schedule(self._handle_linked_channels_command(event.source.nick, words[1:]))
             return
-        if words and words[0].upper() == "LINKED_USERS":
-            self._schedule(self._handle_linked_users_command(event.source.nick, words[1:]))
+        if two == "LINKED USERS":
+            self._schedule(self._handle_linked_users_command(event.source.nick, words[2:]))
             return
-        if words and words[0].upper() in _ADMIN_DM_COMMANDS:
+        if two in _ADMIN_DM_COMMANDS_TWO_WORD or (words and words[0].upper() in _ADMIN_DM_COMMANDS):
             self._schedule(self._handle_dm_command(event.source.nick, content))
 
     def _handle_pubnotice(self, event) -> None:
@@ -416,7 +422,7 @@ class IrcSenderService(SenderService):
         self._notify(nick, summary)
 
     async def _handle_linked_users_command(self, nick: str, args: list[str]) -> None:
-        """`LINKED_USERS [local_id]`: with no argument, lists every
+        """`LINKED USERS [local_id]`: with no argument, lists every
         cross-connector user link (for debugging); given an IRC nick, shows
         just that identity's link."""
         if self._user_linker is None:
@@ -431,6 +437,12 @@ class IrcSenderService(SenderService):
     async def _handle_dm_command(self, nick: str, content: str) -> None:
         command, *args = content.split()
         command = command.upper()
+        # Two-word user commands (`LINK USER` / `UNLINK USER`) - fold the
+        # second token into the command name so the branch bodies below stay
+        # keyed on a single token, matching the underscore commands.
+        if args and f"{command} {args[0].upper()}" in _ADMIN_DM_COMMANDS_TWO_WORD:
+            command = f"{command}_{args[0].upper()}"
+            args = args[1:]
         if not await self._check_is_oper(nick):
             logger.info("[irc:%s] %s tried admin command %s without oper status - denied", self.connector_id, nick, command)
             self._notify(nick, "You need to be an IRC operator to do that.")
@@ -477,7 +489,7 @@ class IrcSenderService(SenderService):
             self._notify(nick, summary)
         elif command == "LINK_USER":
             if len(args) != 3:
-                self._notify(nick, "Usage: LINK_USER <service> <external_id> <local_id>")
+                self._notify(nick, "Usage: LINK USER <service> <external_id|name> <local_id|name>")
                 return
             service, external_id, local_id = args
             if self._user_linker is None:
@@ -558,7 +570,7 @@ class IrcSenderService(SenderService):
             # running the command - IRC has no "current channel" to fall
             # back to, but it does always know who's asking.
             if len(args) > 2:
-                self._notify(nick, "Usage: UNLINK_USER [service|all] [local_id]")
+                self._notify(nick, "Usage: UNLINK USER [service|all] [local_id|name]")
                 return
             service = args[0] if args else None
             local_id = args[1] if len(args) > 1 else nick

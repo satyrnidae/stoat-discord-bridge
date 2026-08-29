@@ -118,12 +118,14 @@ itself drops only once every connector's copy has been deleted.
 ### Admin & status commands
 
 Every admin/status command (`/status`, `/link-channel`, `/unlink-channel`,
-`/linked-channels`, `/link-user`, `/unlink-user`, `/linked-users`,
-`/link-emote`, `/mirror-channel`, `/mirror-channels`, `/link-category`,
-`/unlink-category`, `/linked-categories`, and the role commands `/link role` /
-`/mirror role` / `/linked roles` / `/unlink role` — Discord/Stoat only; on
-Discord these are real `app_commands` subcommand groups, unlike the flat
-`/link-channel` etc. a later step migrates onto the same shape) and how to
+`/linked-channels`, `/link-emote`, `/mirror-channel`, `/mirror-channels`,
+`/link-category`, `/unlink-category`, `/linked-categories`, the role commands
+`/link role` / `/mirror role` / `/linked roles` / `/unlink role` and the user
+commands `/link user` / `/unlink user` / `/linked users` — the role commands
+Discord/Stoat only; on Discord the role and user commands are real
+`app_commands` subcommand groups (`/link user` etc., on IRC `LINK USER` /
+`UNLINK USER` / `LINKED USERS`), while channel/category/emote linking stays
+flat `/link-channel` etc. until a later step migrates those too) and how to
 reach it on each connector is documented in `COMMANDS.md`, not duplicated
 here — shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /

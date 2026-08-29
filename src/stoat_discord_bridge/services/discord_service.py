@@ -261,17 +261,6 @@ class DiscordSenderService(SenderService):
         async def linked_categories_command(interaction: discord.Interaction) -> None:
             await self._handle_linked_categories(interaction)
 
-        @self.tree.command(
-            name="linked-users",
-            description="List cross-connector user links, for debugging - or just one member's, if given",
-            guild=self._guild,
-        )
-        @app_commands.describe(local_id="Show only this member's link (omit to list every linked user)")
-        async def linked_users_command(
-            interaction: discord.Interaction, local_id: discord.Member | None = None
-        ) -> None:
-            await self._handle_linked_users(interaction, local_id)
-
         async def link_channel_service_autocomplete(
             interaction: discord.Interaction, current: str
         ) -> list[app_commands.Choice[str]]:
@@ -341,29 +330,6 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_link_emote(interaction, service, external_id, local_id)
 
-        async def link_user_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._user_linker.connectors if self._user_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors)
-
-        @self.tree.command(
-            name="link-user",
-            description="Link a user from another connector to a local user, for mention rewriting and masquerade override",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to link from (see /status for configured connectors)",
-            external_id="User id on that connector",
-            local_id="The Discord member this is the same person as",
-        )
-        @app_commands.autocomplete(service=link_user_service_autocomplete)
-        async def link_user_command(
-            interaction: discord.Interaction, service: str, external_id: str, local_id: discord.Member
-        ) -> None:
-            await self._handle_link_user(interaction, service, external_id, local_id)
-
         async def mirror_channel_service_autocomplete(
             interaction: discord.Interaction, current: str
         ) -> list[app_commands.Choice[str]]:
@@ -427,38 +393,23 @@ class DiscordSenderService(SenderService):
         async def unlink_category_command(interaction: discord.Interaction, service: str | None = None) -> None:
             await self._handle_unlink_category(interaction, service)
 
-        async def unlink_user_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._user_linker.connectors if self._user_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors, include_all=True)
-
-        @self.tree.command(
-            name="unlink-user",
-            description="Unlink a user's cross-connector identity - one connector, or the whole group (default: all)",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to unlink, or 'all' to dissolve the whole link group (default: all)",
-            local_id="Member to unlink (defaults to yourself)",
-        )
-        @app_commands.autocomplete(service=unlink_user_service_autocomplete)
-        async def unlink_user_command(
-            interaction: discord.Interaction, service: str | None = None, local_id: discord.Member | None = None
-        ) -> None:
-            await self._handle_unlink_user(interaction, service, local_id)
-
-        # Roles use the `/link role`, `/unlink role`, `/linked roles`,
-        # `/mirror role` subcommand form (app_commands groups) rather than the
-        # flat `-role` names the other link commands still use - a later step
-        # migrates those onto the same shape.
-        def role_service_autocomplete(*, include_all: bool):
+        # Roles and users use the `/link …`, `/unlink …`, `/linked …`,
+        # `/mirror …` subcommand form (app_commands groups); channel, category
+        # and emote still use the flat `/link-channel` etc. names - a later
+        # step migrates those onto the same shape.
+        def _linker_service_autocomplete(get_linker, *, include_all: bool):
             async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-                connectors = self._role_linker.connectors if self._role_linker is not None else {}
+                linker = get_linker()
+                connectors = linker.connectors if linker is not None else {}
                 return _connector_autocomplete_choices(current, connectors, include_all=include_all)
 
             return _ac
+
+        def role_service_autocomplete(*, include_all: bool):
+            return _linker_service_autocomplete(lambda: self._role_linker, include_all=include_all)
+
+        def user_service_autocomplete(*, include_all: bool):
+            return _linker_service_autocomplete(lambda: self._user_linker, include_all=include_all)
 
         _manage = discord.Permissions(manage_guild=True)
         link_group = app_commands.Group(
@@ -514,6 +465,43 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, local_id: str, service: str | None = None
         ) -> None:
             await self._handle_mirror_role(interaction, local_id, service)
+
+        @link_group.command(
+            name="user",
+            description="Link a user from another connector to a local member, for mentions and masquerade override",
+        )
+        @app_commands.describe(
+            service="Connector id to link from (see /status for configured connectors)",
+            external_id="User id or display name on that connector",
+            local_id="The Discord member this is the same person as",
+        )
+        @app_commands.autocomplete(service=user_service_autocomplete(include_all=False))
+        async def link_user_command(
+            interaction: discord.Interaction, service: str, external_id: str, local_id: discord.Member
+        ) -> None:
+            await self._handle_link_user(interaction, service, external_id, local_id)
+
+        @unlink_group.command(
+            name="user", description="Unlink a user's cross-connector identity - one connector, or the whole group (default: all)"
+        )
+        @app_commands.describe(
+            service="Connector id to unlink, or 'all' to dissolve the whole link group (default: all)",
+            local_id="Member to unlink (defaults to yourself)",
+        )
+        @app_commands.autocomplete(service=user_service_autocomplete(include_all=True))
+        async def unlink_user_command(
+            interaction: discord.Interaction, service: str | None = None, local_id: discord.Member | None = None
+        ) -> None:
+            await self._handle_unlink_user(interaction, service, local_id)
+
+        @linked_group.command(
+            name="users", description="List cross-connector user links, for debugging - or just one member's, if given"
+        )
+        @app_commands.describe(local_id="Show only this member's link (omit to list every linked user)")
+        async def linked_users_command(
+            interaction: discord.Interaction, local_id: discord.Member | None = None
+        ) -> None:
+            await self._handle_linked_users(interaction, local_id)
 
     @property
     def client(self) -> discord.Client:
@@ -985,6 +973,25 @@ class DiscordSenderService(SenderService):
             return None
         return getattr(user, "display_name", None)
 
+    async def resolve_user_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare display name / global name / username to a member
+        id so `/link user` etc. accept either. A token that's already a real
+        member id is returned as-is; an unrecognized token yields None
+        (UserLinker then treats it as a literal id). Case-insensitive; first
+        match wins. Needs the privileged members intent (enabled - see
+        CLAUDE.md) for guild.members to be populated."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        if token.isdigit() and guild.get_member(int(token)) is not None:
+            return token
+        lowered = token.casefold()
+        for member in guild.members:
+            names = (member.display_name, getattr(member, "global_name", None), member.name)
+            if any(n is not None and n.casefold() == lowered for n in names):
+                return str(member.id)
+        return None
+
     def _guild_or_none(self) -> "discord.Guild | None":
         return self._client.get_guild(self._config.guild_id)
 
@@ -1332,7 +1339,7 @@ class DiscordSenderService(SenderService):
             await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
             return
         logger.info(
-            "[discord:%s] %s ran /link-user service=%s external_id=%s local_id=%s",
+            "[discord:%s] %s ran /link user service=%s external_id=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
@@ -1347,7 +1354,7 @@ class DiscordSenderService(SenderService):
                 source_user_id=external_id,
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /link-user rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /link user rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -1426,7 +1433,7 @@ class DiscordSenderService(SenderService):
             return
         target = local_id or interaction.user
         logger.info(
-            "[discord:%s] %s ran /unlink-user service=%s local_id=%s",
+            "[discord:%s] %s ran /unlink user service=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
@@ -1437,7 +1444,7 @@ class DiscordSenderService(SenderService):
                 local_connector=self.connector_id, local_user_id=str(target.id), destination=service
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /unlink-user rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /unlink user rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)

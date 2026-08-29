@@ -476,8 +476,22 @@ def test_autocomplete_choices_all_not_added_when_include_all_is_false(sample_con
 
 
 def _autocomplete_callback(sender: DiscordSenderService, command_name: str, param_name: str):
-    command = sender.tree.get_command(command_name, guild=sender._guild)
-    return command._params[param_name].autocomplete
+    # command_name is either a flat command ("link-channel") or a
+    # "group sub" pair ("link user") for an app_commands subcommand group.
+    node = sender.tree.get_command(command_name.split()[0], guild=sender._guild)
+    for part in command_name.split()[1:]:
+        node = node.get_command(part)
+    return node._params[param_name].autocomplete
+
+
+def test_user_commands_are_registered_as_subcommands_not_flat(sample_connectors):
+    sender = _make_sender(FakeLinker())
+    for group, sub in (("link", "user"), ("unlink", "user"), ("linked", "users")):
+        node = sender.tree.get_command(group, guild=sender._guild)
+        assert node is not None and node.get_command(sub) is not None
+    # the old flat names are gone
+    for flat in ("link-user", "unlink-user", "linked-users"):
+        assert sender.tree.get_command(flat, guild=sender._guild) is None
 
 
 async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_connectors):
@@ -751,7 +765,7 @@ async def test_link_emote_source_autocomplete_reads_the_emote_linker(sample_conn
 
 async def test_link_user_source_autocomplete_reads_the_user_linker(sample_connectors):
     sender = _make_sender(FakeLinker(), user_linker=FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-user", "service")
+    callback = _autocomplete_callback(sender, "link user", "service")
 
     choices = await callback(FakeInteraction(), "irc")
 

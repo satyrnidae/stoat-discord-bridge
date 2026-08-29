@@ -364,7 +364,7 @@ async def test_link_user_wrong_arg_count_sends_usage():
 
     await sender._handle_link_user(message, ["discord", "remote-id"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-user <service> <external_id> <local_id>"
+    assert message.channel.sent[0]["content"] == "Usage: /link user <service> <external_id|name> <local_id|name>"
 
 
 async def test_link_user_without_a_configured_linker():
@@ -1187,3 +1187,32 @@ async def test_two_token_routing_does_not_shadow_hyphenated_link_channel():
     sender = _make_sender(linker=linker, role_linker=FakeRoleLinker())
     await sender._handle_message(_cmd_message("/link-channel discord src dest"))
     assert linker.link_channel_calls and linker.link_channel_calls[0]["source"] == "discord"
+
+
+async def test_two_token_link_user_routes():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    await sender._handle_message(_cmd_message("/link user discord Alice Bob"))
+    assert user_linker.calls == [
+        {"local_connector": "stoat", "local_user_id": "Bob", "source": "discord", "source_user_id": "Alice"}
+    ]
+
+
+async def test_two_token_unlink_and_linked_user_route():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    await sender._handle_message(_cmd_message("/unlink user discord Bob"))
+    await sender._handle_message(_cmd_message("/linked users"))
+    assert user_linker.unlink_user_calls == [
+        {"local_connector": "stoat", "local_user_id": "Bob", "destination": "discord"}
+    ]
+    assert user_linker.list_linked_users_calls == [{}]
+
+
+async def test_linked_users_two_token_needs_no_admin_permission():
+    user_linker = FakeUserLinker()
+    sender = _make_sender(user_linker=user_linker)
+    await sender._handle_message(_cmd_message("/linked users 01KH", manage_server=False))
+    assert user_linker.list_linked_users_calls == [
+        {"local_connector": "stoat", "local_user_id": "01KH"}
+    ]

@@ -180,6 +180,27 @@ async def test_privmsg_admin_command_is_scheduled_not_run_inline():
     scheduled[0].close()  # never awaited - avoid a "coroutine was never awaited" warning
 
 
+async def test_privmsg_two_word_link_user_is_scheduled_not_run_inline():
+    sender, _conn = _make_sender(user_linker=FakeUserLinker())
+    scheduled = []
+    sender._schedule = lambda coro: scheduled.append(coro)
+
+    sender._handle_privmsg(None, FakeIrcEvent(text="LINK USER discord remote local", nick="alice"))
+
+    assert len(scheduled) == 1
+    scheduled[0].close()
+
+
+async def test_two_word_link_user_is_oper_gated():
+    user_linker = FakeUserLinker()
+    sender, conn = _make_sender(is_oper=False, user_linker=user_linker)
+
+    await sender._handle_dm_command("alice", "LINK USER discord remote local")
+
+    assert user_linker.calls == []
+    assert conn.notice_calls == [("alice", "You need to be an IRC operator to do that.")]
+
+
 # ---------------------------------------------------------------- _handle_dm_command: oper gate
 
 
@@ -265,7 +286,7 @@ async def test_link_user_success():
     user_linker = FakeUserLinker()
     sender, conn = _make_sender(user_linker=user_linker)
 
-    await sender._handle_dm_command("alice", "LINK_USER discord remote-id local-id")
+    await sender._handle_dm_command("alice", "LINK USER discord remote-id local-id")
 
     assert user_linker.calls == [
         {"local_connector": "irc", "local_user_id": "local-id", "source": "discord", "source_user_id": "remote-id"}
@@ -276,7 +297,7 @@ async def test_link_user_success():
 async def test_link_user_without_a_configured_linker():
     sender, conn = _make_sender(user_linker=None)
 
-    await sender._handle_dm_command("alice", "LINK_USER discord remote-id local-id")
+    await sender._handle_dm_command("alice", "LINK USER discord remote-id local-id")
 
     assert conn.notice_calls == [("alice", "User linking isn't configured.")]
 
@@ -384,7 +405,7 @@ async def test_privmsg_linked_users_is_scheduled_not_run_inline():
     scheduled = []
     sender._schedule = lambda coro: scheduled.append(coro)
 
-    sender._handle_privmsg(None, FakeIrcEvent(text="LINKED_USERS 01KH", nick="alice"))
+    sender._handle_privmsg(None, FakeIrcEvent(text="LINKED USERS 01KH", nick="alice"))
 
     assert len(scheduled) == 1
     scheduled[0].close()
@@ -488,7 +509,7 @@ async def test_unlink_user_defaults_to_all_and_self():
     user_linker = FakeUserLinker()
     sender, conn = _make_sender(user_linker=user_linker)
 
-    await sender._handle_dm_command("alice", "UNLINK_USER")
+    await sender._handle_dm_command("alice", "UNLINK USER")
 
     assert user_linker.unlink_user_calls == [{"local_connector": "irc", "local_user_id": "alice", "destination": None}]
     assert conn.notice_calls == [("alice", "user unlinked ok")]
@@ -498,7 +519,7 @@ async def test_unlink_user_with_a_specific_destination_and_target():
     user_linker = FakeUserLinker()
     sender, conn = _make_sender(user_linker=user_linker)
 
-    await sender._handle_dm_command("alice", "UNLINK_USER discord bob")
+    await sender._handle_dm_command("alice", "UNLINK USER discord bob")
 
     assert user_linker.unlink_user_calls == [{"local_connector": "irc", "local_user_id": "bob", "destination": "discord"}]
 
@@ -506,15 +527,15 @@ async def test_unlink_user_with_a_specific_destination_and_target():
 async def test_unlink_user_too_many_args_sends_usage():
     sender, conn = _make_sender(user_linker=FakeUserLinker())
 
-    await sender._handle_dm_command("alice", "UNLINK_USER discord bob extra")
+    await sender._handle_dm_command("alice", "UNLINK USER discord bob extra")
 
-    assert conn.notice_calls == [("alice", "Usage: UNLINK_USER [service|all] [local_id]")]
+    assert conn.notice_calls == [("alice", "Usage: UNLINK USER [service|all] [local_id|name]")]
 
 
 async def test_unlink_user_without_a_configured_linker():
     sender, conn = _make_sender(user_linker=None)
 
-    await sender._handle_dm_command("alice", "UNLINK_USER")
+    await sender._handle_dm_command("alice", "UNLINK USER")
 
     assert conn.notice_calls == [("alice", "User linking isn't configured.")]
 
@@ -522,7 +543,7 @@ async def test_unlink_user_without_a_configured_linker():
 async def test_unlink_user_rejects_a_non_oper():
     sender, conn = _make_sender(is_oper=False, user_linker=FakeUserLinker())
 
-    await sender._handle_dm_command("alice", "UNLINK_USER")
+    await sender._handle_dm_command("alice", "UNLINK USER")
 
     assert conn.notice_calls == [("alice", "You need to be an IRC operator to do that.")]
 

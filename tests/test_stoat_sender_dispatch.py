@@ -108,13 +108,13 @@ async def test_handle_message_linked_channels_command_routes_to_its_handler():
 
 async def test_handle_message_linked_users_command_routes_to_its_handler():
     # Full behavior is covered in test_stoat_admin_dispatch.py; this only
-    # proves _handle_message actually routes "/linked-users" there.
+    # proves _handle_message actually routes "/linked users" there.
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     channel = FakeChannel(id="42")
     author = FakeAuthor(id="u1")
 
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked-users"))
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked users"))
 
     assert recorder.messages == []
     assert channel.sent == [{"content": "User linking isn't configured.", "masquerade": None}]
@@ -153,7 +153,7 @@ async def test_handle_message_unlink_user_command_routes_to_its_handler():
     channel = FakeChannel(id="42")
     author = FakeAuthor(id="u1")
 
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink-user"))
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink user"))
 
     assert recorder.messages == []
     assert channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}]
