@@ -7,6 +7,26 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# 1Password CLI - only needed if any config value is an `op://...` secret
+# reference (see config.py's module docstring). On by default; build with
+# `--build-arg INSTALL_OP=0` to drop it and shave ~25MB off the image.
+ARG INSTALL_OP=1
+ARG OP_VERSION=2.31.1
+RUN if [ "$INSTALL_OP" = "1" ]; then set -eux; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends curl unzip ca-certificates; \
+      case "$(dpkg --print-architecture)" in \
+        amd64) oparch=amd64 ;; \
+        arm64) oparch=arm64 ;; \
+        *) echo "unsupported arch for op CLI"; exit 1 ;; \
+      esac; \
+      curl -sSfL "https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_VERSION}/op_linux_${oparch}_v${OP_VERSION}.zip" -o /tmp/op.zip; \
+      unzip -o /tmp/op.zip op -d /usr/local/bin; \
+      rm /tmp/op.zip; \
+      apt-get purge -y --auto-remove curl unzip; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Layer-cached separately from the source so an app-only change doesn't
 # force a dependency reinstall.
 COPY pyproject.toml README.md ./

@@ -18,8 +18,12 @@ literal value in `config.yaml` or an `{SECTION}__{index}__{FIELD}` env var
 (Azure App Configuration/ASP.NET Core-style hierarchical binding, `index`
 being the connector's 0-based position in its kind's list - e.g.
 `STOAT__1__TOKEN` for the 2nd `stoat:` entry), with the env var taking
-priority when both are set. See `src/stoat_discord_bridge/config.py`'s
-docstring for the full rules. `config.yaml` itself is gitignored - copy it
+priority when both are set. A `{SECTION}__{index}__{FIELD}_FILE` env var
+naming a file (Docker/Kubernetes secrets convention) is a third source, and
+any resolved value may be a 1Password secret reference
+(`op://<vault>/<item>/<field>`), dereferenced via the `op` CLI at startup if
+present. See `src/stoat_discord_bridge/config.py`'s docstring for the full
+rules. `config.yaml` itself is gitignored - copy it
 from `config.yaml.example` (which documents every field) and fill in your
 actual deployment's ids/hosts. Adding another server of any kind is just
 another list entry (literal, env-backed, or both).
@@ -54,6 +58,13 @@ the `mongo-data` named volume) - no separate Mongo setup needed.
 (so editing either doesn't require a rebuild, just a restart); `.env` is
 loaded via `env_file`. Neither secrets nor `config.yaml` are baked into
 the image (see `.dockerignore`).
+
+The image ships the 1Password `op` CLI, so `op://<vault>/<item>/<field>`
+values in `config.yaml` resolve at startup - authenticate it with a
+service-account token, mounted as a Docker secret and pointed at by
+`OP_SERVICE_ACCOUNT_TOKEN_FILE` (see the commented block in
+`docker-compose.yml` and the example in `docker-compose.override.yml`).
+Build with `--build-arg INSTALL_OP=0` to leave `op` out.
 
 The bridge image ships a `HEALTHCHECK` (`docker ps` / `docker inspect` shows
 it) polling a liveness-only `GET /healthz` on port 8080

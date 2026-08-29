@@ -271,6 +271,87 @@ def test_mongo_uri_resolved_from_a_file(tmp_path, isolated_env, monkeypatch):
     assert config.mongo.uri == "mongodb://from-file/db"
 
 
+# ---------------------------------------------------------- 1Password references
+
+
+def test_op_reference_in_config_yaml_is_dereferenced(tmp_path, isolated_env, monkeypatch):
+    calls = []
+
+    def fake_op_read(ref):
+        calls.append(ref)
+        return "resolved-secret"
+
+    monkeypatch.setattr("stoat_discord_bridge.config._op_read", fake_op_read)
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+            bot_token: op://Bridge/discord/token
+        """,
+    )
+    config = load_config(path)
+    assert config.discord[0].bot_token == "resolved-secret"
+    assert calls == ["op://Bridge/discord/token"]
+
+
+def test_op_reference_via_env_var_is_dereferenced(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setattr("stoat_discord_bridge.config._op_read", lambda ref: "env-op-secret")
+    monkeypatch.setenv("DISCORD__0__TOKEN", "op://Bridge/discord/token")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+    config = load_config(path)
+    assert config.discord[0].bot_token == "env-op-secret"
+
+
+def test_non_op_values_are_not_passed_to_op(tmp_path, isolated_env, monkeypatch):
+    def boom(ref):
+        raise AssertionError("op should not be invoked for a plain value")
+
+    monkeypatch.setattr("stoat_discord_bridge.config._op_read", boom)
+    path = _write_config(
+        tmp_path,
+        "discord:\n  - id: discord\n    guild_id: 123\n    bot_token: literal-token\n",
+    )
+    config = load_config(path)
+    assert config.discord[0].bot_token == "literal-token"
+
+
+def test_op_service_account_token_file_is_loaded_into_env(tmp_path, isolated_env, monkeypatch):
+    from stoat_discord_bridge import config as config_mod
+
+    token_file = tmp_path / "op-token"
+    token_file.write_text("ops_service_account_token_value\n", encoding="utf-8")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN_FILE", str(token_file))
+    monkeypatch.setattr(config_mod.shutil, "which", lambda _: None)  # stop before actually shelling out
+
+    with pytest.raises(ConfigError):
+        config_mod._op_read("op://Bridge/x/y")
+
+    assert os.environ["OP_SERVICE_ACCOUNT_TOKEN"] == "ops_service_account_token_value"
+
+
+def test_plain_op_service_account_token_wins_over_file(tmp_path, isolated_env, monkeypatch):
+    from stoat_discord_bridge import config as config_mod
+
+    token_file = tmp_path / "op-token"
+    token_file.write_text("from-file", encoding="utf-8")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "from-env")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN_FILE", str(token_file))
+
+    config_mod._load_op_service_account_token()
+
+    assert os.environ["OP_SERVICE_ACCOUNT_TOKEN"] == "from-env"
+
+
+def test_op_reference_missing_cli_raises(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setattr("stoat_discord_bridge.config.shutil.which", lambda _: None)
+    monkeypatch.setenv("DISCORD__0__TOKEN", "op://Bridge/discord/token")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+    with pytest.raises(ConfigError, match="1Password secret reference"):
+        load_config(path)
+
+
 def test_legacy_env_pointer_field_is_ignored(tmp_path, isolated_env, monkeypatch):
     """*_env pointer fields (e.g. nick_env) were removed - config.yaml
     setting one should just be a plain unused key, not resolve anything."""

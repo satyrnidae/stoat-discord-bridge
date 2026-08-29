@@ -13,6 +13,11 @@
 #      `IRC__0__NICKSERV_PASSWORD`.
 #   2. A literal value written directly in config.yaml.
 #
+# Any value from either source may be a 1Password secret reference
+# (`op://<vault>/<item>/<field>`), resolved via the `op` CLI at startup - so
+# e.g. `bot_token: op://Bridge/discord/token` keeps the real secret out of
+# this file. Opt-in: `op` is only invoked if an `op://` value is present.
+#
 # This example shows the *minimal* config.yaml this lets you get away with -
 # only `id`/`label`/`host` (things you'd never really want to source from a
 # secret store) are literal below; everything else (tokens, guild/server

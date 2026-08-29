@@ -62,6 +62,12 @@ services:
     #   secrets:
     #     discord_0_token:
     #       file: ./secrets/discord_0_token
+    #
+    # The same pattern wires a 1Password service-account token for resolving
+    # `op://...` values in config.yaml - use the var name
+    # OP_SERVICE_ACCOUNT_TOKEN_FILE (config.py loads that file into
+    # OP_SERVICE_ACCOUNT_TOKEN, which the bundled `op` CLI reads). See
+    # docker-compose.override.yml for a worked example.
 
 volumes:
   mongo-data:

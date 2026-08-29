@@ -24,12 +24,27 @@ This keeps secrets out of config.yaml (which is itself gitignored anyway -
 see config.yaml.example) while letting the *shape* of the deployment (which
 servers, how many) live wherever you'd like: all in config.yaml, all in env
 vars, or a mix.
+
+Independently of the three sources above, any resolved value that is a
+1Password secret reference - a string of the form `op://<vault>/<item>/<field>`
+- is dereferenced by shelling out to the 1Password CLI (`op read`), so a
+token can live in config.yaml (or an env var) as `op://Bridge/discord/token`
+rather than as the secret itself. This is entirely opt-in: if no value looks
+like an `op://` reference, `op` is never invoked and doesn't need to be
+installed. `op` must be authenticated (a service-account token in
+`OP_SERVICE_ACCOUNT_TOKEN` - or its path in `OP_SERVICE_ACCOUNT_TOKEN_FILE`,
+the same file-based-secret convention as the `_FILE` vars above - or
+desktop-app integration); an optional `OP_ACCOUNT` env var is passed through
+as `op --account`.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -123,6 +138,57 @@ class ConfigError(Exception):
     """Raised for a malformed config.yaml or a referenced .env var that isn't set."""
 
 
+_OP_REF_PREFIX = "op://"
+
+
+def _load_op_service_account_token() -> None:
+    """Honor `OP_SERVICE_ACCOUNT_TOKEN_FILE` (a path to a file holding the
+    token) the same way our `{SECTION}__{index}__{FIELD}_FILE` vars work - the
+    `op` CLI itself only reads `OP_SERVICE_ACCOUNT_TOKEN`, so this bridges a
+    Docker/Kubernetes file-based secret into the plain var `op` expects.
+    A plain `OP_SERVICE_ACCOUNT_TOKEN` already in the environment wins."""
+    if os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        return
+    file_path = os.environ.get("OP_SERVICE_ACCOUNT_TOKEN_FILE")
+    if not file_path:
+        return
+    os.environ["OP_SERVICE_ACCOUNT_TOKEN"] = _read_secret_file(
+        file_path, env_name="OP_SERVICE_ACCOUNT_TOKEN_FILE"
+    )
+
+
+@lru_cache(maxsize=None)
+def _op_read(ref: str) -> str:
+    """Dereference a single `op://vault/item/field` reference via the 1Password
+    CLI. Cached so the same reference used by more than one field only shells
+    out once per process."""
+    _load_op_service_account_token()
+    if shutil.which("op") is None:
+        raise ConfigError(
+            f"value '{ref}' is a 1Password secret reference but the 'op' CLI isn't on PATH - "
+            "install the 1Password CLI or use a different secret source"
+        )
+    cmd = ["op", "read", "--no-newline"]
+    account = os.environ.get("OP_ACCOUNT")
+    if account:
+        cmd += ["--account", account]
+    cmd.append(ref)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise ConfigError(f"1Password lookup failed for '{ref}': {stderr or f'op exited {exc.returncode}'}") from exc
+    return result.stdout
+
+
+def _deref_secret(value):
+    """Resolve a 1Password secret reference to its value; pass anything else
+    through untouched."""
+    if isinstance(value, str) and value.startswith(_OP_REF_PREFIX):
+        return _op_read(value)
+    return value
+
+
 def _read_secret_file(path: str, *, env_name: str) -> str:
     try:
         return Path(path).read_text(encoding="utf-8").strip()
@@ -142,9 +208,9 @@ def _resolve_env(env_name: str) -> str | None:
     if value and file_path:
         raise ConfigError(f"both '{env_name}' and '{file_env_name}' are set - use only one")
     if value:
-        return value
+        return _deref_secret(value)
     if file_path:
-        return _read_secret_file(file_path, env_name=file_env_name)
+        return _deref_secret(_read_secret_file(file_path, env_name=file_env_name))
     return None
 
 
@@ -167,7 +233,7 @@ def _resolve(entry: dict, *, section: str, index: int, field: str, yaml_key: str
         return value
 
     if yaml_key in entry:
-        return entry[yaml_key]
+        return _deref_secret(entry[yaml_key])
 
     return None
 

@@ -47,7 +47,11 @@ instance (data persisted in a named volume) - see the README's Docker
 section. `config.yaml`/`certs/` are bind-mounted, `.env` loaded via
 `env_file`; `docker-compose.yml` forces `MONGO__URI` to the containerized
 Mongo regardless of what `.env` says, so the bridge always gets a working
-Mongo under Docker without needing one set up separately.
+Mongo under Docker without needing one set up separately. The image bundles
+the 1Password `op` CLI (opt out with `--build-arg INSTALL_OP=0`) so
+`op://...` values in `config.yaml` resolve; point
+`OP_SERVICE_ACCOUNT_TOKEN_FILE` at a mounted secret to authenticate it
+(`config.py` loads that file into `OP_SERVICE_ACCOUNT_TOKEN`).
 
 ## Architecture
 
@@ -83,7 +87,12 @@ earlier ones succeeded.
 Core-style hierarchical binding — `index` is the connector's 0-based
 position within its kind's `config.yaml` list, e.g. `STOAT__1__TOKEN` for
 the 2nd `stoat:` entry) beats a literal value written directly in
-`config.yaml`. This means any field — not just tokens — can live in
+`config.yaml`. A
+`{SECTION}__{index}__{FIELD}_FILE` env var naming a file is a third source,
+and any resolved value that looks like a 1Password secret reference
+(`op://<vault>/<item>/<field>`) is dereferenced via the `op` CLI at startup
+(opt-in — `op` is only invoked if such a value is present). This means any
+field — not just tokens — can live in
 `config.yaml` or in a positional env var, connector-by-connector. Adding
 another server of any kind is just another `config.yaml` list entry (or
 purely env vars, if you'd rather). Connector IDs must be unique across all
