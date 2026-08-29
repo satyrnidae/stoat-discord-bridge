@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from stoat_discord_bridge.models import StandardMessage
+from stoat_discord_bridge.models import Attachment, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError
 from stoat_discord_bridge.services.irc_service import IrcReceiverService
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
@@ -77,6 +77,33 @@ async def test_receive_sends_a_single_bare_line_when_content_is_empty():
 
     assert connection.privmsg_calls == [("#general", "<Alice> ")]
     assert len(ids) == 1
+
+
+async def test_receive_inlines_attachment_urls_for_an_image_only_message():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+
+    await receiver.receive(
+        _message(content_markdown="", attachments=[Attachment(url="https://cdn.example/f.png")]),
+        target_channel_id="#general",
+    )
+
+    assert connection.privmsg_calls == [("#general", "<Alice> https://cdn.example/f.png")]
+
+
+async def test_receive_appends_attachment_urls_after_the_text():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+
+    await receiver.receive(
+        _message(content_markdown="look:", attachments=[Attachment(url="https://cdn.example/f.png")]),
+        target_channel_id="#general",
+    )
+
+    assert connection.privmsg_calls == [
+        ("#general", "<Alice> look:"),
+        ("#general", "<Alice> https://cdn.example/f.png"),
+    ]
 
 
 async def test_receive_prefixes_with_the_linked_local_nick_when_linked(fake_db):

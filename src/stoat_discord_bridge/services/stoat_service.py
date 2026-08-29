@@ -30,6 +30,7 @@ from stoat_discord_bridge.admin_commands import (
 from stoat_discord_bridge.channel_structure import ChannelSpec, GuildStructure
 from stoat_discord_bridge.config import StoatConnectorConfig
 from stoat_discord_bridge.models import (
+    Attachment,
     CustomEmoji,
     StandardEmojiCreated,
     StandardEmojiDeleted,
@@ -816,7 +817,7 @@ class StoatSenderService(SenderService):
                 sender_user_id=str(message.author.id),
                 content_markdown=message.content,
                 message_id=str(message.id),
-                attachments=[],  # TODO: map stoat.py attachment objects to Attachment once confirmed
+                attachments=_map_attachments(message),
             )
         )
 
@@ -1781,6 +1782,32 @@ def _avatar_url(author) -> str | None:
     if asset is not None:
         return asset.url()
     return getattr(author, "default_avatar_url", None)
+
+
+def _map_attachments(message) -> list[Attachment]:
+    """Map stoat.py's `Message.attachments` (a list of `stoat.cdn.Asset` -
+    each with a `.url()` *method*, plus `.filename` / `.content_type` /
+    `.size`) onto the bridge's platform-neutral `Attachment`. Defensive
+    `getattr`/`try` throughout, same as the rest of this module treats
+    stoat.py's shapes as unverified against a live server."""
+    out: list[Attachment] = []
+    for a in getattr(message, "attachments", None) or []:
+        try:
+            url_attr = getattr(a, "url", None)
+            url = url_attr() if callable(url_attr) else url_attr
+        except Exception:
+            url = None
+        if not url:
+            continue
+        out.append(
+            Attachment(
+                url=url,
+                filename=getattr(a, "filename", None),
+                content_type=getattr(a, "content_type", None),
+                size_bytes=getattr(a, "size", None),
+            )
+        )
+    return out
 
 
 async def _download(url: str) -> bytes:

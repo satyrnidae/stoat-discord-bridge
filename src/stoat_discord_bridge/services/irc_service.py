@@ -747,6 +747,15 @@ class IrcReceiverService(ReceiverService):
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
         content = message.content_markdown
+        # IRC has no native attachments - inline each attachment URL (a
+        # Discord/Stoat CDN link) as its own line so an image-only message
+        # isn't relayed blank. Kept inline rather than using
+        # content_with_attachments(), whose empty-message sentinel would put
+        # a zero-width space on the wire.
+        if message.attachments:
+            extra = "\n".join(a.url for a in message.attachments if a.url)
+            if extra:
+                content = f"{content}\n{extra}" if content else extra
         # Discord/Stoat <t:...> dynamic timestamps have no IRC equivalent - render
         # them to plain text (relative styles are relative to right now, i.e. when
         # this handler runs).

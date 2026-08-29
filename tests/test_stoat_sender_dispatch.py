@@ -61,8 +61,10 @@ def _make_sender(
     return sender
 
 
-def _stoat_message(*, channel, author, content="hi", id="m1"):
-    return SimpleNamespace(channel=channel, author=author, content=content, id=id)
+def _stoat_message(*, channel, author, content="hi", id="m1", attachments=None):
+    return SimpleNamespace(
+        channel=channel, author=author, content=content, id=id, attachments=attachments or []
+    )
 
 
 # ---------------------------------------------------------------- _handle_message
@@ -221,6 +223,31 @@ async def test_handle_message_fetches_a_fresh_member_when_the_avatar_is_uncached
     await sender._handle_message(_stoat_message(channel=channel, author=author))
 
     assert recorder.messages[0].sender_avatar_url == "https://cdn.example/fresh.png"
+
+
+async def test_handle_message_maps_attachments_onto_the_standard_message():
+    # An image-only Stoat message: empty content, one CDN attachment. Without
+    # mapping it, every receiver relays a blank body.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42", name="general")
+    author = FakeAuthor(id="u1", display_name="Alice")
+    attachment = SimpleNamespace(
+        url=lambda: "https://cdn.example/f.png",
+        filename="f.png",
+        content_type="image/png",
+        size=10,
+    )
+
+    await sender._handle_message(
+        _stoat_message(channel=channel, author=author, content="", attachments=[attachment])
+    )
+
+    [message] = recorder.messages
+    assert [a.url for a in message.attachments] == ["https://cdn.example/f.png"]
+    assert message.attachments[0].filename == "f.png"
+    assert message.attachments[0].content_type == "image/png"
+    assert message.attachments[0].size_bytes == 10
 
 
 # ---------------------------------------------------------------- _handle_reaction
