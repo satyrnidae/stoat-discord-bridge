@@ -42,6 +42,8 @@ from stoat_discord_bridge.services.base import (
     OnMemberRolesChanged,
     OnMessage,
     OnReaction,
+    OnRoleDeleted,
+    OnRoleRenamed,
     PartialRelayError,
     ReceiverService,
     SenderService,
@@ -210,6 +212,15 @@ class _StoatClient(stoat.Client):
         # from stoat.events.ServerMemberUpdateEvent (.before / .after Member).
         await self._owner._handle_member_update(event)
 
+    async def on_raw_server_role_update(self, event, /) -> None:
+        # TODO: unverified - stoat.events.RawServerRoleUpdateEvent, combined
+        # create+update; .old_role is None => created (ignored here).
+        await self._owner._handle_role_update(event)
+
+    async def on_server_role_delete(self, event, /) -> None:
+        # TODO: unverified - stoat.events.ServerRoleDeleteEvent (.role_id, .server_id).
+        await self._owner._handle_role_delete(event)
+
 
 class StoatSenderService(SenderService):
     def __init__(
@@ -227,6 +238,8 @@ class StoatSenderService(SenderService):
         category_linker: "CategoryLinker | None" = None,
         role_linker: "RoleLinker | None" = None,
         on_member_roles_changed: "OnMemberRolesChanged | None" = None,
+        on_role_renamed: "OnRoleRenamed | None" = None,
+        on_role_deleted: "OnRoleDeleted | None" = None,
     ) -> None:
         # linker/mirrorer/emote_linker/user_linker/category_linker/role_linker
         # are only needed to serve the corresponding `/link-*` / `/link ...`
@@ -244,6 +257,8 @@ class StoatSenderService(SenderService):
         self._category_linker = category_linker
         self._role_linker = role_linker
         self._on_member_roles_changed = on_member_roles_changed
+        self._on_role_renamed = on_role_renamed
+        self._on_role_deleted = on_role_deleted
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
 
@@ -1445,6 +1460,50 @@ class StoatSenderService(SenderService):
             return
         user_id = str(getattr(after, "id", "") or getattr(event, "member", SimpleNamespace(id="")).id)
         await self._on_member_roles_changed(self.connector_id, user_id, added, removed)
+
+    async def _handle_role_update(self, event) -> None:
+        """A role was created or edited - propagate a rename to linked
+        copies. `old_role is None` means created, which we ignore (roles
+        aren't auto-mirrored on creation)."""
+        if self._on_role_renamed is None:
+            return
+        old_role = getattr(event, "old_role", None)
+        new_role = getattr(event, "new_role", None) or getattr(event, "role", None)
+        if old_role is None or new_role is None:
+            return
+        if getattr(old_role, "name", None) == getattr(new_role, "name", None):
+            return
+        role_id = str(getattr(new_role, "id", "") or getattr(old_role, "id", ""))
+        if not role_id:
+            return
+        await self._on_role_renamed(self.connector_id, role_id, new_role.name)
+
+    async def _handle_role_delete(self, event) -> None:
+        if self._on_role_deleted is None:
+            return
+        if getattr(event, "server_id", self.server_id) != self.server_id:
+            return
+        role_id = str(getattr(event, "role_id", "") or getattr(getattr(event, "role", None), "id", ""))
+        if role_id:
+            await self._on_role_deleted(self.connector_id, role_id)
+
+    async def rename_role(self, role_id: str, new_name: str) -> None:
+        """Idempotent - skips the edit if the role already has that name."""
+        role = self._role_by_id(role_id)
+        if role is None:
+            try:
+                server = self._client.get_server(self.server_id, partial=False)
+                if not isinstance(server, stoat.Server):
+                    server = await self._client.fetch_server(self.server_id)
+                role = next((r for r in self._roles_of(server) if str(getattr(r, "id", "")) == role_id), None)
+            except Exception:
+                role = None
+        if role is None or getattr(role, "name", None) == new_name:
+            return
+        try:
+            await role.edit(name=new_name)
+        except Exception:
+            logger.exception("[stoat:%s] role sync: rename of %s failed", self.connector_id, role_id)
 
     async def grant_role(self, user_id: str, role_id: str) -> None:
         """Idempotent (no-op if the member already has the role) so the

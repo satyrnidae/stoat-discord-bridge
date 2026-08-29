@@ -55,7 +55,7 @@ from stoat_discord_bridge.storage.channel_mappings import (
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
 from stoat_discord_bridge.storage.message_sync import MessageRef, MessageSyncRepository
 from stoat_discord_bridge.storage.mongo import MongoStore
-from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
+from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -237,20 +237,28 @@ class BridgeCoordinator:
         await self._emoji_mappings.forget(deleted.origin_connector_id, deleted.native_id)
 
 
-class RoleGrantCoordinator:
-    """When a cross-connector-linked user gains or loses a cross-connector-
-    linked role on one connector, grant/revoke the linked role for their
-    linked identity on every other connector.
+class RoleSyncCoordinator:
+    """Keeps cross-connector-linked roles coherent after they're linked:
 
-    Best-effort and silent: an unlinked user, an unlinked role, a target
-    connector without role hooks, or a hook that raises are all skipped, not
+    - **auto-grant** (`handle`): a linked user gaining/losing a linked role
+      on one connector has the linked role granted/revoked for their linked
+      identity on every other connector.
+    - **rename** (`handle_role_renamed`): a linked role renamed on one
+      connector is renamed to match on every other connector's linked copy,
+      and the stored `role_name` is refreshed.
+    - **delete** (`handle_role_deleted`): a linked role deleted on one
+      connector drops just that connector's mapping entry (the counterpart
+      roles stay - they may still be in use); a group left with one member
+      or none is dissolved.
+
+    Best-effort and silent: an unlinked user/role, a target connector
+    without the relevant hook, or a hook that raises are all skipped, not
     surfaced - matching the reaction/emoji sync stance.
 
-    Loop prevention has two layers: (1) every connector's grant_role/
-    revoke_role hook is idempotent (no-op if the user is already in the
-    desired state), so the echo member-update event this write triggers
+    Loop prevention has two layers: (1) every hook is idempotent (no-op if
+    already in the desired state), so the echo event this write triggers
     diffs to nothing; (2) a short-TTL record of writes just issued, so an
-    echo that still carries a role delta is dropped before it fans back out.
+    echo that still carries a delta is dropped before it fans back out.
     """
 
     _SUPPRESS_TTL = 10.0
@@ -265,6 +273,59 @@ class RoleGrantCoordinator:
         self._user_mappings = user_mappings
         self._connectors = connectors
         self._recent: dict[tuple[str, str, str, bool], float] = {}
+        self._recent_renames: dict[tuple[str, str, str], float] = {}
+
+    async def handle_role_renamed(self, origin_connector_id: str, role_id: str, new_name: str) -> None:
+        """A role was renamed on `origin_connector_id`. If it's linked,
+        rename every other connector's linked copy to match and refresh the
+        stored names. No-op if the role isn't linked or the stored name
+        already matches everywhere (which is how the rename echo terminates)."""
+        now = time.monotonic()
+        self._recent_renames = {k: v for k, v in self._recent_renames.items() if now - v < self._SUPPRESS_TTL}
+        if self._recent_renames.pop((origin_connector_id, role_id, new_name), None) is not None:
+            return  # our own rename echoing back
+        bridge_group = await self._role_mappings.get_bridge_group(origin_connector_id, role_id)
+        if bridge_group is None:
+            return
+        mapped = await self._role_mappings.get_mapped_roles(bridge_group)
+        for m in mapped:
+            if m.role_name == new_name:
+                continue
+            await self._role_mappings.upsert(
+                RoleMapping(
+                    bridge_group=bridge_group,
+                    connector_id=m.connector_id,
+                    role_id=m.role_id,
+                    role_name=new_name,
+                )
+            )
+            if m.connector_id == origin_connector_id:
+                continue
+            info = self._connectors.get(m.connector_id)
+            if info is None or info.rename_role is None:
+                continue
+            self._recent_renames[(m.connector_id, m.role_id, new_name)] = time.monotonic()
+            try:
+                await info.rename_role(m.role_id, new_name)
+            except Exception:
+                logger.exception("[role-sync] renaming role %s on %s failed", m.role_id, m.connector_id)
+            else:
+                logger.info("[role-sync] renamed role %s -> %r on %s (from %s)", m.role_id, new_name, m.connector_id, origin_connector_id)
+
+    async def handle_role_deleted(self, origin_connector_id: str, role_id: str) -> None:
+        """A role was deleted on `origin_connector_id`. Drop just its mapping
+        entry; never touch the counterpart roles. Dissolve a group left with
+        <= 1 member."""
+        bridge_group = await self._role_mappings.get_bridge_group(origin_connector_id, role_id)
+        if bridge_group is None:
+            return
+        mapped = await self._role_mappings.get_mapped_roles(bridge_group)
+        await self._role_mappings.delete_mapping(origin_connector_id, role_id)
+        survivors = [m for m in mapped if m.connector_id != origin_connector_id]
+        if len(survivors) <= 1:
+            for m in survivors:
+                await self._role_mappings.delete_mapping(m.connector_id, m.role_id)
+        logger.info("[role-sync] role %s deleted on %s - dropped from its bridge group", role_id, origin_connector_id)
 
     async def handle(
         self,
@@ -357,7 +418,7 @@ async def run(config: BridgeConfig) -> None:
     user_linker = UserLinker(user_mappings, connector_infos)
     category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
     role_linker = RoleLinker(role_mappings, connector_infos)
-    role_grants = RoleGrantCoordinator(role_mappings, user_mappings, connector_infos)
+    role_grants = RoleSyncCoordinator(role_mappings, user_mappings, connector_infos)
 
     senders: list = []
     closables: list = []
@@ -376,6 +437,8 @@ async def run(config: BridgeConfig) -> None:
             category_linker=category_linker,
             role_linker=role_linker,
             on_member_roles_changed=role_grants.handle,
+            on_role_renamed=role_grants.handle_role_renamed,
+            on_role_deleted=role_grants.handle_role_deleted,
         )
         structure_providers[dc.id] = sender.snapshot_guild_structure
         receiver = DiscordReceiverService(
@@ -402,6 +465,7 @@ async def run(config: BridgeConfig) -> None:
             ensure_role=sender.ensure_role,
             grant_role=sender.grant_role,
             revoke_role=sender.revoke_role,
+            rename_role=sender.rename_role,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -421,6 +485,8 @@ async def run(config: BridgeConfig) -> None:
             category_linker=category_linker,
             role_linker=role_linker,
             on_member_roles_changed=role_grants.handle,
+            on_role_renamed=role_grants.handle_role_renamed,
+            on_role_deleted=role_grants.handle_role_deleted,
         )
         coordinator.register_receiver(
             StoatReceiverService(
@@ -442,6 +508,7 @@ async def run(config: BridgeConfig) -> None:
             ensure_role=sender.ensure_role,
             grant_role=sender.grant_role,
             revoke_role=sender.revoke_role,
+            rename_role=sender.rename_role,
         )
         senders.append(sender)
         closables.append(sender)

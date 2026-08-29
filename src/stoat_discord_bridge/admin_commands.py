@@ -115,7 +115,7 @@ class ConnectorInfo:
     resolve_category_name: Callable[[str], Awaitable[str | None]] | None = None
     # --- Role hooks (Discord/Stoat only; None everywhere on IRC, which has
     # no role concept). See RoleLinker below and bridge.py's
-    # RoleGrantCoordinator. ---
+    # RoleSyncCoordinator. ---
     # Best-effort native-role-id -> name lookup, the role counterpart of
     # resolve_channel_name (same None/exception/falsy -> raw-id fallback).
     resolve_role_name: Callable[[str], Awaitable[str | None]] | None = None

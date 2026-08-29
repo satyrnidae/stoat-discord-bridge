@@ -138,24 +138,34 @@ aren't copied). Linked-role `<@&id>` / `<%id>` mentions are rewritten into the
 target's linked role (`@Name` on IRC) alongside the user/channel mention
 rewrites.
 
-`RoleGrantCoordinator` (`bridge.py`) does **auto-grant**: when a
-cross-connector-linked user gains/loses a cross-connector-linked role on one
-connector (Discord `on_member_update` / Stoat `on_server_member_update`), the
-linked role is granted/revoked for their linked identity on every other
-connector via the `grant_role` / `revoke_role` `ConnectorInfo` hooks. Best-
-effort and silent (unlinked user/role, missing hook, or a raising hook are all
-skipped). Loop-safe two ways: each hook is idempotent (no-op if already in the
-desired state), and the coordinator keeps a ~10s record of writes it issued so
-the echo event is dropped. **Discord needs the privileged members intent**
-(enabled on `_DiscordClient` and in the developer portal) or the
-Discord→other direction never fires.
+`RoleSyncCoordinator` (`bridge.py`) keeps linked roles coherent:
 
-Still planned: propagating a linked role's rename/delete, and mirroring a
-linked role's per-channel permission overrides. The `rename_role` /
-`get_channel_role_permission` / `set_channel_role_permission` hook fields and
-the `services/role_sync.py` permission-translation helpers exist but aren't
-wired to events yet. stoat.py's `server_member_update` / role events are
-assumed from `stoat.events` and unverified against a live server (`TODO`s in
+- **auto-grant** (`handle`): a cross-connector-linked user gaining/losing a
+  cross-connector-linked role on one connector (Discord `on_member_update` /
+  Stoat `on_server_member_update`) has the linked role granted/revoked for
+  their linked identity on every other connector via the `grant_role` /
+  `revoke_role` hooks.
+- **rename** (`handle_role_renamed`, Discord `on_guild_role_update` / Stoat
+  `on_raw_server_role_update`): a linked role renamed on one connector is
+  renamed to match on every linked copy (`rename_role` hook) and the stored
+  `role_name` is refreshed.
+- **delete** (`handle_role_deleted`, `on_guild_role_delete` /
+  `on_server_role_delete`): drops just that connector's mapping entry — the
+  counterpart roles stay (they may still be in use); a group left with ≤ 1
+  member is dissolved. Roles are never auto-created on creation.
+
+All best-effort and silent (unlinked user/role, missing hook, or a raising
+hook are skipped). Loop-safe two ways: each hook is idempotent (no-op if
+already in the desired state), and the coordinator keeps a ~10s record of
+writes it issued so the echo event is dropped. **Discord needs the privileged
+members intent** (enabled on `_DiscordClient` and in the developer portal) or
+the Discord→other direction of auto-grant never fires.
+
+Still planned: mirroring a linked role's per-channel permission overrides —
+the `get_channel_role_permission` / `set_channel_role_permission` hook fields
+and the `services/role_sync.py` permission-translation helpers exist but
+aren't wired to events yet. stoat.py's member/role gateway events are assumed
+from `stoat.events` and unverified against a live server (`TODO`s in
 `stoat_service.py`).
 
 `ChannelLinker.unlink_channel` dissolves a bridge group down to nothing

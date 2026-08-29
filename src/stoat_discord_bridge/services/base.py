@@ -38,8 +38,12 @@ OnReaction = Callable[[StandardReaction], Awaitable[None]]
 OnEmojiCreated = Callable[[StandardEmojiCreated], Awaitable[None]]
 OnEmojiDeleted = Callable[[StandardEmojiDeleted], Awaitable[None]]
 # (origin_connector_id, user_id, added_role_ids, removed_role_ids) - a linked
-# user's role set changed on one connector; see bridge.py's RoleGrantCoordinator.
+# user's role set changed on one connector; see bridge.py's RoleSyncCoordinator.
 OnMemberRolesChanged = Callable[[str, str, set[str], set[str]], Awaitable[None]]
+# (origin_connector_id, role_id, new_name) - a role was renamed on one connector.
+OnRoleRenamed = Callable[[str, str, str], Awaitable[None]]
+# (origin_connector_id, role_id) - a role was deleted on one connector.
+OnRoleDeleted = Callable[[str, str], Awaitable[None]]
 
 
 class SenderService(ABC):

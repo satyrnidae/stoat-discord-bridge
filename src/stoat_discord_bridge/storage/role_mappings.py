@@ -10,7 +10,7 @@ automatically.
 Roles are Discord/Stoat only - IRC has no role concept, same as Categories.
 
 Once roles are linked, two further behaviors kick in (see bridge.py's
-RoleGrantCoordinator and each service's permission-mirror hooks):
+RoleSyncCoordinator and each service's permission-mirror hooks):
 
 - a linked user gaining/losing a linked role on one connector has the linked
   role granted/revoked for their linked identity on the other, and
@@ -68,7 +68,7 @@ class RoleMappingRepository:
         on `target_connector_id`, return that role's native id there - None if
         unlinked, or linked but with no role recorded for
         `target_connector_id`. Used by the auto-grant and permission-mirror
-        flows (see bridge.py's RoleGrantCoordinator). Mirrors
+        flows (see bridge.py's RoleSyncCoordinator). Mirrors
         UserMappingRepository.find_linked_user_id."""
         bridge_group = await self.get_bridge_group(origin_connector_id, origin_role_id)
         if bridge_group is None:

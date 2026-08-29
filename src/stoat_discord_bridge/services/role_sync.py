@@ -1,5 +1,5 @@
 """Network-free helpers for the role auto-grant and per-channel
-permission-mirror flows (see bridge.py's RoleGrantCoordinator and each
+permission-mirror flows (see bridge.py's RoleSyncCoordinator and each
 service's role hooks).
 
 Kept separate from the service modules so it's unit-testable without a live

@@ -50,6 +50,8 @@ from stoat_discord_bridge.services.base import (
     OnMemberRolesChanged,
     OnMessage,
     OnReaction,
+    OnRoleDeleted,
+    OnRoleRenamed,
     PartialRelayError,
     ReceiverService,
     SenderService,
@@ -133,7 +135,7 @@ class _DiscordClient(discord.Client):
         intents.message_content = True
         intents.emojis_and_stickers = True
         # Privileged - needed for on_member_update (role auto-grant, see
-        # bridge.py's RoleGrantCoordinator). Must also be enabled in the
+        # bridge.py's RoleSyncCoordinator). Must also be enabled in the
         # Discord developer portal or the gateway never sends the event.
         intents.members = True
         super().__init__(intents=intents)
@@ -156,6 +158,12 @@ class _DiscordClient(discord.Client):
 
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
         await self._owner._handle_member_update(before, after)
+
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role) -> None:
+        await self._owner._handle_role_update(before, after)
+
+    async def on_guild_role_delete(self, role: discord.Role) -> None:
+        await self._owner._handle_role_delete(role)
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         await self._owner._handle_raw_reaction(payload, added=True)
@@ -184,6 +192,8 @@ class DiscordSenderService(SenderService):
         category_linker: "CategoryLinker | None" = None,
         role_linker: "RoleLinker | None" = None,
         on_member_roles_changed: "OnMemberRolesChanged | None" = None,
+        on_role_renamed: "OnRoleRenamed | None" = None,
+        on_role_deleted: "OnRoleDeleted | None" = None,
     ) -> None:
         # linker/emote_linker/user_linker/category_linker/role_linker are only
         # needed to serve the corresponding `/link-*` commands; None is
@@ -199,6 +209,8 @@ class DiscordSenderService(SenderService):
         self._category_linker = category_linker
         self._role_linker = role_linker
         self._on_member_roles_changed = on_member_roles_changed
+        self._on_role_renamed = on_role_renamed
+        self._on_role_deleted = on_role_deleted
         self._commands_synced = False
         # Discord thread auto-mirror (_handle_thread_create) bookkeeping - see
         # both methods' docstrings. _pending_thread_starter maps a thread id
@@ -706,6 +718,36 @@ class DiscordSenderService(SenderService):
         if not added and not removed:
             return
         await self._on_member_roles_changed(self.connector_id, str(after.id), added, removed)
+
+    async def _handle_role_update(self, before: discord.Role, after: discord.Role) -> None:
+        """A guild role changed - propagate a rename to linked copies."""
+        if self._on_role_renamed is None or after.guild.id != self._config.guild_id:
+            return
+        if before.name == after.name:
+            return
+        await self._on_role_renamed(self.connector_id, str(after.id), after.name)
+
+    async def _handle_role_delete(self, role: discord.Role) -> None:
+        if self._on_role_deleted is None or role.guild.id != self._config.guild_id:
+            return
+        await self._on_role_deleted(self.connector_id, str(role.id))
+
+    async def rename_role(self, role_id: str, new_name: str) -> None:
+        """Idempotent - skips the API call if the role already has that name,
+        so the rename echo doesn't loop. Best-effort."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return
+        try:
+            role = guild.get_role(int(role_id))
+        except ValueError:
+            return
+        if role is None or role.name == new_name:
+            return
+        try:
+            await role.edit(name=new_name, reason="bridge role sync")
+        except Exception:
+            logger.exception("[discord:%s] role sync: rename of %s failed", self.connector_id, role_id)
 
     async def grant_role(self, user_id: str, role_id: str) -> None:
         """Idempotent - no-op (no API call) if the member already has the
