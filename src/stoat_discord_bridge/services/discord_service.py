@@ -47,6 +47,7 @@ from stoat_discord_bridge.models import (
 from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
     OnEmojiDeleted,
+    OnMemberRolesChanged,
     OnMessage,
     OnReaction,
     PartialRelayError,
@@ -131,6 +132,10 @@ class _DiscordClient(discord.Client):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.emojis_and_stickers = True
+        # Privileged - needed for on_member_update (role auto-grant, see
+        # bridge.py's RoleGrantCoordinator). Must also be enabled in the
+        # Discord developer portal or the gateway never sends the event.
+        intents.members = True
         super().__init__(intents=intents)
         self._owner = owner
 
@@ -148,6 +153,9 @@ class _DiscordClient(discord.Client):
 
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
         await self._owner._handle_channel_create(channel)
+
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        await self._owner._handle_member_update(before, after)
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         await self._owner._handle_raw_reaction(payload, added=True)
@@ -175,6 +183,7 @@ class DiscordSenderService(SenderService):
         user_linker: "UserLinker | None" = None,
         category_linker: "CategoryLinker | None" = None,
         role_linker: "RoleLinker | None" = None,
+        on_member_roles_changed: "OnMemberRolesChanged | None" = None,
     ) -> None:
         # linker/emote_linker/user_linker/category_linker/role_linker are only
         # needed to serve the corresponding `/link-*` commands; None is
@@ -189,6 +198,7 @@ class DiscordSenderService(SenderService):
         self._user_linker = user_linker
         self._category_linker = category_linker
         self._role_linker = role_linker
+        self._on_member_roles_changed = on_member_roles_changed
         self._commands_synced = False
         # Discord thread auto-mirror (_handle_thread_create) bookkeeping - see
         # both methods' docstrings. _pending_thread_starter maps a thread id
@@ -682,6 +692,52 @@ class DiscordSenderService(SenderService):
             except Exception:  # noqa: BLE001 - best-effort display name only
                 pass
         return "Someone"
+
+    async def _handle_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        """A guild member changed - if their role set changed and a callback
+        is wired, report (added, removed) role ids for role auto-grant. Needs
+        the privileged members intent (see _DiscordClient.__init__)."""
+        if self._on_member_roles_changed is None or after.guild.id != self._config.guild_id:
+            return
+        before_ids = {str(r.id) for r in before.roles}
+        after_ids = {str(r.id) for r in after.roles}
+        added = after_ids - before_ids
+        removed = before_ids - after_ids
+        if not added and not removed:
+            return
+        await self._on_member_roles_changed(self.connector_id, str(after.id), added, removed)
+
+    async def grant_role(self, user_id: str, role_id: str) -> None:
+        """Idempotent - no-op (no API call) if the member already has the
+        role, so the role-grant echo doesn't loop. Best-effort; logs and
+        swallows failures (missing member/role, hierarchy, permissions)."""
+        await self._edit_member_role(user_id, role_id, add=True)
+
+    async def revoke_role(self, user_id: str, role_id: str) -> None:
+        await self._edit_member_role(user_id, role_id, add=False)
+
+    async def _edit_member_role(self, user_id: str, role_id: str, *, add: bool) -> None:
+        guild = self._guild_or_none()
+        if guild is None:
+            return
+        try:
+            member = guild.get_member(int(user_id)) or await guild.fetch_member(int(user_id))
+            role = guild.get_role(int(role_id))
+        except Exception:
+            logger.warning("[discord:%s] role sync: couldn't resolve member %s / role %s", self.connector_id, user_id, role_id)
+            return
+        if role is None or member is None:
+            return
+        has = role in member.roles
+        if has == add:
+            return
+        try:
+            if add:
+                await member.add_roles(role, reason="bridge role sync")
+            else:
+                await member.remove_roles(role, reason="bridge role sync")
+        except Exception:
+            logger.exception("[discord:%s] role sync: %s role %s for %s failed", self.connector_id, "add" if add else "remove", role_id, user_id)
 
     async def _handle_channel_create(self, channel: discord.abc.GuildChannel) -> None:
         """A new channel appeared in this guild - if it landed inside a

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 
 from stoat_discord_bridge.admin_commands import (
@@ -236,6 +237,93 @@ class BridgeCoordinator:
         await self._emoji_mappings.forget(deleted.origin_connector_id, deleted.native_id)
 
 
+class RoleGrantCoordinator:
+    """When a cross-connector-linked user gains or loses a cross-connector-
+    linked role on one connector, grant/revoke the linked role for their
+    linked identity on every other connector.
+
+    Best-effort and silent: an unlinked user, an unlinked role, a target
+    connector without role hooks, or a hook that raises are all skipped, not
+    surfaced - matching the reaction/emoji sync stance.
+
+    Loop prevention has two layers: (1) every connector's grant_role/
+    revoke_role hook is idempotent (no-op if the user is already in the
+    desired state), so the echo member-update event this write triggers
+    diffs to nothing; (2) a short-TTL record of writes just issued, so an
+    echo that still carries a role delta is dropped before it fans back out.
+    """
+
+    _SUPPRESS_TTL = 10.0
+
+    def __init__(
+        self,
+        role_mappings: RoleMappingRepository,
+        user_mappings: UserMappingRepository,
+        connectors: dict[str, ConnectorInfo],
+    ) -> None:
+        self._role_mappings = role_mappings
+        self._user_mappings = user_mappings
+        self._connectors = connectors
+        self._recent: dict[tuple[str, str, str, bool], float] = {}
+
+    async def handle(
+        self,
+        origin_connector_id: str,
+        user_id: str,
+        added_role_ids: set[str],
+        removed_role_ids: set[str],
+    ) -> None:
+        for role_id in set(added_role_ids):
+            await self._propagate(origin_connector_id, user_id, role_id, added=True)
+        for role_id in set(removed_role_ids):
+            await self._propagate(origin_connector_id, user_id, role_id, added=False)
+
+    async def _propagate(self, origin: str, user_id: str, role_id: str, *, added: bool) -> None:
+        if self._consume_recent(origin, user_id, role_id, added):
+            return  # this is our own write echoing back
+        for target_id, info in self._connectors.items():
+            if target_id == origin:
+                continue
+            hook = info.grant_role if added else info.revoke_role
+            if hook is None:
+                continue
+            target_user_id = await self._user_mappings.find_linked_user_id(origin, user_id, target_id)
+            if target_user_id is None:
+                continue
+            target_role_id = await self._role_mappings.find_linked_role_id(origin, role_id, target_id)
+            if target_role_id is None:
+                continue
+            self._remember(target_id, target_user_id, target_role_id, added)
+            try:
+                await hook(target_user_id, target_role_id)
+            except Exception:
+                logger.exception(
+                    "[role-grant] %s %s's role %s on %s failed",
+                    "granting" if added else "revoking",
+                    target_user_id,
+                    target_role_id,
+                    target_id,
+                )
+            else:
+                logger.info(
+                    "[role-grant] %s role %s %s %s on %s (from %s)",
+                    target_role_id,
+                    "->" if added else "<-",
+                    target_user_id,
+                    "granted" if added else "revoked",
+                    target_id,
+                    origin,
+                )
+
+    def _remember(self, connector_id: str, user_id: str, role_id: str, added: bool) -> None:
+        self._recent[(connector_id, user_id, role_id, added)] = time.monotonic()
+
+    def _consume_recent(self, connector_id: str, user_id: str, role_id: str, added: bool) -> bool:
+        now = time.monotonic()
+        self._recent = {k: v for k, v in self._recent.items() if now - v < self._SUPPRESS_TTL}
+        return self._recent.pop((connector_id, user_id, role_id, added), None) is not None
+
+
 async def run(config: BridgeConfig) -> None:
     mongo = MongoStore(config.mongo)
     channel_mappings = ChannelMappingRepository(mongo.db)
@@ -269,6 +357,7 @@ async def run(config: BridgeConfig) -> None:
     user_linker = UserLinker(user_mappings, connector_infos)
     category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
     role_linker = RoleLinker(role_mappings, connector_infos)
+    role_grants = RoleGrantCoordinator(role_mappings, user_mappings, connector_infos)
 
     senders: list = []
     closables: list = []
@@ -286,6 +375,7 @@ async def run(config: BridgeConfig) -> None:
             user_linker=user_linker,
             category_linker=category_linker,
             role_linker=role_linker,
+            on_member_roles_changed=role_grants.handle,
         )
         structure_providers[dc.id] = sender.snapshot_guild_structure
         receiver = DiscordReceiverService(
@@ -310,6 +400,8 @@ async def run(config: BridgeConfig) -> None:
             resolve_role_name=sender.get_role_name,
             resolve_role_id_by_name=sender.resolve_role_id_by_name,
             ensure_role=sender.ensure_role,
+            grant_role=sender.grant_role,
+            revoke_role=sender.revoke_role,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -328,6 +420,7 @@ async def run(config: BridgeConfig) -> None:
             user_linker=user_linker,
             category_linker=category_linker,
             role_linker=role_linker,
+            on_member_roles_changed=role_grants.handle,
         )
         coordinator.register_receiver(
             StoatReceiverService(
@@ -347,6 +440,8 @@ async def run(config: BridgeConfig) -> None:
             resolve_role_name=sender.get_role_name,
             resolve_role_id_by_name=sender.resolve_role_id_by_name,
             ensure_role=sender.ensure_role,
+            grant_role=sender.grant_role,
+            revoke_role=sender.revoke_role,
         )
         senders.append(sender)
         closables.append(sender)

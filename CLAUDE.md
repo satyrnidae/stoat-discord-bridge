@@ -136,12 +136,27 @@ connector's `resolve_role_id_by_name` hook; `/mirror role` creates-or-matches
 a same-named role via the `ensure_role` hook (name only — color/permissions
 aren't copied). Linked-role `<@&id>` / `<%id>` mentions are rewritten into the
 target's linked role (`@Name` on IRC) alongside the user/channel mention
-rewrites. Auto-granting a linked role to a linked user, and mirroring a linked
-role's per-channel permission overrides, are planned follow-ups — the
-`ConnectorInfo` hook fields (`grant_role` / `revoke_role` / `rename_role` /
-`get_channel_role_permission` / `set_channel_role_permission`) and the
-`services/role_sync.py` permission-translation helpers exist but aren't wired
-to events yet.
+rewrites.
+
+`RoleGrantCoordinator` (`bridge.py`) does **auto-grant**: when a
+cross-connector-linked user gains/loses a cross-connector-linked role on one
+connector (Discord `on_member_update` / Stoat `on_server_member_update`), the
+linked role is granted/revoked for their linked identity on every other
+connector via the `grant_role` / `revoke_role` `ConnectorInfo` hooks. Best-
+effort and silent (unlinked user/role, missing hook, or a raising hook are all
+skipped). Loop-safe two ways: each hook is idempotent (no-op if already in the
+desired state), and the coordinator keeps a ~10s record of writes it issued so
+the echo event is dropped. **Discord needs the privileged members intent**
+(enabled on `_DiscordClient` and in the developer portal) or the
+Discord→other direction never fires.
+
+Still planned: propagating a linked role's rename/delete, and mirroring a
+linked role's per-channel permission overrides. The `rename_role` /
+`get_channel_role_permission` / `set_channel_role_permission` hook fields and
+the `services/role_sync.py` permission-translation helpers exist but aren't
+wired to events yet. stoat.py's `server_member_update` / role events are
+assumed from `stoat.events` and unverified against a live server (`TODO`s in
+`stoat_service.py`).
 
 `ChannelLinker.unlink_channel` dissolves a bridge group down to nothing
 rather than leaving a lone member (a group of one isn't a bridge), and fires
@@ -231,8 +246,8 @@ src/stoat_discord_bridge/
     mongo.py                   # MongoDB connection (motor)
     channel_mappings.py        # which channels, across connectors, are bridged together
     category_mappings.py       # which categories, across connectors, are bridged together; ThreadCategoryRepository binds a thread's parent channel to its (unlinkable) thread-only category id
-    role_mappings.py           # which roles, across connectors, are linked (Discord/Stoat only); backs /link role and role-mention rewriting
+    role_mappings.py           # which roles, across connectors, are linked (Discord/Stoat only); backs /link role, role-mention rewriting, and auto-grant
     message_sync.py            # cross-connector message ID references, for edit/delete sync
     emoji_mappings.py          # cross-connector custom emoji ID references, for reaction sync
-  services/role_sync.py        # network-free helpers for the (planned) role auto-grant & permission-mirror flows
+  services/role_sync.py        # network-free helpers for the role permission-mirror flow (still to be wired)
 ```

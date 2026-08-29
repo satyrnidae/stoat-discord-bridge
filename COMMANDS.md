@@ -259,11 +259,13 @@ themselves are never deleted. Manage Server.
 - **Stoat**: `/link role …` etc. message commands.
 - **IRC**: not available - IRC has no role concept.
 
-> Auto-grant (linked user gains/loses a linked role -> mirror the grant to
-> their linked identity) and per-channel permission mirroring for linked
-> roles are planned follow-ups; only the link layer and role-mention
-> rewriting (`<@&id>` / `<%id>` -> the target's linked role, `@Name` on IRC)
-> ship in this step.
+Once roles are linked, **auto-grant** is automatic: a linked user gaining or
+losing a linked role on one connector has the linked role granted/revoked for
+their linked identity (`/link-user`) on the other. Best-effort and silent.
+The Discord→other direction needs Discord's privileged **members** intent
+enabled for the bot. Propagating a linked role's rename/delete, and mirroring
+a linked role's per-channel permission overrides, are still planned
+follow-ups.
 
 ## `/unlink-channel [service|all] [local_id]`
 

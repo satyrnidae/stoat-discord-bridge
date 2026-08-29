@@ -39,6 +39,7 @@ from stoat_discord_bridge.models import (
 from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
     OnEmojiDeleted,
+    OnMemberRolesChanged,
     OnMessage,
     OnReaction,
     PartialRelayError,
@@ -204,6 +205,11 @@ class _StoatClient(stoat.Client):
     async def on_server_channel_create(self, event, /) -> None:
         await self._owner._handle_channel_create(event.channel)
 
+    async def on_server_member_update(self, event, /) -> None:
+        # TODO: unverified against a live server - event/attr shape assumed
+        # from stoat.events.ServerMemberUpdateEvent (.before / .after Member).
+        await self._owner._handle_member_update(event)
+
 
 class StoatSenderService(SenderService):
     def __init__(
@@ -220,6 +226,7 @@ class StoatSenderService(SenderService):
         user_linker: "UserLinker | None" = None,
         category_linker: "CategoryLinker | None" = None,
         role_linker: "RoleLinker | None" = None,
+        on_member_roles_changed: "OnMemberRolesChanged | None" = None,
     ) -> None:
         # linker/mirrorer/emote_linker/user_linker/category_linker/role_linker
         # are only needed to serve the corresponding `/link-*` / `/link ...`
@@ -236,6 +243,7 @@ class StoatSenderService(SenderService):
         self._user_linker = user_linker
         self._category_linker = category_linker
         self._role_linker = role_linker
+        self._on_member_roles_changed = on_member_roles_changed
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
 
@@ -1416,6 +1424,61 @@ class StoatSenderService(SenderService):
 
     def _role_by_id(self, role_id: str):
         return next((r for r in self._all_roles() if str(getattr(r, "id", "")) == role_id), None)
+
+    async def _handle_member_update(self, event) -> None:
+        """A server member changed - diff their role id set for role
+        auto-grant. TODO: attr shape (event.before / event.after, both
+        Member with .role_ids) assumed from stoat.events - unverified."""
+        if self._on_member_roles_changed is None:
+            return
+        before = getattr(event, "before", None)
+        after = getattr(event, "after", None)
+        if after is None:
+            return
+        if getattr(after, "server_id", self.server_id) != self.server_id:
+            return
+        before_ids = {str(r) for r in (getattr(before, "role_ids", []) or [])} if before is not None else set()
+        after_ids = {str(r) for r in (getattr(after, "role_ids", []) or [])}
+        added = after_ids - before_ids
+        removed = before_ids - after_ids
+        if not added and not removed:
+            return
+        user_id = str(getattr(after, "id", "") or getattr(event, "member", SimpleNamespace(id="")).id)
+        await self._on_member_roles_changed(self.connector_id, user_id, added, removed)
+
+    async def grant_role(self, user_id: str, role_id: str) -> None:
+        """Idempotent (no-op if the member already has the role) so the
+        grant echo doesn't loop. Best-effort. Note stoat.py's Member.edit
+        REPLACES the whole role list - this is a read-modify-write."""
+        await self._edit_member_roles(user_id, role_id, add=True)
+
+    async def revoke_role(self, user_id: str, role_id: str) -> None:
+        await self._edit_member_roles(user_id, role_id, add=False)
+
+    async def _edit_member_roles(self, user_id: str, role_id: str, *, add: bool) -> None:
+        try:
+            member = await self._client.get_server(self.server_id, partial=True).fetch_member(user_id)
+        except Exception:
+            logger.warning("[stoat:%s] role sync: couldn't fetch member %s", self.connector_id, user_id)
+            return
+        current = [str(r) for r in (getattr(member, "role_ids", []) or [])]
+        has = role_id in current
+        if has == add:
+            return
+        if add:
+            current.append(role_id)
+        else:
+            current = [r for r in current if r != role_id]
+        try:
+            await member.edit(roles=current)
+        except Exception:
+            logger.exception(
+                "[stoat:%s] role sync: %s role %s for %s failed",
+                self.connector_id,
+                "add" if add else "remove",
+                role_id,
+                user_id,
+            )
 
     def _is_admin(self, message) -> bool:
         try:
