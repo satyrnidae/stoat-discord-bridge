@@ -147,13 +147,13 @@ async def test_handle_message_status_command_replies_in_channel_and_doesnt_relay
 async def test_handle_message_linked_channels_command_routes_to_its_handler():
     # Full behavior (a configured linker, admin gating - there is none) is
     # covered in test_stoat_admin_dispatch.py; this only proves _handle_message
-    # actually routes "/linked-channels" there instead of relaying it.
+    # actually routes "/linked channels" there instead of relaying it.
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     channel = FakeChannel(id="42")
     author = FakeAuthor(id="u1")
 
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked-channels"))
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked channels"))
 
     assert recorder.messages == []
     assert channel.sent == [{"content": "Linking isn't configured.", "masquerade": None}]
@@ -188,13 +188,13 @@ async def test_handle_message_bridge_help_command_replies_in_channel_and_doesnt_
 
 async def test_handle_message_unlink_channel_command_routes_to_its_handler():
     # Full behavior is covered in test_stoat_admin_dispatch.py; this only
-    # proves _handle_message actually routes "/unlink-channel" there.
+    # proves _handle_message actually routes "/unlink channel" there.
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     channel = FakeChannel(id="42")
     author = FakeAuthor(id="u1")
 
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink-channel"))
+    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink channel"))
 
     assert recorder.messages == []
     assert channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}]

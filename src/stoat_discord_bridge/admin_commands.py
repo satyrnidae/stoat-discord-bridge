@@ -1,11 +1,11 @@
-"""Shared logic behind the `/link-channel`, `/link-category`, and
+"""Shared logic behind the `/link channel`, `/link-category`, and
 `/mirror-channels` admin commands, called identically from each connector's
 own command handler (services/discord_service.py, stoat_service.py,
 irc_service.py) so the bridge-group/conflict logic isn't duplicated three
 times.
 
 Channels never link automatically - a bridge_group only comes into being via
-`ChannelLinker.link_channel`, called directly by `/link-channel` or, per
+`ChannelLinker.link_channel`, called directly by `/link channel` or, per
 channel created/matched, by the Stoat `/mirror-channels` handler. Categories
 are the same - only `/link-category` creates a CategoryLinker bridge_group -
 but once a Category *is* linked, a new channel appearing inside it on either
@@ -68,12 +68,20 @@ class ConnectorInfo:
     # in", whose name we don't otherwise know). None, an exception, or a
     # falsy return all fall back to using the raw id as the name.
     resolve_channel_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Best-effort native-channel-NAME -> id lookup, so the channel commands
+    # (`/link channel` / `/mirror channel` / `/unlink channel` / `/linked
+    # channels`) accept a bare channel name anywhere an id is expected.
+    # None/exception/falsy return all mean "treat the token as an id already"
+    # (ChannelLinker._resolve_to_id) - the same contract as
+    # resolve_role_id_by_name. IRC leaves this unset: a channel id there is
+    # already `#name`.
+    resolve_channel_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
     # Called with a freshly-linked channel id on this connector. Only IRC
     # connectors set this, to JOIN the channel immediately instead of
     # waiting for a restart to pick up the new mapping.
     on_channel_linked: Callable[[str], Awaitable[None]] | None = None
     # Called (channel_id, unlinked_from) when a channel on this connector has
-    # just lost its last linked counterpart - via /unlink-channel on any
+    # just lost its last linked counterpart - via /unlink channel on any
     # connector, whether the whole group was dissolved or a kick stranded
     # this channel alone. `unlinked_from` is a human-readable list of the
     # channels it was bridged to. Only IRC connectors set this, to post a
@@ -87,14 +95,14 @@ class ConnectorInfo:
     # matched-or-created channel should end up inside a same-named Category
     # on this connector (creating it if needed). None if this connector kind
     # doesn't support channel creation (e.g. Discord has no channel-creation
-    # capability in this codebase at all - /mirror-channel then reports that
+    # capability in this codebase at all - /mirror channel then reports that
     # connector as unsupported rather than calling this).
     # The third argument, is_thread_category, marks the matched/created
     # Category (if any) as one Discord's thread/forum-post auto-mirroring
     # created (see DiscordSenderService._handle_thread_create), via
     # CategoryLinker.bind_thread_category - so `/link-category` later
     # refuses to link it. False for every other caller (regular
-    # /mirror-channel, and CategoryLinker.sync_new_channel's own auto-sync).
+    # /mirror channel, and CategoryLinker.sync_new_channel's own auto-sync).
     # The fourth argument, category_parent_channel_id, is this connector's
     # own channel id for the thread's parent channel (only set from the
     # thread auto-mirror). It keys the persistent parent->thread-Category
@@ -184,12 +192,14 @@ class ChannelLinker:
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
 
-        if destination_id is None or destination_id == local_channel_id:
+        source_id = await self._resolve_to_id(source, source_id)
+
+        if not destination_id or destination_id == local_channel_id:
             destination_channel_id = local_channel_id
             destination_name = local_channel_name
         else:
-            destination_channel_id = destination_id
-            destination_name = await self._resolve_name(local_connector, destination_id)
+            destination_channel_id = await self._resolve_to_id(local_connector, destination_id)
+            destination_name = await self._resolve_name(local_connector, destination_channel_id)
 
         if source == local_connector and source_id == destination_channel_id:
             raise LinkError("can't link a channel to itself.")
@@ -264,6 +274,8 @@ class ChannelLinker:
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
 
+        local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
+
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is not None:
             existing = await self._channel_mappings.get_mapped_channels(bridge_group)
@@ -272,7 +284,7 @@ class ChannelLinker:
 
         dest_info = self._connectors[destination]
         if dest_info.ensure_channel is None:
-            return f"{dest_info.label}: doesn't support channel creation - link it manually with /link-channel."
+            return f"{dest_info.label}: doesn't support channel creation - link it manually with /link channel."
 
         category = local_channel_category
         category_parent_channel_id: str | None = None
@@ -290,7 +302,7 @@ class ChannelLinker:
                 local_channel_name, category, is_thread_category, category_parent_channel_id
             )
         except Exception as exc:
-            logger.warning("mirror-channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
+            logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
             return f"{dest_info.label}: failed to create/find a channel: {exc}"
 
         try:
@@ -315,7 +327,7 @@ class ChannelLinker:
         is_thread_category: bool = False,
         category_from_channel_id: str | None = None,
     ) -> str:
-        """`/mirror-channel all` - mirror_channel() against every other
+        """`/mirror channel all` - mirror_channel() against every other
         configured connector, one line of summary/skip/error per connector
         rather than stopping at the first problem."""
         results = [
@@ -337,9 +349,10 @@ class ChannelLinker:
         """Human-readable listing of every channel bridged to
         `local_channel_id` on `local_connector` (the invoking channel),
         across every connector in its bridge group - for the
-        `/linked-channels` command. Read-only, so unlike `link_channel` it
+        `/linked channels` command. Read-only, so unlike `link_channel` it
         never raises LinkError; an unlinked channel just gets a plain
         "nothing here" reply."""
+        local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is None:
             return "This channel isn't linked to any others."
@@ -358,7 +371,7 @@ class ChannelLinker:
         return "Linked channels:\n" + "\n".join(lines)
 
     async def unlink_channel(self, *, local_connector: str, local_channel_id: str, destination: str | None) -> str:
-        """`/unlink-channel`. `destination` (a connector id) kicks just that
+        """`/unlink channel`. `destination` (a connector id) kicks just that
         one member out of `local_channel_id`'s bridge group - everyone else
         (including this channel) stays linked to each other; None/"all"
         (the default) dissolves the whole group instead, unlinking every
@@ -370,6 +383,7 @@ class ChannelLinker:
         its connector via the on_channel_unlinked hook (IRC uses it to post a
         "this channel was unlinked from ..." notice and PART); a channel that
         still has other links stays untouched and unannounced."""
+        local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is None:
             raise LinkError("this channel isn't linked to anything.")
@@ -431,6 +445,22 @@ class ChannelLinker:
             return None
         mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
         return next((m for m in mapped if m.connector_id == destination), None)
+
+    async def _resolve_to_id(self, connector: str, token: str) -> str:
+        """Resolve a bare channel name to its native id so the channel
+        commands accept either. A token the hook doesn't recognize (or a
+        connector with no hook - e.g. IRC, where a channel id is already
+        `#name`) is returned unchanged. Mirrors RoleLinker._resolve_to_id."""
+        info = self._connectors.get(connector)
+        if info is not None and info.resolve_channel_id_by_name is not None:
+            try:
+                channel_id = await info.resolve_channel_id_by_name(token)
+            except Exception:
+                logger.debug("couldn't resolve channel name %r on %s", token, connector, exc_info=True)
+                channel_id = None
+            if channel_id:
+                return channel_id
+        return token
 
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
@@ -597,7 +627,7 @@ class CategoryLinker:
         other connector in its bridge group - into that destination's own
         linked Category (by name), not `local_category_id`'s name, since
         /link-category allows differently-named Categories across
-        connectors (unlike /mirror-channel's same-name carry-over). No-op if
+        connectors (unlike /mirror channel's same-name carry-over). No-op if
         the Category isn't linked - which a thread-mirroring-created
         Category never is, since link_category refuses to ever link one, so
         this is naturally never triggered for those without needing its own

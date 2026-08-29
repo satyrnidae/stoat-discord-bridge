@@ -476,13 +476,18 @@ def test_autocomplete_choices_all_not_added_when_include_all_is_false(sample_con
 
 
 def _autocomplete_callback(sender: DiscordSenderService, command_name: str, param_name: str):
-    command = sender.tree.get_command(command_name, guild=sender._guild)
+    # `command_name` is either a flat command name ("link-category") or a
+    # "group sub" pair ("link channel") for an app_commands.Group subcommand.
+    parts = command_name.split()
+    command = sender.tree.get_command(parts[0], guild=sender._guild)
+    for sub in parts[1:]:
+        command = command.get_command(sub)
     return command._params[param_name].autocomplete
 
 
 async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_connectors):
     sender = _make_sender(FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-channel", "service")
+    callback = _autocomplete_callback(sender, "link channel", "service")
 
     choices = await callback(FakeInteraction(), "stoat")
 
@@ -735,7 +740,7 @@ async def test_link_channel_source_autocomplete_handles_no_configured_linker():
     sender = DiscordSenderService(
         _discord_config(), on_message=_noop, health=HealthTracker({"discord": "Discord"}), linker=None
     )
-    callback = _autocomplete_callback(sender, "link-channel", "service")
+    callback = _autocomplete_callback(sender, "link channel", "service")
 
     assert await callback(FakeInteraction(), "") == []
 
@@ -760,7 +765,7 @@ async def test_link_user_source_autocomplete_reads_the_user_linker(sample_connec
 
 async def test_mirror_channel_destination_autocomplete_includes_all(sample_connectors):
     sender = _make_sender(FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "mirror-channel", "service")
+    callback = _autocomplete_callback(sender, "mirror channel", "service")
 
     choices = await callback(FakeInteraction(), "")
 
