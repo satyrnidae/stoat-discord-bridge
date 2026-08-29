@@ -152,15 +152,17 @@ textual content — which is how IRC ignores pin notifications from both sides.
 Every admin/status command (`/status`, the channel commands `/link channel` /
 `/unlink channel` / `/mirror channel` / `/linked channels`, the role commands
 `/link role` / `/mirror role` / `/linked roles` / `/unlink role`
-(Discord/Stoat only), `/link-user`, `/unlink-user`, `/linked-users`,
-`/link-emote`, `/mirror-channels`, `/link-category`, `/unlink-category`,
-`/linked-categories`) and how to reach it on each connector is documented in
-`COMMANDS.md`, not duplicated here. On Discord the channel and role commands
-are real `app_commands` subcommand groups (`/link`, `/unlink`, `/mirror`,
-`/linked`); on Stoat/IRC they're space-separated (`LINK CHANNEL …` on IRC).
-Category/emote/user commands are still flat. Every id argument to a channel
-or role command also accepts a bare name (`ConnectorInfo.
-resolve_channel_id_by_name` / `resolve_role_id_by_name`). Shared logic
+(Discord/Stoat only), the user commands `/link user` / `/unlink user` /
+`/linked users`, `/link-emote`, `/mirror-channels`, `/link-category`,
+`/unlink-category`, `/linked-categories`) and how to reach it on each
+connector is documented in `COMMANDS.md`, not duplicated here. On Discord the
+channel, role and user commands are real `app_commands` subcommand groups
+(`/link`, `/unlink`, `/mirror`, `/linked`); on Stoat/IRC they're
+space-separated (`LINK CHANNEL …` / `LINK USER …` on IRC). Category/emote
+commands are still flat. Every id argument to a channel or role command also
+accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /
+`resolve_role_id_by_name`), as does every id argument to a user command
+(`resolve_user_id_by_name`). Shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
 `EmoteLinker` / `UserLinker` / `RoleLinker` / `StructureMirrorer`), called
 identically from each connector's own `services/*.py` module. Nothing is

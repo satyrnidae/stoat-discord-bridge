@@ -84,11 +84,11 @@ _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /status - sync target health, read-only
   /linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
   /linked-categories - Categories bridged to this channel's Category, read-only
-  /linked-users [local_id] - cross-connector user links, read-only
+  /linked users [local_id|name] - cross-connector user links, read-only
   /linked roles [local_id|name] - roles linked across the bridge, read-only
   /link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
   /link-category <service> <external_id> [local_id] - bridge a Category; new channels in either sync automatically (Manage Server)
-  /link-user <service> <external_id> <local_id> - link a user for mentions/masquerading (Manage Server)
+  /link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
   /link-emote <service> <external_id> <local_id> - link a custom emoji (Manage Server)
   /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
   /mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
@@ -96,7 +96,7 @@ _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
   /unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   /unlink-category [service|all] - unlink this channel's Category (default: whole group) from one connector, or the whole group (Manage Server)
-  /unlink-user [service|all] [local_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
+  /unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   /unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
@@ -828,6 +828,15 @@ class StoatSenderService(SenderService):
         if two == "/mirror channel":
             await self._handle_mirror_channel(message, parts[2:])
             return
+        if two == "/link user":
+            await self._handle_link_user(message, parts[2:])
+            return
+        if two == "/unlink user":
+            await self._handle_unlink_user(message, parts[2:])
+            return
+        if two == "/linked users":
+            await self._handle_linked_users(message, parts[2:])
+            return
         if cmd == "/status":
             await message.channel.send(self._health.render())
             return
@@ -836,9 +845,6 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/linked-categories":
             await self._handle_linked_categories(message)
-            return
-        if cmd == "/linked-users":
-            await self._handle_linked_users(message, parts[1:])
             return
         if cmd == "/mirror-channels":
             await self._handle_mirror_channels(message, parts[1:])
@@ -849,14 +855,8 @@ class StoatSenderService(SenderService):
         if cmd == "/link-emote":
             await self._handle_link_emote(message, parts[1:])
             return
-        if cmd == "/link-user":
-            await self._handle_link_user(message, parts[1:])
-            return
         if cmd == "/unlink-category":
             await self._handle_unlink_category(message, parts[1:])
-            return
-        if cmd == "/unlink-user":
-            await self._handle_unlink_user(message, parts[1:])
             return
         logger.debug(
             "[stoat:%s] message %s in channel %s from %s",
@@ -1036,10 +1036,10 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_linked_users(self, message, args: list[str], /) -> None:
-        """`/linked-users [local_id]`: with no argument, lists every
-        cross-connector user link (for debugging); given a Stoat user id,
-        shows just that identity's link. No permission gate - read-only,
-        same as /status and /linked channels."""
+        """`/linked users [local_id|name]`: with no argument, lists every
+        cross-connector user link (for debugging); given a Stoat user id or
+        display name, shows just that identity's link. No permission gate -
+        read-only, same as /status and /linked channels."""
         if self._user_linker is None:
             await message.channel.send("User linking isn't configured.")
             return
@@ -1212,7 +1212,7 @@ class StoatSenderService(SenderService):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if len(args) < 3:
-            await message.channel.send("Usage: /link-user <service> <external_id> <local_id>")
+            await message.channel.send("Usage: /link user <service> <external_id|name> <local_id|name>")
             return
         service, external_id, local_id = args[0], args[1], args[2]
 
@@ -1220,7 +1220,7 @@ class StoatSenderService(SenderService):
             await message.channel.send("User linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-user service=%s external_id=%s local_id=%s",
+            "[stoat:%s] %s ran /link user service=%s external_id=%s local_id=%s",
             self.connector_id,
             message.author.id,
             service,
@@ -1235,7 +1235,7 @@ class StoatSenderService(SenderService):
                 source_user_id=external_id,
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /link-user rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /link user rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -1350,7 +1350,7 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_unlink_user(self, message, args: list[str], /) -> None:
-        """`/unlink-user [service|all] [local_id]`: service defaults
+        """`/unlink user [service|all] [local_id|name]`: service defaults
         to "all" (dissolving the whole link group); local_id defaults to the
         invoking user themselves."""
         if not self._is_admin(message):
@@ -1363,7 +1363,7 @@ class StoatSenderService(SenderService):
             await message.channel.send("User linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /unlink-user service=%s local_id=%s",
+            "[stoat:%s] %s ran /unlink user service=%s local_id=%s",
             self.connector_id,
             message.author.id,
             service,
@@ -1374,7 +1374,7 @@ class StoatSenderService(SenderService):
                 local_connector=self.connector_id, local_user_id=local_id, destination=service
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /unlink-user rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /unlink user rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -1525,6 +1525,38 @@ class StoatSenderService(SenderService):
 
     def _role_by_id(self, role_id: str):
         return next((r for r in self._all_roles() if str(getattr(r, "id", "")) == role_id), None)
+
+    def _all_members(self):
+        # TODO: the cached `.members` collection's shape (dict keyed by id vs.
+        # list) is assumed from stoat.py's Server and unverified against a
+        # live server - same caveat as _all_roles / the rest of the Stoat
+        # integration.
+        server = self._client.get_server(self.server_id, partial=True)
+        members = getattr(server, "members", None) or []
+        return list(members.values()) if isinstance(members, dict) else list(members)
+
+    async def resolve_user_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare display name / nickname / username to a member id
+        (case-insensitive, first match) so `/link user` etc. accept either; a
+        token that's already a member id is returned as-is, an unknown token
+        yields None (UserLinker then treats it as a literal id)."""
+        try:
+            members = self._all_members()
+        except Exception:
+            return None
+        for member in members:
+            if str(getattr(member, "id", "")) == token:
+                return token
+        lowered = token.casefold()
+        for member in members:
+            candidates = (
+                getattr(member, "nick", None),
+                getattr(member, "display_name", None),
+                getattr(member, "name", None),
+            )
+            if any(c and c.casefold() == lowered for c in candidates):
+                return str(member.id)
+        return None
 
     async def _handle_member_update(self, event) -> None:
         """A server member changed - diff their role id set for role

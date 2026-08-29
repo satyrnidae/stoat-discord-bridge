@@ -24,13 +24,16 @@ id on the connector the command is run on.
 
 - **Discord**: slash commands. Anything that changes bridge state requires
   the Manage Server permission; read-only commands (`/status`,
-  `/linked channels`, `/linked-users`) don't.
+  `/linked channels`, `/linked users`) don't.
 - **Stoat**: message commands (type the command as a plain chat message).
   Same Manage Server / read-only split as Discord.
 - **IRC**: sent as a **DM to the bot**, bare and **uppercase**, no leading
   `/` or `!` (unlike Discord/Stoat's slash commands — many IRC clients treat
-  a leading `/` as a local client command and never send it as text).
-  Anything that changes bridge state requires **IRC-operator status**,
+  a leading `/` as a local client command and never send it as text). Most
+  are single underscore-joined tokens (`LINK_CHANNEL`); the user commands are
+  two words (`LINK USER` / `UNLINK USER` / `LINKED USERS`), mirroring the
+  Discord/Stoat subcommand form. Anything that changes bridge state requires
+  **IRC-operator status**,
   checked live via `WHOIS` (not channel-operator status — a DM has no
   per-channel permission to check against in the first place); read-only
   commands need no permission. A DM also has no "current channel" the way a
@@ -86,32 +89,47 @@ also accepts a bare channel name.
 - **Stoat**: `/linked channels [<local_id|name>]` message command (defaults to the current channel)
 - **IRC**: `LINKED CHANNELS <local_id>`, DM (channel always required)
 
-## `/link-user <service> <external_id> <local_id>`
+## Users: `/link user`, `/linked users`, `/unlink user`
 
-Links `service`'s `external_id` to a local identity, for two things: `services/
+Links a user's identity across connectors, for two things: `services/
 mentions.py`'s @mention rewriting, and making a message from the linked
 remote user masquerade as the local identity when relayed (webhook
 username+avatar on Discord, masquerade name+avatar on Stoat, the `<nick>`
 prefix on IRC) instead of showing the remote user's own name/avatar. Same
 already-linked/conflicting-group rules as `/link channel`.
 
-- **Discord**: `/link-user` slash command (Manage Server). The local side
-  (`local_id`) is picked from Discord's own member search — a real
+These use a **space-separated subcommand** syntax on every connector - on
+Discord real `app_commands` subcommand groups (`/link user`, `/unlink user`,
+`/linked users`), on Stoat the same tokens as a plain chat message, on IRC an
+upper-case `LINK USER` / `UNLINK USER` / `LINKED USERS` DM. Every id argument
+also accepts a bare **display name / username** (resolved case-insensitively
+against the connector it lives on; first match wins - pass an id when a name
+is ambiguous). On IRC no resolution is needed - a user id there already *is*
+the nick.
+
+### `/link user <service> <external_id|name> <local_id|name>`
+
+Links `service`'s user to a local identity. Manage Server (Discord/Stoat) /
+IRC-operator (IRC).
+
+- **Discord**: `/link user` slash subcommand (Manage Server). The local side
+  (`local_id`) is still picked from Discord's own member search — a real
   `discord.Member` option, not typed text. Deliberately: a free-text id
   field here previously let someone type a bare `@name` instead of the real
   snowflake, which silently linked a nonexistent id and broke mention
-  rewriting in both directions with no error.
-- **Stoat**: `/link-user <service> <external_id> <local_id>` message command
-  (Manage Server) — the local side is still plain text (no member-picker
-  equivalent exists there), so the same mistake above is still possible when
-  linking *from* Stoat.
-- **IRC**: `LINK_USER <service> <external_id> <local_id>`, DM (IRC-operator)
+  rewriting in both directions with no error. The *other* connector's
+  `external_id` accepts a name.
+- **Stoat**: `/link user <service> <external_id|name> <local_id|name>` message
+  command (Manage Server) — both sides accept a name or an id (no
+  member-picker equivalent exists there).
+- **IRC**: `LINK USER <service> <external_id|name> <local_id|name>`, DM
+  (IRC-operator)
 
 Relinking a connector's id within an existing group (e.g. correcting a
-mistake like the one above) replaces the old entry rather than leaving both
-on file for mention rewriting to pick between nondeterministically.
+mistake) replaces the old entry rather than leaving both on file for mention
+rewriting to pick between nondeterministically.
 
-## `/linked-users [local_id]`
+### `/linked users [local_id|name]`
 
 Read-only listing of cross-connector user links, for debugging. With no
 target, lists every link group; given one, shows just that identity's group.
@@ -119,11 +137,14 @@ Each entry's display name is resolved **live** from its own connector
 (`ConnectorInfo.resolve_user_name`) rather than read from storage, since the
 stored name is never more than the id it was linked with.
 
-- **Discord**: `/linked-users [local_id]` slash command (`local_id` a real `discord.Member`, optional)
-- **Stoat**: `/linked-users [local_id]` message command
-- **IRC**: `LINKED_USERS [local_id]`, DM
+- **Discord**: `/linked users [local_id]` slash subcommand (`local_id` a real `discord.Member`, optional)
+- **Stoat**: `/linked users [local_id|name]` message command
+- **IRC**: `LINKED USERS [local_id]`, DM
+
 
 ## `/link-emote <service> <external_id> <local_id>`
+
+TODO: Split these
 
 Links a custom emoji from connector `<service>` to a local custom emoji, so a
 reaction using either can be recreated as the other (see the reaction/emoji
@@ -133,6 +154,8 @@ conflicting-group rules as `/link channel`.
 - **Discord**: `/link-emote` slash command (Manage Server)
 - **Stoat**: `/link-emote <service> <external_id> <local_id>` message command (Manage Server)
 - **IRC**: `LINK_EMOTE <service> <external_id> <local_id>`, DM (IRC-operator)
+
+TODO: Remove emote IRC link, since IRC does not have emotes
 
 ## `/mirror channel [<local_id>] [<service>|all]`
 
@@ -207,6 +230,8 @@ auto-sync stops.
 
 ## `/mirror-channels <service>`
 
+TODO: Remove this command
+
 **Stoat-only**, and distinct from `/mirror channel` (singular) above: recreates
 `<service>`'s (a configured Discord connector's) *entire current
 category/channel layout* on the Stoat server this is run on
@@ -239,9 +264,9 @@ conflicting-group rules as `/link channel`.
 On Discord these are `app_commands` subcommand groups (`/link role`,
 `/unlink role`, `/linked roles`, `/mirror role` - typed exactly like that);
 on Stoat they are the same tokens as a plain chat message. The channel
-commands (`/link channel` etc.) share the same `/link` / `/unlink` /
-`/mirror` / `/linked` groups; category, emote and user commands are still
-flat.
+commands (`/link channel` etc.) and the user commands (`/link user` etc.)
+share the same `/link` / `/unlink` / `/mirror` / `/linked` groups; category
+and emote commands are still flat.
 
 ### `/link role <local_id|name> <service> <external_id|name>`
 
@@ -276,7 +301,7 @@ Once roles are linked, three things happen automatically (all best-effort and
 silent):
 
 - **auto-grant**: a linked user gaining/losing a linked role on one connector
-  has the linked role granted/revoked for their linked identity (`/link-user`)
+  has the linked role granted/revoked for their linked identity (`/link user`)
   on the other. The Discord→other direction needs Discord's privileged
   **members** intent enabled for the bot.
 - **rename**: renaming a linked role on one connector renames every linked
@@ -321,7 +346,7 @@ channels in place (they're real, human-created channels there).
   to - and hoisted to the first arg since it's the one id IRC can't leave
   out; `service` remains optional and comes after)
 
-## `/unlink-user [service|all] [local_id]`
+## `/unlink user [service|all] [local_id|name]`
 
 Removes identities from a user's cross-connector link group. Given a
 specific `service` (a connector id), kicks just that one identity out -
@@ -329,14 +354,14 @@ the rest of the group stays linked to each other. With no `service`, or
 `all` (the default), dissolves the whole group instead. `local_id` defaults to
 whoever ran the command.
 
-- **Discord**: `/unlink-user [service] [local_id]` slash command (Manage
+- **Discord**: `/unlink user [service] [local_id]` slash subcommand (Manage
   Server); `service`'s autocomplete includes the literal `all` choice.
-  `local_id` is a real `discord.Member`, same picker as `/link-user`'s local
-  side and `/linked-users`.
-- **Stoat**: `/unlink-user [service|all] [local_id]` message command
-  (Manage Server) - `local_id` is still plain text (no member-picker
-  equivalent exists there, same caveat as `/link-user`'s local side).
-- **IRC**: `UNLINK_USER [service|all] [local_id]`, DM
+  `local_id` is a real `discord.Member`, same picker as `/link user`'s local
+  side and `/linked users`.
+- **Stoat**: `/unlink user [service|all] [local_id|name]` message command
+  (Manage Server) - `local_id` accepts a name or an id (no member-picker
+  equivalent exists there, same caveat as `/link user`'s local side).
+- **IRC**: `UNLINK USER [service|all] [local_id]`, DM
   (IRC-operator; both arguments optional, `local_id` defaults to the
   nick running the command)
 
