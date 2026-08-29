@@ -482,7 +482,7 @@ def _autocomplete_callback(sender: DiscordSenderService, command_name: str, para
 
 async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_connectors):
     sender = _make_sender(FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-channel", "source")
+    callback = _autocomplete_callback(sender, "link-channel", "service")
 
     choices = await callback(FakeInteraction(), "stoat")
 
@@ -491,7 +491,7 @@ async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_co
 
 async def test_link_category_source_autocomplete_is_wired_to_the_category_linker(sample_connectors):
     sender = _make_sender(FakeLinker(), category_linker=FakeCategoryLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-category", "source")
+    callback = _autocomplete_callback(sender, "link-category", "service")
 
     choices = await callback(FakeInteraction(), "stoat")
 
@@ -735,14 +735,14 @@ async def test_link_channel_source_autocomplete_handles_no_configured_linker():
     sender = DiscordSenderService(
         _discord_config(), on_message=_noop, health=HealthTracker({"discord": "Discord"}), linker=None
     )
-    callback = _autocomplete_callback(sender, "link-channel", "source")
+    callback = _autocomplete_callback(sender, "link-channel", "service")
 
     assert await callback(FakeInteraction(), "") == []
 
 
 async def test_link_emote_source_autocomplete_reads_the_emote_linker(sample_connectors):
     sender = _make_sender(FakeLinker(), emote_linker=FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-emote", "source")
+    callback = _autocomplete_callback(sender, "link-emote", "service")
 
     choices = await callback(FakeInteraction(), "irc")
 
@@ -751,7 +751,7 @@ async def test_link_emote_source_autocomplete_reads_the_emote_linker(sample_conn
 
 async def test_link_user_source_autocomplete_reads_the_user_linker(sample_connectors):
     sender = _make_sender(FakeLinker(), user_linker=FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-user", "source")
+    callback = _autocomplete_callback(sender, "link-user", "service")
 
     choices = await callback(FakeInteraction(), "irc")
 
@@ -760,7 +760,7 @@ async def test_link_user_source_autocomplete_reads_the_user_linker(sample_connec
 
 async def test_mirror_channel_destination_autocomplete_includes_all(sample_connectors):
     sender = _make_sender(FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "mirror-channel", "destination")
+    callback = _autocomplete_callback(sender, "mirror-channel", "service")
 
     choices = await callback(FakeInteraction(), "")
 

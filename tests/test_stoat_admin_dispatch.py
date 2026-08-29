@@ -253,7 +253,7 @@ async def test_link_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_link_channel(message, ["discord"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-channel <source> <source_id> [<destination_id>]"
+    assert message.channel.sent[0]["content"] == "Usage: /link-channel <service> <external_id> [<local_id>]"
 
 
 async def test_link_channel_without_a_configured_linker():
@@ -294,7 +294,7 @@ async def test_link_emote_wrong_arg_count_sends_usage():
 
     await sender._handle_link_emote(message, ["discord", "src-id"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-emote <source> <source_id> <local_id>"
+    assert message.channel.sent[0]["content"] == "Usage: /link-emote <service> <external_id> <local_id>"
 
 
 async def test_link_emote_without_a_configured_linker():
@@ -328,7 +328,7 @@ async def test_link_user_wrong_arg_count_sends_usage():
 
     await sender._handle_link_user(message, ["discord", "remote-id"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-user <source> <user_id> <local_user_id>"
+    assert message.channel.sent[0]["content"] == "Usage: /link-user <service> <external_id> <local_id>"
 
 
 async def test_link_user_without_a_configured_linker():
@@ -404,7 +404,7 @@ async def test_mirror_channel_missing_destination_sends_usage():
 
     await sender._handle_mirror_channel(message, [])
 
-    assert message.channel.sent[0]["content"] == "Usage: /mirror-channel <destination|all> [local_channel_id]"
+    assert message.channel.sent[0]["content"] == "Usage: /mirror-channel <service|all> [local_id]"
 
 
 async def test_mirror_channel_without_a_configured_linker():
@@ -655,7 +655,7 @@ async def test_mirror_channels_missing_source_sends_usage():
 
     await sender._handle_mirror_channels(message, [])
 
-    assert message.channel.sent[0]["content"] == "Usage: /mirror-channels <source>"
+    assert message.channel.sent[0]["content"] == "Usage: /mirror-channels <service>"
 
 
 async def test_mirror_channels_without_a_configured_mirrorer():
@@ -952,7 +952,7 @@ async def test_link_category_wrong_arg_count_sends_usage():
 
     await sender._handle_link_category(message, ["discord"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-category <source> <source_id> [<destination_id>]"
+    assert message.channel.sent[0]["content"] == "Usage: /link-category <service> <external_id> [<local_id>]"
 
 
 async def test_link_category_without_a_configured_category_linker():

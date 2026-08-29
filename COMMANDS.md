@@ -12,10 +12,13 @@ help command. Stoat and IRC don't, hence `/bridge-help` (Stoat) and `HELP`
 (IRC) - both just print a compact copy of this file's per-connector command
 list.
 
-A `<source>`/`destination` argument below is a connector `id` from
+A `<service>` argument below is a connector `id` from
 `config.yaml` (see its `id` field) — not a platform name, since there can be
 any number of connectors of each kind. On Discord, every such argument has
 autocomplete listing the bridge's currently configured connectors.
+
+`<external_id>` is an id that lives on *another* connector; `<local_id>` is an
+id on the connector the command is run on.
 
 ## Conventions by connector
 
@@ -50,11 +53,11 @@ connection state and recent relay outcomes. No permission gate — read-only.
 A `GET /status` JSON endpoint on the health-check server (see the Docker
 section of `README.md`) mirrors the same data.
 
-## `/link-channel <source> <source_id> [<destination_id>]`
+## `/link-channel <service> <external_id> [<local_id>]`
 
-Links `source_id` on connector `<source>` to `<destination_id>` on the
+Links `external_id` on connector `<service>` to `<local_id>` on the
 connector the command is run on — or to the current channel if
-`<destination_id>` is omitted (Discord/Stoat only; IRC has no "current
+`<local_id>` is omitted (Discord/Stoat only; IRC has no "current
 channel" for a DM, so it's always required there). If either channel is
 already linked, the existing bridge group is reused; if *both* are already
 linked to two *different* groups, the command fails rather than merging them
@@ -62,9 +65,9 @@ linked to two *different* groups, the command fails rather than merging them
 means linking one side elsewhere to move it into a different group).
 
 - **Discord**: `/link-channel` slash command (Manage Server)
-- **Stoat**: `/link-channel <source> <source_id> [<destination_id>]` message
+- **Stoat**: `/link-channel <service> <external_id> [<local_id>]` message
   command (Manage Server)
-- **IRC**: `LINK_CHANNEL <source> <source_id> <local_id>`, DM (IRC-operator)
+- **IRC**: `LINK_CHANNEL <service> <external_id> <local_id>`, DM (IRC-operator)
 
 ## `/linked-channels`
 
@@ -73,11 +76,11 @@ every connector in its bridge group.
 
 - **Discord**: `/linked-channels` slash command (defaults to the current channel)
 - **Stoat**: `/linked-channels` message command (defaults to the current channel)
-- **IRC**: `LINKED_CHANNELS <local_channel_id>`, DM (channel always required)
+- **IRC**: `LINKED_CHANNELS <local_id>`, DM (channel always required)
 
-## `/link-user <source> <user_id> <local_user>`
+## `/link-user <service> <external_id> <local_id>`
 
-Links `source`'s `user_id` to a local identity, for two things: `services/
+Links `service`'s `external_id` to a local identity, for two things: `services/
 mentions.py`'s @mention rewriting, and making a message from the linked
 remote user masquerade as the local identity when relayed (webhook
 username+avatar on Discord, masquerade name+avatar on Stoat, the `<nick>`
@@ -85,22 +88,22 @@ prefix on IRC) instead of showing the remote user's own name/avatar. Same
 already-linked/conflicting-group rules as `/link-channel`.
 
 - **Discord**: `/link-user` slash command (Manage Server). The local side
-  (`local_user`) is picked from Discord's own member search — a real
+  (`local_id`) is picked from Discord's own member search — a real
   `discord.Member` option, not typed text. Deliberately: a free-text id
   field here previously let someone type a bare `@name` instead of the real
   snowflake, which silently linked a nonexistent id and broke mention
   rewriting in both directions with no error.
-- **Stoat**: `/link-user <source> <user_id> <local_user_id>` message command
+- **Stoat**: `/link-user <service> <external_id> <local_id>` message command
   (Manage Server) — the local side is still plain text (no member-picker
   equivalent exists there), so the same mistake above is still possible when
   linking *from* Stoat.
-- **IRC**: `LINK_USER <source> <user_id> <local_user_id>`, DM (IRC-operator)
+- **IRC**: `LINK_USER <service> <external_id> <local_id>`, DM (IRC-operator)
 
 Relinking a connector's id within an existing group (e.g. correcting a
 mistake like the one above) replaces the old entry rather than leaving both
 on file for mention rewriting to pick between nondeterministically.
 
-## `/linked-users [user]`
+## `/linked-users [local_id]`
 
 Read-only listing of cross-connector user links, for debugging. With no
 target, lists every link group; given one, shows just that identity's group.
@@ -108,44 +111,44 @@ Each entry's display name is resolved **live** from its own connector
 (`ConnectorInfo.resolve_user_name`) rather than read from storage, since the
 stored name is never more than the id it was linked with.
 
-- **Discord**: `/linked-users [user]` slash command (`user` a real `discord.Member`, optional)
-- **Stoat**: `/linked-users [user_id]` message command
-- **IRC**: `LINKED_USERS [local_user_id]`, DM
+- **Discord**: `/linked-users [local_id]` slash command (`local_id` a real `discord.Member`, optional)
+- **Stoat**: `/linked-users [local_id]` message command
+- **IRC**: `LINKED_USERS [local_id]`, DM
 
-## `/link-emote <source> <source_id> <local_id>`
+## `/link-emote <service> <external_id> <local_id>`
 
-Links a custom emoji from connector `<source>` to a local custom emoji, so a
+Links a custom emoji from connector `<service>` to a local custom emoji, so a
 reaction using either can be recreated as the other (see the reaction/emoji
 sync section of `README.md`/`CLAUDE.md`). Same already-linked/
 conflicting-group rules as `/link-channel`.
 
 - **Discord**: `/link-emote` slash command (Manage Server)
-- **Stoat**: `/link-emote <source> <source_id> <local_id>` message command (Manage Server)
-- **IRC**: `LINK_EMOTE <source> <source_id> <local_id>`, DM (IRC-operator)
+- **Stoat**: `/link-emote <service> <external_id> <local_id>` message command (Manage Server)
+- **IRC**: `LINK_EMOTE <service> <external_id> <local_id>`, DM (IRC-operator)
 
-## `/mirror-channel <destination|all> [local_channel_id]`
+## `/mirror-channel <service|all> [local_id]`
 
-Ensures a linked counterpart of the invoking channel exists on `destination`
+Ensures a linked counterpart of the invoking channel exists on `service`
 (or every other configured connector, if `all`) — creating one via that
 connector's `ensure_channel` hook if it doesn't already have a matching
-channel, then linking it. A destination that can't create channels (Discord
+channel, then linking it. A service that can't create channels (Discord
 has no channel-creation capability in this codebase) or hits a link conflict
 is reported per-connector rather than aborting the rest when `all` is used.
 
-- **Discord**: `/mirror-channel` slash command (Manage Server; `destination`'s
+- **Discord**: `/mirror-channel` slash command (Manage Server; `service`'s
   autocomplete includes the literal `all` choice)
-- **Stoat**: `/mirror-channel <destination|all> [local_channel_id]` message
+- **Stoat**: `/mirror-channel <service|all> [local_id]` message
   command (Manage Server)
-- **IRC**: `MIRROR_CHANNEL <local_channel_id> <destination|all>`, DM
+- **IRC**: `MIRROR_CHANNEL <local_id> <service|all>`, DM
   (IRC-operator; channel always required - no "current channel" to default
   to - and hoisted to the first arg since it's the one id IRC can't leave
   out)
 
-## `/link-category <source> <source_id> [<destination_id>]`
+## `/link-category <service> <external_id> [<local_id>]`
 
 **Discord and Stoat only** (IRC has no Category concept). Links the invoking
-channel's Category to `source_id`'s Category on connector `<source>` - or to
-`<destination_id>`'s Category on the connector the command is run on, if
+channel's Category to `external_id`'s Category on connector `<service>` - or to
+`<local_id>`'s Category on the connector the command is run on, if
 given. Same already-linked/conflicting-group rules as `/link-channel`. Once
 two Categories are linked, any **new channel** created inside either one is
 automatically mirrored (created + linked, via the same logic as
@@ -154,14 +157,14 @@ manual `/mirror-channel` needed per new channel.
 
 A Category that Discord's thread/forum-post auto-mirroring created on Stoat
 (see the README's Discord threads section) can never be linked this way -
-`/link-category` rejects it as both a `source`/`destination_id` and as the
+`/link-category` rejects it as both a `service`/`local_id` and as the
 invoking channel's own Category, so thread mirroring's synthetic "Threads"
 Categories always stay outside the bridge.
 
 - **Discord**: `/link-category` slash command (Manage Server); the Category
   is always the invoking channel's own Category (the command must be run
   from inside a channel that's in one).
-- **Stoat**: `/link-category <source> <source_id> [<destination_id>]`
+- **Stoat**: `/link-category <service> <external_id> [<local_id>]`
   message command (Manage Server); same "invoking channel's own Category"
   rule.
 - **IRC**: not available - IRC has no Category concept.
@@ -177,25 +180,25 @@ Category, across every connector in its bridge group.
   channel's Category)
 - **IRC**: not available - IRC has no Category concept.
 
-## `/unlink-category [destination|all]`
+## `/unlink-category [service|all]`
 
 Removes members from the invoking channel's own Category's bridge group.
-Given a specific `destination` (a connector id), kicks just that one member
+Given a specific `service` (a connector id), kicks just that one member
 out - the rest of the group stays linked to each other. With no argument, or
 `all` (the default), dissolves the whole group instead. Existing channels
 already synced into the Category are left alone either way - only future
 auto-sync stops.
 
-- **Discord**: `/unlink-category [destination]` slash command (Manage
-  Server); `destination`'s autocomplete includes the literal `all` choice.
-- **Stoat**: `/unlink-category [destination|all]` message command (Manage
+- **Discord**: `/unlink-category [service]` slash command (Manage
+  Server); `service`'s autocomplete includes the literal `all` choice.
+- **Stoat**: `/unlink-category [service|all]` message command (Manage
   Server).
 - **IRC**: not available - IRC has no Category concept.
 
-## `/mirror-channels <source>`
+## `/mirror-channels <service>`
 
 **Stoat-only**, and distinct from `/mirror-channel` (singular) above: recreates
-`<source>`'s (a configured Discord connector's) *entire current
+`<service>`'s (a configured Discord connector's) *entire current
 category/channel layout* on the Stoat server this is run on
 (`channel_structure.py`) — additive/idempotent, existing categories/channels
 matched by name are left alone, nothing deleted or renamed. Every channel it
@@ -209,51 +212,51 @@ Discord forum channels have no Stoat equivalent, so each forum mirrors as
 its own group named after the forum, with one channel per currently active
 (non-archived) post.
 
-- **Stoat**: `/mirror-channels <source>` message command (Manage Server) —
+- **Stoat**: `/mirror-channels <service>` message command (Manage Server) —
   not available on Discord or IRC (Discord doesn't need to mirror structure
   onto itself; IRC networks don't offer bot-driven channel creation the way
   this command needs).
 
-## `/unlink-channel [destination|all] [local_channel_id]`
+## `/unlink-channel [service|all] [local_id]`
 
-Removes members from `local_channel_id`'s (or the invoking channel, if
-omitted) bridge group. Given a specific `destination` (a connector id),
+Removes members from `local_id`'s (or the invoking channel, if
+omitted) bridge group. Given a specific `service` (a connector id),
 kicks just that one member out - the rest of the group, including the
 channel itself, stays linked to each other. With no argument, or `all` (the
 default), dissolves the whole group instead - every member is unlinked.
 There's no separate "just leave, don't destroy the group for everyone else"
-form beyond passing your own connector as `destination`, which does exactly
+form beyond passing your own connector as `service`, which does exactly
 that.
 
-- **Discord**: `/unlink-channel [destination] [local_channel_id]` slash
-  command (Manage Server); `destination`'s autocomplete includes the
-  literal `all` choice, same as `/mirror-channel`. `local_channel_id`
+- **Discord**: `/unlink-channel [service] [local_id]` slash
+  command (Manage Server); `service`'s autocomplete includes the
+  literal `all` choice, same as `/mirror-channel`. `local_id`
   defaults to the current channel.
-- **Stoat**: `/unlink-channel [destination|all] [local_channel_id]` message
-  command (Manage Server). `local_channel_id` defaults to the current
+- **Stoat**: `/unlink-channel [service|all] [local_id]` message
+  command (Manage Server). `local_id` defaults to the current
   channel.
-- **IRC**: `UNLINK_CHANNEL <local_channel_id> [destination|all]`, DM
+- **IRC**: `UNLINK_CHANNEL <local_id> [service|all]`, DM
   (IRC-operator; channel always required - no "current channel" to default
   to - and hoisted to the first arg since it's the one id IRC can't leave
-  out; `destination` remains optional and comes after)
+  out; `service` remains optional and comes after)
 
-## `/unlink-user [destination|all] [user]`
+## `/unlink-user [service|all] [local_id]`
 
 Removes identities from a user's cross-connector link group. Given a
-specific `destination` (a connector id), kicks just that one identity out -
-the rest of the group stays linked to each other. With no `destination`, or
-`all` (the default), dissolves the whole group instead. `user` defaults to
+specific `service` (a connector id), kicks just that one identity out -
+the rest of the group stays linked to each other. With no `service`, or
+`all` (the default), dissolves the whole group instead. `local_id` defaults to
 whoever ran the command.
 
-- **Discord**: `/unlink-user [destination] [user]` slash command (Manage
-  Server); `destination`'s autocomplete includes the literal `all` choice.
-  `user` is a real `discord.Member`, same picker as `/link-user`'s local
+- **Discord**: `/unlink-user [service] [local_id]` slash command (Manage
+  Server); `service`'s autocomplete includes the literal `all` choice.
+  `local_id` is a real `discord.Member`, same picker as `/link-user`'s local
   side and `/linked-users`.
-- **Stoat**: `/unlink-user [destination|all] [user_id]` message command
-  (Manage Server) - `user_id` is still plain text (no member-picker
+- **Stoat**: `/unlink-user [service|all] [local_id]` message command
+  (Manage Server) - `local_id` is still plain text (no member-picker
   equivalent exists there, same caveat as `/link-user`'s local side).
-- **IRC**: `UNLINK_USER [destination|all] [local_user_id]`, DM
-  (IRC-operator; both arguments optional, `local_user_id` defaults to the
+- **IRC**: `UNLINK_USER [service|all] [local_id]`, DM
+  (IRC-operator; both arguments optional, `local_id` defaults to the
   nick running the command)
 
 ## `HELP` (IRC) / `/bridge-help` (Stoat)

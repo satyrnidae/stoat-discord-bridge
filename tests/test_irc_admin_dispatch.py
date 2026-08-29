@@ -218,7 +218,7 @@ async def test_link_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_dm_command("alice", "LINK_CHANNEL discord src-id")
 
-    assert conn.notice_calls == [("alice", "Usage: LINK_CHANNEL <source> <source_id> <local_id>")]
+    assert conn.notice_calls == [("alice", "Usage: LINK_CHANNEL <service> <external_id> <local_id>")]
 
 
 async def test_link_channel_without_a_configured_linker():
@@ -313,7 +313,7 @@ async def test_mirror_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_dm_command("alice", "MIRROR_CHANNEL discord")
 
-    assert conn.notice_calls == [("alice", "Usage: MIRROR_CHANNEL <local_channel_id> <destination|all>")]
+    assert conn.notice_calls == [("alice", "Usage: MIRROR_CHANNEL <local_id> <service|all>")]
 
 
 # ---------------------------------------------------------------- unrecognized command
@@ -356,7 +356,7 @@ async def test_linked_channels_wrong_arg_count_sends_usage():
 
     await sender._handle_linked_channels_command("alice", [])
 
-    assert conn.notice_calls == [("alice", "Usage: LINKED_CHANNELS <local_channel_id>")]
+    assert conn.notice_calls == [("alice", "Usage: LINKED_CHANNELS <local_id>")]
 
 
 async def test_linked_channels_without_a_configured_linker():
@@ -462,7 +462,7 @@ async def test_unlink_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_dm_command("alice", "UNLINK_CHANNEL")
 
-    assert conn.notice_calls == [("alice", "Usage: UNLINK_CHANNEL <local_channel_id> [destination|all]")]
+    assert conn.notice_calls == [("alice", "Usage: UNLINK_CHANNEL <local_id> [service|all]")]
 
 
 async def test_unlink_channel_without_a_configured_linker():
@@ -508,7 +508,7 @@ async def test_unlink_user_too_many_args_sends_usage():
 
     await sender._handle_dm_command("alice", "UNLINK_USER discord bob extra")
 
-    assert conn.notice_calls == [("alice", "Usage: UNLINK_USER [destination|all] [local_user_id]")]
+    assert conn.notice_calls == [("alice", "Usage: UNLINK_USER [service|all] [local_id]")]
 
 
 async def test_unlink_user_without_a_configured_linker():

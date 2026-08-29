@@ -66,16 +66,16 @@ _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /status - sync target health, read-only
   /linked-channels - channels bridged to this one, read-only
   /linked-categories - Categories bridged to this channel's Category, read-only
-  /linked-users [user_id] - cross-connector user links, read-only
-  /link-channel <source> <source_id> [destination_id] - bridge a channel (Manage Server)
-  /link-category <source> <source_id> [destination_id] - bridge a Category; new channels in either sync automatically (Manage Server)
-  /link-user <source> <user_id> <local_user_id> - link a user for mentions/masquerading (Manage Server)
-  /link-emote <source> <source_id> <local_id> - link a custom emoji (Manage Server)
-  /mirror-channel <destination|all> [local_channel_id] - create+link a matching channel (Manage Server)
-  /mirror-channels <source> - recreate a Discord guild's structure here (Manage Server)
-  /unlink-channel [destination|all] [local_channel_id] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
-  /unlink-category [destination|all] - unlink this channel's Category (default: whole group) from one connector, or the whole group (Manage Server)
-  /unlink-user [destination|all] [user_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
+  /linked-users [local_id] - cross-connector user links, read-only
+  /link-channel <service> <external_id> [local_id] - bridge a channel (Manage Server)
+  /link-category <service> <external_id> [local_id] - bridge a Category; new channels in either sync automatically (Manage Server)
+  /link-user <service> <external_id> <local_id> - link a user for mentions/masquerading (Manage Server)
+  /link-emote <service> <external_id> <local_id> - link a custom emoji (Manage Server)
+  /mirror-channel <service|all> [local_id] - create+link a matching channel (Manage Server)
+  /mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
+  /unlink-channel [service|all] [local_id] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
+  /unlink-category [service|all] - unlink this channel's Category (default: whole group) from one connector, or the whole group (Manage Server)
+  /unlink-user [service|all] [local_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
 
@@ -906,7 +906,7 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_linked_users(self, message, args: list[str], /) -> None:
-        """`/linked-users [local_user_id]`: with no argument, lists every
+        """`/linked-users [local_id]`: with no argument, lists every
         cross-connector user link (for debugging); given a Stoat user id,
         shows just that identity's link. No permission gate - read-only,
         same as /status and /linked-channels."""
@@ -920,7 +920,7 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_mirror_channels(self, message, args: list[str], /) -> None:
-        """`/mirror-channels <source>`: recreate `<source>`'s (a configured
+        """`/mirror-channels <service>`: recreate `<service>`'s (a configured
         Discord connector's) category/channel layout on this Stoat server,
         linking each channel it creates or matches by name back to its
         Discord counterpart. Requires Manage Server so only admins can
@@ -930,29 +930,29 @@ class StoatSenderService(SenderService):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if not args:
-            await message.channel.send("Usage: /mirror-channels <source>")
+            await message.channel.send("Usage: /mirror-channels <service>")
             return
-        source = args[0]
+        service = args[0]
 
         if self._mirrorer is None:
             await message.channel.send("Mirroring isn't configured.")
             return
-        logger.info("[stoat:%s] %s ran /mirror-channels source=%s", self.connector_id, message.author.id, source)
+        logger.info("[stoat:%s] %s ran /mirror-channels service=%s", self.connector_id, message.author.id, service)
         try:
-            structure = self._mirrorer.get_structure(source)
+            structure = self._mirrorer.get_structure(service)
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror-channels rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         except Exception as exc:
-            logger.exception("[stoat:%s] /mirror-channels couldn't read '%s' structure", self.connector_id, source)
-            await message.channel.send(f"Couldn't read the '{source}' channel structure: {exc}")
+            logger.exception("[stoat:%s] /mirror-channels couldn't read '%s' structure", self.connector_id, service)
+            await message.channel.send(f"Couldn't read the '{service}' channel structure: {exc}")
             return
 
         summary = await _mirror_guild_structure(
             message.channel.server,
             structure,
-            source=source,
+            source=service,
             local_connector=self.connector_id,
             linker=self._linker,
         )
@@ -963,30 +963,30 @@ class StoatSenderService(SenderService):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if len(args) < 2:
-            await message.channel.send("Usage: /link-channel <source> <source_id> [<destination_id>]")
+            await message.channel.send("Usage: /link-channel <service> <external_id> [<local_id>]")
             return
-        source, source_id, *rest = args
-        destination_id = rest[0] if rest else None
+        service, external_id, *rest = args
+        local_id = rest[0] if rest else None
 
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-channel source=%s source_id=%s destination_id=%s",
+            "[stoat:%s] %s ran /link-channel service=%s external_id=%s local_id=%s",
             self.connector_id,
             message.author.id,
-            source,
-            source_id,
-            destination_id,
+            service,
+            external_id,
+            local_id,
         )
         try:
             summary = await self._linker.link_channel(
                 local_connector=self.connector_id,
                 local_channel_id=str(message.channel.id),
                 local_channel_name=getattr(message.channel, "name", str(message.channel.id)),
-                source=source,
-                source_id=source_id,
-                destination_id=destination_id,
+                source=service,
+                source_id=external_id,
+                destination_id=local_id,
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link-channel rejected: %s", self.connector_id, exc)
@@ -995,19 +995,19 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_link_category(self, message, args: list[str], /) -> None:
-        """`/link-category <source> <source_id> [<destination_id>]`: links
-        the invoking channel's Category to `source_id`'s Category on
-        `source` (or `destination_id`'s Category on this connector, if
+        """`/link-category <service> <external_id> [<local_id>]`: links
+        the invoking channel's Category to `external_id`'s Category on
+        `service` (or `local_id`'s Category on this connector, if
         given). Once linked, a new channel appearing in either Category
         auto-syncs onto the other."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if len(args) < 2:
-            await message.channel.send("Usage: /link-category <source> <source_id> [<destination_id>]")
+            await message.channel.send("Usage: /link-category <service> <external_id> [<local_id>]")
             return
-        source, source_id, *rest = args
-        destination_id = rest[0] if rest else None
+        service, external_id, *rest = args
+        local_id = rest[0] if rest else None
 
         if self._category_linker is None:
             await message.channel.send("Category linking isn't configured.")
@@ -1017,21 +1017,21 @@ class StoatSenderService(SenderService):
             await message.channel.send("This channel isn't in a Category.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-category source=%s source_id=%s destination_id=%s",
+            "[stoat:%s] %s ran /link-category service=%s external_id=%s local_id=%s",
             self.connector_id,
             message.author.id,
-            source,
-            source_id,
-            destination_id,
+            service,
+            external_id,
+            local_id,
         )
         try:
             summary = await self._category_linker.link_category(
                 local_connector=self.connector_id,
                 local_category_id=str(category.id),
                 local_category_name=category.title,
-                source=source,
-                source_id=source_id,
-                destination_id=destination_id,
+                source=service,
+                source_id=external_id,
+                destination_id=local_id,
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link-category rejected: %s", self.connector_id, exc)
@@ -1044,27 +1044,27 @@ class StoatSenderService(SenderService):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if len(args) < 3:
-            await message.channel.send("Usage: /link-emote <source> <source_id> <local_id>")
+            await message.channel.send("Usage: /link-emote <service> <external_id> <local_id>")
             return
-        source, source_id, local_id = args[:3]
+        service, external_id, local_id = args[:3]
 
         if self._emote_linker is None:
             await message.channel.send("Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-emote source=%s source_id=%s local_id=%s",
+            "[stoat:%s] %s ran /link-emote service=%s external_id=%s local_id=%s",
             self.connector_id,
             message.author.id,
-            source,
-            source_id,
+            service,
+            external_id,
             local_id,
         )
         try:
             summary = await self._emote_linker.link_emote(
                 local_connector=self.connector_id,
                 local_id=local_id,
-                source=source,
-                source_id=source_id,
+                source=service,
+                source_id=external_id,
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link-emote rejected: %s", self.connector_id, exc)
@@ -1077,27 +1077,27 @@ class StoatSenderService(SenderService):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if len(args) < 3:
-            await message.channel.send("Usage: /link-user <source> <user_id> <local_user_id>")
+            await message.channel.send("Usage: /link-user <service> <external_id> <local_id>")
             return
-        source, user_id, local_user_id = args[0], args[1], args[2]
+        service, external_id, local_id = args[0], args[1], args[2]
 
         if self._user_linker is None:
             await message.channel.send("User linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-user source=%s user_id=%s local_user_id=%s",
+            "[stoat:%s] %s ran /link-user service=%s external_id=%s local_id=%s",
             self.connector_id,
             message.author.id,
-            source,
-            user_id,
-            local_user_id,
+            service,
+            external_id,
+            local_id,
         )
         try:
             summary = await self._user_linker.link_user(
                 local_connector=self.connector_id,
-                local_user_id=local_user_id,
-                source=source,
-                source_user_id=user_id,
+                local_user_id=local_id,
+                source=service,
+                source_user_id=external_id,
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link-user rejected: %s", self.connector_id, exc)
@@ -1110,9 +1110,9 @@ class StoatSenderService(SenderService):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if not args:
-            await message.channel.send("Usage: /mirror-channel <destination|all> [local_channel_id]")
+            await message.channel.send("Usage: /mirror-channel <service|all> [local_id]")
             return
-        destination = args[0]
+        service = args[0]
         if len(args) > 1:
             channel_id = channel_name = args[1]  # explicit id - no way to resolve its real display name
         else:
@@ -1124,14 +1124,14 @@ class StoatSenderService(SenderService):
             return
         channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
-            "[stoat:%s] %s ran /mirror-channel destination=%s local_channel_id=%s",
+            "[stoat:%s] %s ran /mirror-channel service=%s local_id=%s",
             self.connector_id,
             message.author.id,
-            destination,
+            service,
             channel_id,
         )
         try:
-            if destination.lower() == "all":
+            if service.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
                     local_connector=self.connector_id,
                     local_channel_id=channel_id,
@@ -1143,7 +1143,7 @@ class StoatSenderService(SenderService):
                     local_connector=self.connector_id,
                     local_channel_id=channel_id,
                     local_channel_name=channel_name,
-                    destination=destination,
+                    destination=service,
                     local_channel_category=channel_category,
                 )
         except LinkError as exc:
@@ -1153,28 +1153,28 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_unlink_channel(self, message, args: list[str], /) -> None:
-        """`/unlink-channel [destination|all] [local_channel_id]`: destination
+        """`/unlink-channel [service|all] [local_id]`: service
         defaults to "all" (dissolving the whole bridge group);
-        local_channel_id defaults to the invoking channel."""
+        local_id defaults to the invoking channel."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
-        destination = args[0] if args else None
+        service = args[0] if args else None
         channel_id = args[1] if len(args) > 1 else str(message.channel.id)
 
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /unlink-channel destination=%s local_channel_id=%s",
+            "[stoat:%s] %s ran /unlink-channel service=%s local_id=%s",
             self.connector_id,
             message.author.id,
-            destination,
+            service,
             channel_id,
         )
         try:
             summary = await self._linker.unlink_channel(
-                local_connector=self.connector_id, local_channel_id=channel_id, destination=destination
+                local_connector=self.connector_id, local_channel_id=channel_id, destination=service
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink-channel rejected: %s", self.connector_id, exc)
@@ -1183,13 +1183,13 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_unlink_category(self, message, args: list[str], /) -> None:
-        """`/unlink-category [destination|all]`: destination defaults to
+        """`/unlink-category [service|all]`: service defaults to
         "all" (dissolving the whole bridge group); the Category is always
         the invoking channel's own Category."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
-        destination = args[0] if args else None
+        service = args[0] if args else None
 
         if self._category_linker is None:
             await message.channel.send("Category linking isn't configured.")
@@ -1199,15 +1199,15 @@ class StoatSenderService(SenderService):
             await message.channel.send("This channel isn't in a Category.")
             return
         logger.info(
-            "[stoat:%s] %s ran /unlink-category destination=%s category_id=%s",
+            "[stoat:%s] %s ran /unlink-category service=%s category_id=%s",
             self.connector_id,
             message.author.id,
-            destination,
+            service,
             category.id,
         )
         try:
             summary = await self._category_linker.unlink_category(
-                local_connector=self.connector_id, local_category_id=str(category.id), destination=destination
+                local_connector=self.connector_id, local_category_id=str(category.id), destination=service
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink-category rejected: %s", self.connector_id, exc)
@@ -1216,28 +1216,28 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_unlink_user(self, message, args: list[str], /) -> None:
-        """`/unlink-user [destination|all] [user_id]`: destination defaults
-        to "all" (dissolving the whole link group); user_id defaults to the
+        """`/unlink-user [service|all] [local_id]`: service defaults
+        to "all" (dissolving the whole link group); local_id defaults to the
         invoking user themselves."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
-        destination = args[0] if args else None
-        user_id = args[1] if len(args) > 1 else str(message.author.id)
+        service = args[0] if args else None
+        local_id = args[1] if len(args) > 1 else str(message.author.id)
 
         if self._user_linker is None:
             await message.channel.send("User linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /unlink-user destination=%s user_id=%s",
+            "[stoat:%s] %s ran /unlink-user service=%s local_id=%s",
             self.connector_id,
             message.author.id,
-            destination,
-            user_id,
+            service,
+            local_id,
         )
         try:
             summary = await self._user_linker.unlink_user(
-                local_connector=self.connector_id, local_user_id=user_id, destination=destination
+                local_connector=self.connector_id, local_user_id=local_id, destination=service
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink-user rejected: %s", self.connector_id, exc)
