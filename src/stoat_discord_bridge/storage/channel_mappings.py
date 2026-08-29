@@ -4,7 +4,7 @@ Each mapped channel is stored as its own document keyed by (connector_id,
 channel_id), tagged with a `bridge_group` — a logical name tying together
 every connector's channel for one bridged conversation (e.g. "general").
 
-Rows are created by the `/link-channel` and `/mirror-channels` admin
+Rows are created by the `/link channel` and `/mirror-channels` admin
 commands (see admin_commands.py) - nothing links automatically.
 
 The Mongo field is still named "platform" (pre-dating the move to
@@ -53,7 +53,7 @@ class ChannelMappingRepository:
 
     async def delete_mapping(self, connector_id: str, channel_id: str) -> bool:
         """Removes just this one channel from its bridge group - the rest of
-        the group (if any) stays linked to each other. For `/unlink-channel
+        the group (if any) stays linked to each other. For `/unlink channel
         <destination>`, which kicks a single member rather than dissolving
         the whole group."""
         result = await self._collection.delete_one({"platform": connector_id, "channel_id": channel_id})
@@ -61,7 +61,7 @@ class ChannelMappingRepository:
 
     async def delete_bridge_group(self, bridge_group: str) -> int:
         """Dissolves an entire bridge group - every member channel, not just
-        one. For `/unlink-channel`'s default ("all") behavior."""
+        one. For `/unlink channel`'s default ("all") behavior."""
         result = await self._collection.delete_many({"bridge_group": bridge_group})
         return result.deleted_count
 

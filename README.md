@@ -141,10 +141,10 @@ connector, and IRC's receiver leaves them at the base-class default (`False`).
 
 ## Commands
 
-Every admin/status command (`/status`, `/link-channel`, `/linked-channels`,
-`/link-user`, `/linked-users`, `/link-emote`, `/mirror-channel`,
-`/mirror-channels`) and how to reach it on each connector is documented in
-[`COMMANDS.md`](COMMANDS.md).
+Every admin/status command (`/status`, `/link channel`, `/linked channels`,
+`/mirror channel`, `/unlink channel`, `/link role`, `/link-user`,
+`/linked-users`, `/link-emote`, `/mirror-channels`) and how to reach it on
+each connector is documented in [`COMMANDS.md`](COMMANDS.md).
 
 ## Layout
 
@@ -154,7 +154,7 @@ src/stoat_discord_bridge/
   config.py                 # loads config.yaml + resolves secrets named by it from .env
   models.py                  # StandardMessage — the platform-neutral message format
   channel_structure.py        # GuildStructure snapshot used by the /mirror-channels command
-  admin_commands.py            # ChannelLinker / StructureMirrorer - shared /link-channel & /mirror-channels logic
+  admin_commands.py            # ChannelLinker / StructureMirrorer - shared /link channel & /mirror-channels logic
   bridge.py                     # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
   status.py                      # HealthTracker: per-connector sync target health, read by the /status commands
   services/

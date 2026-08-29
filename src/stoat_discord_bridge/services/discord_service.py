@@ -11,7 +11,7 @@ Receiver: posts StandardMessages into Discord "as" the originating
 Stoat/IRC user, via a per-channel Discord webhook (username + avatar
 override) rather than the bridge bot's own identity. `target_channel_id`
 is a real Discord channel id; the receiver resolves/creates that channel's
-webhook itself (cached per channel), so `/link-channel` never needs an
+webhook itself (cached per channel), so `/link channel` never needs an
 admin to already have a webhook URL in hand.
 """
 
@@ -105,7 +105,7 @@ def _connector_autocomplete_choices(
     autocomplete: Discord expects results ranked/filtered by `current` (the
     option's in-progress text) and caps them at 25 - substring match against
     both the connector id and its display label, so typing either finds it.
-    `include_all` adds the literal "all" choice `/mirror-channel` accepts."""
+    `include_all` adds the literal "all" choice `/mirror channel` accepts."""
     current = current.lower()
     choices = [
         app_commands.Choice(name=f"{info.label} ({connector_id})", value=connector_id)
@@ -124,7 +124,7 @@ def _normalize_channel_id(raw: str) -> str:
     while typing one, which pastes a full `<#id>` mention rather than the
     bare id. Strip that down to the id so it's actually usable as one -
     otherwise it ends up stored as a channel_id that never matches a real
-    incoming message's origin_channel_id, and (for /mirror-channel, which
+    incoming message's origin_channel_id, and (for /mirror channel, which
     also uses this as the display name when no name can be resolved) as the
     literal name of the channel created on the other connector."""
     match = _CHANNEL_MENTION_RE.match(raw.strip())
@@ -246,14 +246,6 @@ class DiscordSenderService(SenderService):
             await interaction.response.send_message(self._health.render(), ephemeral=True)
 
         @self.tree.command(
-            name="linked-channels",
-            description="List every channel linked to this one across the bridge",
-            guild=self._guild,
-        )
-        async def linked_channels_command(interaction: discord.Interaction) -> None:
-            await self._handle_linked_channels(interaction)
-
-        @self.tree.command(
             name="linked-categories",
             description="List every Category linked to this channel's Category across the bridge",
             guild=self._guild,
@@ -271,29 +263,6 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, local_id: discord.Member | None = None
         ) -> None:
             await self._handle_linked_users(interaction, local_id)
-
-        async def link_channel_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._linker.connectors if self._linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors)
-
-        @self.tree.command(
-            name="link-channel",
-            description="Link a channel from another bridge connector to this channel",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to link from (see /status for configured connectors)",
-            external_id="Channel id on that connector",
-            local_id="Channel id on this connector (defaults to the current channel)",
-        )
-        @app_commands.autocomplete(service=link_channel_service_autocomplete)
-        async def link_channel_command(
-            interaction: discord.Interaction, service: str, external_id: str, local_id: str | None = None
-        ) -> None:
-            await self._handle_link_channel(interaction, service, external_id, local_id)
 
         async def link_category_service_autocomplete(
             interaction: discord.Interaction, current: str
@@ -364,50 +333,6 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_link_user(interaction, service, external_id, local_id)
 
-        async def mirror_channel_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._linker.connectors if self._linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors, include_all=True)
-
-        @self.tree.command(
-            name="mirror-channel",
-            description="Ensure a linked counterpart of a channel exists on another connector (or all of them)",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to mirror to, or 'all' for every configured connector",
-            local_id="Channel id on this connector (defaults to the current channel)",
-        )
-        @app_commands.autocomplete(service=mirror_channel_service_autocomplete)
-        async def mirror_channel_command(
-            interaction: discord.Interaction, service: str, local_id: str | None = None
-        ) -> None:
-            await self._handle_mirror_channel(interaction, service, local_id)
-
-        async def unlink_channel_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._linker.connectors if self._linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors, include_all=True)
-
-        @self.tree.command(
-            name="unlink-channel",
-            description="Unlink a channel's bridge - one connector, or the whole group (default: all)",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to unlink, or 'all' to dissolve the whole bridge group (default: all)",
-            local_id="Channel id on this connector (defaults to the current channel)",
-        )
-        @app_commands.autocomplete(service=unlink_channel_service_autocomplete)
-        async def unlink_channel_command(
-            interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
-        ) -> None:
-            await self._handle_unlink_channel(interaction, service, local_id)
-
         async def unlink_category_service_autocomplete(
             interaction: discord.Interaction, current: str
         ) -> list[app_commands.Choice[str]]:
@@ -449,13 +374,20 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_unlink_user(interaction, service, local_id)
 
-        # Roles use the `/link role`, `/unlink role`, `/linked roles`,
-        # `/mirror role` subcommand form (app_commands groups) rather than the
-        # flat `-role` names the other link commands still use - a later step
-        # migrates those onto the same shape.
+        # Channels and roles use the `/link <noun>`, `/unlink <noun>`,
+        # `/linked <noun>`, `/mirror <noun>` subcommand form (app_commands
+        # groups). Categories, emotes and users still use the flat `-category`
+        # / `-emote` / `-user` names above - a later step migrates those too.
         def role_service_autocomplete(*, include_all: bool):
             async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
                 connectors = self._role_linker.connectors if self._role_linker is not None else {}
+                return _connector_autocomplete_choices(current, connectors, include_all=include_all)
+
+            return _ac
+
+        def channel_service_autocomplete(*, include_all: bool):
+            async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+                connectors = self._linker.connectors if self._linker is not None else {}
                 return _connector_autocomplete_choices(current, connectors, include_all=include_all)
 
             return _ac
@@ -514,6 +446,51 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, local_id: str, service: str | None = None
         ) -> None:
             await self._handle_mirror_role(interaction, local_id, service)
+
+        @link_group.command(name="channel", description="Link a channel from another connector to a local channel")
+        @app_commands.describe(
+            local_id="Channel id or name on this connector (defaults to the current channel)",
+            service="Connector id to link from (see /status for configured connectors)",
+            external_id="Channel id or name on that connector",
+        )
+        @app_commands.autocomplete(service=channel_service_autocomplete(include_all=False))
+        async def link_channel_command(
+            interaction: discord.Interaction, service: str, external_id: str, local_id: str | None = None
+        ) -> None:
+            await self._handle_link_channel(interaction, service, external_id, local_id)
+
+        @unlink_group.command(
+            name="channel", description="Unlink a channel - one connector, or the whole group (default: all)"
+        )
+        @app_commands.describe(
+            local_id="Channel id or name on this connector (defaults to the current channel)",
+            service="Connector id to unlink, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=channel_service_autocomplete(include_all=True))
+        async def unlink_channel_command(
+            interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        ) -> None:
+            await self._handle_unlink_channel(interaction, service, local_id)
+
+        @linked_group.command(
+            name="channels", description="List channels linked to a given channel (omit it for the current channel)"
+        )
+        @app_commands.describe(local_id="Channel id or name on this connector (defaults to the current channel)")
+        async def linked_channels_command(
+            interaction: discord.Interaction, local_id: str | None = None
+        ) -> None:
+            await self._handle_linked_channels(interaction, local_id)
+
+        @mirror_group.command(name="channel", description="Ensure a linked counterpart of a channel exists elsewhere")
+        @app_commands.describe(
+            local_id="Channel id or name on this connector (defaults to the current channel)",
+            service="Connector id to mirror to, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=channel_service_autocomplete(include_all=True))
+        async def mirror_channel_command(
+            interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        ) -> None:
+            await self._handle_mirror_channel(interaction, service, local_id)
 
     @property
     def client(self) -> discord.Client:
@@ -579,7 +556,7 @@ class DiscordSenderService(SenderService):
         """A Discord thread (including a forum post, also a discord.Thread -
         see _get_or_create_webhook's docstring) has no IRC/Stoat equivalent,
         so instead of relaying its starter message as plain text, bundle a
-        `/mirror-channel all`-style request: ensure a same-named channel
+        `/mirror channel all`-style request: ensure a same-named channel
         exists and is linked on every other connector, then relay the
         thread's own starter message into it as the originating user. Only
         fires for a thread whose parent channel is itself already bridged,
@@ -600,7 +577,7 @@ class DiscordSenderService(SenderService):
         thread's *parent channel* - not any real Discord Category the parent
         itself belongs to - so every thread/forum-post under the same parent
         groups together on the destination, deliberately overriding the
-        general "mirror the source's own Category" rule /mirror-channel
+        general "mirror the source's own Category" rule /mirror channel
         otherwise follows. The Category takes each destination's *own* name
         for the parent channel (via `category_from_channel_id`), falling back
         to the Discord name only where the parent isn't linked there.
@@ -937,7 +914,7 @@ class DiscordSenderService(SenderService):
 
     async def get_channel_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> name lookup, used as this connector's
-        `ConnectorInfo.resolve_channel_name` for `/link-channel`."""
+        `ConnectorInfo.resolve_channel_name` for `/link channel`."""
         try:
             channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         except (discord.HTTPException, discord.NotFound, ValueError):
@@ -945,13 +922,33 @@ class DiscordSenderService(SenderService):
             return None
         return getattr(channel, "name", None)
 
+    async def resolve_channel_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare channel name to its id so the `/link channel` etc.
+        commands accept either - this connector's
+        `ConnectorInfo.resolve_channel_id_by_name`. A token that's already a
+        real channel id (bare, or a pasted `<#id>` mention) is returned as
+        the bare id; an unrecognized token yields None (ChannelLinker then
+        treats it as a literal id). Case-insensitive; first match wins
+        (Discord channel names aren't unique)."""
+        token = _normalize_channel_id(token).strip()
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        if token.isdigit() and guild.get_channel(int(token)) is not None:
+            return token
+        lowered = token.lstrip("#").casefold()
+        for channel in (*guild.text_channels, *guild.voice_channels):
+            if channel.name.casefold() == lowered:
+                return str(channel.id)
+        return None
+
     async def get_channel_category_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> Category-name lookup, used by
-        `/mirror-channel` to carry a channel's Category across to the
+        `/mirror channel` to carry a channel's Category across to the
         destination connector. Catches broadly (not just discord.py's own
         HTTPException/NotFound) since an id that isn't a real channel this
         client can see - e.g. a bare Stoat/IRC-style name typed into
-        /mirror-channel's local_id option - can fail in ways short
+        /mirror channel's local_id option - can fail in ways short
         of a clean discord.py exception (fetch_channel(), unlike
         get_channel_name's other call sites, isn't otherwise guarded here)."""
         try:
@@ -1072,12 +1069,15 @@ class DiscordSenderService(SenderService):
 
         return GuildStructure(groups=groups, ungrouped_channels=ungrouped)
 
-    async def _handle_linked_channels(self, interaction: discord.Interaction) -> None:
+    async def _handle_linked_channels(
+        self, interaction: discord.Interaction, local_id: str | None = None
+    ) -> None:
         if self._linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
+        channel_id = _normalize_channel_id(local_id) if local_id else str(interaction.channel_id)
         summary = await self._linker.list_linked_channels(
-            local_connector=self.connector_id, local_channel_id=str(interaction.channel_id)
+            local_connector=self.connector_id, local_channel_id=channel_id
         )
         await interaction.response.send_message(summary, ephemeral=True)
 
@@ -1103,7 +1103,7 @@ class DiscordSenderService(SenderService):
         if local_id is not None:
             local_id = _normalize_channel_id(local_id)
         logger.info(
-            "[discord:%s] %s ran /link-channel service=%s external_id=%s local_id=%s",
+            "[discord:%s] %s ran /link channel service=%s external_id=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
@@ -1120,7 +1120,7 @@ class DiscordSenderService(SenderService):
                 destination_id=local_id,
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /link-channel rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /link channel rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -1353,7 +1353,7 @@ class DiscordSenderService(SenderService):
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_mirror_channel(
-        self, interaction: discord.Interaction, service: str, local_id: str | None
+        self, interaction: discord.Interaction, service: str | None, local_id: str | None
     ) -> None:
         if self._linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
@@ -1366,14 +1366,14 @@ class DiscordSenderService(SenderService):
             channel_name = getattr(interaction.channel, "name", channel_id)
         channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
-            "[discord:%s] %s ran /mirror-channel service=%s local_id=%s",
+            "[discord:%s] %s ran /mirror channel service=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
             channel_id,
         )
         try:
-            if service.lower() == "all":
+            if service is None or service.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
                     local_connector=self.connector_id,
                     local_channel_id=channel_id,
@@ -1389,7 +1389,7 @@ class DiscordSenderService(SenderService):
                     local_channel_category=channel_category,
                 )
         except LinkError as exc:
-            logger.info("[discord:%s] /mirror-channel rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /mirror channel rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -1402,7 +1402,7 @@ class DiscordSenderService(SenderService):
             return
         channel_id = _normalize_channel_id(local_id) if local_id is not None else str(interaction.channel_id)
         logger.info(
-            "[discord:%s] %s ran /unlink-channel service=%s local_id=%s",
+            "[discord:%s] %s ran /unlink channel service=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
@@ -1413,7 +1413,7 @@ class DiscordSenderService(SenderService):
                 local_connector=self.connector_id, local_channel_id=channel_id, destination=service
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /unlink-channel rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /unlink channel rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)

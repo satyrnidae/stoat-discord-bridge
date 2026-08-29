@@ -3,7 +3,7 @@ every other connector's receiver service (posts into that platform), and
 records what got relayed where via MongoDB for sync tracking.
 
 Nothing links automatically: `ChannelMappingRepository` rows only come from
-the `/link-channel` and `/mirror-channels` admin commands (see
+the `/link channel` and `/mirror-channels` admin commands (see
 admin_commands.py and each services/*.py module's command handler).
 """
 
@@ -540,12 +540,13 @@ async def run(config: BridgeConfig) -> None:
         )
         coordinator.register_receiver(receiver)
         # No ensure_channel: Discord has no channel-creation capability in
-        # this codebase, so /mirror-channel reports it unsupported rather
+        # this codebase, so /mirror channel reports it unsupported rather
         # than this hook ever being called.
         connector_infos[dc.id] = ConnectorInfo(
             id=dc.id,
             label=dc.label,
             resolve_channel_name=sender.get_channel_name,
+            resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
             resolve_user_name=sender.get_user_name,
             resolve_category_name=sender.get_category_name,
             resolve_role_name=sender.get_role_name,
@@ -591,6 +592,7 @@ async def run(config: BridgeConfig) -> None:
             id=sc.id,
             label=sc.label,
             resolve_channel_name=sender.get_channel_name,
+            resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
             ensure_channel=sender.ensure_channel,
             resolve_user_name=sender.get_user_name,
             resolve_category_name=sender.get_category_name,

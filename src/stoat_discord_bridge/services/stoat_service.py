@@ -78,21 +78,21 @@ _CONTENT_LIMIT = 2000
 # COMMANDS.md for full per-command detail - this is a compact pointer to it.
 _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /status - sync target health, read-only
-  /linked-channels - channels bridged to this one, read-only
+  /linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
   /linked-categories - Categories bridged to this channel's Category, read-only
   /linked-users [local_id] - cross-connector user links, read-only
-  /link-channel <service> <external_id> [local_id] - bridge a channel (Manage Server)
+  /linked roles [local_id|name] - roles linked across the bridge, read-only
+  /link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
   /link-category <service> <external_id> [local_id] - bridge a Category; new channels in either sync automatically (Manage Server)
   /link-user <service> <external_id> <local_id> - link a user for mentions/masquerading (Manage Server)
   /link-emote <service> <external_id> <local_id> - link a custom emoji (Manage Server)
-  /mirror-channel <service|all> [local_id] - create+link a matching channel (Manage Server)
+  /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
+  /mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
+  /mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
   /mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
-  /unlink-channel [service|all] [local_id] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
+  /unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   /unlink-category [service|all] - unlink this channel's Category (default: whole group) from one connector, or the whole group (Manage Server)
   /unlink-user [service|all] [local_id] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
-  /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
-  /mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
-  /linked roles [local_id|name] - roles linked across the bridge, read-only
   /unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
@@ -384,7 +384,7 @@ class StoatSenderService(SenderService):
 
     async def get_channel_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> name lookup, used as this connector's
-        `ConnectorInfo.resolve_channel_name` for `/link-channel`.
+        `ConnectorInfo.resolve_channel_name` for `/link channel`.
 
         TODO: verify stoat.py's get_channel(partial=False) semantics - this
         assumes it returns a fully-populated channel object synchronously,
@@ -395,6 +395,26 @@ class StoatSenderService(SenderService):
         except Exception:
             return None
         return getattr(channel, "name", None)
+
+    async def resolve_channel_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare channel name to its id so the `/link channel` etc.
+        commands accept either - this connector's
+        `ConnectorInfo.resolve_channel_id_by_name`. A token that's already a
+        real channel id is returned as-is; an unrecognized token yields None
+        (ChannelLinker then treats it as a literal id). Case-insensitive;
+        first match wins."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            channels = list(getattr(server, "channels", []) or [])
+        except Exception:
+            return None
+        if any(str(c.id) == token for c in channels):
+            return token
+        lowered = token.casefold()
+        for channel in channels:
+            if getattr(channel, "name", "").casefold() == lowered:
+                return str(channel.id)
+        return None
 
     async def get_channel_category_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> Category-title lookup, for `/mirror-
@@ -433,7 +453,7 @@ class StoatSenderService(SenderService):
         is_thread_category: bool = False,
         category_parent_channel_id: str | None = None,
     ) -> str:
-        """Idempotent get-or-create by name, for `/mirror-channel`'s
+        """Idempotent get-or-create by name, for `/mirror channel`'s
         `ConnectorInfo.ensure_channel` hook - same "match existing by name,
         else create" logic `_mirror_guild_structure` already uses in bulk,
         just for a single channel outside that flow. If `category` is given,
@@ -757,14 +777,23 @@ class StoatSenderService(SenderService):
         if two == "/mirror role":
             await self._handle_mirror_role(message, parts[2:])
             return
+        if two == "/link channel":
+            await self._handle_link_channel(message, parts[2:])
+            return
+        if two == "/unlink channel":
+            await self._handle_unlink_channel(message, parts[2:])
+            return
+        if two == "/linked channels":
+            await self._handle_linked_channels(message, parts[2:])
+            return
+        if two == "/mirror channel":
+            await self._handle_mirror_channel(message, parts[2:])
+            return
         if cmd == "/status":
             await message.channel.send(self._health.render())
             return
         if cmd == "/bridge-help":
             await message.channel.send(_HELP_TEXT)
-            return
-        if cmd == "/linked-channels":
-            await self._handle_linked_channels(message)
             return
         if cmd == "/linked-categories":
             await self._handle_linked_categories(message)
@@ -775,9 +804,6 @@ class StoatSenderService(SenderService):
         if cmd == "/mirror-channels":
             await self._handle_mirror_channels(message, parts[1:])
             return
-        if cmd == "/link-channel":
-            await self._handle_link_channel(message, parts[1:])
-            return
         if cmd == "/link-category":
             await self._handle_link_category(message, parts[1:])
             return
@@ -786,12 +812,6 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/link-user":
             await self._handle_link_user(message, parts[1:])
-            return
-        if cmd == "/mirror-channel":
-            await self._handle_mirror_channel(message, parts[1:])
-            return
-        if cmd == "/unlink-channel":
-            await self._handle_unlink_channel(message, parts[1:])
             return
         if cmd == "/unlink-category":
             await self._handle_unlink_category(message, parts[1:])
@@ -943,12 +963,15 @@ class StoatSenderService(SenderService):
     async def close(self) -> None:
         await self._client.close()
 
-    async def _handle_linked_channels(self, message) -> None:
+    async def _handle_linked_channels(self, message, args: list[str] | None = None, /) -> None:
+        """`/linked channels [local_id|name]` - read-only. Defaults to the
+        invoking channel."""
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
+        local_id = args[0] if args else str(message.channel.id)
         summary = await self._linker.list_linked_channels(
-            local_connector=self.connector_id, local_channel_id=str(message.channel.id)
+            local_connector=self.connector_id, local_channel_id=local_id
         )
         await message.channel.send(summary)
 
@@ -969,7 +992,7 @@ class StoatSenderService(SenderService):
         """`/linked-users [local_id]`: with no argument, lists every
         cross-connector user link (for debugging); given a Stoat user id,
         shows just that identity's link. No permission gate - read-only,
-        same as /status and /linked-channels."""
+        same as /status and /linked channels."""
         if self._user_linker is None:
             await message.channel.send("User linking isn't configured.")
             return
@@ -1019,25 +1042,30 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_link_channel(self, message, args: list[str], /) -> None:
+        """`/link channel [local_id|name] <service> <external_id|name>`: with
+        two args they're `service external_id` and the local side defaults to
+        the invoking channel; with three, the first is the local channel."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
-        if len(args) < 2:
-            await message.channel.send("Usage: /link-channel <service> <external_id> [<local_id>]")
+        if len(args) == 2:
+            local_id, (service, external_id) = None, args
+        elif len(args) >= 3:
+            local_id, service, external_id = args[0], args[1], args[2]
+        else:
+            await message.channel.send("Usage: /link channel [local_id|name] <service> <external_id|name>")
             return
-        service, external_id, *rest = args
-        local_id = rest[0] if rest else None
 
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-channel service=%s external_id=%s local_id=%s",
+            "[stoat:%s] %s ran /link channel local_id=%s service=%s external_id=%s",
             self.connector_id,
             message.author.id,
+            local_id,
             service,
             external_id,
-            local_id,
         )
         try:
             summary = await self._linker.link_channel(
@@ -1049,7 +1077,7 @@ class StoatSenderService(SenderService):
                 destination_id=local_id,
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /link-channel rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /link channel rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -1166,32 +1194,31 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_mirror_channel(self, message, args: list[str], /) -> None:
+        """`/mirror channel [local_id|name] [<service>|all]`: local_id
+        defaults to the invoking channel; service defaults to "all"."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
-        if not args:
-            await message.channel.send("Usage: /mirror-channel <service|all> [local_id]")
-            return
-        service = args[0]
-        if len(args) > 1:
-            channel_id = channel_name = args[1]  # explicit id - no way to resolve its real display name
+        if args:
+            channel_id = channel_name = args[0]  # explicit id/name - no way to resolve its real display name
         else:
             channel_id = str(message.channel.id)
             channel_name = getattr(message.channel, "name", channel_id)
+        service = args[1] if len(args) > 1 else None
 
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
         channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
-            "[stoat:%s] %s ran /mirror-channel service=%s local_id=%s",
+            "[stoat:%s] %s ran /mirror channel local_id=%s service=%s",
             self.connector_id,
             message.author.id,
-            service,
             channel_id,
+            service,
         )
         try:
-            if service.lower() == "all":
+            if service is None or service.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
                     local_connector=self.connector_id,
                     local_channel_id=channel_id,
@@ -1207,37 +1234,37 @@ class StoatSenderService(SenderService):
                     local_channel_category=channel_category,
                 )
         except LinkError as exc:
-            logger.info("[stoat:%s] /mirror-channel rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /mirror channel rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
 
     async def _handle_unlink_channel(self, message, args: list[str], /) -> None:
-        """`/unlink-channel [service|all] [local_id]`: service
-        defaults to "all" (dissolving the whole bridge group);
-        local_id defaults to the invoking channel."""
+        """`/unlink channel [local_id|name] [<service>|all]`: local_id
+        defaults to the invoking channel; service defaults to "all"
+        (dissolving the whole bridge group)."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
-        service = args[0] if args else None
-        channel_id = args[1] if len(args) > 1 else str(message.channel.id)
+        channel_id = args[0] if args else str(message.channel.id)
+        service = args[1] if len(args) > 1 else None
 
         if self._linker is None:
             await message.channel.send("Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /unlink-channel service=%s local_id=%s",
+            "[stoat:%s] %s ran /unlink channel local_id=%s service=%s",
             self.connector_id,
             message.author.id,
-            service,
             channel_id,
+            service,
         )
         try:
             summary = await self._linker.unlink_channel(
                 local_connector=self.connector_id, local_channel_id=channel_id, destination=service
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /unlink-channel rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /unlink channel rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)

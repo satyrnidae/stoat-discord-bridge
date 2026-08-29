@@ -258,7 +258,7 @@ async def test_link_channel_success():
     sender = _make_sender(linker=linker)
     message = _admin_message(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._handle_link_channel(message, ["discord", "src-id", "dest-id"])
+    await sender._handle_link_channel(message, ["dest-id", "discord", "src-id"])
 
     assert linker.link_channel_calls == [
         {
@@ -289,7 +289,10 @@ async def test_link_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_link_channel(message, ["discord"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-channel <service> <external_id> [<local_id>]"
+    assert (
+        message.channel.sent[0]["content"]
+        == "Usage: /link channel [local_id|name] <service> <external_id|name>"
+    )
 
 
 async def test_link_channel_without_a_configured_linker():
@@ -384,12 +387,12 @@ async def test_mirror_channel_to_a_single_destination():
     sender = _make_sender(linker=linker)
     message = _admin_message(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._handle_mirror_channel(message, ["discord"])
+    await sender._handle_mirror_channel(message, ["general", "discord"])
 
     assert linker.mirror_channel_calls == [
         {
             "local_connector": "stoat",
-            "local_channel_id": "c1",
+            "local_channel_id": "general",
             "local_channel_name": "general",
             "destination": "discord",
             "local_channel_category": None,
@@ -406,7 +409,7 @@ async def test_mirror_channel_resolves_and_forwards_the_channels_category():
     sender = _make_sender(linker=linker, client=client)
     message = _admin_message(channel=channel)
 
-    await sender._handle_mirror_channel(message, ["discord"])
+    await sender._handle_mirror_channel(message, ["c1", "discord"])
 
     assert linker.mirror_channel_calls[0]["local_channel_category"] == "Team Alpha"
 
@@ -416,10 +419,20 @@ async def test_mirror_channel_to_all_is_case_insensitive():
     sender = _make_sender(linker=linker)
     message = _admin_message()
 
-    await sender._handle_mirror_channel(message, ["ALL"])
+    await sender._handle_mirror_channel(message, ["general", "ALL"])
 
     assert linker.mirror_channel_all_calls
     assert message.channel.sent[0]["content"] == "mirrored to all ok"
+
+
+async def test_mirror_channel_no_args_mirrors_the_current_channel_to_all():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    message = _admin_message(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._handle_mirror_channel(message, [])
+
+    assert linker.mirror_channel_all_calls[0]["local_channel_id"] == "c1"
 
 
 async def test_mirror_channel_uses_an_explicit_channel_id_when_given():
@@ -427,20 +440,11 @@ async def test_mirror_channel_uses_an_explicit_channel_id_when_given():
     sender = _make_sender(linker=linker)
     message = _admin_message()
 
-    await sender._handle_mirror_channel(message, ["discord", "explicit-id"])
+    await sender._handle_mirror_channel(message, ["explicit-id", "discord"])
 
     call = linker.mirror_channel_calls[0]
     assert call["local_channel_id"] == "explicit-id"
     assert call["local_channel_name"] == "explicit-id"
-
-
-async def test_mirror_channel_missing_destination_sends_usage():
-    sender = _make_sender(linker=FakeLinker())
-    message = _admin_message()
-
-    await sender._handle_mirror_channel(message, [])
-
-    assert message.channel.sent[0]["content"] == "Usage: /mirror-channel <service|all> [local_id]"
 
 
 async def test_mirror_channel_without_a_configured_linker():
@@ -821,7 +825,7 @@ async def test_unlink_channel_with_a_specific_destination():
     sender = _make_sender(linker=linker)
     message = _admin_message(channel=FakeChannel(id="c1"))
 
-    await sender._handle_unlink_channel(message, ["discord"])
+    await sender._handle_unlink_channel(message, ["c1", "discord"])
 
     assert linker.unlink_channel_calls == [{"local_connector": "stoat", "local_channel_id": "c1", "destination": "discord"}]
 
@@ -831,7 +835,7 @@ async def test_unlink_channel_with_a_specific_local_channel_id():
     sender = _make_sender(linker=linker)
     message = _admin_message(channel=FakeChannel(id="c1"))
 
-    await sender._handle_unlink_channel(message, ["discord", "other-channel"])
+    await sender._handle_unlink_channel(message, ["other-channel", "discord"])
 
     assert linker.unlink_channel_calls == [
         {"local_connector": "stoat", "local_channel_id": "other-channel", "destination": "discord"}
@@ -1133,7 +1137,7 @@ async def test_handle_channel_create_noop_for_a_channel_with_no_category():
     assert category_linker.sync_new_channel_calls == []
 
 
-# ---------------------------------------------------------------- /link role ... two-token routing
+# ---------------------------------------------------------------- /link channel & /link role two-token routing
 
 
 def _cmd_message(content: str, *, manage_server: bool = True):
@@ -1182,8 +1186,37 @@ async def test_link_role_non_admin_rejected_linked_roles_allowed():
     ]
 
 
-async def test_two_token_routing_does_not_shadow_hyphenated_link_channel():
+async def test_two_token_channel_commands_route_to_their_handlers():
     linker = FakeLinker()
     sender = _make_sender(linker=linker, role_linker=FakeRoleLinker())
-    await sender._handle_message(_cmd_message("/link-channel discord src dest"))
-    assert linker.link_channel_calls and linker.link_channel_calls[0]["source"] == "discord"
+    await sender._handle_message(_cmd_message("/link channel dest discord src"))
+    await sender._handle_message(_cmd_message("/mirror channel general discord"))
+    await sender._handle_message(_cmd_message("/unlink channel general discord"))
+    await sender._handle_message(_cmd_message("/linked channels general"))
+    assert linker.link_channel_calls == [
+        {
+            "local_connector": "stoat",
+            "local_channel_id": "c1",
+            "local_channel_name": "general",
+            "source": "discord",
+            "source_id": "src",
+            "destination_id": "dest",
+        }
+    ]
+    assert linker.mirror_channel_calls[0]["destination"] == "discord"
+    assert linker.unlink_channel_calls == [
+        {"local_connector": "stoat", "local_channel_id": "general", "destination": "discord"}
+    ]
+    assert linker.list_linked_channels_calls == [
+        {"local_connector": "stoat", "local_channel_id": "general"}
+    ]
+
+
+async def test_two_token_channel_and_role_commands_do_not_shadow_each_other():
+    linker = FakeLinker()
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(linker=linker, role_linker=role_linker)
+    await sender._handle_message(_cmd_message("/link channel dest discord src"))
+    await sender._handle_message(_cmd_message("/link role Mods discord 111"))
+    assert len(linker.link_channel_calls) == 1
+    assert len(role_linker.link_role_calls) == 1

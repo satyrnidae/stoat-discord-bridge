@@ -123,6 +123,33 @@ async def test_link_channel_resolve_name_failure_falls_back_to_id(fake_db):
     assert "channel 'd1' (d1)" in summary  # name resolution failed - fell back to the raw id
 
 
+async def test_link_channel_resolves_bare_names_and_falls_back_to_id(fake_db):
+    async def d_by_name(token):
+        return {"announce": "111"}.get(token)
+
+    async def s_by_name(token):
+        return {"news": "999"}.get(token)
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_channel_id_by_name=d_by_name),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", resolve_channel_id_by_name=s_by_name),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="cur", local_channel_name="cur",
+        source="discord", source_id="announce", destination_id="news",
+    )
+    assert await channel_mappings.get_bridge_group("discord", "111") is not None
+    assert await channel_mappings.get_bridge_group("stoat", "999") is not None
+    # a name the resolver doesn't know is kept as a literal id
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="cur2", local_channel_name="cur2",
+        source="discord", source_id="raw-token", destination_id=None,
+    )
+    assert await channel_mappings.get_bridge_group("discord", "raw-token") is not None
+
+
 # ---------------------------------------------------------------- ChannelLinker.list_linked_channels
 
 
