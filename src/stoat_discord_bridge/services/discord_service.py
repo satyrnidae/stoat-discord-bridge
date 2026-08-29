@@ -48,6 +48,7 @@ from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
     OnEmojiDeleted,
     OnMemberRolesChanged,
+    OnChannelRolePermissionChanged,
     OnMessage,
     OnReaction,
     OnRoleDeleted,
@@ -65,6 +66,13 @@ from stoat_discord_bridge.services.mentions import (
     rewrite_mentions,
     rewrite_role_mentions,
 )
+from stoat_discord_bridge.services.role_sync import (
+    NEUTRAL_PERMISSIONS,
+    discord_overwrite_to_neutral,
+    neutral_to_discord_pair,
+)
+
+_MAPPED_DISCORD_PERM_ATTRS = {d_attr for d_attr, _ in NEUTRAL_PERMISSIONS.values()}
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
@@ -165,6 +173,11 @@ class _DiscordClient(discord.Client):
     async def on_guild_role_delete(self, role: discord.Role) -> None:
         await self._owner._handle_role_delete(role)
 
+    async def on_guild_channel_update(
+        self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+    ) -> None:
+        await self._owner._handle_channel_update(before, after)
+
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         await self._owner._handle_raw_reaction(payload, added=True)
 
@@ -194,6 +207,7 @@ class DiscordSenderService(SenderService):
         on_member_roles_changed: "OnMemberRolesChanged | None" = None,
         on_role_renamed: "OnRoleRenamed | None" = None,
         on_role_deleted: "OnRoleDeleted | None" = None,
+        on_channel_role_permission_changed: "OnChannelRolePermissionChanged | None" = None,
     ) -> None:
         # linker/emote_linker/user_linker/category_linker/role_linker are only
         # needed to serve the corresponding `/link-*` commands; None is
@@ -211,6 +225,7 @@ class DiscordSenderService(SenderService):
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted
+        self._on_channel_role_permission_changed = on_channel_role_permission_changed
         self._commands_synced = False
         # Discord thread auto-mirror (_handle_thread_create) bookkeeping - see
         # both methods' docstrings. _pending_thread_starter maps a thread id
@@ -434,76 +449,67 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_unlink_user(interaction, service, local_id)
 
-        async def role_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._role_linker.connectors if self._role_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors, include_all=True)
+        # Roles use the `/link role`, `/unlink role`, `/linked roles`,
+        # `/mirror role` subcommand form (app_commands groups) rather than the
+        # flat `-role` names the other link commands still use - a later step
+        # migrates those onto the same shape.
+        def role_service_autocomplete(*, include_all: bool):
+            async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+                connectors = self._role_linker.connectors if self._role_linker is not None else {}
+                return _connector_autocomplete_choices(current, connectors, include_all=include_all)
 
-        async def link_role_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._role_linker.connectors if self._role_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors)
+            return _ac
 
-        @self.tree.command(
-            name="link-role",
-            description="Link a role from another connector to a local role (accepts a role name or id)",
-            guild=self._guild,
+        _manage = discord.Permissions(manage_guild=True)
+        link_group = app_commands.Group(
+            name="link", description="Link an entity across the bridge", default_permissions=_manage
         )
-        @app_commands.default_permissions(manage_guild=True)
+        unlink_group = app_commands.Group(
+            name="unlink", description="Unlink an entity's bridge", default_permissions=_manage
+        )
+        linked_group = app_commands.Group(name="linked", description="List cross-bridge links")
+        mirror_group = app_commands.Group(
+            name="mirror", description="Create+link a matching entity elsewhere", default_permissions=_manage
+        )
+        for _g in (link_group, unlink_group, linked_group, mirror_group):
+            self.tree.add_command(_g, guild=self._guild)
+
+        @link_group.command(name="role", description="Link a role from another connector to a local role")
         @app_commands.describe(
             local_id="Role id or name on this connector",
-            service="Connector id to link from (see /status for configured connectors)",
+            service="Connector id to link from",
             external_id="Role id or name on that connector",
         )
-        @app_commands.autocomplete(service=link_role_service_autocomplete)
+        @app_commands.autocomplete(service=role_service_autocomplete(include_all=False))
         async def link_role_command(
             interaction: discord.Interaction, local_id: str, service: str, external_id: str
         ) -> None:
             await self._handle_link_role(interaction, local_id, service, external_id)
 
-        @self.tree.command(
-            name="unlink-role",
-            description="Unlink a role's bridge - one connector, or the whole group (default: all)",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
+        @unlink_group.command(name="role", description="Unlink a role - one connector, or the whole group (default: all)")
         @app_commands.describe(
             local_id="Role id or name on this connector",
-            service="Connector id to unlink, or 'all' to dissolve the whole bridge group (default: all)",
+            service="Connector id to unlink, or 'all' (default: all)",
         )
-        @app_commands.autocomplete(service=role_service_autocomplete)
+        @app_commands.autocomplete(service=role_service_autocomplete(include_all=True))
         async def unlink_role_command(
             interaction: discord.Interaction, local_id: str, service: str | None = None
         ) -> None:
             await self._handle_unlink_role(interaction, local_id, service)
 
-        @self.tree.command(
-            name="linked-roles",
-            description="List every role linked to a given role across the bridge (omit the role to list all)",
-            guild=self._guild,
-        )
-        @app_commands.describe(
-            local_id="Role id or name on this connector (omit to list every linked role)",
-            service="Unused filter placeholder; pass 'all' or omit",
-        )
+        @linked_group.command(name="roles", description="List roles linked across the bridge (omit the role to list all)")
+        @app_commands.describe(local_id="Role id or name on this connector (omit to list every linked role)")
         async def linked_roles_command(
-            interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+            interaction: discord.Interaction, local_id: str | None = None
         ) -> None:
-            await self._handle_linked_roles(interaction, local_id, service)
+            await self._handle_linked_roles(interaction, local_id, None)
 
-        @self.tree.command(
-            name="mirror-role",
-            description="Ensure a linked counterpart of a role exists on another connector (or all of them)",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
+        @mirror_group.command(name="role", description="Ensure a linked counterpart of a role exists elsewhere")
         @app_commands.describe(
             local_id="Role id or name on this connector",
-            service="Connector id to mirror to, or 'all' for every configured connector (default: all)",
+            service="Connector id to mirror to, or 'all' (default: all)",
         )
-        @app_commands.autocomplete(service=role_service_autocomplete)
+        @app_commands.autocomplete(service=role_service_autocomplete(include_all=True))
         async def mirror_role_command(
             interaction: discord.Interaction, local_id: str, service: str | None = None
         ) -> None:
@@ -731,6 +737,74 @@ class DiscordSenderService(SenderService):
         if self._on_role_deleted is None or role.guild.id != self._config.guild_id:
             return
         await self._on_role_deleted(self.connector_id, str(role.id))
+
+    async def _handle_channel_update(
+        self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+    ) -> None:
+        """A channel (or category) was edited - if a role's permission
+        overwrite changed and the callback is wired, report the new
+        override for permission mirroring. This event fires for many
+        unrelated edits, so it diffs the overwrites and no-ops fast."""
+        if self._on_channel_role_permission_changed is None or getattr(after, "guild", None) is None:
+            return
+        if after.guild.id != self._config.guild_id:
+            return
+        before_ov = {t: o for t, o in before.overwrites.items() if isinstance(t, discord.Role)}
+        after_ov = {t: o for t, o in after.overwrites.items() if isinstance(t, discord.Role)}
+        changed = set(before_ov) | set(after_ov)
+        is_category = isinstance(after, discord.CategoryChannel)
+        for role in changed:
+            b = before_ov.get(role)
+            a = after_ov.get(role)
+            if b == a:
+                continue
+            allow, deny = (a.pair() if a is not None else discord.PermissionOverwrite().pair())
+            override = discord_overwrite_to_neutral(allow, deny)
+            await self._on_channel_role_permission_changed(
+                self.connector_id, str(after.id), str(role.id), override, is_category=is_category
+            )
+
+    async def get_channel_role_permission(self, channel_id: str, role_id: str):
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            channel = guild.get_channel(int(channel_id))
+            role = guild.get_role(int(role_id))
+        except ValueError:
+            return None
+        if channel is None or role is None:
+            return None
+        allow, deny = channel.overwrites_for(role).pair()
+        return discord_overwrite_to_neutral(allow, deny)
+
+    async def set_channel_role_permission(self, channel_id: str, role_id: str, override) -> None:
+        """Idempotent - skips the API call if the overwrite already matches."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return
+        try:
+            channel = guild.get_channel(int(channel_id))
+            role = guild.get_role(int(role_id))
+        except ValueError:
+            return
+        if channel is None or role is None:
+            return
+        current = channel.overwrites_for(role)
+        cur_allow, cur_deny = current.pair()
+        if discord_overwrite_to_neutral(cur_allow, cur_deny) == override:
+            return
+        allow, deny = neutral_to_discord_pair(override, discord.Permissions)
+        new = discord.PermissionOverwrite.from_pair(allow, deny)
+        # keep every unmapped bit exactly as the current overwrite had it -
+        # mirroring only ever touches the shared NEUTRAL_PERMISSIONS subset.
+        for name, value in current:
+            if name not in _MAPPED_DISCORD_PERM_ATTRS:
+                setattr(new, name, value)
+        try:
+            await channel.set_permissions(role, overwrite=new, reason="bridge role permission sync")
+        except Exception:
+            logger.exception("[discord:%s] perm sync: set on channel %s role %s failed", self.connector_id, channel_id, role_id)
 
     async def rename_role(self, role_id: str, new_name: str) -> None:
         """Idempotent - skips the API call if the role already has that name,

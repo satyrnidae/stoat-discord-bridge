@@ -220,15 +220,17 @@ its own group named after the forum, with one channel per currently active
 ## Roles: `/link role`, `/mirror role`, `/linked roles`, `/unlink role`
 
 **Discord and Stoat only** (IRC has no role concept, same as Categories).
-These use a new space-separated subcommand syntax with the **local** id
-first, and every id argument also accepts a bare **role name** (resolved
+These use a space-separated subcommand syntax with the **local** id first,
+and every id argument also accepts a bare **role name** (resolved
 case-insensitively; first match wins, since Discord role names aren't
 unique - pass an id when a name is ambiguous). Same already-linked /
 conflicting-group rules as `/link-channel`.
 
-On Discord these are the flat slash commands `/link-role`, `/mirror-role`,
-`/linked-roles`, `/unlink-role` with the argument order below; on Stoat they
-are the literal message commands shown.
+On Discord these are `app_commands` subcommand groups (`/link role`,
+`/unlink role`, `/linked roles`, `/mirror role` - typed exactly like that);
+on Stoat they are the same tokens as a plain chat message. (The other link
+commands still use the flat `/link-channel` form; a later step migrates them
+onto this shape.)
 
 ### `/link role <local_id|name> <service> <external_id|name>`
 
@@ -254,9 +256,9 @@ just that one, `all` (the default) dissolves the whole group. A kick that
 would stand a lone survivor dissolves the group instead. The roles
 themselves are never deleted. Manage Server.
 
-- **Discord**: `/link-role` / `/mirror-role` / `/linked-roles` /
-  `/unlink-role` slash commands.
-- **Stoat**: `/link role …` etc. message commands.
+- **Discord**: `/link role` / `/mirror role` / `/linked roles` /
+  `/unlink role` slash subcommands (Manage Server on all but `/linked roles`).
+- **Stoat**: the same `/link role …` etc. as message commands.
 - **IRC**: not available - IRC has no role concept.
 
 Once roles are linked, three things happen automatically (all best-effort and
@@ -271,9 +273,11 @@ silent):
 - **delete**: deleting a linked role drops just that connector's link entry
   (the counterpart roles are left alone); a link left with a single member is
   dissolved.
-
-Mirroring a linked role's per-channel permission overrides is still a planned
-follow-up.
+- **permission mirroring**: changing a linked role's permission override on a
+  bridge-linked channel or category mirrors the allow/deny onto the linked
+  channel's copy for the linked role on the other connector - only the small
+  set of permission bits that mean the same on Discord and Stoat; every other
+  bit on the target is left untouched.
 
 ## `/unlink-channel [service|all] [local_id]`
 

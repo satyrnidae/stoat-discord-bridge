@@ -2,6 +2,8 @@ import pytest
 
 from stoat_discord_bridge.admin_commands import ConnectorInfo
 from stoat_discord_bridge.bridge import RoleSyncCoordinator
+from stoat_discord_bridge.services.role_sync import RolePermissionOverride
+from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 
@@ -134,3 +136,69 @@ async def test_delete_from_a_trio_keeps_the_remaining_pair(fake_db):
     assert await roles.get_bridge_group("discord", "d") is None
     assert await roles.get_bridge_group("stoat", "s") == "r"
     assert await roles.get_bridge_group("other", "o") == "r"
+
+
+# ---- permission mirroring
+
+
+async def _perm_setup(fake_db):
+    roles = RoleMappingRepository(fake_db)
+    channels = ChannelMappingRepository(fake_db)
+    await roles.upsert(RoleMapping(bridge_group="r", connector_id="discord", role_id="d-mod", role_name="Mod"))
+    await roles.upsert(RoleMapping(bridge_group="r", connector_id="stoat", role_id="s-mod", role_name="Mod"))
+    await channels.upsert(ChannelMapping(bridge_group="c", connector_id="discord", channel_id="d-ch", channel_name="general"))
+    await channels.upsert(ChannelMapping(bridge_group="c", connector_id="stoat", channel_id="s-ch", channel_name="general"))
+
+    sets: list[tuple] = []
+    store = {}
+
+    async def get_perm(channel_id, role_id):
+        return store.get((channel_id, role_id))
+
+    async def set_perm(channel_id, role_id, override):
+        store[(channel_id, role_id)] = override
+        sets.append((channel_id, role_id, override))
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", get_channel_role_permission=get_perm, set_channel_role_permission=set_perm
+        ),
+    }
+    coord = RoleSyncCoordinator(roles, UserMappingRepository(fake_db), connectors, channels, None)
+    return coord, sets, store
+
+
+async def test_permission_change_mirrored_onto_linked_channel_for_linked_role(fake_db):
+    coord, sets, _ = await _perm_setup(fake_db)
+    ov = RolePermissionOverride(allow=frozenset(), deny=frozenset({"send_messages"}))
+    await coord.handle_channel_role_permission("discord", "d-ch", "d-mod", ov)
+    assert sets == [("s-ch", "s-mod", ov)]
+
+
+async def test_permission_change_skipped_when_channel_not_linked(fake_db):
+    coord, sets, _ = await _perm_setup(fake_db)
+    ov = RolePermissionOverride(allow=frozenset({"view_channel"}), deny=frozenset())
+    await coord.handle_channel_role_permission("discord", "unlinked-ch", "d-mod", ov)
+    assert sets == []
+
+
+async def test_permission_change_skipped_when_role_not_linked(fake_db):
+    coord, sets, _ = await _perm_setup(fake_db)
+    ov = RolePermissionOverride(allow=frozenset({"view_channel"}), deny=frozenset())
+    await coord.handle_channel_role_permission("discord", "d-ch", "unlinked-role", ov)
+    assert sets == []
+
+
+async def test_permission_mirror_is_idempotent_and_echo_suppressed(fake_db):
+    coord, sets, _ = await _perm_setup(fake_db)
+    ov = RolePermissionOverride(allow=frozenset(), deny=frozenset({"send_messages"}))
+    await coord.handle_channel_role_permission("discord", "d-ch", "d-mod", ov)
+    assert len(sets) == 1
+    # stoat echoes its own channel-update back
+    await coord.handle_channel_role_permission("stoat", "s-ch", "s-mod", ov)
+    assert len(sets) == 1
+    # a fresh identical change after the suppression entry is consumed is a
+    # no-op because the target already matches
+    await coord.handle_channel_role_permission("discord", "d-ch", "d-mod", ov)
+    assert len(sets) == 1

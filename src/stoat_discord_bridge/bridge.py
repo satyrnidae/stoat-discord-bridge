@@ -13,6 +13,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.admin_commands import (
     CategoryLinker,
@@ -57,6 +58,9 @@ from stoat_discord_bridge.storage.message_sync import MessageRef, MessageSyncRep
 from stoat_discord_bridge.storage.mongo import MongoStore
 from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
+
+if TYPE_CHECKING:
+    from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +254,13 @@ class RoleSyncCoordinator:
       connector drops just that connector's mapping entry (the counterpart
       roles stay - they may still be in use); a group left with one member
       or none is dissolved.
+    - **permissions** (`handle_channel_role_permission`): a linked role's
+      permission override on a bridge-linked channel/category changing on
+      one connector is mirrored onto the linked channel's copy for the
+      linked role on every other connector - only the small subset of
+      permission bits that mean the same thing on both platforms
+      (services/role_sync.NEUTRAL_PERMISSIONS), spliced onto the target's
+      existing override so unmapped bits are left alone.
 
     Best-effort and silent: an unlinked user/role, a target connector
     without the relevant hook, or a hook that raises are all skipped, not
@@ -268,12 +279,86 @@ class RoleSyncCoordinator:
         role_mappings: RoleMappingRepository,
         user_mappings: UserMappingRepository,
         connectors: dict[str, ConnectorInfo],
+        channel_mappings: ChannelMappingRepository | None = None,
+        category_mappings: CategoryMappingRepository | None = None,
     ) -> None:
         self._role_mappings = role_mappings
         self._user_mappings = user_mappings
         self._connectors = connectors
+        self._channel_mappings = channel_mappings
+        self._category_mappings = category_mappings
         self._recent: dict[tuple[str, str, str, bool], float] = {}
         self._recent_renames: dict[tuple[str, str, str], float] = {}
+        self._recent_perms: dict[tuple[str, str, str], float] = {}
+
+    async def handle_channel_role_permission(
+        self,
+        origin_connector_id: str,
+        channel_id: str,
+        role_id: str,
+        override: "RolePermissionOverride",
+        *,
+        is_category: bool = False,
+    ) -> None:
+        """A linked role's permission override on a bridge-linked channel (or
+        category, `is_category=True`) changed. Mirror the mapped bits onto
+        every other connector's linked channel for the linked role. No-op if
+        the channel/category or the role isn't linked to that connector, or
+        the target already matches."""
+        now = time.monotonic()
+        self._recent_perms = {k: v for k, v in self._recent_perms.items() if now - v < self._SUPPRESS_TTL}
+        if self._recent_perms.pop((origin_connector_id, channel_id, role_id), None) is not None:
+            return  # our own write echoing back
+        repo = self._category_mappings if is_category else self._channel_mappings
+        if repo is None:
+            return
+        bridge_group = await repo.get_bridge_group(origin_connector_id, channel_id)
+        if bridge_group is None:
+            return
+        members = (
+            await repo.get_mapped_categories(bridge_group)
+            if is_category
+            else await repo.get_mapped_channels(bridge_group)
+        )
+        for m in members:
+            if m.connector_id == origin_connector_id:
+                continue
+            info = self._connectors.get(m.connector_id)
+            if info is None or info.set_channel_role_permission is None:
+                continue
+            target_channel_id = m.category_id if is_category else m.channel_id
+            target_role_id = await self._role_mappings.find_linked_role_id(
+                origin_connector_id, role_id, m.connector_id
+            )
+            if target_role_id is None:
+                continue
+            current = None
+            if info.get_channel_role_permission is not None:
+                try:
+                    current = await info.get_channel_role_permission(target_channel_id, target_role_id)
+                except Exception:
+                    current = None
+            spliced = override.splice_onto(current)
+            if spliced == current:
+                continue
+            self._recent_perms[(m.connector_id, target_channel_id, target_role_id)] = time.monotonic()
+            try:
+                await info.set_channel_role_permission(target_channel_id, target_role_id, spliced)
+            except Exception:
+                logger.exception(
+                    "[role-sync] mirroring perms for role %s on %s channel %s failed",
+                    target_role_id,
+                    m.connector_id,
+                    target_channel_id,
+                )
+            else:
+                logger.info(
+                    "[role-sync] mirrored perms for role %s onto %s channel %s (from %s)",
+                    target_role_id,
+                    m.connector_id,
+                    target_channel_id,
+                    origin_connector_id,
+                )
 
     async def handle_role_renamed(self, origin_connector_id: str, role_id: str, new_name: str) -> None:
         """A role was renamed on `origin_connector_id`. If it's linked,
@@ -418,7 +503,9 @@ async def run(config: BridgeConfig) -> None:
     user_linker = UserLinker(user_mappings, connector_infos)
     category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
     role_linker = RoleLinker(role_mappings, connector_infos)
-    role_grants = RoleSyncCoordinator(role_mappings, user_mappings, connector_infos)
+    role_grants = RoleSyncCoordinator(
+        role_mappings, user_mappings, connector_infos, channel_mappings, category_mappings
+    )
 
     senders: list = []
     closables: list = []
@@ -439,6 +526,7 @@ async def run(config: BridgeConfig) -> None:
             on_member_roles_changed=role_grants.handle,
             on_role_renamed=role_grants.handle_role_renamed,
             on_role_deleted=role_grants.handle_role_deleted,
+            on_channel_role_permission_changed=role_grants.handle_channel_role_permission,
         )
         structure_providers[dc.id] = sender.snapshot_guild_structure
         receiver = DiscordReceiverService(
@@ -466,6 +554,8 @@ async def run(config: BridgeConfig) -> None:
             grant_role=sender.grant_role,
             revoke_role=sender.revoke_role,
             rename_role=sender.rename_role,
+            get_channel_role_permission=sender.get_channel_role_permission,
+            set_channel_role_permission=sender.set_channel_role_permission,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -487,6 +577,7 @@ async def run(config: BridgeConfig) -> None:
             on_member_roles_changed=role_grants.handle,
             on_role_renamed=role_grants.handle_role_renamed,
             on_role_deleted=role_grants.handle_role_deleted,
+            on_channel_role_permission_changed=role_grants.handle_channel_role_permission,
         )
         coordinator.register_receiver(
             StoatReceiverService(
@@ -509,6 +600,8 @@ async def run(config: BridgeConfig) -> None:
             grant_role=sender.grant_role,
             revoke_role=sender.revoke_role,
             rename_role=sender.rename_role,
+            get_channel_role_permission=sender.get_channel_role_permission,
+            set_channel_role_permission=sender.set_channel_role_permission,
         )
         senders.append(sender)
         closables.append(sender)

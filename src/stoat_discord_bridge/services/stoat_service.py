@@ -40,6 +40,7 @@ from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
     OnEmojiDeleted,
     OnMemberRolesChanged,
+    OnChannelRolePermissionChanged,
     OnMessage,
     OnReaction,
     OnRoleDeleted,
@@ -56,6 +57,10 @@ from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
     rewrite_mentions,
     rewrite_role_mentions,
+)
+from stoat_discord_bridge.services.role_sync import (
+    neutral_to_stoat_pair,
+    stoat_override_to_neutral,
 )
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
@@ -221,6 +226,11 @@ class _StoatClient(stoat.Client):
         # TODO: unverified - stoat.events.ServerRoleDeleteEvent (.role_id, .server_id).
         await self._owner._handle_role_delete(event)
 
+    async def on_channel_update(self, event, /) -> None:
+        # TODO: unverified - stoat.events.ChannelUpdateEvent (.before / .after
+        # channels, each with a .role_permissions dict[str, PermissionOverride]).
+        await self._owner._handle_channel_update(event)
+
 
 class StoatSenderService(SenderService):
     def __init__(
@@ -240,6 +250,7 @@ class StoatSenderService(SenderService):
         on_member_roles_changed: "OnMemberRolesChanged | None" = None,
         on_role_renamed: "OnRoleRenamed | None" = None,
         on_role_deleted: "OnRoleDeleted | None" = None,
+        on_channel_role_permission_changed: "OnChannelRolePermissionChanged | None" = None,
     ) -> None:
         # linker/mirrorer/emote_linker/user_linker/category_linker/role_linker
         # are only needed to serve the corresponding `/link-*` / `/link ...`
@@ -259,6 +270,7 @@ class StoatSenderService(SenderService):
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted
+        self._on_channel_role_permission_changed = on_channel_role_permission_changed
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
 
@@ -1486,6 +1498,59 @@ class StoatSenderService(SenderService):
         role_id = str(getattr(event, "role_id", "") or getattr(getattr(event, "role", None), "id", ""))
         if role_id:
             await self._on_role_deleted(self.connector_id, role_id)
+
+    async def _handle_channel_update(self, event) -> None:
+        """A channel was edited - diff its role permission overrides for
+        permission mirroring. TODO: attr shapes unverified."""
+        if self._on_channel_role_permission_changed is None:
+            return
+        before = getattr(event, "before", None)
+        after = getattr(event, "after", None) or getattr(event, "channel", None)
+        if after is None:
+            return
+        before_rp = dict(getattr(before, "role_permissions", {}) or {}) if before is not None else {}
+        after_rp = dict(getattr(after, "role_permissions", {}) or {})
+        for role_id in set(before_rp) | set(after_rp):
+            b = before_rp.get(role_id)
+            a = after_rp.get(role_id)
+            if b is a or (b is not None and a is not None and getattr(b, "to_dict", lambda: b)() == getattr(a, "to_dict", lambda: a)()):
+                continue
+            allow = getattr(a, "allow", None)
+            deny = getattr(a, "deny", None)
+            override = stoat_override_to_neutral(allow, deny) if a is not None else stoat_override_to_neutral(None, None)
+            await self._on_channel_role_permission_changed(
+                self.connector_id, str(getattr(after, "id", "")), str(role_id), override, is_category=False
+            )
+
+    async def get_channel_role_permission(self, channel_id: str, role_id: str):
+        try:
+            channel = self._client.get_channel(channel_id, partial=False)
+            override = (getattr(channel, "role_permissions", {}) or {}).get(role_id)
+        except Exception:
+            return None
+        if override is None:
+            return stoat_override_to_neutral(None, None)
+        return stoat_override_to_neutral(getattr(override, "allow", None), getattr(override, "deny", None))
+
+    async def set_channel_role_permission(self, channel_id: str, role_id: str, override) -> None:
+        try:
+            channel = self._client.get_channel(channel_id, partial=False)
+        except Exception:
+            return
+        if channel is None or not hasattr(channel, "set_role_permissions"):
+            return
+        current = (getattr(channel, "role_permissions", {}) or {}).get(role_id)
+        if current is not None:
+            cur_neutral = stoat_override_to_neutral(getattr(current, "allow", None), getattr(current, "deny", None))
+            if cur_neutral == override:
+                return
+        allow, deny = neutral_to_stoat_pair(override, stoat.Permissions)
+        try:
+            await channel.set_role_permissions(role_id, allow=allow, deny=deny)
+        except Exception:
+            logger.exception(
+                "[stoat:%s] perm sync: set on channel %s role %s failed", self.connector_id, channel_id, role_id
+            )
 
     async def rename_role(self, role_id: str, new_name: str) -> None:
         """Idempotent - skips the edit if the role already has that name."""

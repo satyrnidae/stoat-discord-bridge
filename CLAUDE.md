@@ -121,9 +121,11 @@ Every admin/status command (`/status`, `/link-channel`, `/unlink-channel`,
 `/linked-channels`, `/link-user`, `/unlink-user`, `/linked-users`,
 `/link-emote`, `/mirror-channel`, `/mirror-channels`, `/link-category`,
 `/unlink-category`, `/linked-categories`, and the role commands `/link role` /
-`/mirror role` / `/linked roles` / `/unlink role` — Discord/Stoat only, flat
-`/link-role` etc. on Discord) and how to reach it on each
-connector is documented in `COMMANDS.md`, not duplicated here — shared logic
+`/mirror role` / `/linked roles` / `/unlink role` — Discord/Stoat only; on
+Discord these are real `app_commands` subcommand groups, unlike the flat
+`/link-channel` etc. a later step migrates onto the same shape) and how to
+reach it on each connector is documented in `COMMANDS.md`, not duplicated
+here — shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
 `EmoteLinker` / `UserLinker` / `RoleLinker` / `StructureMirrorer`), called
 identically from each connector's own `services/*.py` module. Nothing is
@@ -153,19 +155,26 @@ rewrites.
   `on_server_role_delete`): drops just that connector's mapping entry — the
   counterpart roles stay (they may still be in use); a group left with ≤ 1
   member is dissolved. Roles are never auto-created on creation.
+- **permission mirroring** (`handle_channel_role_permission`, Discord
+  `on_guild_channel_update` / Stoat `on_channel_update`): a linked role's
+  permission override on a bridge-linked channel/category changing on one
+  connector is mirrored onto the linked channel's copy for the linked role
+  on the other, via the `get_channel_role_permission` /
+  `set_channel_role_permission` hooks. Only the bits in
+  `services/role_sync.NEUTRAL_PERMISSIONS` (the ones that mean the same on
+  both platforms) are touched; every other bit on the target's override is
+  preserved (`RolePermissionOverride.splice_onto`).
 
-All best-effort and silent (unlinked user/role, missing hook, or a raising
-hook are skipped). Loop-safe two ways: each hook is idempotent (no-op if
-already in the desired state), and the coordinator keeps a ~10s record of
+All best-effort and silent (unlinked user/role/channel, missing hook, or a
+raising hook are skipped). Loop-safe two ways: each hook is idempotent (no-op
+if already in the desired state), and the coordinator keeps a ~10s record of
 writes it issued so the echo event is dropped. **Discord needs the privileged
 members intent** (enabled on `_DiscordClient` and in the developer portal) or
 the Discord→other direction of auto-grant never fires.
 
-Still planned: mirroring a linked role's per-channel permission overrides —
-the `get_channel_role_permission` / `set_channel_role_permission` hook fields
-and the `services/role_sync.py` permission-translation helpers exist but
-aren't wired to events yet. stoat.py's member/role gateway events are assumed
-from `stoat.events` and unverified against a live server (`TODO`s in
+The `services/role_sync.py` permission-name translation is a deliberately
+conservative subset. stoat.py's member/role/channel gateway events are
+assumed from `stoat.events` and unverified against a live server (`TODO`s in
 `stoat_service.py`).
 
 `ChannelLinker.unlink_channel` dissolves a bridge group down to nothing
@@ -259,5 +268,5 @@ src/stoat_discord_bridge/
     role_mappings.py           # which roles, across connectors, are linked (Discord/Stoat only); backs /link role, role-mention rewriting, and auto-grant
     message_sync.py            # cross-connector message ID references, for edit/delete sync
     emoji_mappings.py          # cross-connector custom emoji ID references, for reaction sync
-  services/role_sync.py        # network-free helpers for the role permission-mirror flow (still to be wired)
+  services/role_sync.py        # network-free helpers for the role permission-mirror flow (neutral<->native permission translation)
 ```
