@@ -1,20 +1,23 @@
-"""Tests for StoatSenderService's admin-command surface -
-_handle_mirror_channels/_handle_link_channel/_handle_link_emote/
-_handle_link_user/_handle_mirror_channel and the _is_admin permission gate
-behind all of them. Previously almost entirely untested - this was
-stoat_service.py's single largest coverage gap.
+"""Tests for StoatSenderService's admin-command surface - the
+`_link_channel` / `_mirror_channel` / `_link_emote` / `_link_user` / … methods
+the `stoat.ext.commands` tree on `_StoatClient` forwards to, and the `_is_admin`
+Manage-Server gate behind the mutating ones.
 
 Constructs the service via object.__new__, same rationale as
 test_stoat_resolve_avatar.py/test_stoat_sender_dispatch.py: __init__ builds
 a _StoatClient whose constructor makes a real network call that none of
 these handlers need.
+
+Argument arity / "missing required argument" is the command framework's job
+now (see test_stoat_command_tree.py for the group/subcommand wiring), so
+there are no "wrong arg count sends usage" tests here any more.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 
-import pytest
 import stoat
 
 from stoat_discord_bridge.admin_commands import LinkError
@@ -65,12 +68,38 @@ class FakeEmoteLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
         self._raises = raises
         self.calls: list[dict] = []
+        self.unlink_emote_calls: list[dict] = []
+        self.list_linked_emotes_calls: list[dict] = []
+        self.mirror_emote_calls: list[dict] = []
+        self.mirror_emote_all_calls: list[dict] = []
 
     async def link_emote(self, **kwargs):
         self.calls.append(kwargs)
         if self._raises is not None:
             raise self._raises
         return "emote linked ok"
+
+    async def unlink_emote(self, **kwargs):
+        self.unlink_emote_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "emote unlinked ok"
+
+    async def list_linked_emotes(self, **kwargs):
+        self.list_linked_emotes_calls.append(kwargs)
+        return "Linked emotes:\nDiscord: blob ↔ Stoat: blob"
+
+    async def mirror_emote(self, **kwargs):
+        self.mirror_emote_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "emote mirrored ok"
+
+    async def mirror_emote_all(self, **kwargs):
+        self.mirror_emote_all_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "emote mirrored to all ok"
 
 
 class FakeUserLinker:
@@ -206,6 +235,7 @@ def _make_sender(
     sender._category_linker = category_linker
     sender._role_linker = role_linker
     sender.server_id = server_id
+    sender._command_message_ids = deque(maxlen=512)
     if client is not None:
         sender._client = client
     return sender
@@ -218,6 +248,23 @@ def _admin_message(*, manage_server: bool = True, channel=None):
         author=SimpleNamespace(id="admin-1"),
         author_as_member=SimpleNamespace(server_permissions=SimpleNamespace(manage_server=manage_server)),
     )
+
+
+class _Ctx:
+    """The slice of `stoat.ext.commands.Context` the `_link_*` handlers touch:
+    `.message` (for `_is_admin`), `.channel`, `.author_id`, and `.send`."""
+
+    def __init__(self, message) -> None:
+        self.message = message
+        self.channel = message.channel
+        self.author_id = message.author.id
+
+    async def send(self, content):
+        return await self.channel.send(content)
+
+
+def _make_ctx(*, manage_server: bool = True, channel=None):
+    return _Ctx(_admin_message(manage_server=manage_server, channel=channel))
 
 
 # ---------------------------------------------------------------- _is_admin
@@ -238,6 +285,35 @@ def test_is_admin_false_when_member_info_is_unavailable():
     assert sender._is_admin(SimpleNamespace(channel=FakeChannel(id="c1"))) is False
 
 
+class _MemberNoPermsCache:
+    """Member whose computed `server_permissions` raises (cache miss)."""
+
+    def __init__(self, *, member_id, owner_id):
+        self.id = member_id
+        self._owner_id = owner_id
+
+    def get_server(self):
+        return SimpleNamespace(owner_id=self._owner_id)
+
+    @property
+    def server_permissions(self):
+        raise RuntimeError("permissions cache miss")
+
+
+def test_is_admin_true_for_server_owner_when_permissions_unavailable():
+    sender = _make_sender()
+    member = _MemberNoPermsCache(member_id="owner-1", owner_id="owner-1")
+    message = SimpleNamespace(channel=FakeChannel(id="c1"), author_as_member=member)
+    assert sender._is_admin(message) is True
+
+
+def test_is_admin_false_for_non_owner_when_permissions_unavailable():
+    sender = _make_sender()
+    member = _MemberNoPermsCache(member_id="member-1", owner_id="someone-else")
+    message = SimpleNamespace(channel=FakeChannel(id="c1"), author_as_member=member)
+    assert sender._is_admin(message) is False
+
+
 # ---------------------------------------------------------------- shared "needs admin" gate
 
 
@@ -248,31 +324,35 @@ async def test_each_admin_command_rejects_a_non_admin():
         user_linker=FakeUserLinker(),
         mirrorer=FakeMirrorer(),
         category_linker=FakeCategoryLinker(),
+        role_linker=FakeRoleLinker(),
     )
-    message = _admin_message(manage_server=False)
+    ctx = _make_ctx(manage_server=False)
 
-    await sender._handle_mirror_channels(message, ["discord"])
-    await sender._handle_link_channel(message, ["discord", "s1"])
-    await sender._handle_link_emote(message, ["discord", "s1", "l1"])
-    await sender._handle_link_user(message, ["discord", "u1", "l1"])
-    await sender._handle_mirror_channel(message, ["discord"])
-    await sender._handle_unlink_channel(message, [])
-    await sender._handle_unlink_user(message, [])
-    await sender._handle_link_category(message, ["discord", "s1"])
-    await sender._handle_unlink_category(message, [])
+    await sender._mirror_channels(ctx, "discord")
+    await sender._link_channel(ctx, "discord", "s1")
+    await sender._link_emote(ctx, "discord", "s1", "l1")
+    await sender._link_user(ctx, "discord", "u1", "l1")
+    await sender._mirror_channel(ctx)
+    await sender._unlink_channel(ctx)
+    await sender._unlink_user(ctx)
+    await sender._link_category(ctx, "discord", "s1")
+    await sender._unlink_category(ctx)
+    await sender._link_role(ctx, "Mods", "discord", "111")
 
-    assert message.channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}] * 9
+    assert ctx.channel.sent == [
+        {"content": "You need the Manage Server permission to do that.", "masquerade": None}
+    ] * 10
 
 
-# ---------------------------------------------------------------- _handle_link_channel
+# ---------------------------------------------------------------- _link_channel
 
 
 async def test_link_channel_success():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message(channel=FakeChannel(id="c1", name="general"))
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._handle_link_channel(message, ["dest-id", "discord", "src-id"])
+    await sender._link_channel(ctx, "discord", "src-id", "dest-id")
 
     assert linker.link_channel_calls == [
         {
@@ -284,124 +364,145 @@ async def test_link_channel_success():
             "destination_id": "dest-id",
         }
     ]
-    assert message.channel.sent[0]["content"] == "linked ok"
+    assert ctx.channel.sent[0]["content"] == "linked ok"
 
 
 async def test_link_channel_destination_defaults_to_none():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_channel(message, ["discord", "src-id"])
+    await sender._link_channel(ctx, "discord", "src-id")
 
     assert linker.link_channel_calls[0]["destination_id"] is None
 
 
-async def test_link_channel_wrong_arg_count_sends_usage():
-    sender = _make_sender(linker=FakeLinker())
-    message = _admin_message()
-
-    await sender._handle_link_channel(message, ["discord"])
-
-    assert (
-        message.channel.sent[0]["content"]
-        == "Usage: /link channel [local_id|name] <service> <external_id|name>"
-    )
-
-
 async def test_link_channel_without_a_configured_linker():
     sender = _make_sender(linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_channel(message, ["discord", "src-id"])
+    await sender._link_channel(ctx, "discord", "src-id")
 
-    assert message.channel.sent[0]["content"] == "Linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Linking isn't configured."
 
 
 async def test_link_channel_reports_a_link_error():
     sender = _make_sender(linker=FakeLinker(raises=LinkError("already linked elsewhere")))
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_channel(message, ["discord", "src-id"])
+    await sender._link_channel(ctx, "discord", "src-id")
 
-    assert message.channel.sent[0]["content"] == "already linked elsewhere"
+    assert ctx.channel.sent[0]["content"] == "already linked elsewhere"
 
 
-# ---------------------------------------------------------------- _handle_link_emote
+# ---------------------------------------------------------------- _link_emote
 
 
 async def test_link_emote_success():
     emote_linker = FakeEmoteLinker()
     sender = _make_sender(emote_linker=emote_linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_emote(message, ["discord", "src-id", "local-id"])
+    await sender._link_emote(ctx, "discord", "src-id", "local-id")
 
-    assert emote_linker.calls == [{"local_connector": "stoat", "local_id": "local-id", "source": "discord", "source_id": "src-id"}]
-    assert message.channel.sent[0]["content"] == "emote linked ok"
-
-
-async def test_link_emote_wrong_arg_count_sends_usage():
-    sender = _make_sender(emote_linker=FakeEmoteLinker())
-    message = _admin_message()
-
-    await sender._handle_link_emote(message, ["discord", "src-id"])
-
-    assert message.channel.sent[0]["content"] == "Usage: /link-emote <service> <external_id> <local_id>"
+    assert emote_linker.calls == [
+        {"local_connector": "stoat", "local_id": "local-id", "source": "discord", "source_id": "src-id"}
+    ]
+    assert ctx.channel.sent[0]["content"] == "emote linked ok"
 
 
 async def test_link_emote_without_a_configured_linker():
     sender = _make_sender(emote_linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_emote(message, ["discord", "src-id", "local-id"])
+    await sender._link_emote(ctx, "discord", "src-id", "local-id")
 
-    assert message.channel.sent[0]["content"] == "Linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Linking isn't configured."
 
 
-# ---------------------------------------------------------------- _handle_link_user
+async def test_unlink_emote_defaults_destination_to_none():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    ctx = _make_ctx()
+
+    await sender._unlink_emote(ctx, "blob")
+
+    assert emote_linker.unlink_emote_calls == [
+        {"local_connector": "stoat", "local_emote": "blob", "destination": None}
+    ]
+    assert ctx.channel.sent[0]["content"] == "emote unlinked ok"
+
+
+async def test_linked_emotes_lists_the_group():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    ctx = _make_ctx()
+
+    await sender._linked_emotes(ctx)
+
+    assert emote_linker.list_linked_emotes_calls == [
+        {"local_connector": "stoat", "local_emote": None, "service": None}
+    ]
+    assert ctx.channel.sent[0]["content"].startswith("Linked emotes:")
+
+
+async def test_mirror_emote_to_all_by_default():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_emote(ctx, "blob")
+
+    assert emote_linker.mirror_emote_all_calls == [{"local_connector": "stoat", "local_emote": "blob"}]
+    assert ctx.channel.sent[0]["content"] == "emote mirrored to all ok"
+
+
+async def test_mirror_emote_to_a_single_destination():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_emote(ctx, "blob", "discord")
+
+    assert emote_linker.mirror_emote_calls == [
+        {"local_connector": "stoat", "local_emote": "blob", "destination": "discord"}
+    ]
+
+
+# ---------------------------------------------------------------- _link_user
 
 
 async def test_link_user_success():
     user_linker = FakeUserLinker()
     sender = _make_sender(user_linker=user_linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_user(message, ["discord", "remote-id", "local-id"])
+    await sender._link_user(ctx, "discord", "remote-id", "local-id")
 
     assert user_linker.calls == [
         {"local_connector": "stoat", "local_user_id": "local-id", "source": "discord", "source_user_id": "remote-id"}
     ]
-    assert message.channel.sent[0]["content"] == "user linked ok"
-
-
-async def test_link_user_wrong_arg_count_sends_usage():
-    sender = _make_sender(user_linker=FakeUserLinker())
-    message = _admin_message()
-
-    await sender._handle_link_user(message, ["discord", "remote-id"])
-
-    assert message.channel.sent[0]["content"] == "Usage: /link user <service> <external_id|name> <local_id|name>"
+    assert ctx.channel.sent[0]["content"] == "user linked ok"
 
 
 async def test_link_user_without_a_configured_linker():
     sender = _make_sender(user_linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_user(message, ["discord", "remote-id", "local-id"])
+    await sender._link_user(ctx, "discord", "remote-id", "local-id")
 
-    assert message.channel.sent[0]["content"] == "User linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "User linking isn't configured."
 
 
-# ---------------------------------------------------------------- _handle_mirror_channel
+# ---------------------------------------------------------------- _mirror_channel
 
 
 async def test_mirror_channel_to_a_single_destination():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message(channel=FakeChannel(id="c1", name="general"))
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._handle_mirror_channel(message, ["general", "discord"])
+    await sender._mirror_channel(ctx, "general", "discord")
 
     assert linker.mirror_channel_calls == [
         {
@@ -412,7 +513,7 @@ async def test_mirror_channel_to_a_single_destination():
             "local_channel_category": None,
         }
     ]
-    assert message.channel.sent[0]["content"] == "mirrored ok"
+    assert ctx.channel.sent[0]["content"] == "mirrored ok"
 
 
 async def test_mirror_channel_resolves_and_forwards_the_channels_category():
@@ -421,9 +522,9 @@ async def test_mirror_channel_resolves_and_forwards_the_channels_category():
     client = FakeClient()
     client.add_channel(channel)
     sender = _make_sender(linker=linker, client=client)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_mirror_channel(message, ["c1", "discord"])
+    await sender._mirror_channel(ctx, "c1", "discord")
 
     assert linker.mirror_channel_calls[0]["local_channel_category"] == "Team Alpha"
 
@@ -431,20 +532,20 @@ async def test_mirror_channel_resolves_and_forwards_the_channels_category():
 async def test_mirror_channel_to_all_is_case_insensitive():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_mirror_channel(message, ["general", "ALL"])
+    await sender._mirror_channel(ctx, "general", "ALL")
 
     assert linker.mirror_channel_all_calls
-    assert message.channel.sent[0]["content"] == "mirrored to all ok"
+    assert ctx.channel.sent[0]["content"] == "mirrored to all ok"
 
 
 async def test_mirror_channel_no_args_mirrors_the_current_channel_to_all():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message(channel=FakeChannel(id="c1", name="general"))
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._handle_mirror_channel(message, [])
+    await sender._mirror_channel(ctx)
 
     assert linker.mirror_channel_all_calls[0]["local_channel_id"] == "c1"
 
@@ -452,9 +553,9 @@ async def test_mirror_channel_no_args_mirrors_the_current_channel_to_all():
 async def test_mirror_channel_uses_an_explicit_channel_id_when_given():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_mirror_channel(message, ["explicit-id", "discord"])
+    await sender._mirror_channel(ctx, "explicit-id", "discord")
 
     call = linker.mirror_channel_calls[0]
     assert call["local_channel_id"] == "explicit-id"
@@ -463,11 +564,11 @@ async def test_mirror_channel_uses_an_explicit_channel_id_when_given():
 
 async def test_mirror_channel_without_a_configured_linker():
     sender = _make_sender(linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_mirror_channel(message, ["discord"])
+    await sender._mirror_channel(ctx, "discord")
 
-    assert message.channel.sent[0]["content"] == "Linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Linking isn't configured."
 
 
 # ---------------------------------------------------------------- ensure_channel / Category placement
@@ -679,7 +780,7 @@ async def test_ensure_channel_self_heals_when_the_bound_category_is_gone():
     assert linker.binds == [("p1", category.id)]
 
 
-# ---------------------------------------------------------------- _handle_mirror_channels
+# ---------------------------------------------------------------- _mirror_channels
 
 
 async def test_mirror_channels_success_creates_and_links():
@@ -693,9 +794,9 @@ async def test_mirror_channels_success_creates_and_links():
     server = FakeServer(id="s1")
     channel = FakeChannel(id="c1")
     channel.server = server
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_mirror_channels(message, ["discord"])
+    await sender._mirror_channels(ctx, "discord")
 
     assert mirrorer.get_structure_calls == ["discord"]
     assert server.created_channels == ["general"]
@@ -703,54 +804,45 @@ async def test_mirror_channels_success_creates_and_links():
     assert "Mirrored 'discord' structure" in channel.sent[-1]["content"]
 
 
-async def test_mirror_channels_missing_source_sends_usage():
-    sender = _make_sender(mirrorer=FakeMirrorer())
-    message = _admin_message()
-
-    await sender._handle_mirror_channels(message, [])
-
-    assert message.channel.sent[0]["content"] == "Usage: /mirror-channels <service>"
-
-
 async def test_mirror_channels_without_a_configured_mirrorer():
     sender = _make_sender(mirrorer=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_mirror_channels(message, ["discord"])
+    await sender._mirror_channels(ctx, "discord")
 
-    assert message.channel.sent[0]["content"] == "Mirroring isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Mirroring isn't configured."
 
 
 async def test_mirror_channels_reports_a_link_error_from_get_structure():
     mirrorer = FakeMirrorer(raises=LinkError("'discord' isn't a known structure source"))
     sender = _make_sender(mirrorer=mirrorer)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_mirror_channels(message, ["discord"])
+    await sender._mirror_channels(ctx, "discord")
 
-    assert message.channel.sent[0]["content"] == "'discord' isn't a known structure source"
+    assert ctx.channel.sent[0]["content"] == "'discord' isn't a known structure source"
 
 
 async def test_mirror_channels_reports_an_unexpected_error_from_get_structure():
     mirrorer = FakeMirrorer(raises=RuntimeError("boom"))
     sender = _make_sender(mirrorer=mirrorer)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_mirror_channels(message, ["discord"])
+    await sender._mirror_channels(ctx, "discord")
 
-    assert "Couldn't read the 'discord' channel structure: boom" in message.channel.sent[0]["content"]
+    assert "Couldn't read the 'discord' channel structure: boom" in ctx.channel.sent[0]["content"]
 
 
-# ---------------------------------------------------------------- _handle_linked_channels
+# ---------------------------------------------------------------- _linked_channels
 
 
 async def test_linked_channels_reports_the_invoking_channel():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
     channel = FakeChannel(id="c1")
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_linked_channels(message)
+    await sender._linked_channels(ctx)
 
     assert linker.list_linked_channels_calls == [{"local_connector": "stoat", "local_channel_id": "c1"}]
     assert channel.sent[0]["content"] == "Linked channels:\nStoat: general (c1) (this channel)"
@@ -758,88 +850,88 @@ async def test_linked_channels_reports_the_invoking_channel():
 
 async def test_linked_channels_without_a_configured_linker():
     sender = _make_sender(linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_linked_channels(message)
+    await sender._linked_channels(ctx)
 
-    assert message.channel.sent[0]["content"] == "Linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Linking isn't configured."
 
 
 async def test_linked_channels_needs_no_admin_permission():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message(manage_server=False)
+    ctx = _make_ctx(manage_server=False)
 
-    await sender._handle_linked_channels(message)  # must not be rejected
+    await sender._linked_channels(ctx)  # must not be rejected
 
     assert linker.list_linked_channels_calls
 
 
-# ---------------------------------------------------------------- _handle_linked_users
+# ---------------------------------------------------------------- _linked_users
 
 
 async def test_linked_users_with_an_argument_shows_only_that_users_link():
     user_linker = FakeUserLinker()
     sender = _make_sender(user_linker=user_linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_linked_users(message, ["01KH7TH31EBY08FTQ7YC2RC4DQ"])
+    await sender._linked_users(ctx, "01KH7TH31EBY08FTQ7YC2RC4DQ")
 
     assert user_linker.list_linked_users_calls == [
         {"local_connector": "stoat", "local_user_id": "01KH7TH31EBY08FTQ7YC2RC4DQ"}
     ]
-    assert message.channel.sent[0]["content"] == "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
+    assert ctx.channel.sent[0]["content"] == "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
 
 
 async def test_linked_users_with_no_argument_lists_everything():
     user_linker = FakeUserLinker()
     sender = _make_sender(user_linker=user_linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_linked_users(message, [])
+    await sender._linked_users(ctx)
 
     assert user_linker.list_linked_users_calls == [{}]
 
 
 async def test_linked_users_without_a_configured_user_linker():
     sender = _make_sender(user_linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_linked_users(message, [])
+    await sender._linked_users(ctx)
 
-    assert message.channel.sent[0]["content"] == "User linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "User linking isn't configured."
 
 
 async def test_linked_users_needs_no_admin_permission():
     user_linker = FakeUserLinker()
     sender = _make_sender(user_linker=user_linker)
-    message = _admin_message(manage_server=False)
+    ctx = _make_ctx(manage_server=False)
 
-    await sender._handle_linked_users(message, [])  # must not be rejected
+    await sender._linked_users(ctx)  # must not be rejected
 
     assert user_linker.list_linked_users_calls
 
 
-# ---------------------------------------------------------------- _handle_unlink_channel
+# ---------------------------------------------------------------- _unlink_channel
 
 
 async def test_unlink_channel_defaults_to_all():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message(channel=FakeChannel(id="c1"))
+    ctx = _make_ctx(channel=FakeChannel(id="c1"))
 
-    await sender._handle_unlink_channel(message, [])
+    await sender._unlink_channel(ctx)
 
     assert linker.unlink_channel_calls == [{"local_connector": "stoat", "local_channel_id": "c1", "destination": None}]
-    assert message.channel.sent[0]["content"] == "unlinked ok"
+    assert ctx.channel.sent[0]["content"] == "unlinked ok"
 
 
 async def test_unlink_channel_with_a_specific_destination():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message(channel=FakeChannel(id="c1"))
+    ctx = _make_ctx(channel=FakeChannel(id="c1"))
 
-    await sender._handle_unlink_channel(message, ["c1", "discord"])
+    await sender._unlink_channel(ctx, "c1", "discord")
 
     assert linker.unlink_channel_calls == [{"local_connector": "stoat", "local_channel_id": "c1", "destination": "discord"}]
 
@@ -847,9 +939,9 @@ async def test_unlink_channel_with_a_specific_destination():
 async def test_unlink_channel_with_a_specific_local_channel_id():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
-    message = _admin_message(channel=FakeChannel(id="c1"))
+    ctx = _make_ctx(channel=FakeChannel(id="c1"))
 
-    await sender._handle_unlink_channel(message, ["other-channel", "discord"])
+    await sender._unlink_channel(ctx, "other-channel", "discord")
 
     assert linker.unlink_channel_calls == [
         {"local_connector": "stoat", "local_channel_id": "other-channel", "destination": "discord"}
@@ -858,76 +950,76 @@ async def test_unlink_channel_with_a_specific_local_channel_id():
 
 async def test_unlink_channel_without_a_configured_linker():
     sender = _make_sender(linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_unlink_channel(message, [])
+    await sender._unlink_channel(ctx)
 
-    assert message.channel.sent[0]["content"] == "Linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Linking isn't configured."
 
 
 async def test_unlink_channel_reports_a_link_error():
     linker = FakeLinker(raises=LinkError("this channel isn't linked to anything."))
     sender = _make_sender(linker=linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_unlink_channel(message, [])
+    await sender._unlink_channel(ctx)
 
-    assert message.channel.sent[0]["content"] == "this channel isn't linked to anything."
+    assert ctx.channel.sent[0]["content"] == "this channel isn't linked to anything."
 
 
-# ---------------------------------------------------------------- _handle_unlink_user
+# ---------------------------------------------------------------- _unlink_user
 
 
 async def test_unlink_user_defaults_to_all_and_self():
     user_linker = FakeUserLinker()
     sender = _make_sender(user_linker=user_linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_unlink_user(message, [])
+    await sender._unlink_user(ctx)
 
     assert user_linker.unlink_user_calls == [{"local_connector": "stoat", "local_user_id": "admin-1", "destination": None}]
-    assert message.channel.sent[0]["content"] == "user unlinked ok"
+    assert ctx.channel.sent[0]["content"] == "user unlinked ok"
 
 
 async def test_unlink_user_with_a_specific_destination_and_target():
     user_linker = FakeUserLinker()
     sender = _make_sender(user_linker=user_linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_unlink_user(message, ["discord", "s1"])
+    await sender._unlink_user(ctx, "discord", "s1")
 
     assert user_linker.unlink_user_calls == [{"local_connector": "stoat", "local_user_id": "s1", "destination": "discord"}]
 
 
 async def test_unlink_user_without_a_configured_user_linker():
     sender = _make_sender(user_linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_unlink_user(message, [])
+    await sender._unlink_user(ctx)
 
-    assert message.channel.sent[0]["content"] == "User linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "User linking isn't configured."
 
 
 async def test_unlink_user_reports_a_link_error():
     user_linker = FakeUserLinker(raises=LinkError("this user isn't linked to anything."))
     sender = _make_sender(user_linker=user_linker)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_unlink_user(message, [])
+    await sender._unlink_user(ctx)
 
-    assert message.channel.sent[0]["content"] == "this user isn't linked to anything."
+    assert ctx.channel.sent[0]["content"] == "this user isn't linked to anything."
 
 
-# ---------------------------------------------------------------- _handle_linked_categories
+# ---------------------------------------------------------------- _linked_categories
 
 
 async def test_linked_categories_reports_the_invoking_channels_category():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_linked_categories(message, [])
+    await sender._linked_categories(ctx)
 
     assert category_linker.list_linked_categories_calls == [
         {"local_connector": "stoat", "local_category_id": "cat-1", "local_category": None}
@@ -937,22 +1029,22 @@ async def test_linked_categories_reports_the_invoking_channels_category():
 
 async def test_linked_categories_without_a_configured_category_linker():
     sender = _make_sender(category_linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_linked_categories(message, [])
+    await sender._linked_categories(ctx)
 
-    assert message.channel.sent[0]["content"] == "Category linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Category linking isn't configured."
 
 
 async def test_linked_categories_when_invoking_channel_has_no_category():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=None)
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_linked_categories(message, [])
+    await sender._linked_categories(ctx)
 
-    assert message.channel.sent[0]["content"] == "This channel isn't in a Category."
+    assert ctx.channel.sent[0]["content"] == "This channel isn't in a Category."
     assert category_linker.list_linked_categories_calls == []
 
 
@@ -960,23 +1052,23 @@ async def test_linked_categories_needs_no_admin_permission():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(manage_server=False, channel=channel)
+    ctx = _make_ctx(manage_server=False, channel=channel)
 
-    await sender._handle_linked_categories(message, [])  # must not be rejected
+    await sender._linked_categories(ctx)  # must not be rejected
 
     assert category_linker.list_linked_categories_calls
 
 
-# ---------------------------------------------------------------- _handle_link_category
+# ---------------------------------------------------------------- _link_category
 
 
 async def test_link_category_success():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_link_category(message, ["discord", "src-id", "dest-id"])
+    await sender._link_category(ctx, "discord", "src-id", "dest-id")
 
     assert category_linker.link_category_calls == [
         {
@@ -995,66 +1087,56 @@ async def test_link_category_destination_defaults_to_none():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_link_category(message, ["discord", "src-id"])
+    await sender._link_category(ctx, "discord", "src-id")
 
     assert category_linker.link_category_calls[0]["destination_id"] is None
 
 
-async def test_link_category_wrong_arg_count_sends_usage():
-    sender = _make_sender(category_linker=FakeCategoryLinker())
-    message = _admin_message()
-
-    await sender._handle_link_category(message, ["discord"])
-
-    assert (
-        message.channel.sent[0]["content"]
-        == "Usage: /link category <service> <external_id|name> [<local_id|name>]"
-    )
-
-
 async def test_link_category_without_a_configured_category_linker():
     sender = _make_sender(category_linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_link_category(message, ["discord", "src-id"])
+    await sender._link_category(ctx, "discord", "src-id")
 
-    assert message.channel.sent[0]["content"] == "Category linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Category linking isn't configured."
 
 
 async def test_link_category_when_invoking_channel_has_no_category():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=None)
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_link_category(message, ["discord", "src-id"])
+    await sender._link_category(ctx, "discord", "src-id")
 
-    assert message.channel.sent[0]["content"] == "This channel isn't in a Category."
+    assert ctx.channel.sent[0]["content"] == "This channel isn't in a Category."
     assert category_linker.link_category_calls == []
 
 
 async def test_link_category_reports_a_link_error():
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
-    sender = _make_sender(category_linker=FakeCategoryLinker(raises=LinkError("that Category is used for thread mirroring")))
-    message = _admin_message(channel=channel)
+    sender = _make_sender(
+        category_linker=FakeCategoryLinker(raises=LinkError("that Category is used for thread mirroring"))
+    )
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_link_category(message, ["discord", "src-id"])
+    await sender._link_category(ctx, "discord", "src-id")
 
     assert channel.sent[0]["content"] == "that Category is used for thread mirroring"
 
 
-# ---------------------------------------------------------------- _handle_unlink_category
+# ---------------------------------------------------------------- _unlink_category
 
 
 async def test_unlink_category_defaults_to_all():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_unlink_category(message, [])
+    await sender._unlink_category(ctx)
 
     assert category_linker.unlink_category_calls == [
         {"local_connector": "stoat", "local_category_id": "cat-1", "local_category": None, "destination": None}
@@ -1066,9 +1148,9 @@ async def test_unlink_category_with_a_specific_destination():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_unlink_category(message, ["Team", "discord"])
+    await sender._unlink_category(ctx, "Team", "discord")
 
     assert category_linker.unlink_category_calls == [
         {"local_connector": "stoat", "local_category_id": "cat-1", "local_category": "Team", "destination": "discord"}
@@ -1077,33 +1159,94 @@ async def test_unlink_category_with_a_specific_destination():
 
 async def test_unlink_category_without_a_configured_category_linker():
     sender = _make_sender(category_linker=None)
-    message = _admin_message()
+    ctx = _make_ctx()
 
-    await sender._handle_unlink_category(message, [])
+    await sender._unlink_category(ctx)
 
-    assert message.channel.sent[0]["content"] == "Category linking isn't configured."
+    assert ctx.channel.sent[0]["content"] == "Category linking isn't configured."
 
 
 async def test_unlink_category_when_invoking_channel_has_no_category():
     category_linker = FakeCategoryLinker()
     channel = FakeChannel(id="c1", category=None)
     sender = _make_sender(category_linker=category_linker)
-    message = _admin_message(channel=channel)
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_unlink_category(message, [])
+    await sender._unlink_category(ctx)
 
-    assert message.channel.sent[0]["content"] == "This channel isn't in a Category."
+    assert ctx.channel.sent[0]["content"] == "This channel isn't in a Category."
     assert category_linker.unlink_category_calls == []
 
 
 async def test_unlink_category_reports_a_link_error():
     channel = FakeChannel(id="c1", category=FakeCategory(id="cat-1", title="Team"))
-    sender = _make_sender(category_linker=FakeCategoryLinker(raises=LinkError("this Category isn't linked to anything.")))
-    message = _admin_message(channel=channel)
+    sender = _make_sender(
+        category_linker=FakeCategoryLinker(raises=LinkError("this Category isn't linked to anything."))
+    )
+    ctx = _make_ctx(channel=channel)
 
-    await sender._handle_unlink_category(message, [])
+    await sender._unlink_category(ctx)
 
     assert channel.sent[0]["content"] == "this Category isn't linked to anything."
+
+
+# ---------------------------------------------------------------- role commands
+
+
+async def test_link_role_success():
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(role_linker=role_linker)
+    ctx = _make_ctx()
+
+    await sender._link_role(ctx, "Mods", "discord", "111")
+
+    assert role_linker.link_role_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "source": "discord", "source_role": "111"}
+    ]
+    assert ctx.channel.sent[0]["content"] == "role linked ok"
+
+
+async def test_link_role_without_a_configured_role_linker():
+    sender = _make_sender(role_linker=None)
+    ctx = _make_ctx()
+
+    await sender._link_role(ctx, "Mods", "discord", "111")
+
+    assert ctx.channel.sent[0]["content"] == "Role linking isn't configured."
+
+
+async def test_mirror_and_linked_and_unlink_role_route():
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(role_linker=role_linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_role(ctx, "Mods")
+    await sender._mirror_role(ctx, "Mods", "stoat")
+    await sender._linked_roles(ctx)
+    await sender._unlink_role(ctx, "Mods", "all")
+
+    assert role_linker.mirror_role_all_calls == [{"local_connector": "stoat", "local_role": "Mods"}]
+    assert role_linker.mirror_role_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "destination": "stoat"}
+    ]
+    assert role_linker.list_linked_roles_calls == [
+        {"local_connector": "stoat", "local_role": None, "service": None}
+    ]
+    assert role_linker.unlink_role_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "destination": "all"}
+    ]
+
+
+async def test_linked_roles_needs_no_admin_permission():
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(role_linker=role_linker)
+    ctx = _make_ctx(manage_server=False)
+
+    await sender._linked_roles(ctx, "Mods")
+
+    assert role_linker.list_linked_roles_calls == [
+        {"local_connector": "stoat", "local_role": "Mods", "service": None}
+    ]
 
 
 # ---------------------------------------------------------------- _handle_channel_create
@@ -1154,149 +1297,3 @@ async def test_handle_channel_create_noop_for_a_channel_with_no_category():
     await sender._handle_channel_create(channel)
 
     assert category_linker.sync_new_channel_calls == []
-
-
-# ---------------------------------------------------------------- /link channel & /link role two-token routing
-
-
-def _cmd_message(content: str, *, manage_server: bool = True):
-    msg = _admin_message(manage_server=manage_server)
-    msg.content = content
-    msg.id = "m1"
-    return msg
-
-
-async def test_two_token_link_role_routes():
-    role_linker = FakeRoleLinker()
-    sender = _make_sender(role_linker=role_linker)
-    await sender._handle_message(_cmd_message("/link role Mods discord 111"))
-    assert role_linker.link_role_calls == [
-        {"local_connector": "stoat", "local_role": "Mods", "source": "discord", "source_role": "111"}
-    ]
-
-
-async def test_two_token_mirror_and_linked_and_unlink_route():
-    role_linker = FakeRoleLinker()
-    sender = _make_sender(role_linker=role_linker)
-    await sender._handle_message(_cmd_message("/mirror role Mods"))
-    await sender._handle_message(_cmd_message("/mirror role Mods stoat"))
-    await sender._handle_message(_cmd_message("/linked roles"))
-    await sender._handle_message(_cmd_message("/unlink role Mods all"))
-    assert role_linker.mirror_role_all_calls == [{"local_connector": "stoat", "local_role": "Mods"}]
-    assert role_linker.mirror_role_calls == [
-        {"local_connector": "stoat", "local_role": "Mods", "destination": "stoat"}
-    ]
-    assert role_linker.list_linked_roles_calls == [
-        {"local_connector": "stoat", "local_role": None, "service": None}
-    ]
-    assert role_linker.unlink_role_calls == [
-        {"local_connector": "stoat", "local_role": "Mods", "destination": "all"}
-    ]
-
-
-async def test_link_role_non_admin_rejected_linked_roles_allowed():
-    role_linker = FakeRoleLinker()
-    sender = _make_sender(role_linker=role_linker)
-    await sender._handle_message(_cmd_message("/link role Mods discord 111", manage_server=False))
-    await sender._handle_message(_cmd_message("/linked roles Mods", manage_server=False))
-    assert role_linker.link_role_calls == []
-    assert role_linker.list_linked_roles_calls == [
-        {"local_connector": "stoat", "local_role": "Mods", "service": None}
-    ]
-
-
-async def test_two_token_channel_commands_route_to_their_handlers():
-    linker = FakeLinker()
-    sender = _make_sender(linker=linker, role_linker=FakeRoleLinker())
-    await sender._handle_message(_cmd_message("/link channel dest discord src"))
-    await sender._handle_message(_cmd_message("/mirror channel general discord"))
-    await sender._handle_message(_cmd_message("/unlink channel general discord"))
-    await sender._handle_message(_cmd_message("/linked channels general"))
-    assert linker.link_channel_calls == [
-        {
-            "local_connector": "stoat",
-            "local_channel_id": "c1",
-            "local_channel_name": "general",
-            "source": "discord",
-            "source_id": "src",
-            "destination_id": "dest",
-        }
-    ]
-    assert linker.mirror_channel_calls[0]["destination"] == "discord"
-    assert linker.unlink_channel_calls == [
-        {"local_connector": "stoat", "local_channel_id": "general", "destination": "discord"}
-    ]
-    assert linker.list_linked_channels_calls == [
-        {"local_connector": "stoat", "local_channel_id": "general"}
-    ]
-
-
-async def test_two_token_channel_and_role_commands_do_not_shadow_each_other():
-    linker = FakeLinker()
-    role_linker = FakeRoleLinker()
-    sender = _make_sender(linker=linker, role_linker=role_linker)
-    await sender._handle_message(_cmd_message("/link channel dest discord src"))
-    await sender._handle_message(_cmd_message("/link role Mods discord 111"))
-    assert len(linker.link_channel_calls) == 1
-    assert len(role_linker.link_role_calls) == 1
-
-
-async def test_two_token_link_user_routes():
-    user_linker = FakeUserLinker()
-    sender = _make_sender(user_linker=user_linker)
-    await sender._handle_message(_cmd_message("/link user discord Alice Bob"))
-    assert user_linker.calls == [
-        {"local_connector": "stoat", "local_user_id": "Bob", "source": "discord", "source_user_id": "Alice"}
-    ]
-
-
-async def test_two_token_unlink_and_linked_user_route():
-    user_linker = FakeUserLinker()
-    sender = _make_sender(user_linker=user_linker)
-    await sender._handle_message(_cmd_message("/unlink user discord Bob"))
-    await sender._handle_message(_cmd_message("/linked users"))
-    assert user_linker.unlink_user_calls == [
-        {"local_connector": "stoat", "local_user_id": "Bob", "destination": "discord"}
-    ]
-    assert user_linker.list_linked_users_calls == [{}]
-
-
-async def test_linked_users_two_token_needs_no_admin_permission():
-    user_linker = FakeUserLinker()
-    sender = _make_sender(user_linker=user_linker)
-    await sender._handle_message(_cmd_message("/linked users 01KH", manage_server=False))
-    assert user_linker.list_linked_users_calls == [
-        {"local_connector": "stoat", "local_user_id": "01KH"}
-    ]
-
-
-async def test_two_token_category_commands_route():
-    category_linker = FakeCategoryLinker()
-    sender = _make_sender(category_linker=category_linker)
-    await sender._handle_message(_cmd_message("/link category discord src-cat dest-cat"))
-    await sender._handle_message(_cmd_message("/unlink category MyCat all"))
-    await sender._handle_message(_cmd_message("/linked categories MyCat"))
-    await sender._handle_message(_cmd_message("/mirror category MyCat stoat"))
-    await sender._handle_message(_cmd_message("/mirror category MyCat"))
-
-    assert category_linker.link_category_calls[0]["source"] == "discord"
-    assert category_linker.link_category_calls[0]["source_id"] == "src-cat"
-    assert category_linker.link_category_calls[0]["destination_id"] == "dest-cat"
-    assert category_linker.unlink_category_calls == [
-        {"local_connector": "stoat", "local_category_id": None, "local_category": "MyCat", "destination": "all"}
-    ]
-    assert category_linker.list_linked_categories_calls == [
-        {"local_connector": "stoat", "local_category_id": None, "local_category": "MyCat"}
-    ]
-    assert category_linker.mirror_category_calls == [
-        {
-            "local_connector": "stoat",
-            "local_category_id": None,
-            "local_category": "MyCat",
-            "local_category_name": None,
-            "destination": "stoat",
-        }
-    ]
-    assert category_linker.mirror_category_all_calls == [
-        {"local_connector": "stoat", "local_category_id": None, "local_category": "MyCat", "local_category_name": None}
-    ]

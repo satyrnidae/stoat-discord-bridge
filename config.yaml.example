@@ -63,6 +63,11 @@ stoat:
     # STOAT__1__GROUP_PARENT_CHANNEL_WITH_THREADS=false) to leave the parent
     # channel where it is. Re-checked on every relayed message.
     group_parent_channel_with_threads: true
+    # Prefix the Stoat message-command parser triggers on. Defaults to "/"
+    # (like Discord's slash commands); set e.g. "!" (or
+    # STOAT__1__COMMAND_PREFIX=!) to avoid clashing with another bot or with
+    # clients that swallow a leading "/". Command names are unchanged.
+    command_prefix: "/"
 
 irc:
   - id: irc

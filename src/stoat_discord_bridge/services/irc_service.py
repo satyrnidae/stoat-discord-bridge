@@ -23,18 +23,20 @@ from collections.abc import Awaitable
 import irc.bot
 import irc.connection
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, LinkError, UserLinker
+from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError, UserLinker
 from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import OnMessage, PartialRelayError, ReceiverService, SenderService
 from stoat_discord_bridge.services.formatting import chunk_content, render_discord_timestamps
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
+    rewrite_emoji,
     rewrite_mentions,
     rewrite_role_mentions,
 )
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -74,12 +76,12 @@ def _split_permanent_mode(modes: str) -> tuple[str | None, bool]:
 # Admin commands arrive as a DM to the bot's own nick, bare and uppercase
 # (no leading "/" or "!" - unlike Discord/Stoat's slash commands, since many
 # IRC clients swallow a leading "/" as a local client command). The channel
-# channel and user commands are two-token (`LINK CHANNEL` / `MIRROR CHANNEL`
-# / `UNLINK CHANNEL` / `LINK USER` / `UNLINK USER`, and read-only `LINKED
+# and user commands are two-token (`LINK CHANNEL` / `MIRROR CHANNEL` /
+# `UNLINK CHANNEL` / `LINK USER` / `UNLINK USER`, and read-only `LINKED
 # CHANNELS` / `LINKED USERS`), matching Discord's `/link channel` subcommand
-# shape; LINK_EMOTE is still single-token. See
+# shape. IRC has no custom-emoji concept, so the emote commands aren't
+# offered here at all (same as roles/categories). See
 # _handle_privmsg/_handle_dm_command.
-_ADMIN_DM_COMMANDS = frozenset({"LINK_EMOTE"})
 _ADMIN_DM_CHANNEL_VERBS = frozenset({"LINK", "MIRROR", "UNLINK"})
 # Second tokens accepted after a verb in _ADMIN_DM_CHANNEL_VERBS.
 _ADMIN_DM_TWO_WORD_NOUNS = frozenset({"CHANNEL", "USER"})
@@ -92,7 +94,6 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   LINKED USERS [local_id|name] - cross-connector user links, read-only
   LINK CHANNEL <local_id> <service> <external_id> - bridge a channel (IRC-operator)
   LINK USER <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (IRC-operator)
-  LINK_EMOTE <service> <external_id> <local_id> - link a custom emoji (IRC-operator)
   MIRROR CHANNEL <local_id> [service|all] - create+link a matching channel (IRC-operator)
   UNLINK CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK USER [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
@@ -225,7 +226,6 @@ class IrcSenderService(SenderService):
         on_message: OnMessage,
         health: HealthTracker,
         linker: ChannelLinker | None = None,
-        emote_linker: EmoteLinker | None = None,
         user_linker: UserLinker | None = None,
     ) -> None:
         SenderService.__init__(self, on_message)
@@ -234,7 +234,6 @@ class IrcSenderService(SenderService):
         self._channels = list(channels)
         self._health = health
         self._linker = linker
-        self._emote_linker = emote_linker
         self._user_linker = user_linker
         self._client = _IrcClient(self, config)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -334,8 +333,8 @@ class IrcSenderService(SenderService):
     def _handle_privmsg(self, connection, event) -> None:
         # DM to the bot. `STATUS`/`LINKED CHANNELS`/`LINKED USERS` are
         # read-only, no permission gate. `LINK CHANNEL`/`MIRROR CHANNEL`/
-        # `UNLINK CHANNEL`/`LINK USER`/`UNLINK USER` (two-token) and LINK_EMOTE
-        # are oper-gated admin commands, dispatched to _handle_dm_command.
+        # `UNLINK CHANNEL`/`LINK USER`/`UNLINK USER` (two-token) are oper-gated
+        # admin commands, dispatched to _handle_dm_command.
         content = event.arguments[0]
         if content.strip().upper() == "STATUS":
             for line in self._health.render().splitlines():
@@ -355,12 +354,9 @@ class IrcSenderService(SenderService):
             self._schedule(self._handle_linked_users_command(event.source.nick, words[2:]))
             return
         if (
-            words[0].upper() in _ADMIN_DM_COMMANDS
-            or (
-                words[0].upper() in _ADMIN_DM_CHANNEL_VERBS
-                and len(words) > 1
-                and words[1].upper() in _ADMIN_DM_TWO_WORD_NOUNS
-            )
+            words[0].upper() in _ADMIN_DM_CHANNEL_VERBS
+            and len(words) > 1
+            and words[1].upper() in _ADMIN_DM_TWO_WORD_NOUNS
         ):
             self._schedule(self._handle_dm_command(event.source.nick, content))
 
@@ -475,23 +471,6 @@ class IrcSenderService(SenderService):
                     source=service,
                     source_id=external_id,
                     destination_id=local_id,
-                )
-            except LinkError as exc:
-                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
-                self._notify(nick, str(exc))
-                return
-            self._notify(nick, summary)
-        elif command == "LINK_EMOTE":
-            if len(args) != 3:
-                self._notify(nick, "Usage: LINK_EMOTE <service> <external_id> <local_id>")
-                return
-            service, external_id, local_id = args
-            if self._emote_linker is None:
-                self._notify(nick, "Linking isn't configured.")
-                return
-            try:
-                summary = await self._emote_linker.link_emote(
-                    local_connector=self.connector_id, local_id=local_id, source=service, source_id=external_id
                 )
             except LinkError as exc:
                 logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
@@ -762,6 +741,7 @@ class IrcReceiverService(ReceiverService):
         enable_local_user_masquerade: bool = True,
         channel_mappings: ChannelMappingRepository | None = None,
         role_mappings: RoleMappingRepository | None = None,
+        emoji_mappings: EmojiMappingRepository | None = None,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
@@ -769,6 +749,7 @@ class IrcReceiverService(ReceiverService):
         self._enable_local_user_masquerade = enable_local_user_masquerade
         self._channel_mappings = channel_mappings
         self._role_mappings = role_mappings
+        self._emoji_mappings = emoji_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
@@ -832,6 +813,14 @@ class IrcReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="irc",
                 role_mappings=self._role_mappings,
+            )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="irc",
+                emoji_mappings=self._emoji_mappings,
             )
         if not content.strip():
             # A synced message with no textual content (after attachment

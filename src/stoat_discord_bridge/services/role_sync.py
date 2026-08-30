@@ -17,9 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # neutral name -> (discord.Permissions attr, stoat Permissions attr). Only
-# bits that mean the same thing on both platforms. TODO: the stoat.py flag
-# names are a best guess against the Revolt lineage - verify against a live
-# server, same caveat as the rest of the Stoat integration.
+# bits that mean the same thing on both platforms. Both sides' attr names
+# are verified against discord.py's `Permissions` and stoat.py's
+# `Permissions` flag class (stoatpy.readthedocs.io .../enums_and_flag_classes).
 NEUTRAL_PERMISSIONS: dict[str, tuple[str, str]] = {
     "view_channel": ("view_channel", "view_channel"),
     "read_message_history": ("read_message_history", "read_message_history"),
@@ -29,6 +29,9 @@ NEUTRAL_PERMISSIONS: dict[str, tuple[str, str]] = {
     "manage_webhooks": ("manage_webhooks", "manage_webhooks"),
     "create_invites": ("create_instant_invite", "create_invites"),
     "manage_permissions": ("manage_permissions", "manage_permissions"),
+    "embed_links": ("embed_links", "send_embeds"),
+    "attach_files": ("attach_files", "upload_files"),
+    "add_reactions": ("add_reactions", "react"),
 }
 
 

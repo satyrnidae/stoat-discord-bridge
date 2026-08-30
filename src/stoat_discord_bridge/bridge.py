@@ -34,6 +34,7 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.discord_service import (
@@ -156,6 +157,39 @@ class BridgeCoordinator:
             for native_id in native_ids
         ]
 
+    async def handle_typing(self, typing: StandardTyping) -> None:
+        """Relay a "someone is typing" / "stopped typing" indicator onto every
+        other connector's channel mapped into the same bridge group.
+        Fire-and-forget: nothing is recorded and no echo guard is needed - the
+        bridge posts via webhook/masquerade, which don't themselves emit typing
+        events, and each sender already drops typing from its own bot user. A
+        `typing.active == False` event (an explicit stop, Stoat only) routes to
+        `stop_typing` instead of `trigger_typing`. Silently does nothing if the
+        origin channel isn't bridged or a target doesn't advertise
+        `supports_typing` (IRC)."""
+        bridge_group = await self._channel_mappings.get_bridge_group(
+            typing.origin_connector_id, typing.origin_channel_id
+        )
+        if bridge_group is None:
+            return  # this channel isn't bridged
+
+        targets = await self._channel_mappings.get_mapped_channels(bridge_group)
+        for target in targets:
+            if target.connector_id == typing.origin_connector_id:
+                continue
+            receiver = self._receivers.get(target.connector_id)
+            if receiver is None or not receiver.supports_typing:
+                continue
+            try:
+                if typing.active:
+                    await receiver.trigger_typing(target_channel_id=target.channel_id)
+                else:
+                    await receiver.stop_typing(target_channel_id=target.channel_id)
+            except Exception:
+                logger.exception(
+                    "typing relay from %s to %s failed", typing.origin_connector_id, target.connector_id
+                )
+
     async def handle_reaction(self, reaction: StandardReaction) -> None:
         """Relay a reaction add/remove onto every other connector's copy of
         the same message, translating custom emoji IDs along the way.
@@ -235,10 +269,21 @@ class BridgeCoordinator:
     ) -> str | CustomEmoji | None:
         if isinstance(emoji, str):
             return emoji  # unicode emoji is universal, no translation needed
-        native_id = await self._emoji_mappings.find_equivalent(origin_connector_id, emoji.native_id, target_connector_id)
-        if native_id is None:
+        ref = await self._emoji_mappings.find_equivalent_ref(
+            origin_connector_id, emoji.native_id, target_connector_id
+        )
+        if ref is None:
             return None  # never mirrored to this connector (or mirroring failed) - caller should skip
-        return CustomEmoji(native_id=native_id, name=emoji.name, image_url=emoji.image_url, animated=emoji.animated)
+        # Use the target ref's own stored name, not the origin emoji's: a
+        # reaction event's emoji often carries no name (Stoat's `_parse_stoat_emoji`
+        # leaves it blank), and a target that needs `name:id` (Discord) rejects
+        # a blank name with "Unknown Emoji".
+        return CustomEmoji(
+            native_id=ref.emoji_id,
+            name=ref.name or emoji.name,
+            image_url=emoji.image_url,
+            animated=emoji.animated,
+        )
 
     async def handle_emoji_created(self, created: StandardEmojiCreated) -> None:
         """Mirror a newly created custom emoji onto every other connector
@@ -569,6 +614,7 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_created=coordinator.handle_emoji_created,
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             on_pin=coordinator.handle_pin,
+            on_typing=coordinator.handle_typing,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -588,6 +634,7 @@ async def run(config: BridgeConfig) -> None:
             enable_local_user_masquerade=dc.enable_local_user_masquerade,
             channel_mappings=channel_mappings,
             role_mappings=role_mappings,
+            emoji_mappings=emoji_mappings,
         )
         coordinator.register_receiver(receiver)
         # No ensure_channel: Discord has no channel-creation capability in
@@ -613,6 +660,10 @@ async def run(config: BridgeConfig) -> None:
             rename_role=sender.rename_role,
             get_channel_role_permission=sender.get_channel_role_permission,
             set_channel_role_permission=sender.set_channel_role_permission,
+            resolve_emoji_name=sender.get_emoji_name,
+            resolve_emoji_id_by_name=sender.resolve_emoji_id_by_name,
+            resolve_emoji=sender.resolve_emoji,
+            ensure_emoji=receiver.create_emoji,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -626,6 +677,7 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_created=coordinator.handle_emoji_created,
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             on_pin=coordinator.handle_pin,
+            on_typing=coordinator.handle_typing,
             linker=linker,
             mirrorer=mirrorer,
             emote_linker=emote_linker,
@@ -637,14 +689,14 @@ async def run(config: BridgeConfig) -> None:
             on_role_deleted=role_grants.handle_role_deleted,
             on_channel_role_permission_changed=role_grants.handle_channel_role_permission,
         )
-        coordinator.register_receiver(
-            StoatReceiverService(
-                sender,
-                user_mappings=user_mappings,
-                channel_mappings=channel_mappings,
-                role_mappings=role_mappings,
-            )
+        receiver = StoatReceiverService(
+            sender,
+            user_mappings=user_mappings,
+            channel_mappings=channel_mappings,
+            role_mappings=role_mappings,
+            emoji_mappings=emoji_mappings,
         )
+        coordinator.register_receiver(receiver)
         connector_infos[sc.id] = ConnectorInfo(
             id=sc.id,
             label=sc.label,
@@ -666,6 +718,10 @@ async def run(config: BridgeConfig) -> None:
             rename_role=sender.rename_role,
             get_channel_role_permission=sender.get_channel_role_permission,
             set_channel_role_permission=sender.set_channel_role_permission,
+            resolve_emoji_name=sender.get_emoji_name,
+            resolve_emoji_id_by_name=sender.resolve_emoji_id_by_name,
+            resolve_emoji=sender.resolve_emoji,
+            ensure_emoji=receiver.create_emoji,
         )
         senders.append(sender)
         closables.append(sender)
@@ -678,7 +734,6 @@ async def run(config: BridgeConfig) -> None:
             on_message=coordinator.handle_incoming,
             health=health,
             linker=linker,
-            emote_linker=emote_linker,
             user_linker=user_linker,
         )
         coordinator.register_receiver(
@@ -688,6 +743,7 @@ async def run(config: BridgeConfig) -> None:
                 enable_local_user_masquerade=ic.enable_local_user_masquerade,
                 channel_mappings=channel_mappings,
                 role_mappings=role_mappings,
+                emoji_mappings=emoji_mappings,
             )
         )
         connector_infos[ic.id] = ConnectorInfo(

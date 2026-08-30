@@ -99,6 +99,33 @@ def test_stoat_group_parent_channel_with_threads_defaults_on_and_is_overridable(
     assert config.stoat[1].group_parent_channel_with_threads is False  # env override
 
 
+def test_stoat_command_prefix_defaults_and_is_overridable(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("STOAT__2__COMMAND_PREFIX", "?")
+    path = _write_config(
+        tmp_path,
+        """
+        stoat:
+          - id: stoat_a
+            server_id: s1
+            api_url: https://a.example/api
+            bot_token: t0
+          - id: stoat_b
+            server_id: s2
+            api_url: https://b.example/api
+            bot_token: t1
+            command_prefix: "!"
+          - id: stoat_c
+            server_id: s3
+            api_url: https://c.example/api
+            bot_token: t2
+        """,
+    )
+    config = load_config(path)
+    assert config.stoat[0].command_prefix == "/"  # default
+    assert config.stoat[1].command_prefix == "!"  # literal in yaml
+    assert config.stoat[2].command_prefix == "?"  # env override
+
+
 def test_missing_required_field_raises(tmp_path, isolated_env):
     path = _write_config(
         tmp_path,

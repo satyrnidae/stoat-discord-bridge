@@ -43,12 +43,16 @@ class _Recorder:
         self.emoji_created: list = []
         self.emoji_deleted: list = []
         self.pins: list = []
+        self.typing: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
 
     async def on_pin(self, pin) -> None:
         self.pins.append(pin)
+
+    async def on_typing(self, typing) -> None:
+        self.typing.append(typing)
 
     async def on_reaction(self, reaction) -> None:
         self.reactions.append(reaction)
@@ -71,6 +75,7 @@ def _make_sender(
         on_emoji_created=recorder.on_emoji_created,
         on_emoji_deleted=recorder.on_emoji_deleted,
         on_pin=recorder.on_pin,
+        on_typing=recorder.on_typing,
         linker=linker,
         category_linker=category_linker,
     )
@@ -209,6 +214,45 @@ async def test_handle_raw_message_edit_ignores_a_different_guild():
     await sender._handle_raw_message_edit(_edit_payload(guild_id=999, data={"pinned": True}))
 
     assert recorder.pins == []
+
+
+# ---------------------------------------------------------------- _handle_typing
+
+
+def _typing_channel(id=42, guild_id=123):
+    return SimpleNamespace(id=id, guild=FakeGuild(id=guild_id))
+
+
+async def test_handle_typing_emits_a_standard_typing():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_typing(_typing_channel(), FakeUser(id=7, display_name="Alice"))
+
+    assert [(t.origin_channel_id, t.sender_name, t.sender_user_id) for t in recorder.typing] == [
+        ("42", "Alice", "7")
+    ]
+
+
+async def test_handle_typing_ignores_dms_and_other_guilds():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_typing(SimpleNamespace(id=42, guild=None), FakeUser(id=7))
+    await sender._handle_typing(_typing_channel(guild_id=999), FakeUser(id=7))
+
+    assert recorder.typing == []
+
+
+async def test_handle_typing_ignores_the_bridge_bot_and_other_bots():
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=1))
+    sender = _make_sender(recorder, client)
+
+    await sender._handle_typing(_typing_channel(), FakeUser(id=1))  # the bridge bot itself
+    await sender._handle_typing(_typing_channel(), FakeUser(id=2, bot=True))
+
+    assert recorder.typing == []
 
 
 # ---------------------------------------------------------------- _handle_raw_reaction

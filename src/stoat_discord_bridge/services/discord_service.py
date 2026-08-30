@@ -17,8 +17,10 @@ admin to already have a webhook URL in hand.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from dataclasses import replace
 
 import aiohttp
@@ -44,6 +46,7 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
@@ -53,6 +56,7 @@ from stoat_discord_bridge.services.base import (
     OnMessage,
     OnPin,
     OnReaction,
+    OnTyping,
     OnRoleDeleted,
     OnRoleRenamed,
     PartialRelayError,
@@ -65,6 +69,7 @@ from stoat_discord_bridge.services.formatting import (
 )
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
+    rewrite_emoji,
     rewrite_mentions,
     rewrite_role_mentions,
 )
@@ -77,6 +82,7 @@ from stoat_discord_bridge.services.role_sync import (
 _MAPPED_DISCORD_PERM_ATTRS = {d_attr for d_attr, _ in NEUTRAL_PERMISSIONS.values()}
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -166,6 +172,9 @@ class _DiscordClient(discord.Client):
     async def on_thread_create(self, thread: discord.Thread) -> None:
         await self._owner._handle_thread_create(thread)
 
+    async def on_typing(self, channel, user, when) -> None:
+        await self._owner._handle_typing(channel, user)
+
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
         await self._owner._handle_channel_create(channel)
 
@@ -205,6 +214,7 @@ class DiscordSenderService(SenderService):
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
+        on_typing: OnTyping | None = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -219,7 +229,9 @@ class DiscordSenderService(SenderService):
         # needed to serve the corresponding `/link-*` commands; None is
         # accepted (e.g. for tests) but those commands will then report
         # themselves unconfigured.
-        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin)
+        SenderService.__init__(
+            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing
+        )
         self._config = config
         self.connector_id = config.id
         self._health = health
@@ -251,33 +263,9 @@ class DiscordSenderService(SenderService):
         async def status_command(interaction: discord.Interaction) -> None:
             await interaction.response.send_message(self._health.render(), ephemeral=True)
 
-        async def link_emote_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._emote_linker.connectors if self._emote_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors)
-
-        @self.tree.command(
-            name="link-emote",
-            description="Link a custom emoji from another bridge connector to a local custom emoji",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to link from (see /status for configured connectors)",
-            external_id="Emoji id on that connector",
-            local_id="Emoji id on this connector",
-        )
-        @app_commands.autocomplete(service=link_emote_service_autocomplete)
-        async def link_emote_command(
-            interaction: discord.Interaction, service: str, external_id: str, local_id: str
-        ) -> None:
-            await self._handle_link_emote(interaction, service, external_id, local_id)
-
-        # Channels, roles, users and Categories use the `/link <noun>`,
-        # `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>` subcommand form
-        # (app_commands groups). Emotes still use the flat `-emote` name above
-        # - a later step migrates that too.
+        # Channels, roles, users, Categories and emotes all use the `/link
+        # <noun>`, `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>`
+        # subcommand form (app_commands groups).
         def _linker_service_autocomplete(get_linker, *, include_all: bool):
             async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
                 linker = get_linker()
@@ -297,6 +285,9 @@ class DiscordSenderService(SenderService):
 
         def category_service_autocomplete(*, include_all: bool):
             return _linker_service_autocomplete(lambda: self._category_linker, include_all=include_all)
+
+        def emote_service_autocomplete(*, include_all: bool):
+            return _linker_service_autocomplete(lambda: self._emote_linker, include_all=include_all)
 
         _manage = discord.Permissions(manage_guild=True)
         link_group = app_commands.Group(
@@ -486,6 +477,53 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_mirror_category(interaction, local_id, service)
 
+        @link_group.command(name="emote", description="Link a custom emoji from another connector to a local one")
+        @app_commands.describe(
+            service="Connector id to link from (see /status for configured connectors)",
+            external_id="Emoji id or name on that connector",
+            local_id="Emoji id or name on this connector",
+        )
+        @app_commands.autocomplete(service=emote_service_autocomplete(include_all=False))
+        async def link_emote_command(
+            interaction: discord.Interaction, service: str, external_id: str, local_id: str
+        ) -> None:
+            await self._handle_link_emote(interaction, service, external_id, local_id)
+
+        @unlink_group.command(
+            name="emote", description="Unlink a custom emoji - one connector, or the whole group (default: all)"
+        )
+        @app_commands.describe(
+            local_id="Emoji id or name on this connector",
+            service="Connector id to unlink, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True))
+        async def unlink_emote_command(
+            interaction: discord.Interaction, local_id: str, service: str | None = None
+        ) -> None:
+            await self._handle_unlink_emote(interaction, local_id, service)
+
+        @linked_group.command(
+            name="emotes", description="List custom emoji linked across the bridge (omit the emote to list all)"
+        )
+        @app_commands.describe(local_id="Emoji id or name on this connector (omit to list every linked emote)")
+        async def linked_emotes_command(
+            interaction: discord.Interaction, local_id: str | None = None
+        ) -> None:
+            await self._handle_linked_emotes(interaction, local_id)
+
+        @mirror_group.command(
+            name="emote", description="Recreate a custom emoji on another connector and link the two"
+        )
+        @app_commands.describe(
+            local_id="Emoji id or name on this connector",
+            service="Connector id to mirror to, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True))
+        async def mirror_emote_command(
+            interaction: discord.Interaction, local_id: str, service: str | None = None
+        ) -> None:
+            await self._handle_mirror_emote(interaction, local_id, service)
+
     @property
     def client(self) -> discord.Client:
         return self._client
@@ -575,6 +613,28 @@ class DiscordSenderService(SenderService):
                 origin_channel_id=str(payload.channel_id),
                 origin_message_id=str(payload.message_id),
                 pinned=bool(data["pinned"]),
+            )
+        )
+
+    async def _handle_typing(self, channel, user) -> None:
+        """`on_typing`: a user started typing in a channel. Relay it across the
+        bridge (BridgeCoordinator scopes it to a mapped channel). Dropped for
+        DMs, other guilds, and the bridge bot's own typing (which its own
+        `trigger_typing` on the receiver side would otherwise echo back)."""
+        if self._on_typing is None:
+            return
+        guild = getattr(channel, "guild", None)
+        if guild is None or guild.id != self._config.guild_id:
+            return
+        self_user = self._client.user
+        if getattr(user, "bot", False) or (self_user is not None and user.id == self_user.id):
+            return
+        await self._on_typing(
+            StandardTyping(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(channel.id),
+                sender_name=getattr(user, "display_name", None) or getattr(user, "name", str(user.id)),
+                sender_user_id=str(user.id),
             )
         )
 
@@ -1090,6 +1150,50 @@ class DiscordSenderService(SenderService):
         role = await guild.create_role(name=name, reason="bridge role mirror")
         return str(role.id)
 
+    async def get_emoji_name(self, emoji_id: str) -> str | None:
+        """Best-effort emoji-id -> name lookup, this connector's
+        `ConnectorInfo.resolve_emoji_name`."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            emoji = guild.get_emoji(int(emoji_id))
+        except ValueError:
+            return None
+        return emoji.name if emoji is not None else None
+
+    async def resolve_emoji_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare custom-emoji name to its id so `/link emote` etc.
+        accept either. A token that's already a real emoji id is returned
+        as-is; an unrecognized token yields None (EmoteLinker then treats it
+        as a literal id). Case-insensitive; first match wins."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        if token.isdigit() and guild.get_emoji(int(token)) is not None:
+            return token
+        lowered = token.casefold()
+        for emoji in guild.emojis:
+            if emoji.name.casefold() == lowered:
+                return str(emoji.id)
+        return None
+
+    async def resolve_emoji(self, emoji_id: str) -> "CustomEmoji | None":
+        """emoji-id -> full CustomEmoji, this connector's
+        `ConnectorInfo.resolve_emoji` (the source side of `/mirror emote`)."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            emoji = guild.get_emoji(int(emoji_id))
+        except ValueError:
+            return None
+        if emoji is None:
+            return None
+        return CustomEmoji(
+            native_id=str(emoji.id), name=emoji.name, image_url=str(emoji.url), animated=emoji.animated
+        )
+
     async def resolve_category_id_by_name(self, token: str) -> str | None:
         """Resolve a bare Category name to its id so `/link category` etc.
         accept either. A token that's already a real Category id is returned
@@ -1480,7 +1584,7 @@ class DiscordSenderService(SenderService):
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
         logger.info(
-            "[discord:%s] %s ran /link-emote service=%s external_id=%s local_id=%s",
+            "[discord:%s] %s ran /link emote service=%s external_id=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
@@ -1495,7 +1599,69 @@ class DiscordSenderService(SenderService):
                 source_id=external_id,
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /link-emote rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /link emote rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_unlink_emote(
+        self, interaction: discord.Interaction, local_id: str, service: str | None
+    ) -> None:
+        if self._emote_linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        logger.info(
+            "[discord:%s] %s ran /unlink emote local_id=%s service=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+        )
+        try:
+            summary = await self._emote_linker.unlink_emote(
+                local_connector=self.connector_id, local_emote=local_id, destination=service
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /unlink emote rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_linked_emotes(
+        self, interaction: discord.Interaction, local_id: str | None
+    ) -> None:
+        if self._emote_linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        summary = await self._emote_linker.list_linked_emotes(
+            local_connector=self.connector_id, local_emote=local_id
+        )
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_mirror_emote(
+        self, interaction: discord.Interaction, local_id: str, service: str | None
+    ) -> None:
+        if self._emote_linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        logger.info(
+            "[discord:%s] %s ran /mirror emote local_id=%s service=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+        )
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._emote_linker.mirror_emote_all(
+                    local_connector=self.connector_id, local_emote=local_id
+                )
+            else:
+                summary = await self._emote_linker.mirror_emote(
+                    local_connector=self.connector_id, local_emote=local_id, destination=service
+                )
+        except LinkError as exc:
+            logger.info("[discord:%s] /mirror emote rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
@@ -1627,6 +1793,7 @@ class DiscordReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
     supports_pins = True
+    supports_typing = True
 
     def __init__(
         self,
@@ -1637,6 +1804,7 @@ class DiscordReceiverService(ReceiverService):
         enable_local_user_masquerade: bool = True,
         channel_mappings: ChannelMappingRepository | None = None,
         role_mappings: RoleMappingRepository | None = None,
+        emoji_mappings: EmojiMappingRepository | None = None,
     ) -> None:
         self._client = client
         self._guild_id = guild_id
@@ -1644,9 +1812,14 @@ class DiscordReceiverService(ReceiverService):
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
         self._role_mappings = role_mappings
+        self._emoji_mappings = emoji_mappings
         self._enable_local_user_masquerade = enable_local_user_masquerade
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
+        # target_channel_id -> monotonic deadline the keep-alive loop stops at,
+        # and the loop task itself (one per channel currently "typing").
+        self._typing_until: dict[str, float] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         webhook, thread = await self._get_or_create_webhook(target_channel_id)
@@ -1689,6 +1862,14 @@ class DiscordReceiverService(ReceiverService):
                 target_kind="discord",
                 role_mappings=self._role_mappings,
             )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                emoji_mappings=self._emoji_mappings,
+            )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):
             logger.debug(
@@ -1720,7 +1901,7 @@ class DiscordReceiverService(ReceiverService):
         if await self._bot_has_reaction(target_channel_id, target_message_id, emoji) is True:
             return
         message = await self._get_partial_message(target_channel_id, target_message_id)
-        await message.add_reaction(_to_discord_emoji(emoji))
+        await message.add_reaction(self._discord_emoji(emoji))
 
     async def remove_reaction(
         self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji
@@ -1730,7 +1911,7 @@ class DiscordReceiverService(ReceiverService):
         if await self._bot_has_reaction(target_channel_id, target_message_id, emoji) is False:
             return
         message = await self._get_partial_message(target_channel_id, target_message_id)
-        await message.remove_reaction(_to_discord_emoji(emoji), self._client.user)
+        await message.remove_reaction(self._discord_emoji(emoji), self._client.user)
 
     async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
         channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
@@ -1756,6 +1937,73 @@ class DiscordReceiverService(ReceiverService):
                 target_channel_id,
             )
 
+    # Discord shows a typing indicator for ~10s per call and has no API to
+    # clear one early, so the best we can do on an explicit stop is quit
+    # re-arming it. While the origin user keeps typing we refresh well inside
+    # the ~10s window so the indicator never visibly flickers; `_TYPING_LINGER`
+    # is the grace period we keep refreshing for after the last event, in case
+    # a `stop_typing` never arrives (e.g. the origin is another Discord, which
+    # emits no stop event).
+    _TYPING_REFRESH = 2.0
+    _TYPING_LINGER = 3.0
+
+    async def trigger_typing(self, *, target_channel_id: str) -> None:
+        """Show a typing indicator in the channel, attributed to the bridge bot
+        (Discord can't show a webhook identity as typing). Extends the linger
+        deadline and, if no keep-alive loop is running for this channel, starts
+        one that re-sends the indicator every `_TYPING_REFRESH`s until the
+        deadline (or an explicit `stop_typing`). Best-effort: a missing channel
+        or transient API error just stops the loop."""
+        self._typing_until[target_channel_id] = time.monotonic() + self._TYPING_LINGER
+        task = self._typing_tasks.get(target_channel_id)
+        if task is not None and not task.done():
+            return
+        self._typing_tasks[target_channel_id] = asyncio.ensure_future(
+            self._keep_typing(target_channel_id)
+        )
+
+    async def stop_typing(self, *, target_channel_id: str) -> None:
+        """The origin user stopped typing before sending. Discord has no
+        clear-typing API, so all we can do is stop re-arming the indicator and
+        let Discord's own ~10s timeout lapse it."""
+        self._typing_until.pop(target_channel_id, None)
+        task = self._typing_tasks.pop(target_channel_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+
+    async def _keep_typing(self, channel_id: str) -> None:
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(
+                int(channel_id)
+            )
+            while time.monotonic() < self._typing_until.get(channel_id, 0.0):
+                await channel.typing()
+                await asyncio.sleep(self._TYPING_REFRESH)
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, ValueError):
+            logger.debug("[discord:%s] typing keep-alive for channel %s failed", self.connector_id, channel_id)
+        finally:
+            self._typing_until.pop(channel_id, None)
+            self._typing_tasks.pop(channel_id, None)
+
+    def _discord_emoji(self, emoji: str | CustomEmoji) -> str | discord.Emoji | discord.PartialEmoji:
+        """Like the module-level `_to_discord_emoji`, but resolves a custom
+        emoji against the client cache first: the real `discord.Emoji` carries
+        the authoritative `name`/`animated`, and Discord's reaction endpoint
+        rejects a `name:id` pair whose name is blank or whose animated prefix
+        is wrong with "Unknown Emoji"."""
+        if isinstance(emoji, CustomEmoji):
+            getter = getattr(self._client, "get_emoji", None)
+            resolved = getter(int(emoji.native_id)) if getter is not None else None
+            if resolved is not None:
+                return resolved
+        return _to_discord_emoji(emoji)
+
     async def _bot_has_reaction(
         self, channel_id: str, message_id: str, emoji: str | CustomEmoji
     ) -> bool | None:
@@ -1767,7 +2015,7 @@ class DiscordReceiverService(ReceiverService):
             message = await channel.fetch_message(int(message_id))
         except Exception:
             return None
-        want = _to_discord_emoji(emoji)
+        want = self._discord_emoji(emoji)
         for reaction in message.reactions:
             if _discord_reaction_matches(reaction.emoji, want):
                 return bool(reaction.me)

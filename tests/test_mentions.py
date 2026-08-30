@@ -1,9 +1,11 @@
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
+    rewrite_emoji,
     rewrite_mentions,
     rewrite_role_mentions,
 )
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
 from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 
@@ -54,6 +56,64 @@ async def test_unmapped_role_mention_left_untouched(fake_db):
         target_kind="stoat", role_mappings=repo,
     )
     assert result == "ping <@&111> and <@&222>"
+
+
+async def _linked_emoji(fake_db, *refs):
+    repo = EmojiMappingRepository(fake_db)
+    group_id = await repo.try_reserve(EmojiRef(*refs[0]))
+    await repo.add_refs(group_id, [EmojiRef(*r) for r in refs[1:]])
+    return repo
+
+
+async def test_discord_custom_emoji_rewritten_to_stoat(fake_db):
+    repo = await _linked_emoji(fake_db, ("discord", "989662279748431872", "lmao"), ("stoat", _ULID, "lmao"))
+    result = await rewrite_emoji(
+        "haha <:lmao:989662279748431872>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", emoji_mappings=repo,
+    )
+    assert result == f"haha :{_ULID}:"
+
+
+async def test_stoat_custom_emoji_rewritten_to_discord(fake_db):
+    repo = await _linked_emoji(fake_db, ("stoat", _ULID, "lmao"), ("discord", "989662279748431872", "lmao"))
+    result = await rewrite_emoji(
+        f"haha :{_ULID}:", origin_connector_id="stoat", target_connector_id="discord",
+        target_kind="discord", emoji_mappings=repo,
+    )
+    assert result == "haha <:lmao:989662279748431872>"
+
+
+async def test_custom_emoji_stripped_to_shortcode_on_irc(fake_db):
+    repo = await _linked_emoji(fake_db, ("discord", "989662279748431872", "lmao"), ("stoat", _ULID, "lmao"))
+    discord_origin = await rewrite_emoji(
+        "a <:lmao:989662279748431872> b", origin_connector_id="discord", target_connector_id="irc",
+        target_kind="irc", emoji_mappings=repo,
+    )
+    assert discord_origin == "a :lmao: b"
+    stoat_origin = await rewrite_emoji(
+        f"a :{_ULID}: b", origin_connector_id="stoat", target_connector_id="irc",
+        target_kind="irc", emoji_mappings=repo,
+    )
+    assert stoat_origin == "a :lmao: b"
+
+
+async def test_unknown_stoat_emoji_removed_entirely_on_irc(fake_db):
+    repo = await _linked_emoji(fake_db, ("discord", "111", "a"), ("stoat", _ULID, "a"))
+    other_ulid = "01BX5ZZKBKACTAV9WEVGEMMVRZ"
+    result = await rewrite_emoji(
+        f"hi :{other_ulid}: there", origin_connector_id="stoat", target_connector_id="irc",
+        target_kind="irc", emoji_mappings=repo,
+    )
+    assert result == "hi  there"
+
+
+async def test_unmapped_custom_emoji_and_shortcodes_left_untouched(fake_db):
+    repo = await _linked_emoji(fake_db, ("discord", "111", "a"), ("stoat", _ULID, "a"))
+    result = await rewrite_emoji(
+        "<:other:222> and :smile:", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", emoji_mappings=repo,
+    )
+    assert result == "<:other:222> and :smile:"
 
 
 async def _linked(fake_db, *mappings):

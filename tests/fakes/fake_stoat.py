@@ -107,6 +107,15 @@ class FakeChannel:
         self._messages: dict[str, FakeStoatMessage] = {}
         self._next_message_id = 1
         self.category = category
+        self.typing_events: list[str] = []
+
+    async def begin_typing(self) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.typing_events.append("begin")
+
+    async def end_typing(self) -> None:
+        self.typing_events.append("end")
 
     async def send(self, content: str, *, masquerade=None) -> FakeSentMessage:
         if self._raises is not None:
@@ -153,6 +162,23 @@ class FakeServer:
         self.created_emoji_calls: list[dict] = []
         self._members: dict[str, Any] = {}
         self._next_emoji_id = 1
+        # id -> FakeEmoji; `Server.emojis` is a Mapping in stoat.py
+        self._emojis: dict[str, Any] = {}
+        self.fetch_emojis_calls = 0
+
+    @property
+    def emojis(self):
+        return dict(self._emojis)
+
+    def add_emoji(self, emoji) -> None:
+        self._emojis[str(emoji.id)] = emoji
+
+    def get_emoji(self, emoji_id: str):
+        return self._emojis.get(str(emoji_id))
+
+    async def fetch_emojis(self, **kwargs):
+        self.fetch_emojis_calls += 1
+        return list(self._emojis.values())
 
     def add_member(self, user_id: str, member) -> None:
         self._members[user_id] = member
@@ -189,10 +215,11 @@ class FakeServer:
             ]
         return json
 
-    async def create_emoji(self, *, name: str, image: bytes):
+    async def create_server_emoji(self, name: str, *, image, nsfw=None):
         if self._raises is not None:
             raise self._raises
-        self.created_emoji_calls.append({"name": name, "image": image})
+        # `image` is a stoat.Upload; unwrap its bytes for assertions
+        self.created_emoji_calls.append({"name": name, "image": getattr(image, "content", image)})
         emoji = FakeEmoji(id=str(self._next_emoji_id), name=name)
         self._next_emoji_id += 1
         return emoji

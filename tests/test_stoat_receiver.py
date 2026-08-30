@@ -460,6 +460,19 @@ async def test_create_emoji_downloads_and_mirrors_it(monkeypatch):
     assert result.name == "smile"
 
 
+async def test_create_emoji_sanitises_the_name_to_stoats_charset(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"image-bytes"))
+    client = FakeClient()
+    server = client.add_server(FakeServer(id="srv-1"))
+    receiver = _make_receiver(client)
+
+    await receiver.create_emoji(
+        CustomEmoji(native_id="e1", name="Big Smile!", image_url="https://cdn.example/e.png")
+    )
+
+    assert server.created_emoji_calls == [{"name": "big_smile", "image": b"image-bytes"}]
+
+
 async def test_create_emoji_returns_none_on_http_failure(monkeypatch):
     monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"image-bytes"))
     client = FakeClient()
@@ -499,3 +512,61 @@ async def test_set_pinned_is_a_noop_when_already_in_the_target_state():
     await receiver.set_pinned(target_channel_id="c-1", target_message_id="m7", pinned=True)
 
     assert msg.pin_calls == 0
+
+
+# ---------------------------------------------------------------- trigger_typing
+
+
+async def test_trigger_typing_keeps_typing_then_ends_it():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 0.05
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="c-1")
+    await receiver._typing_tasks["c-1"]
+
+    assert channel.typing_events[0] == "begin"
+    assert channel.typing_events[-1] == "end"
+    assert receiver._typing_tasks == {}
+
+
+async def test_trigger_typing_reuses_the_running_loop_for_repeat_calls():
+    client = FakeClient()
+    client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 0.05
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="c-1")
+    task = receiver._typing_tasks["c-1"]
+    await receiver.trigger_typing(target_channel_id="c-1")
+
+    assert receiver._typing_tasks["c-1"] is task
+    await task
+
+
+async def test_stop_typing_cancels_the_loop_and_ends_the_indicator():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 5.0
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="c-1")
+    await receiver.stop_typing(target_channel_id="c-1")
+
+    assert receiver._typing_tasks == {}
+    assert receiver._typing_until == {}
+    assert channel.typing_events[-1] == "end"
+
+
+async def test_stop_typing_is_a_safe_noop_when_nothing_is_typing():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+
+    await receiver.stop_typing(target_channel_id="c-1")  # must not raise
+
+    assert channel.typing_events == ["end"]

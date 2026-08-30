@@ -25,8 +25,13 @@ id on the connector the command is run on.
 - **Discord**: slash commands. Anything that changes bridge state requires
   the Manage Server permission; read-only commands (`/status`,
   `/linked channels`, `/linked users`) don't.
-- **Stoat**: message commands (type the command as a plain chat message).
-  Same Manage Server / read-only split as Discord.
+- **Stoat**: message commands (type the command as a plain chat message,
+  `/` prefix by default — configurable per connector via `command_prefix`,
+  e.g. `!link channel …`). Parsed by `stoat.ext.commands` - `/link`, `/unlink`, `/linked`,
+  `/mirror` are real command groups with `channel` / `role` / `user` /
+  `category` / `emote` subcommands, the same shape as Discord's `app_commands`
+  groups. Same Manage Server / read-only split as Discord. The invoking
+  message and the bot's reply are never relayed to other connectors.
 - **IRC**: sent as a **DM to the bot**, bare and **uppercase**, no leading
   `/` or `!` (unlike Discord/Stoat's slash commands — many IRC clients treat
   a leading `/` as a local client command and never send it as text). Most
@@ -142,20 +147,56 @@ stored name is never more than the id it was linked with.
 - **IRC**: `LINKED USERS [local_id]`, DM
 
 
-## `/link-emote <service> <external_id> <local_id>`
+## Emotes: `/link emote`, `/mirror emote`, `/linked emotes`, `/unlink emote`
 
-TODO: Split these
+**Discord and Stoat only** (IRC has no custom-emoji concept, same as roles and
+Categories). Like the role commands, these use a space-separated subcommand
+syntax, and **every id argument also accepts a bare emoji name** (resolved
+case-insensitively; first match wins - pass an id when a name is ambiguous).
+Same already-linked / conflicting-group rules as `/link channel`.
+
+On Discord these are `app_commands` subcommand groups (`/link emote`,
+`/mirror emote`, `/linked emotes`, `/unlink emote`); on Stoat they are the
+same tokens as a plain chat message. They share the `/link` / `/mirror` /
+`/linked` / `/unlink` groups with the channel, role, user and Category
+commands.
+
+### `/link emote <service> <external_id|name> <local_id|name>`
 
 Links a custom emoji from connector `<service>` to a local custom emoji, so a
 reaction using either can be recreated as the other (see the reaction/emoji
-sync section of `README.md`/`CLAUDE.md`). Same already-linked/
-conflicting-group rules as `/link channel`.
+sync section of `README.md`/`CLAUDE.md`). Manage Server.
 
-- **Discord**: `/link-emote` slash command (Manage Server)
-- **Stoat**: `/link-emote <service> <external_id> <local_id>` message command (Manage Server)
-- **IRC**: `LINK_EMOTE <service> <external_id> <local_id>`, DM (IRC-operator)
+### `/mirror emote <local_id|name> [<service>|all]`
 
-TODO: Remove emote IRC link, since IRC does not have emotes
+Ensures a linked counterpart of the emoji exists on `<service>` (or every
+other connector, if `all` - the default): reuses the existing link if the
+pair is already linked; failing that, links to a same-named emoji that
+already exists on the destination (name match only - images aren't compared)
+rather than creating a duplicate; only if neither is found does it read the
+source emoji's image, recreate it on the destination, and link the two.
+Unlike `/mirror role`, an emoji
+can't be created name-only - a connector that can't read the source emoji or
+can't create it (slots full, name rejected, image too large) is reported
+per-connector. Manage Server.
+
+### `/linked emotes [<local_id|name>]`
+
+Read-only. With an emote, lists its linked counterparts; with no argument,
+lists every linked-emote group.
+
+### `/unlink emote <local_id|name> [<service>|all]`
+
+Removes members from the emoji's mapping group - a specific `<service>` kicks
+just that one, `all` (the default) dissolves the whole group. A kick that
+would stand a lone survivor dissolves the group instead. The emoji
+themselves are never deleted.
+
+- **Discord**: the `/link emote` / `/mirror emote` / `/linked emotes` /
+  `/unlink emote` slash subcommands (Manage Server on all but
+  `/linked emotes`).
+- **Stoat**: the same tokens as message commands.
+- **IRC**: not available - IRC has no custom emoji.
 
 ## `/mirror channel [<local_id>] [<service>|all]`
 

@@ -7,10 +7,15 @@ each Stoat deployment needs its own client/session.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
+import typing
 import urllib.request
+from collections import deque
+from inspect import isawaitable
 from types import SimpleNamespace
 
 import aiohttp
@@ -18,6 +23,7 @@ import aiohttp
 import stoat
 from stoat import routes as stoat_routes
 from stoat.core import ulid_new
+from stoat.ext import commands as stoat_commands
 
 from stoat_discord_bridge.admin_commands import (
     CategoryLinker,
@@ -38,6 +44,7 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
@@ -47,6 +54,7 @@ from stoat_discord_bridge.services.base import (
     OnMessage,
     OnPin,
     OnReaction,
+    OnTyping,
     OnRoleDeleted,
     OnRoleRenamed,
     PartialRelayError,
@@ -59,6 +67,7 @@ from stoat_discord_bridge.services.formatting import (
 )
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
+    rewrite_emoji,
     rewrite_mentions,
     rewrite_role_mentions,
 )
@@ -68,6 +77,7 @@ from stoat_discord_bridge.services.role_sync import (
 )
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -80,26 +90,35 @@ _CONTENT_LIMIT = 2000
 # Discord has native slash-command discoverability; Stoat's commands are
 # plain chat messages with no such affordance, hence /bridge-help. See
 # COMMANDS.md for full per-command detail - this is a compact pointer to it.
-_HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
-  /status - sync target health, read-only
-  /linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
-  /linked users [local_id|name] - cross-connector user links, read-only
-  /linked roles [local_id|name] - roles linked across the bridge, read-only
-  /linked categories [local_id|name] - Categories bridged to this channel's Category, read-only
-  /link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
-  /link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
-  /link-emote <service> <external_id> <local_id> - link a custom emoji (Manage Server)
-  /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
-  /link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
-  /mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
-  /mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
-  /mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
-  /mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
-  /unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
-  /unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
-  /unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
-  /unlink category [local_id|name] [service|all] - unlink a Category (default: this channel's) from one connector, or the whole group (Manage Server)
-  /bridge-help - this message"""
+# `{p}` is filled with the connector's configured command prefix
+# (`StoatConnectorConfig.command_prefix`, "/" by default) - see `_help_text`.
+_HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
+  {p}status - sync target health, read-only
+  {p}linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
+  {p}linked users [local_id|name] - cross-connector user links, read-only
+  {p}linked roles [local_id|name] - roles linked across the bridge, read-only
+  {p}linked categories [local_id|name] - Categories bridged to this channel's Category, read-only
+  {p}linked emotes [local_id|name] - custom emoji linked across the bridge, read-only
+  {p}link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
+  {p}link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
+  {p}link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
+  {p}link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
+  {p}link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
+  {p}mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
+  {p}mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
+  {p}mirror emote <local_id|name> [service|all] - recreate a custom emoji on another connector and link the two (Manage Server)
+  {p}mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
+  {p}mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
+  {p}unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
+  {p}unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
+  {p}unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
+  {p}unlink emote <local_id|name> [service|all] - unlink a custom emoji from one connector, or the whole group (Manage Server)
+  {p}unlink category [local_id|name] [service|all] - unlink a Category (default: this channel's) from one connector, or the whole group (Manage Server)
+  {p}bridge-help - this message"""
+
+
+def _help_text(prefix: str) -> str:
+    return _HELP_TEXT_TEMPLATE.format(p=prefix)
 
 
 def _discover_node_config(http_base: str, *, connector_id: str = "stoat") -> dict | None:
@@ -191,22 +210,35 @@ def _discover_cdn_base(node_config: dict | None) -> str | None:
     return url if isinstance(url, str) and url else None
 
 
-class _StoatClient(stoat.Client):
+class _StoatClient(stoat_commands.Bot):
     """stoat.py dispatches events by looking up `on_<event>` attributes on the
     Client instance itself, so *something* has to subclass stoat.Client. This
     subclass exists only to satisfy that and delegates every callback to the
     owning StoatSenderService, which otherwise doesn't need to inherit from a
-    third-party client class."""
+    third-party client class.
+
+    Subclasses `stoat.ext.commands.Bot` (a `stoat.Client` that also runs the
+    prefix-command framework) rather than a bare `stoat.Client`, so the admin
+    commands (`/link channel …` etc.) are real `commands.Group` subcommands -
+    the Stoat analogue of the Discord side's `app_commands` groups - instead of
+    a hand-rolled string-match ladder in `_handle_message`. `MessageCreateEvent`
+    still also drives `on_message` (via `call_object_handlers_hook`), which is
+    where message relay happens; `process_commands` below records the ids of
+    messages it recognised as commands so `_handle_message` can skip relaying
+    them."""
 
     def __init__(self, owner: StoatSenderService, config: StoatConnectorConfig) -> None:
         node_config = _discover_node_config(config.api_url, connector_id=config.id)
+        self._prefix = config.command_prefix
         super().__init__(
+            config.command_prefix,
             token=config.bot_token,
             http_base=config.api_url,
             websocket_base=_discover_websocket_base(node_config),
             cdn_base=_discover_cdn_base(node_config),
         )
         self._owner = owner
+        self._register_commands()
 
     async def on_ready(self, event, /) -> None:
         await self._owner._handle_ready(event)
@@ -236,6 +268,14 @@ class _StoatClient(stoat.Client):
         # channels, each with a .role_permissions dict[str, PermissionOverride]).
         await self._owner._handle_channel_update(event)
 
+    async def on_channel_start_typing(self, event, /) -> None:
+        # stoat.events.ChannelStartTypingEvent (.channel_id, .user_id).
+        await self._owner._handle_typing(event, active=True)
+
+    async def on_channel_stop_typing(self, event, /) -> None:
+        # stoat.events.ChannelStopTypingEvent (.channel_id, .user_id).
+        await self._owner._handle_typing(event, active=False)
+
     async def on_message_react(self, event, /) -> None:
         await self._owner._handle_message_react(event, added=True)
 
@@ -248,6 +288,160 @@ class _StoatClient(stoat.Client):
     async def on_server_emoji_delete(self, event, /) -> None:
         await self._owner._handle_emoji_delete(getattr(event, "emoji_id", None) or event.emoji.id)
 
+    # ----------------------------------------------------------- commands
+
+    async def process_commands(self, message, shard, /) -> None:
+        """Same as `commands.Bot.process_commands`, but records the id of any
+        message that resolved to one of our registered commands so
+        `_handle_message` (driven independently off the same MessageCreateEvent
+        via `call_object_handlers_hook`) knows not to also relay it as chat.
+        The record is taken even when argument parsing later fails, so a
+        malformed `/link channel` still isn't relayed."""
+        ctx = await self.get_context(message, shard)
+        if ctx.command is not None:
+            self._owner._note_command_message(str(message.id))
+        skip = self.skip_check(ctx)
+        if isawaitable(skip):
+            skip = await skip
+        if skip:
+            return
+        await self.invoke(ctx)
+
+    async def on_command_error(self, event, /) -> None:
+        error = event.error
+        ctx = event.context
+        if isinstance(error, stoat_commands.CommandNotFound):
+            return
+        if isinstance(error, stoat_commands.UserInputError):
+            if ctx.command is not None:
+                sig = ctx.command.signature
+                usage = f"Usage: {self._prefix}{ctx.command.qualified_name}" + (f" {sig}" if sig else "")
+            else:
+                usage = "Bad command usage."
+            await self._owner._reply(ctx, usage)
+            return
+        logger.error(
+            "[stoat:%s] command %r failed",
+            self._owner.connector_id,
+            getattr(ctx.command, "qualified_name", "?"),
+            exc_info=error,
+        )
+        await self._owner._reply(ctx, "That command failed.")
+
+    def _register_commands(self) -> None:
+        """Declares the `/link`, `/unlink`, `/linked`, `/mirror` groups (+ their
+        subcommands) and the flat `/status`, `/bridge-help`, `/mirror-channels`
+        commands, mirroring the Discord `app_commands` tree
+        (`discord_service._DiscordClient`). Every callback just forwards to the
+        matching `StoatSenderService._<verb>_<noun>` method, which holds the
+        shared linking logic and the Manage-Server gate."""
+        owner = self._owner
+        p = self._prefix
+
+        @self.group(name="link", invoke_without_command=True)
+        async def link(ctx):
+            await owner._reply(ctx, f"Usage: {p}link <channel|role|user|category|emote> …")
+
+        @self.group(name="unlink", invoke_without_command=True)
+        async def unlink(ctx):
+            await owner._reply(ctx, f"Usage: {p}unlink <channel|role|user|category|emote> …")
+
+        @self.group(name="linked", invoke_without_command=True)
+        async def linked(ctx):
+            await owner._reply(ctx, f"Usage: {p}linked <channels|roles|users|categories|emotes> …")
+
+        @self.group(name="mirror", invoke_without_command=True)
+        async def mirror(ctx):
+            await owner._reply(ctx, f"Usage: {p}mirror <channel|role|category|emote> …")
+
+        @link.command(name="channel")
+        async def link_channel(ctx, service: str, external_id: str, local_id: typing.Optional[str] = None):
+            await owner._link_channel(ctx, service, external_id, local_id)
+
+        @link.command(name="role")
+        async def link_role(ctx, local_id: str, service: str, external_id: str):
+            await owner._link_role(ctx, local_id, service, external_id)
+
+        @link.command(name="user")
+        async def link_user(ctx, service: str, external_id: str, local_id: str):
+            await owner._link_user(ctx, service, external_id, local_id)
+
+        @link.command(name="category")
+        async def link_category(ctx, service: str, external_id: str, local_id: typing.Optional[str] = None):
+            await owner._link_category(ctx, service, external_id, local_id)
+
+        @link.command(name="emote")
+        async def link_emote(ctx, service: str, external_id: str, local_id: str):
+            await owner._link_emote(ctx, service, external_id, local_id)
+
+        @unlink.command(name="channel")
+        async def unlink_channel(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+            await owner._unlink_channel(ctx, local_id, service)
+
+        @unlink.command(name="role")
+        async def unlink_role(ctx, local_id: str, service: typing.Optional[str] = None):
+            await owner._unlink_role(ctx, local_id, service)
+
+        @unlink.command(name="user")
+        async def unlink_user(ctx, service: typing.Optional[str] = None, local_id: typing.Optional[str] = None):
+            await owner._unlink_user(ctx, service, local_id)
+
+        @unlink.command(name="category")
+        async def unlink_category(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+            await owner._unlink_category(ctx, local_id, service)
+
+        @unlink.command(name="emote")
+        async def unlink_emote(ctx, local_id: str, service: typing.Optional[str] = None):
+            await owner._unlink_emote(ctx, local_id, service)
+
+        @linked.command(name="channels")
+        async def linked_channels(ctx, local_id: typing.Optional[str] = None):
+            await owner._linked_channels(ctx, local_id)
+
+        @linked.command(name="roles")
+        async def linked_roles(ctx, local_id: typing.Optional[str] = None):
+            await owner._linked_roles(ctx, local_id)
+
+        @linked.command(name="users")
+        async def linked_users(ctx, local_id: typing.Optional[str] = None):
+            await owner._linked_users(ctx, local_id)
+
+        @linked.command(name="categories")
+        async def linked_categories(ctx, local_id: typing.Optional[str] = None):
+            await owner._linked_categories(ctx, local_id)
+
+        @linked.command(name="emotes")
+        async def linked_emotes(ctx, local_id: typing.Optional[str] = None):
+            await owner._linked_emotes(ctx, local_id)
+
+        @mirror.command(name="channel")
+        async def mirror_channel(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+            await owner._mirror_channel(ctx, local_id, service)
+
+        @mirror.command(name="role")
+        async def mirror_role(ctx, local_id: str, service: typing.Optional[str] = None):
+            await owner._mirror_role(ctx, local_id, service)
+
+        @mirror.command(name="category")
+        async def mirror_category(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+            await owner._mirror_category(ctx, local_id, service)
+
+        @mirror.command(name="emote")
+        async def mirror_emote(ctx, local_id: str, service: typing.Optional[str] = None):
+            await owner._mirror_emote(ctx, local_id, service)
+
+        @self.command(name="status")
+        async def status(ctx):
+            await owner._reply(ctx, owner._health.render())
+
+        @self.command(name="bridge-help")
+        async def bridge_help(ctx):
+            await owner._reply(ctx, _help_text(p))
+
+        @self.command(name="mirror-channels")
+        async def mirror_channels(ctx, service: str):
+            await owner._mirror_channels(ctx, service)
+
 
 class StoatSenderService(SenderService):
     def __init__(
@@ -259,6 +453,7 @@ class StoatSenderService(SenderService):
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
+        on_typing: OnTyping | None = None,
         linker: ChannelLinker | None = None,
         mirrorer: StructureMirrorer | None = None,
         emote_linker: "EmoteLinker | None" = None,
@@ -274,7 +469,9 @@ class StoatSenderService(SenderService):
         # are only needed to serve the corresponding `/link-*` / `/link ...`
         # commands; None is accepted (e.g. for tests) but those commands will
         # then report themselves unconfigured.
-        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin)
+        SenderService.__init__(
+            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing
+        )
         self._config = config
         self.server_id = config.server_id
         self.connector_id = config.id
@@ -291,6 +488,10 @@ class StoatSenderService(SenderService):
         self._on_channel_role_permission_changed = on_channel_role_permission_changed
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
+        # ids of messages the ext.commands processor recognised as a bridge
+        # command (`/link channel …`, `/status`, …) plus the bot's own command
+        # replies - `_handle_message` drops these instead of relaying them.
+        self._command_message_ids: deque[str] = deque(maxlen=512)
 
     def get_channel(self, channel_id: str, *, partial: bool = False):
         return self._client.get_channel(channel_id, partial=partial)
@@ -776,8 +977,28 @@ class StoatSenderService(SenderService):
     # not off. A dropped connection still shows up as degraded/failing via
     # relay-error tracking in `receive()`.
 
+    def _note_command_message(self, message_id: str) -> None:
+        """Record `message_id` as a bridge-command message (the invoking
+        `/…` or a bot command reply) so `_handle_message` won't relay it.
+        Called from `_StoatClient.process_commands` and from `_reply`."""
+        if message_id:
+            self._command_message_ids.append(message_id)
+
+    async def _reply(self, ctx, text: str) -> None:
+        """Send a command's response. The single seam every `/…` handler uses
+        instead of `ctx.send` directly - also flags the reply's id so the
+        relay path in `_handle_message` drops it (belt-and-suspenders on top
+        of the bot-author check, which already excludes it)."""
+        sent = await ctx.send(text)
+        self._note_command_message(str(getattr(sent, "id", "")))
+
     async def _handle_message(self, message) -> None:
         if getattr(message.author, "bot", False):
+            return
+        if str(message.id) in self._command_message_ids:
+            # A `/link channel …` etc. already handled by the ext.commands
+            # processor (which shares this MessageCreateEvent) - don't also
+            # relay it as chat.
             return
         # A pin/unpin produces a system message (message_pinned /
         # message_unpinned) delivered here like any other. Turn it into a
@@ -801,67 +1022,9 @@ class StoatSenderService(SenderService):
                     )
                 )
             return
-        raw = message.content.strip()
-        parts = raw.split()
-        cmd = parts[0].lower() if parts else ""
-        two = f"{parts[0].lower()} {parts[1].lower()}" if len(parts) > 1 else ""
-        if two == "/link role":
-            await self._handle_link_role(message, parts[2:])
-            return
-        if two == "/unlink role":
-            await self._handle_unlink_role(message, parts[2:])
-            return
-        if two == "/linked roles":
-            await self._handle_linked_roles(message, parts[2:])
-            return
-        if two == "/mirror role":
-            await self._handle_mirror_role(message, parts[2:])
-            return
-        if two == "/link channel":
-            await self._handle_link_channel(message, parts[2:])
-            return
-        if two == "/unlink channel":
-            await self._handle_unlink_channel(message, parts[2:])
-            return
-        if two == "/linked channels":
-            await self._handle_linked_channels(message, parts[2:])
-            return
-        if two == "/mirror channel":
-            await self._handle_mirror_channel(message, parts[2:])
-            return
-        if two == "/link user":
-            await self._handle_link_user(message, parts[2:])
-            return
-        if two == "/unlink user":
-            await self._handle_unlink_user(message, parts[2:])
-            return
-        if two == "/linked users":
-            await self._handle_linked_users(message, parts[2:])
-            return
-        if two == "/link category":
-            await self._handle_link_category(message, parts[2:])
-            return
-        if two == "/unlink category":
-            await self._handle_unlink_category(message, parts[2:])
-            return
-        if two == "/linked categories":
-            await self._handle_linked_categories(message, parts[2:])
-            return
-        if two == "/mirror category":
-            await self._handle_mirror_category(message, parts[2:])
-            return
-        if cmd == "/status":
-            await message.channel.send(self._health.render())
-            return
-        if cmd == "/bridge-help":
-            await message.channel.send(_HELP_TEXT)
-            return
-        if cmd == "/mirror-channels":
-            await self._handle_mirror_channels(message, parts[1:])
-            return
-        if cmd == "/link-emote":
-            await self._handle_link_emote(message, parts[1:])
-            return
+        # Bridge commands (`/link channel …`, `/status`, …) are handled by the
+        # `stoat.ext.commands` processor on `_StoatClient` off this same event;
+        # anything it recognised was already filtered out above by id.
         logger.debug(
             "[stoat:%s] message %s in channel %s from %s",
             self.connector_id,
@@ -946,6 +1109,35 @@ class StoatSenderService(SenderService):
         exposed for the receiver's own-reaction idempotency check."""
         return self._self_id
 
+    async def _handle_typing(self, event, *, active: bool = True) -> None:
+        """`stoat.events.ChannelStart/StopTypingEvent`: someone started
+        (`active`) or stopped (`not active`) typing. Relay it across the bridge
+        (BridgeCoordinator scopes it to a mapped channel). Dropped for the
+        bridge bot's own typing, which the receiver-side keep-alive would
+        otherwise echo back here."""
+        if self._on_typing is None:
+            return
+        user_id = str(getattr(event, "user_id", "") or "")
+        channel_id = str(getattr(event, "channel_id", "") or "")
+        if not user_id or not channel_id or user_id == self._self_id:
+            return
+        name = user_id
+        try:
+            user = self._client.get_user(user_id)
+        except Exception:
+            user = None
+        if user is not None:
+            name = _display_name(user) or user_id
+        await self._on_typing(
+            StandardTyping(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=channel_id,
+                sender_name=name,
+                sender_user_id=user_id,
+                active=active,
+            )
+        )
+
     async def _handle_message_react(self, event, *, added: bool) -> None:
         """`stoat.events.MessageReactEvent` / `MessageUnreactEvent`: someone
         added/removed a reaction. `event` carries `.channel_id`, `.message_id`,
@@ -1014,110 +1206,97 @@ class StoatSenderService(SenderService):
     async def close(self) -> None:
         await self._client.close()
 
-    async def _handle_linked_channels(self, message, args: list[str] | None = None, /) -> None:
+    async def _linked_channels(self, ctx, local_id: str | None = None) -> None:
         """`/linked channels [local_id|name]` - read-only. Defaults to the
         invoking channel."""
         if self._linker is None:
-            await message.channel.send("Linking isn't configured.")
+            await self._reply(ctx, "Linking isn't configured.")
             return
-        local_id = args[0] if args else str(message.channel.id)
+        target = local_id if local_id else str(ctx.channel.id)
         summary = await self._linker.list_linked_channels(
-            local_connector=self.connector_id, local_channel_id=local_id
+            local_connector=self.connector_id, local_channel_id=target
         )
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_linked_categories(self, message, args: list[str], /) -> None:
+    async def _linked_categories(self, ctx, local_id: str | None = None) -> None:
         """`/linked categories [<local_id|name>]` - read-only."""
         if self._category_linker is None:
-            await message.channel.send("Category linking isn't configured.")
+            await self._reply(ctx, "Category linking isn't configured.")
             return
-        local = args[0] if args else None
-        category = _channel_category(message.channel)
-        if local is None and category is None:
-            await message.channel.send("This channel isn't in a Category.")
+        category = _channel_category(ctx.channel)
+        if local_id is None and category is None:
+            await self._reply(ctx, "This channel isn't in a Category.")
             return
         summary = await self._category_linker.list_linked_categories(
             local_connector=self.connector_id,
             local_category_id=str(category.id) if category is not None else None,
-            local_category=local,
+            local_category=local_id,
         )
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_linked_users(self, message, args: list[str], /) -> None:
+    async def _linked_users(self, ctx, local_id: str | None = None) -> None:
         """`/linked users [local_id|name]`: with no argument, lists every
         cross-connector user link (for debugging); given a Stoat user id or
         display name, shows just that identity's link. No permission gate -
         read-only, same as /status and /linked channels."""
         if self._user_linker is None:
-            await message.channel.send("User linking isn't configured.")
+            await self._reply(ctx, "User linking isn't configured.")
             return
-        if args:
-            summary = await self._user_linker.list_linked_users(local_connector=self.connector_id, local_user_id=args[0])
+        if local_id:
+            summary = await self._user_linker.list_linked_users(
+                local_connector=self.connector_id, local_user_id=local_id
+            )
         else:
             summary = await self._user_linker.list_linked_users()
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_mirror_channels(self, message, args: list[str], /) -> None:
+    async def _mirror_channels(self, ctx, service: str) -> None:
         """`/mirror-channels <service>`: recreate `<service>`'s (a configured
         Discord connector's) category/channel layout on this Stoat server,
         linking each channel it creates or matches by name back to its
         Discord counterpart. Requires Manage Server so only admins can
         trigger a (potentially large) batch of channel creations.
         """
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        if not args:
-            await message.channel.send("Usage: /mirror-channels <service>")
-            return
-        service = args[0]
-
         if self._mirrorer is None:
-            await message.channel.send("Mirroring isn't configured.")
+            await self._reply(ctx, "Mirroring isn't configured.")
             return
-        logger.info("[stoat:%s] %s ran /mirror-channels service=%s", self.connector_id, message.author.id, service)
+        logger.info("[stoat:%s] %s ran /mirror-channels service=%s", self.connector_id, ctx.author_id, service)
         try:
             structure = self._mirrorer.get_structure(service)
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror-channels rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
         except Exception as exc:
             logger.exception("[stoat:%s] /mirror-channels couldn't read '%s' structure", self.connector_id, service)
-            await message.channel.send(f"Couldn't read the '{service}' channel structure: {exc}")
+            await self._reply(ctx, f"Couldn't read the '{service}' channel structure: {exc}")
             return
 
         summary = await _mirror_guild_structure(
-            message.channel.server,
+            ctx.channel.server,
             structure,
             source=service,
             local_connector=self.connector_id,
             linker=self._linker,
         )
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_link_channel(self, message, args: list[str], /) -> None:
-        """`/link channel [local_id|name] <service> <external_id|name>`: with
-        two args they're `service external_id` and the local side defaults to
-        the invoking channel; with three, the first is the local channel."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+    async def _link_channel(self, ctx, service: str, external_id: str, local_id: str | None = None) -> None:
+        """`/link channel <service> <external_id|name> [local_id|name]`: the
+        local side defaults to the invoking channel."""
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        if len(args) == 2:
-            local_id, (service, external_id) = None, args
-        elif len(args) >= 3:
-            local_id, service, external_id = args[0], args[1], args[2]
-        else:
-            await message.channel.send("Usage: /link channel [local_id|name] <service> <external_id|name>")
-            return
-
         if self._linker is None:
-            await message.channel.send("Linking isn't configured.")
+            await self._reply(ctx, "Linking isn't configured.")
             return
         logger.info(
             "[stoat:%s] %s ran /link channel local_id=%s service=%s external_id=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             local_id,
             service,
             external_id,
@@ -1125,43 +1304,37 @@ class StoatSenderService(SenderService):
         try:
             summary = await self._linker.link_channel(
                 local_connector=self.connector_id,
-                local_channel_id=str(message.channel.id),
-                local_channel_name=getattr(message.channel, "name", str(message.channel.id)),
+                local_channel_id=str(ctx.channel.id),
+                local_channel_name=getattr(ctx.channel, "name", str(ctx.channel.id)),
                 source=service,
                 source_id=external_id,
                 destination_id=local_id,
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link channel rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_link_category(self, message, args: list[str], /) -> None:
+    async def _link_category(self, ctx, service: str, external_id: str, local_id: str | None = None) -> None:
         """`/link category <service> <external_id|name> [<local_id|name>]`:
         links the invoking channel's Category (or `local_id`'s Category, if
         given) to `external_id`'s Category on `service`. Once linked, a new
         channel appearing in either Category auto-syncs onto the other."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        if len(args) < 2:
-            await message.channel.send("Usage: /link category <service> <external_id|name> [<local_id|name>]")
-            return
-        service, external_id, *rest = args
-        local_id = rest[0] if rest else None
-
         if self._category_linker is None:
-            await message.channel.send("Category linking isn't configured.")
+            await self._reply(ctx, "Category linking isn't configured.")
             return
-        category = _channel_category(message.channel)
+        category = _channel_category(ctx.channel)
         if category is None and local_id is None:
-            await message.channel.send("This channel isn't in a Category.")
+            await self._reply(ctx, "This channel isn't in a Category.")
             return
         logger.info(
             "[stoat:%s] %s ran /link category service=%s external_id=%s local_id=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             service,
             external_id,
             local_id,
@@ -1177,26 +1350,22 @@ class StoatSenderService(SenderService):
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link category rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_link_emote(self, message, args: list[str], /) -> None:
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+    async def _link_emote(self, ctx, service: str, external_id: str, local_id: str) -> None:
+        """`/link emote <service> <external_id|name> <local_id|name>`."""
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        if len(args) < 3:
-            await message.channel.send("Usage: /link-emote <service> <external_id> <local_id>")
-            return
-        service, external_id, local_id = args[:3]
-
         if self._emote_linker is None:
-            await message.channel.send("Linking isn't configured.")
+            await self._reply(ctx, "Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-emote service=%s external_id=%s local_id=%s",
+            "[stoat:%s] %s ran /link emote service=%s external_id=%s local_id=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             service,
             external_id,
             local_id,
@@ -1209,27 +1378,73 @@ class StoatSenderService(SenderService):
                 source_id=external_id,
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /link-emote rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            logger.info("[stoat:%s] /link emote rejected: %s", self.connector_id, exc)
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_link_user(self, message, args: list[str], /) -> None:
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+    async def _unlink_emote(self, ctx, local_id: str, service: str | None = None) -> None:
+        """`/unlink emote <local_id|name> [<service>|all]`."""
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        if len(args) < 3:
-            await message.channel.send("Usage: /link user <service> <external_id|name> <local_id|name>")
+        if self._emote_linker is None:
+            await self._reply(ctx, "Linking isn't configured.")
             return
-        service, external_id, local_id = args[0], args[1], args[2]
+        try:
+            summary = await self._emote_linker.unlink_emote(
+                local_connector=self.connector_id, local_emote=local_id, destination=service
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /unlink emote rejected: %s", self.connector_id, exc)
+            await self._reply(ctx, str(exc))
+            return
+        await self._reply(ctx, summary)
 
+    async def _linked_emotes(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
+        """`/linked emotes [<local_id|name>] [<service>|all]` - read-only."""
+        if self._emote_linker is None:
+            await self._reply(ctx, "Linking isn't configured.")
+            return
+        summary = await self._emote_linker.list_linked_emotes(
+            local_connector=self.connector_id, local_emote=local_id, service=service
+        )
+        await self._reply(ctx, summary)
+
+    async def _mirror_emote(self, ctx, local_id: str, service: str | None = None) -> None:
+        """`/mirror emote <local_id|name> [<service>|all]`."""
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
+            return
+        if self._emote_linker is None:
+            await self._reply(ctx, "Linking isn't configured.")
+            return
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._emote_linker.mirror_emote_all(
+                    local_connector=self.connector_id, local_emote=local_id
+                )
+            else:
+                summary = await self._emote_linker.mirror_emote(
+                    local_connector=self.connector_id, local_emote=local_id, destination=service
+                )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /mirror emote rejected: %s", self.connector_id, exc)
+            await self._reply(ctx, str(exc))
+            return
+        await self._reply(ctx, summary)
+
+    async def _link_user(self, ctx, service: str, external_id: str, local_id: str) -> None:
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
+            return
         if self._user_linker is None:
-            await message.channel.send("User linking isn't configured.")
+            await self._reply(ctx, "User linking isn't configured.")
             return
         logger.info(
             "[stoat:%s] %s ran /link user service=%s external_id=%s local_id=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             service,
             external_id,
             local_id,
@@ -1243,31 +1458,30 @@ class StoatSenderService(SenderService):
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link user rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_mirror_channel(self, message, args: list[str], /) -> None:
+    async def _mirror_channel(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/mirror channel [local_id|name] [<service>|all]`: local_id
         defaults to the invoking channel; service defaults to "all"."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        if args:
-            channel_id = channel_name = args[0]  # explicit id/name - no way to resolve its real display name
+        if local_id:
+            channel_id = channel_name = local_id  # explicit id/name - no way to resolve its real display name
         else:
-            channel_id = str(message.channel.id)
-            channel_name = getattr(message.channel, "name", channel_id)
-        service = args[1] if len(args) > 1 else None
+            channel_id = str(ctx.channel.id)
+            channel_name = getattr(ctx.channel, "name", channel_id)
 
         if self._linker is None:
-            await message.channel.send("Linking isn't configured.")
+            await self._reply(ctx, "Linking isn't configured.")
             return
         channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
             "[stoat:%s] %s ran /mirror channel local_id=%s service=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             channel_id,
             service,
         )
@@ -1289,27 +1503,26 @@ class StoatSenderService(SenderService):
                 )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror channel rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_unlink_channel(self, message, args: list[str], /) -> None:
+    async def _unlink_channel(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/unlink channel [local_id|name] [<service>|all]`: local_id
         defaults to the invoking channel; service defaults to "all"
         (dissolving the whole bridge group)."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        channel_id = args[0] if args else str(message.channel.id)
-        service = args[1] if len(args) > 1 else None
+        channel_id = local_id if local_id else str(ctx.channel.id)
 
         if self._linker is None:
-            await message.channel.send("Linking isn't configured.")
+            await self._reply(ctx, "Linking isn't configured.")
             return
         logger.info(
             "[stoat:%s] %s ran /unlink channel local_id=%s service=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             channel_id,
             service,
         )
@@ -1319,65 +1532,60 @@ class StoatSenderService(SenderService):
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink channel rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_unlink_category(self, message, args: list[str], /) -> None:
+    async def _unlink_category(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/unlink category [<local_id|name>] [<service>|all]`: local Category
         defaults to the invoking channel's own; service defaults to "all"
         (dissolving the whole bridge group)."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        local = args[0] if args else None
-        service = args[1] if len(args) > 1 else None
-
         if self._category_linker is None:
-            await message.channel.send("Category linking isn't configured.")
+            await self._reply(ctx, "Category linking isn't configured.")
             return
-        category = _channel_category(message.channel)
-        if local is None and category is None:
-            await message.channel.send("This channel isn't in a Category.")
+        category = _channel_category(ctx.channel)
+        if local_id is None and category is None:
+            await self._reply(ctx, "This channel isn't in a Category.")
             return
         logger.info(
             "[stoat:%s] %s ran /unlink category local=%s service=%s",
             self.connector_id,
-            message.author.id,
-            local,
+            ctx.author_id,
+            local_id,
             service,
         )
         try:
             summary = await self._category_linker.unlink_category(
                 local_connector=self.connector_id,
                 local_category_id=str(category.id) if category is not None else None,
-                local_category=local,
+                local_category=local_id,
                 destination=service,
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink category rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_mirror_category(self, message, args: list[str], /) -> None:
+    async def _mirror_category(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/mirror category [<local_id|name>] [<service>|all]`."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
         if self._category_linker is None:
-            await message.channel.send("Category linking isn't configured.")
+            await self._reply(ctx, "Category linking isn't configured.")
             return
-        local = args[0] if args else None
-        service = args[1] if len(args) > 1 else None
-        category = _channel_category(message.channel)
-        if local is None and category is None:
-            await message.channel.send("This channel isn't in a Category.")
+        category = _channel_category(ctx.channel)
+        if local_id is None and category is None:
+            await self._reply(ctx, "This channel isn't in a Category.")
             return
         kwargs = dict(
             local_connector=self.connector_id,
             local_category_id=str(category.id) if category is not None else None,
-            local_category=local,
+            local_category=local_id,
             local_category_name=category.title if category is not None else None,
         )
         try:
@@ -1387,56 +1595,51 @@ class StoatSenderService(SenderService):
                 summary = await self._category_linker.mirror_category(destination=service, **kwargs)
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror category rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary or "Nothing to mirror.")
+        await self._reply(ctx, summary or "Nothing to mirror.")
 
-    async def _handle_unlink_user(self, message, args: list[str], /) -> None:
+    async def _unlink_user(self, ctx, service: str | None = None, local_id: str | None = None) -> None:
         """`/unlink user [service|all] [local_id|name]`: service defaults
         to "all" (dissolving the whole link group); local_id defaults to the
         invoking user themselves."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
-        service = args[0] if args else None
-        local_id = args[1] if len(args) > 1 else str(message.author.id)
+        target = local_id if local_id else str(ctx.author_id)
 
         if self._user_linker is None:
-            await message.channel.send("User linking isn't configured.")
+            await self._reply(ctx, "User linking isn't configured.")
             return
         logger.info(
             "[stoat:%s] %s ran /unlink user service=%s local_id=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             service,
-            local_id,
+            target,
         )
         try:
             summary = await self._user_linker.unlink_user(
-                local_connector=self.connector_id, local_user_id=local_id, destination=service
+                local_connector=self.connector_id, local_user_id=target, destination=service
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink user rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_link_role(self, message, args: list[str], /) -> None:
+    async def _link_role(self, ctx, local_id: str, service: str, external_id: str) -> None:
         """`/link role <local_id|name> <service> <external_id|name>`."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
         if self._role_linker is None:
-            await message.channel.send("Role linking isn't configured.")
+            await self._reply(ctx, "Role linking isn't configured.")
             return
-        if len(args) < 3:
-            await message.channel.send("Usage: /link role <local_id|name> <service> <external_id|name>")
-            return
-        local_id, service, external_id = args[0], args[1], args[2]
         logger.info(
             "[stoat:%s] %s ran /link role local=%s service=%s external=%s",
             self.connector_id,
-            message.author.id,
+            ctx.author_id,
             local_id,
             service,
             external_id,
@@ -1450,58 +1653,46 @@ class StoatSenderService(SenderService):
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /link role rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_unlink_role(self, message, args: list[str], /) -> None:
+    async def _unlink_role(self, ctx, local_id: str, service: str | None = None) -> None:
         """`/unlink role <local_id|name> [<service>|all]`."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
         if self._role_linker is None:
-            await message.channel.send("Role linking isn't configured.")
+            await self._reply(ctx, "Role linking isn't configured.")
             return
-        if not args:
-            await message.channel.send("Usage: /unlink role <local_id|name> [<service>|all]")
-            return
-        local_id = args[0]
-        service = args[1] if len(args) > 1 else None
         try:
             summary = await self._role_linker.unlink_role(
                 local_connector=self.connector_id, local_role=local_id, destination=service
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /unlink role rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_linked_roles(self, message, args: list[str], /) -> None:
+    async def _linked_roles(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/linked roles [<local_id|name>] [<service>|all]` - read-only."""
         if self._role_linker is None:
-            await message.channel.send("Role linking isn't configured.")
+            await self._reply(ctx, "Role linking isn't configured.")
             return
-        local_id = args[0] if args else None
-        service = args[1] if len(args) > 1 else None
         summary = await self._role_linker.list_linked_roles(
             local_connector=self.connector_id, local_role=local_id, service=service
         )
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
-    async def _handle_mirror_role(self, message, args: list[str], /) -> None:
+    async def _mirror_role(self, ctx, local_id: str, service: str | None = None) -> None:
         """`/mirror role <local_id|name> [<service>|all]`."""
-        if not self._is_admin(message):
-            await message.channel.send("You need the Manage Server permission to do that.")
+        if not self._is_admin(ctx.message):
+            await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
         if self._role_linker is None:
-            await message.channel.send("Role linking isn't configured.")
+            await self._reply(ctx, "Role linking isn't configured.")
             return
-        if not args:
-            await message.channel.send("Usage: /mirror role <local_id|name> [<service>|all]")
-            return
-        local_id = args[0]
-        service = args[1] if len(args) > 1 else None
         try:
             if service is None or service.lower() == "all":
                 summary = await self._role_linker.mirror_role_all(
@@ -1513,9 +1704,9 @@ class StoatSenderService(SenderService):
                 )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror role rejected: %s", self.connector_id, exc)
-            await message.channel.send(str(exc))
+            await self._reply(ctx, str(exc))
             return
-        await message.channel.send(summary)
+        await self._reply(ctx, summary)
 
     async def get_role_name(self, role_id: str) -> str | None:
         """Best-effort role-id -> name lookup, this connector's
@@ -1555,6 +1746,70 @@ class StoatSenderService(SenderService):
                 return str(role.id)
         role = await server.create_role(name=name)
         return str(role.id)
+
+    async def _all_emojis(self) -> list:
+        """Every custom emoji on this server - `server.emojis` if the cache
+        has it, else a REST fetch. `Server.emojis` is a Mapping[id, emoji],
+        so iterate its `.values()`, not the mapping itself (which yields ids)."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            emojis = getattr(server, "emojis", None) or {}
+        except Exception:
+            emojis = {}
+        values = list(getattr(emojis, "values", lambda: emojis)())
+        if values:
+            return values
+        try:
+            server = await self._full_server()
+            return list(await server.fetch_emojis())
+        except Exception:
+            logger.debug("[stoat:%s] fetch_emojis failed", self.connector_id, exc_info=True)
+            return []
+
+    async def get_emoji_name(self, emoji_id: str) -> str | None:
+        """Best-effort emoji-id -> name lookup, this connector's
+        `ConnectorInfo.resolve_emoji_name`."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            emoji = server.get_emoji(emoji_id)
+        except Exception:
+            emoji = None
+        if emoji is None:
+            emoji = next((e for e in await self._all_emojis() if str(e.id) == emoji_id), None)
+        return getattr(emoji, "name", None) if emoji is not None else None
+
+    async def resolve_emoji_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare custom-emoji name to its id (case-insensitive, first
+        match); a token that's already an emoji id is returned as-is, an
+        unknown token yields None - this connector's
+        `ConnectorInfo.resolve_emoji_id_by_name`."""
+        emojis = await self._all_emojis()
+        if any(str(getattr(e, "id", "")) == token for e in emojis):
+            return token
+        lowered = token.casefold()
+        for e in emojis:
+            if str(getattr(e, "name", "")).casefold() == lowered:
+                return str(e.id)
+        return None
+
+    async def resolve_emoji(self, emoji_id: str) -> "CustomEmoji | None":
+        """emoji-id -> full CustomEmoji, this connector's
+        `ConnectorInfo.resolve_emoji` (the source side of `/mirror emote`)."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            emoji = server.get_emoji(emoji_id)
+        except Exception:
+            emoji = None
+        if emoji is None:
+            emoji = next((e for e in await self._all_emojis() if str(e.id) == emoji_id), None)
+        if emoji is None:
+            return None
+        return CustomEmoji(
+            native_id=str(emoji.id),
+            name=emoji.name,
+            image_url=emoji.image.url(),
+            animated=getattr(emoji, "animated", False),
+        )
 
     async def _full_server(self):
         server = self._client.get_server(self.server_id, partial=False)
@@ -1851,8 +2106,24 @@ class StoatSenderService(SenderService):
             )
 
     def _is_admin(self, message) -> bool:
+        """True if the command author has Stoat's Manage Server permission
+        (mirrors the ``manage_guild`` default on Discord's command tree).
+        Server owners always pass; a permissions-cache miss (or any other
+        error) fails closed."""
         try:
-            return bool(message.author_as_member.server_permissions.manage_server)
+            member = message.author_as_member
+        except Exception:
+            return False
+        if member is None:
+            return False
+        try:
+            server = member.get_server()
+            if server is not None and getattr(server, "owner_id", None) == member.id:
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(member.server_permissions.manage_server)
         except Exception:
             return False
 
@@ -1870,6 +2141,15 @@ class StoatReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
     supports_pins = True
+    supports_typing = True
+
+    # How long a single relayed typing indicator lingers before it's ended,
+    # unless `trigger_typing` is called again first. Stoat/Revolt keeps a
+    # BeginTyping alive until an explicit EndTyping, so - unlike Discord's
+    # self-lapsing indicator - the receiver has to run a small keep-alive
+    # loop and stop it once the origin user stops typing.
+    _TYPING_LINGER = 6.0
+    _TYPING_REFRESH = 2.5
 
     def __init__(
         self,
@@ -1877,12 +2157,18 @@ class StoatReceiverService(ReceiverService):
         user_mappings: UserMappingRepository | None = None,
         channel_mappings: ChannelMappingRepository | None = None,
         role_mappings: RoleMappingRepository | None = None,
+        emoji_mappings: EmojiMappingRepository | None = None,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
         self._role_mappings = role_mappings
+        self._emoji_mappings = emoji_mappings
+        # target_channel_id -> monotonic deadline the keep-alive loop stops at,
+        # and the loop task itself (one per channel currently "typing").
+        self._typing_until: dict[str, float] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         channel = self._sender.get_channel(target_channel_id, partial=True)
@@ -1925,6 +2211,14 @@ class StoatReceiverService(ReceiverService):
                 target_kind="stoat",
                 role_mappings=self._role_mappings,
             )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                emoji_mappings=self._emoji_mappings,
+            )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):
             logger.debug(
@@ -1953,9 +2247,11 @@ class StoatReceiverService(ReceiverService):
         native = _to_stoat_emoji(emoji)
         if await self._bot_already_reacted(target_channel_id, target_message_id, native):
             return
-        message = self._sender.get_channel(target_channel_id, partial=True).get_message(
-            target_message_id, partial=True
-        )
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
         await message.react(native)
 
     async def remove_reaction(
@@ -1968,9 +2264,11 @@ class StoatReceiverService(ReceiverService):
         already = await self._bot_already_reacted(target_channel_id, target_message_id, native)
         if already is False:
             return
-        message = self._sender.get_channel(target_channel_id, partial=True).get_message(
-            target_message_id, partial=True
-        )
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
         await message.unreact(native)
 
     async def _bot_already_reacted(
@@ -2013,11 +2311,66 @@ class StoatReceiverService(ReceiverService):
                 target_channel_id,
             )
 
+    async def trigger_typing(self, *, target_channel_id: str) -> None:
+        """Show a typing indicator in the channel, attributed to the bridge
+        bot (Stoat masquerade doesn't extend to typing). Extends the linger
+        deadline and, if no keep-alive loop is running for this channel,
+        starts one that re-sends BeginTyping until the deadline, then ends
+        it. Best-effort: a bad channel / transient error just stops the loop."""
+        self._typing_until[target_channel_id] = time.monotonic() + self._TYPING_LINGER
+        task = self._typing_tasks.get(target_channel_id)
+        if task is not None and not task.done():
+            return
+        self._typing_tasks[target_channel_id] = asyncio.ensure_future(
+            self._keep_typing(target_channel_id)
+        )
+
+    async def stop_typing(self, *, target_channel_id: str) -> None:
+        """End the typing indicator now (the origin user stopped typing before
+        sending). Cancels the keep-alive loop and sends a final EndTyping.
+        Best-effort: a bad channel / transient error is swallowed."""
+        self._typing_until.pop(target_channel_id, None)
+        task = self._typing_tasks.pop(target_channel_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        try:
+            channel = self._sender.get_channel(target_channel_id, partial=True)
+            await channel.end_typing()
+        except Exception:
+            pass
+
+    async def _keep_typing(self, channel_id: str) -> None:
+        channel = self._sender.get_channel(channel_id, partial=True)
+        try:
+            while time.monotonic() < self._typing_until.get(channel_id, 0.0):
+                await channel.begin_typing()
+                await asyncio.sleep(self._TYPING_REFRESH)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("[stoat:%s] typing keep-alive for channel %s failed", self.connector_id, channel_id)
+        finally:
+            self._typing_until.pop(channel_id, None)
+            self._typing_tasks.pop(channel_id, None)
+            try:
+                await channel.end_typing()
+            except Exception:
+                pass
+
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
+        # Stoat emoji names may only contain lowercase ASCII letters, digits
+        # and underscores (1-32 chars) - sanitise whatever the source platform
+        # allowed down to that.
+        name = re.sub(r"[^a-z0-9_]", "_", emoji.name.lower())[:32].strip("_") or "emoji"
         try:
             server = self._sender.get_server(self._sender.server_id, partial=True)
             image_bytes = await _download(emoji.image_url)
-            created = await server.create_emoji(name=emoji.name[:32], image=image_bytes)
+            upload = stoat.Upload.emoji(image_bytes, filename=f"{name}.png")
+            created = await server.create_server_emoji(name, image=upload)
         except (stoat.HTTPException, aiohttp.ClientError) as exc:
             logger.warning("[stoat:%s] couldn't create emoji %r: %s", self.connector_id, emoji.name, exc)
             return None  # e.g. emoji slots full, name taken, image too large, network failure - skip this platform

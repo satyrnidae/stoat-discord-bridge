@@ -151,6 +151,10 @@ class FakeChannel:
         self.created_webhooks: list[FakeWebhook] = []
         self.partial_messages: dict[int, FakePartialMessage] = {}
         self.full_messages: dict[int, FakeFullMessage] = {}
+        self.typing_calls = 0
+
+    async def typing(self) -> None:
+        self.typing_calls += 1
 
     async def webhooks(self) -> list[FakeWebhook]:
         return list(self._webhooks)
@@ -284,6 +288,7 @@ class FakeClient:
         self._channels: dict[int, FakeChannel] = {}
         self._guilds: dict[int, FakeGuild] = {}
         self._users: dict[int, FakeUser] = {}
+        self._emojis: dict[int, object] = {}
 
     def add_channel(self, channel: FakeChannel) -> FakeChannel:
         self._channels[channel.id] = channel
@@ -311,6 +316,13 @@ class FakeClient:
 
     def get_user(self, user_id: int) -> FakeUser | None:
         return self._users.get(user_id)
+
+    def add_emoji(self, emoji_id: int, emoji: object) -> object:
+        self._emojis[emoji_id] = emoji
+        return emoji
+
+    def get_emoji(self, emoji_id: int) -> object | None:
+        return self._emojis.get(emoji_id)
 
     async def fetch_user(self, user_id: int) -> FakeUser:
         user = self._users.get(user_id)

@@ -510,6 +510,14 @@ def test_user_commands_are_registered_as_subcommands_not_flat(sample_connectors)
         assert sender.tree.get_command(flat, guild=sender._guild) is None
 
 
+def test_emote_commands_are_registered_as_subcommands_not_flat(sample_connectors):
+    sender = _make_sender(FakeLinker())
+    for group, sub in (("link", "emote"), ("unlink", "emote"), ("linked", "emotes"), ("mirror", "emote")):
+        node = sender.tree.get_command(group, guild=sender._guild)
+        assert node is not None and node.get_command(sub) is not None
+    assert sender.tree.get_command("link-emote", guild=sender._guild) is None
+
+
 async def test_link_channel_source_autocomplete_is_wired_to_the_linker(sample_connectors):
     sender = _make_sender(FakeLinker(sample_connectors))
     callback = _autocomplete_callback(sender, "link channel", "service")
@@ -829,7 +837,7 @@ async def test_link_channel_source_autocomplete_handles_no_configured_linker():
 
 async def test_link_emote_source_autocomplete_reads_the_emote_linker(sample_connectors):
     sender = _make_sender(FakeLinker(), emote_linker=FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "link-emote", "service")
+    callback = _autocomplete_callback(sender, "link emote", "service")
 
     choices = await callback(FakeInteraction(), "irc")
 
