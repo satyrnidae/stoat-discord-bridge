@@ -160,8 +160,13 @@ commands `/link emote` / `/mirror emote` / `/linked emotes` / `/unlink emote`
 reach it on each connector is documented in
 `COMMANDS.md`, not duplicated here. On Discord the channel, role, user,
 category and emote commands are real `app_commands` subcommand groups
-(`/link`, `/unlink`, `/mirror`, `/linked`); on Stoat/IRC they're
-space-separated (`LINK CHANNEL …` / `LINK USER …` on IRC). No flat admin
+(`/link`, `/unlink`, `/mirror`, `/linked`); on Stoat they're the equivalent
+`stoat.ext.commands` groups (`_StoatClient` subclasses `commands.Bot`; the
+`_<verb>_<noun>` methods on `StoatSenderService` are what the subcommands
+forward to, and `_handle_message` skips relaying anything the command
+processor already claimed - tracked by message id in `_command_message_ids`,
+which also covers the bot's own `_reply` output); on IRC they're
+space-separated (`LINK CHANNEL …` / `LINK USER …`). No flat admin
 commands remain.
 Every id argument to a channel, role, user, category or emote command also
 accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /

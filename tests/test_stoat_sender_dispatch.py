@@ -1,7 +1,7 @@
 """Tests for StoatSenderService's gateway-event handlers - _handle_message
-(including its /status command short-circuit and avatar resolution),
-_handle_message_react, and _handle_emoji_create/_handle_emoji_delete - against
-the fake_stoat scaffolding.
+(relay, avatar resolution, and skipping messages the ext.commands processor
+already claimed), _handle_message_react, and
+_handle_emoji_create/_handle_emoji_delete - against the fake_stoat scaffolding.
 
 Constructs the service via object.__new__ rather than StoatSenderService(...)
 directly, same as test_stoat_resolve_avatar.py: __init__ builds a
@@ -11,6 +11,7 @@ _StoatClient whose constructor makes a real network call
 
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 
 import stoat
@@ -60,6 +61,7 @@ def _make_sender(
     sender._linker = None
     sender._user_linker = None
     sender._self_id = self_id
+    sender._command_message_ids = deque(maxlen=512)
     sender._on_message = recorder.on_message
     sender._on_reaction = recorder.on_reaction if with_reactions else None
     sender._on_emoji_created = recorder.on_emoji_created if with_emoji else None
@@ -131,85 +133,55 @@ async def test_handle_message_unpin_system_event_emits_an_unpin():
     assert (pin.origin_message_id, pin.pinned) == ("um1", False)
 
 
-async def test_handle_message_status_command_replies_in_channel_and_doesnt_relay():
+async def test_handle_message_skips_a_message_the_command_processor_claimed():
+    # `/link channel …`, `/status`, … are handled by the ext.commands processor
+    # on _StoatClient off the same MessageCreateEvent; it records the id so
+    # _handle_message (driven via call_object_handlers_hook) doesn't also relay
+    # the invocation as chat.
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     channel = FakeChannel(id="42")
     author = FakeAuthor(id="u1")
+    sender._command_message_ids.append("m1")
 
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/status"))
+    await sender._handle_message(
+        _stoat_message(channel=channel, author=author, content="/status", id="m1")
+    )
 
     assert recorder.messages == []
-    assert len(channel.sent) == 1
-    assert "Stoat" in channel.sent[0]["content"]
+    assert channel.sent == []
 
 
-async def test_handle_message_linked_channels_command_routes_to_its_handler():
-    # Full behavior (a configured linker, admin gating - there is none) is
-    # covered in test_stoat_admin_dispatch.py; this only proves _handle_message
-    # actually routes "/linked channels" there instead of relaying it.
+async def test_handle_message_skips_a_recorded_command_reply():
+    # _reply flags the bot's own command output the same way, so it's dropped
+    # even though it's authored by the bridge.
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     channel = FakeChannel(id="42")
     author = FakeAuthor(id="u1")
+    sender._command_message_ids.append("reply-7")
 
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked channels"))
+    await sender._handle_message(
+        _stoat_message(channel=channel, author=author, content="linked ok", id="reply-7")
+    )
 
     assert recorder.messages == []
-    assert channel.sent == [{"content": "Linking isn't configured.", "masquerade": None}]
 
 
-async def test_handle_message_linked_users_command_routes_to_its_handler():
-    # Full behavior is covered in test_stoat_admin_dispatch.py; this only
-    # proves _handle_message actually routes "/linked users" there.
+async def test_handle_message_relays_a_slash_prefixed_non_command():
+    # A message that merely starts with "/" but isn't one of our commands is
+    # normal chat - the command processor never claimed it, so it relays.
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
-    channel = FakeChannel(id="42")
-    author = FakeAuthor(id="u1")
+    channel = FakeChannel(id="42", name="general")
+    author = FakeAuthor(id="u1", display_name="Alice")
 
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/linked users"))
+    await sender._handle_message(
+        _stoat_message(channel=channel, author=author, content="/shrug whatever", id="m9")
+    )
 
-    assert recorder.messages == []
-    assert channel.sent == [{"content": "User linking isn't configured.", "masquerade": None}]
-
-
-async def test_handle_message_bridge_help_command_replies_in_channel_and_doesnt_relay():
-    recorder = _Recorder()
-    sender = _make_sender(recorder, FakeClient())
-    channel = FakeChannel(id="42")
-    author = FakeAuthor(id="u1")
-
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/bridge-help"))
-
-    assert recorder.messages == []
-    assert len(channel.sent) == 1
-    assert "/status" in channel.sent[0]["content"]
-
-
-async def test_handle_message_unlink_channel_command_routes_to_its_handler():
-    # Full behavior is covered in test_stoat_admin_dispatch.py; this only
-    # proves _handle_message actually routes "/unlink channel" there.
-    recorder = _Recorder()
-    sender = _make_sender(recorder, FakeClient())
-    channel = FakeChannel(id="42")
-    author = FakeAuthor(id="u1")
-
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink channel"))
-
-    assert recorder.messages == []
-    assert channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}]
-
-
-async def test_handle_message_unlink_user_command_routes_to_its_handler():
-    recorder = _Recorder()
-    sender = _make_sender(recorder, FakeClient())
-    channel = FakeChannel(id="42")
-    author = FakeAuthor(id="u1")
-
-    await sender._handle_message(_stoat_message(channel=channel, author=author, content="/unlink user"))
-
-    assert recorder.messages == []
-    assert channel.sent == [{"content": "You need the Manage Server permission to do that.", "masquerade": None}]
+    [message] = recorder.messages
+    assert message.content_markdown == "/shrug whatever"
 
 
 async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar():

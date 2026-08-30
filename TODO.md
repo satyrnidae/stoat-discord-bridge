@@ -14,5 +14,20 @@
   - stoat.events.ChannelUpdateEvent
 9.  [ ] Spike: Verify stoat.py's get_channel(partial=False) semantics
 10. [ ] Spike: Verify stoat.py's Server.members structure
-11. [ ] Spike: stoat.ext.commands usage/portability
+11. [x] Spike: stoat.ext.commands usage/portability
   - see STOAT_BOT_POINTERS.md
+  - resolved: `_StoatClient` now subclasses `stoat.ext.commands.Bot`; admin
+    commands are real `/link|unlink|linked|mirror` groups mirroring the Discord
+    `app_commands` tree. `_is_admin` kept (not `has_server_permissions`) for
+    graceful degradation; `manage_server` flag name confirmed vs the docs.
+12. [ ] Refactor: Code maintainability: service files are too large; can be split into multiple classes by area of concern with similar structure mirrored by each service.
+  - command parsing
+  - mongo db
+  - formatting
+  - setup / teardown
+13. [ ] Fix: Ensure stoat commands check against actual permissions as defined on https://stoatpy.readthedocs.io/en/latest/api/enums_and_flag_classes.html#permissions
+  - command execution gating (manage_server)
+  - role sync (discord perm <-> stoat perm)
+  - for discord perms, see https://discordpy.readthedocs.io/en/latest/api.html?highlight=permission#discord.Permissions
+14. [ ] Feat: Configurable Stoat command prefix char ('/' default, can be '!' etc.)
+15. [ ] Feat: x is typing... forwarding

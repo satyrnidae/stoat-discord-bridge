@@ -25,8 +25,12 @@ id on the connector the command is run on.
 - **Discord**: slash commands. Anything that changes bridge state requires
   the Manage Server permission; read-only commands (`/status`,
   `/linked channels`, `/linked users`) don't.
-- **Stoat**: message commands (type the command as a plain chat message).
-  Same Manage Server / read-only split as Discord.
+- **Stoat**: message commands (type the command as a plain chat message,
+  `/` prefix). Parsed by `stoat.ext.commands` - `/link`, `/unlink`, `/linked`,
+  `/mirror` are real command groups with `channel` / `role` / `user` /
+  `category` / `emote` subcommands, the same shape as Discord's `app_commands`
+  groups. Same Manage Server / read-only split as Discord. The invoking
+  message and the bot's reply are never relayed to other connectors.
 - **IRC**: sent as a **DM to the bot**, bare and **uppercase**, no leading
   `/` or `!` (unlike Discord/Stoat's slash commands — many IRC clients treat
   a leading `/` as a local client command and never send it as text). Most
