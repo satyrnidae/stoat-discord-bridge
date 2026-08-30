@@ -17,8 +17,10 @@ admin to already have a webhook URL in hand.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from dataclasses import replace
 
 import aiohttp
@@ -1814,6 +1816,10 @@ class DiscordReceiverService(ReceiverService):
         self._enable_local_user_masquerade = enable_local_user_masquerade
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
+        # target_channel_id -> monotonic deadline the keep-alive loop stops at,
+        # and the loop task itself (one per channel currently "typing").
+        self._typing_until: dict[str, float] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         webhook, thread = await self._get_or_create_webhook(target_channel_id)
@@ -1931,19 +1937,59 @@ class DiscordReceiverService(ReceiverService):
                 target_channel_id,
             )
 
+    # Discord shows a typing indicator for ~10s per call and has no API to
+    # clear one early, so the best we can do on an explicit stop is quit
+    # re-arming it. While the origin user keeps typing we refresh well inside
+    # the ~10s window so the indicator never visibly flickers; `_TYPING_LINGER`
+    # is the grace period we keep refreshing for after the last event, in case
+    # a `stop_typing` never arrives (e.g. the origin is another Discord, which
+    # emits no stop event).
+    _TYPING_REFRESH = 2.0
+    _TYPING_LINGER = 3.0
+
     async def trigger_typing(self, *, target_channel_id: str) -> None:
-        """Fire a single typing indicator into the channel (Discord shows it
-        for ~10s, then it lapses on its own unless the coordinator calls
-        again). Attributed to the bridge bot - Discord can't show a webhook
-        identity as typing. Best-effort: a missing channel or a transient API
-        error is swallowed."""
+        """Show a typing indicator in the channel, attributed to the bridge bot
+        (Discord can't show a webhook identity as typing). Extends the linger
+        deadline and, if no keep-alive loop is running for this channel, starts
+        one that re-sends the indicator every `_TYPING_REFRESH`s until the
+        deadline (or an explicit `stop_typing`). Best-effort: a missing channel
+        or transient API error just stops the loop."""
+        self._typing_until[target_channel_id] = time.monotonic() + self._TYPING_LINGER
+        task = self._typing_tasks.get(target_channel_id)
+        if task is not None and not task.done():
+            return
+        self._typing_tasks[target_channel_id] = asyncio.ensure_future(
+            self._keep_typing(target_channel_id)
+        )
+
+    async def stop_typing(self, *, target_channel_id: str) -> None:
+        """The origin user stopped typing before sending. Discord has no
+        clear-typing API, so all we can do is stop re-arming the indicator and
+        let Discord's own ~10s timeout lapse it."""
+        self._typing_until.pop(target_channel_id, None)
+        task = self._typing_tasks.pop(target_channel_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+
+    async def _keep_typing(self, channel_id: str) -> None:
         try:
-            channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
-                int(target_channel_id)
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(
+                int(channel_id)
             )
-            await channel.typing()
+            while time.monotonic() < self._typing_until.get(channel_id, 0.0):
+                await channel.typing()
+                await asyncio.sleep(self._TYPING_REFRESH)
+        except asyncio.CancelledError:
+            raise
         except (discord.HTTPException, ValueError):
-            pass
+            logger.debug("[discord:%s] typing keep-alive for channel %s failed", self.connector_id, channel_id)
+        finally:
+            self._typing_until.pop(channel_id, None)
+            self._typing_tasks.pop(channel_id, None)
 
     def _discord_emoji(self, emoji: str | CustomEmoji) -> str | discord.Emoji | discord.PartialEmoji:
         """Like the module-level `_to_discord_emoji`, but resolves a custom

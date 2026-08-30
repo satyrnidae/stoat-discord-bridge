@@ -57,6 +57,7 @@ class FakeReceiver(ReceiverService):
         self.created_calls: list[CustomEmoji] = []
         self.pins: list[tuple] = []
         self.typing: list[str] = []
+        self.typing_stopped: list[str] = []
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         self.received.append((message, target_channel_id))
@@ -89,6 +90,11 @@ class FakeReceiver(ReceiverService):
         if self._raises is not None:
             raise self._raises
         self.typing.append(target_channel_id)
+
+    async def stop_typing(self, *, target_channel_id) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.typing_stopped.append(target_channel_id)
 
 
 def _message(**overrides) -> StandardMessage:
@@ -528,6 +534,27 @@ async def test_typing_forwards_only_to_mapped_connectors_that_support_it(coordin
 
     assert stoat_receiver.typing == ["200"]
     assert irc_receiver.typing == []
+
+
+async def test_stopped_typing_routes_to_stop_typing(coordinator_parts):
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    stoat_receiver = FakeReceiver("stoat", supports_typing=True)
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_typing(
+        StandardTyping(
+            origin_connector_id="discord",
+            origin_channel_id="100",
+            sender_name="Alice",
+            sender_user_id="a",
+            active=False,
+        )
+    )
+
+    assert stoat_receiver.typing == []
+    assert stoat_receiver.typing_stopped == ["200"]
 
 
 async def test_typing_is_a_noop_for_an_unbridged_channel(coordinator_parts):

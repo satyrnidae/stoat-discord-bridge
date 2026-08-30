@@ -161,7 +161,13 @@ A "someone is typing" event in a bridged channel is relayed onto every other
 connector's mapped channel (`BridgeCoordinator.handle_typing` →
 `ReceiverService.trigger_typing`, gated by `supports_typing` and keyed off
 the same `ChannelMappingRepository` group message relay uses — no
-`MessageSyncRepository` entry, no per-message id). Discord ⇄ Stoat only —
+`MessageSyncRepository` entry, no per-message id). An explicit "stopped
+typing" event (`StandardTyping.active == False`, from Stoat's
+`channel_stop_typing` — Discord has no such event) routes to
+`ReceiverService.stop_typing` instead: each receiver cancels its keep-alive
+loop; Stoat sends a final `end_typing` to clear the indicator now, Discord
+(no clear-typing API) just stops re-arming it and lets its ~10s timeout
+lapse. Discord ⇄ Stoat only —
 **IRC has no typing concept** (`supports_typing` stays `False`).
 Fire-and-forget: nothing is recorded, and there's no echo guard — the bridge
 posts via webhook/masquerade (which don't emit typing events) and each
@@ -170,10 +176,12 @@ silent (unbridged channel, unsupported target, or a raising `trigger_typing`
 are all skipped). The relayed indicator is always attributed to the bridge
 bot itself — neither Discord (webhook) nor Stoat (masquerade) can surface a
 typing indicator under another identity, so `StandardTyping.sender_name` is
-cosmetic. Discord's indicator self-lapses (~10s); Stoat's needs an explicit
-stop, so `StoatReceiverService` runs a short per-channel keep-alive loop
-(`begin_typing` every `_TYPING_REFRESH`s) that ends after `_TYPING_LINGER`s
-of no further events.
+cosmetic. Both receivers run a short per-channel keep-alive loop
+(re-firing the indicator every `_TYPING_REFRESH`s) that ends `_TYPING_LINGER`s
+after the last event or immediately on `stop_typing`. On Stoat that loop's
+end sends `end_typing`, clearing the indicator at once; Discord has no
+clear-typing API, so there the loop just stops re-arming and Discord's own
+~10s timeout lapses it.
 
 ### Admin & status commands
 

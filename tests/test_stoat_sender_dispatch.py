@@ -288,6 +288,16 @@ async def test_handle_typing_emits_a_standard_typing():
     await sender._handle_typing(SimpleNamespace(channel_id="c1", user_id="u1"))
 
     assert [(t.origin_channel_id, t.sender_user_id) for t in recorder.typing] == [("c1", "u1")]
+    assert recorder.typing[0].active is True
+
+
+async def test_handle_typing_emits_an_inactive_standard_typing_on_stop():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_typing(SimpleNamespace(channel_id="c1", user_id="u1"), active=False)
+
+    assert [(t.origin_channel_id, t.active) for t in recorder.typing] == [("c1", False)]
 
 
 async def test_handle_typing_drops_the_bridges_own_echoed_typing():

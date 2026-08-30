@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import asyncio
+
 import aiohttp
 import pytest
 
@@ -431,17 +433,59 @@ async def test_set_pinned_is_a_noop_when_already_in_the_target_state():
 # ---------------------------------------------------------------- trigger_typing
 
 
-async def test_trigger_typing_fires_a_single_indicator():
+async def test_trigger_typing_keeps_refreshing_then_lapses():
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id=42))
     receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 0.05
+    receiver._TYPING_REFRESH = 0.01
 
     await receiver.trigger_typing(target_channel_id="42")
+    await receiver._typing_tasks["42"]
 
-    assert channel.typing_calls == 1
+    assert channel.typing_calls >= 1
+    assert receiver._typing_tasks == {}
+
+
+async def test_trigger_typing_reuses_the_running_loop_for_repeat_calls():
+    client = FakeClient()
+    client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 0.05
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="42")
+    task = receiver._typing_tasks["42"]
+    await receiver.trigger_typing(target_channel_id="42")
+
+    assert receiver._typing_tasks["42"] is task
+    await task
 
 
 async def test_trigger_typing_swallows_a_missing_channel():
     receiver = _make_receiver(FakeClient())
 
-    await receiver.trigger_typing(target_channel_id="999")  # must not raise
+    await receiver.trigger_typing(target_channel_id="999")
+    await receiver._typing_tasks["999"]  # must not raise
+
+
+async def test_stop_typing_halts_the_keep_alive_loop():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 5.0
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="42")
+    await receiver.stop_typing(target_channel_id="42")
+    calls_after_stop = channel.typing_calls
+    await asyncio.sleep(0.05)
+
+    assert receiver._typing_tasks == {}
+    assert channel.typing_calls == calls_after_stop  # no further refreshes
+
+
+async def test_stop_typing_is_a_safe_noop_when_nothing_is_typing():
+    receiver = _make_receiver(FakeClient())
+
+    await receiver.stop_typing(target_channel_id="42")  # must not raise

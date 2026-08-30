@@ -158,13 +158,15 @@ class BridgeCoordinator:
         ]
 
     async def handle_typing(self, typing: StandardTyping) -> None:
-        """Relay a "someone is typing" indicator onto every other connector's
-        channel mapped into the same bridge group. Fire-and-forget: nothing is
-        recorded and no echo guard is needed - the bridge posts via
-        webhook/masquerade, which don't themselves emit typing events, and
-        each sender already drops typing from its own bot user. Silently does
-        nothing if the origin channel isn't bridged or a target doesn't
-        advertise `supports_typing` (IRC)."""
+        """Relay a "someone is typing" / "stopped typing" indicator onto every
+        other connector's channel mapped into the same bridge group.
+        Fire-and-forget: nothing is recorded and no echo guard is needed - the
+        bridge posts via webhook/masquerade, which don't themselves emit typing
+        events, and each sender already drops typing from its own bot user. A
+        `typing.active == False` event (an explicit stop, Stoat only) routes to
+        `stop_typing` instead of `trigger_typing`. Silently does nothing if the
+        origin channel isn't bridged or a target doesn't advertise
+        `supports_typing` (IRC)."""
         bridge_group = await self._channel_mappings.get_bridge_group(
             typing.origin_connector_id, typing.origin_channel_id
         )
@@ -179,7 +181,10 @@ class BridgeCoordinator:
             if receiver is None or not receiver.supports_typing:
                 continue
             try:
-                await receiver.trigger_typing(target_channel_id=target.channel_id)
+                if typing.active:
+                    await receiver.trigger_typing(target_channel_id=target.channel_id)
+                else:
+                    await receiver.stop_typing(target_channel_id=target.channel_id)
             except Exception:
                 logger.exception(
                     "typing relay from %s to %s failed", typing.origin_connector_id, target.connector_id

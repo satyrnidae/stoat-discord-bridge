@@ -46,3 +46,15 @@
     ends after `_TYPING_LINGER`s). IRC has no typing concept - not wired.
     Indicator always shows as the bridge bot (no platform can attribute a
     relayed typing indicator to the origin user).
+  - Follow-up: "stopped typing" now propagates. Stoat's `channel_stop_typing`
+    -> `StandardTyping(active=False)` -> `ReceiverService.stop_typing`. Both
+    receivers run keep-alive loops (`_TYPING_REFRESH` / `_TYPING_LINGER`);
+    `stop_typing` cancels the loop - Stoat sends `end_typing` to clear the
+    indicator immediately, Discord (no clear-typing API) stops re-arming and
+    lets its ~10s timeout lapse. Discord emits no stop event of its own.
+16. [x] Fix: /mirror emote to Stoat doesn't discover matching emotes by name
+  - `StoatSenderService._all_emojis` iterated `Server.emojis` (a
+    Mapping[id, emoji]) directly, yielding id strings, so
+    `resolve_emoji_id_by_name` / `get_emoji_name` never matched and a
+    duplicate was always created. Now iterates `.values()` and falls back to
+    a full-server `fetch_emojis()` when the cache is empty.

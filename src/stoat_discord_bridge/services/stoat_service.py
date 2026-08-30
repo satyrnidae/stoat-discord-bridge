@@ -270,7 +270,11 @@ class _StoatClient(stoat_commands.Bot):
 
     async def on_channel_start_typing(self, event, /) -> None:
         # stoat.events.ChannelStartTypingEvent (.channel_id, .user_id).
-        await self._owner._handle_typing(event)
+        await self._owner._handle_typing(event, active=True)
+
+    async def on_channel_stop_typing(self, event, /) -> None:
+        # stoat.events.ChannelStopTypingEvent (.channel_id, .user_id).
+        await self._owner._handle_typing(event, active=False)
 
     async def on_message_react(self, event, /) -> None:
         await self._owner._handle_message_react(event, added=True)
@@ -1105,11 +1109,12 @@ class StoatSenderService(SenderService):
         exposed for the receiver's own-reaction idempotency check."""
         return self._self_id
 
-    async def _handle_typing(self, event) -> None:
-        """`stoat.events.ChannelStartTypingEvent`: someone started typing.
-        Relay it across the bridge (BridgeCoordinator scopes it to a mapped
-        channel). Dropped for the bridge bot's own typing, which the
-        receiver-side `trigger_typing` would otherwise echo back here."""
+    async def _handle_typing(self, event, *, active: bool = True) -> None:
+        """`stoat.events.ChannelStart/StopTypingEvent`: someone started
+        (`active`) or stopped (`not active`) typing. Relay it across the bridge
+        (BridgeCoordinator scopes it to a mapped channel). Dropped for the
+        bridge bot's own typing, which the receiver-side keep-alive would
+        otherwise echo back here."""
         if self._on_typing is None:
             return
         user_id = str(getattr(event, "user_id", "") or "")
@@ -1129,6 +1134,7 @@ class StoatSenderService(SenderService):
                 origin_channel_id=channel_id,
                 sender_name=name,
                 sender_user_id=user_id,
+                active=active,
             )
         )
 
@@ -1743,14 +1749,21 @@ class StoatSenderService(SenderService):
 
     async def _all_emojis(self) -> list:
         """Every custom emoji on this server - `server.emojis` if the cache
-        has it, else a REST fetch."""
-        server = self._client.get_server(self.server_id, partial=True)
-        emojis = getattr(server, "emojis", None)
-        if emojis:
-            return list(emojis)
+        has it, else a REST fetch. `Server.emojis` is a Mapping[id, emoji],
+        so iterate its `.values()`, not the mapping itself (which yields ids)."""
         try:
+            server = self._client.get_server(self.server_id, partial=True)
+            emojis = getattr(server, "emojis", None) or {}
+        except Exception:
+            emojis = {}
+        values = list(getattr(emojis, "values", lambda: emojis)())
+        if values:
+            return values
+        try:
+            server = await self._full_server()
             return list(await server.fetch_emojis())
         except Exception:
+            logger.debug("[stoat:%s] fetch_emojis failed", self.connector_id, exc_info=True)
             return []
 
     async def get_emoji_name(self, emoji_id: str) -> str | None:
@@ -2311,6 +2324,24 @@ class StoatReceiverService(ReceiverService):
         self._typing_tasks[target_channel_id] = asyncio.ensure_future(
             self._keep_typing(target_channel_id)
         )
+
+    async def stop_typing(self, *, target_channel_id: str) -> None:
+        """End the typing indicator now (the origin user stopped typing before
+        sending). Cancels the keep-alive loop and sends a final EndTyping.
+        Best-effort: a bad channel / transient error is swallowed."""
+        self._typing_until.pop(target_channel_id, None)
+        task = self._typing_tasks.pop(target_channel_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        try:
+            channel = self._sender.get_channel(target_channel_id, partial=True)
+            await channel.end_typing()
+        except Exception:
+            pass
 
     async def _keep_typing(self, channel_id: str) -> None:
         channel = self._sender.get_channel(channel_id, partial=True)

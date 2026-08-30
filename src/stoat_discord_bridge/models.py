@@ -102,12 +102,17 @@ class StandardTyping:
     mapping for — see BridgeCoordinator.handle_typing. Fire-and-forget: no
     message id, no sync tracking, nothing recorded. `sender_name` is
     best-effort and only cosmetic — neither Discord nor Stoat can attribute a
-    relayed typing indicator to anyone but the bridge bot itself."""
+    relayed typing indicator to anyone but the bridge bot itself.
+
+    `active` is False for an explicit "stopped typing" event (Stoat's
+    `channel_stop_typing`); a receiver that can clear an indicator early
+    (Stoat) does so, one that can't (Discord) lets it lapse on its own."""
 
     origin_connector_id: ConnectorId
     origin_channel_id: str
     sender_name: str
     sender_user_id: str
+    active: bool = True
 
 
 @dataclass(frozen=True)

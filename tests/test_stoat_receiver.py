@@ -545,3 +545,28 @@ async def test_trigger_typing_reuses_the_running_loop_for_repeat_calls():
 
     assert receiver._typing_tasks["c-1"] is task
     await task
+
+
+async def test_stop_typing_cancels_the_loop_and_ends_the_indicator():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 5.0
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="c-1")
+    await receiver.stop_typing(target_channel_id="c-1")
+
+    assert receiver._typing_tasks == {}
+    assert receiver._typing_until == {}
+    assert channel.typing_events[-1] == "end"
+
+
+async def test_stop_typing_is_a_safe_noop_when_nothing_is_typing():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+
+    await receiver.stop_typing(target_channel_id="c-1")  # must not raise
+
+    assert channel.typing_events == ["end"]

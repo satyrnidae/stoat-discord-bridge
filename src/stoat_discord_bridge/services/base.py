@@ -129,6 +129,14 @@ class ReceiverService(ABC):
         bridge can surface it under the originating user's name."""
         raise NotImplementedError
 
+    async def stop_typing(self, *, target_channel_id: str) -> None:
+        """Clear a typing indicator started via `trigger_typing`, in response
+        to an explicit "stopped typing" event on the origin connector. Only
+        called when `supports_typing`. Optional and best-effort: the default
+        does nothing; each supporting receiver overrides it (Stoat ends the
+        indicator now, Discord stops re-arming its keep-alive and lets its
+        own ~10s timeout lapse — Discord has no clear-typing API)."""
+
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         """Mirror `emoji` onto this connector, returning it with this connector's
         native ID — or None if it can't be created here (emoji slots full,

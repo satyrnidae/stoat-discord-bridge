@@ -162,6 +162,23 @@ class FakeServer:
         self.created_emoji_calls: list[dict] = []
         self._members: dict[str, Any] = {}
         self._next_emoji_id = 1
+        # id -> FakeEmoji; `Server.emojis` is a Mapping in stoat.py
+        self._emojis: dict[str, Any] = {}
+        self.fetch_emojis_calls = 0
+
+    @property
+    def emojis(self):
+        return dict(self._emojis)
+
+    def add_emoji(self, emoji) -> None:
+        self._emojis[str(emoji.id)] = emoji
+
+    def get_emoji(self, emoji_id: str):
+        return self._emojis.get(str(emoji_id))
+
+    async def fetch_emojis(self, **kwargs):
+        self.fetch_emojis_calls += 1
+        return list(self._emojis.values())
 
     def add_member(self, user_id: str, member) -> None:
         self._members[user_id] = member
