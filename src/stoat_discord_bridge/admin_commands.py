@@ -1,4 +1,4 @@
-"""Shared logic behind the `/link channel`, `/link-category`, and
+"""Shared logic behind the `/link channel`, `/link category`, and
 `/mirror-channels` admin commands, called identically from each connector's
 own command handler (services/discord_service.py, stoat_service.py,
 irc_service.py) so the bridge-group/conflict logic isn't duplicated three
@@ -126,8 +126,29 @@ class ConnectorInfo:
     resolve_user_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
     # Best-effort native-category-id -> title lookup, the Category
     # counterpart of resolve_channel_name, used by CategoryLinker for
-    # `/link-category`. None on IRC (no Category concept there).
+    # `/link category`. None on IRC (no Category concept there).
     resolve_category_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Best-effort native-category-NAME -> id lookup, so `/link category` /
+    # `/mirror category` / `/unlink category` / `/linked categories` accept a
+    # bare Category name anywhere an id is expected. None/exception/falsy
+    # return all mean "treat the token as an id already"
+    # (CategoryLinker._resolve_to_id). None on IRC.
+    resolve_category_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Idempotent get-or-create by name: ensures a Category named `name` exists
+    # on this connector, returning its native id (existing or newly created).
+    # None if this connector kind can't create Categories - `/mirror category`
+    # then reports that connector as unsupported (mirrors ensure_role). None
+    # on IRC.
+    ensure_category: Callable[[str], Awaitable[str]] | None = None
+    # native-category-id -> [(channel_id, channel_name), ...] for every channel
+    # inside that Category, used by `/mirror category` to enumerate the source
+    # Category's channels. None on IRC.
+    channels_in_category: Callable[[str], Awaitable[list[tuple[str, str]]]] | None = None
+    # Move channel `channel_id` into Category `category_id` on this connector.
+    # Idempotent (no-op if already there). Used by `/mirror category` to
+    # relocate already-linked destination channels into the mirrored Category.
+    # None on IRC.
+    move_channel_to_category: Callable[[str, str], Awaitable[None]] | None = None
     # --- Role hooks (Discord/Stoat only; None everywhere on IRC, which has
     # no role concept). See RoleLinker below and bridge.py's
     # RoleSyncCoordinator. ---
@@ -494,7 +515,7 @@ class ChannelLinker:
 
 
 class CategoryLinker:
-    """The Category-level counterpart of ChannelLinker: `/link-category`
+    """The Category-level counterpart of ChannelLinker: `/link category`
     links two Categories across connectors, and once linked, a new channel
     appearing inside either is auto-synced (created + linked) onto the
     other's own linked Category - see sync_new_channel, called from each
@@ -522,7 +543,7 @@ class CategoryLinker:
         self,
         *,
         local_connector: str,
-        local_category_id: str,
+        local_category_id: str | None,
         local_category_name: str,
         source: str,
         source_id: str,
@@ -540,6 +561,12 @@ class CategoryLinker:
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
 
+        source_id = await self._resolve_to_id(source, source_id)
+        if destination_id is not None:
+            destination_id = await self._resolve_to_id(local_connector, destination_id)
+        if destination_id is None and local_category_id is None:
+            raise LinkError("this channel isn't inside a Category.")
+
         if destination_id is None or destination_id == local_category_id:
             destination_category_id = local_category_id
             destination_name = local_category_name
@@ -554,7 +581,7 @@ class CategoryLinker:
             local_connector, destination_category_id
         ):
             raise LinkError(
-                "that Category was auto-created for Discord thread mirroring and can't be linked with /link-category."
+                "that Category was auto-created for Discord thread mirroring and can't be linked with /link category."
             )
 
         source_group = await self._category_mappings.get_bridge_group(source, source_id)
@@ -587,9 +614,17 @@ class CategoryLinker:
             "New channels in either will now sync automatically."
         )
 
-    async def list_linked_categories(self, *, local_connector: str, local_category_id: str) -> str:
-        """Read-only listing, for `/linked-categories` - never raises
-        LinkError, same as ChannelLinker.list_linked_channels."""
+    async def list_linked_categories(
+        self, *, local_connector: str, local_category_id: str | None = None, local_category: str | None = None
+    ) -> str:
+        """Read-only listing, for `/linked categories` - never raises
+        LinkError, same as ChannelLinker.list_linked_channels. `local_category`
+        (an id or a bare name) overrides `local_category_id` (the invoking
+        channel's Category) when given."""
+        if local_category is not None:
+            local_category_id = await self._resolve_to_id(local_connector, local_category)
+        if local_category_id is None:
+            return "This channel isn't inside a Category."
         bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
         if bridge_group is None:
             return "This Category isn't linked to any others."
@@ -607,8 +642,21 @@ class CategoryLinker:
             lines.append(f"{label}: {mapping.category_name} ({mapping.category_id}){marker}")
         return "Linked Categories:\n" + "\n".join(lines)
 
-    async def unlink_category(self, *, local_connector: str, local_category_id: str, destination: str | None) -> str:
-        """`/unlink-category`, symmetric to ChannelLinker.unlink_channel."""
+    async def unlink_category(
+        self,
+        *,
+        local_connector: str,
+        local_category_id: str | None = None,
+        local_category: str | None = None,
+        destination: str | None,
+    ) -> str:
+        """`/unlink category`, symmetric to ChannelLinker.unlink_channel.
+        `local_category` (an id or a bare name) overrides `local_category_id`
+        (the invoking channel's Category) when given."""
+        if local_category is not None:
+            local_category_id = await self._resolve_to_id(local_connector, local_category)
+        if local_category_id is None:
+            raise LinkError("this channel isn't inside a Category.")
         bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
         if bridge_group is None:
             raise LinkError("this Category isn't linked to anything.")
@@ -624,6 +672,124 @@ class CategoryLinker:
         await self._category_mappings.delete_mapping(destination, target.category_id)
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
+
+    async def mirror_category(
+        self,
+        *,
+        local_connector: str,
+        local_category_id: str | None = None,
+        local_category: str | None = None,
+        local_category_name: str | None = None,
+        destination: str,
+    ) -> str:
+        """Ensure `local_category` (id or bare name, on `local_connector`) has
+        a linked counterpart Category on `destination`: reuses the existing
+        linked Category there if the pair is already linked, otherwise creates
+        a same-named one via `destination`'s ensure_category() hook and links
+        it. Then relocates every channel inside the source Category onto that
+        destination Category - a child already linked to a `destination`
+        channel is *moved* into it (move_channel_to_category hook), an
+        unlinked child is mirrored (created + linked) there via
+        ChannelLinker.mirror_channel. Reports rather than raises per problem so
+        `mirror_category_all` can carry on past one bad destination."""
+        if destination not in self._connectors:
+            raise LinkError(f"'{destination}' isn't a known connector.")
+        if destination == local_connector:
+            raise LinkError("can't mirror a Category to its own connector.")
+
+        if local_category is not None:
+            local_category_id = await self._resolve_to_id(local_connector, local_category)
+        if local_category_id is None:
+            raise LinkError("this channel isn't inside a Category.")
+        source_name = local_category_name or await self._resolve_name(local_connector, local_category_id)
+
+        dest_info = self._connectors[destination]
+        dest_label = dest_info.label
+
+        bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
+        dest_category_id: str | None = None
+        if bridge_group is not None:
+            existing = await self._category_mappings.get_mapped_categories(bridge_group)
+            match = next((m for m in existing if m.connector_id == destination), None)
+            if match is not None:
+                dest_category_id = match.category_id
+
+        lines: list[str] = []
+        if dest_category_id is None:
+            if dest_info.ensure_category is None:
+                return f"{dest_label}: doesn't support Category creation - link it manually with /link category."
+            try:
+                dest_category_id = await dest_info.ensure_category(source_name)
+            except Exception as exc:
+                logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, source_name, exc)
+                return f"{dest_label}: failed to create/find a Category: {exc}"
+            try:
+                lines.append(
+                    await self.link_category(
+                        local_connector=destination,
+                        local_category_id=dest_category_id,
+                        local_category_name=await self._resolve_name(destination, dest_category_id),
+                        source=local_connector,
+                        source_id=local_category_id,
+                        destination_id=None,
+                    )
+                )
+            except LinkError as exc:
+                return f"{dest_label}: {exc}"
+        else:
+            lines.append(f"{dest_label}: already linked - reusing '{dest_category_id}'.")
+
+        dest_category_name = await self._resolve_name(destination, dest_category_id)
+        info = self._connectors.get(local_connector)
+        if info is not None and info.channels_in_category is not None:
+            try:
+                children = await info.channels_in_category(local_category_id)
+            except Exception:
+                logger.debug("mirror-category: channels_in_category failed for %s", local_connector, exc_info=True)
+                children = []
+            for cid, cname in children:
+                try:
+                    linked = await self._channel_linker._linked_channel(local_connector, cid, destination)
+                    if linked is not None and dest_info.move_channel_to_category is not None:
+                        await dest_info.move_channel_to_category(linked.channel_id, dest_category_id)
+                        lines.append(f"{dest_label}: moved '{cname}' into the Category.")
+                    else:
+                        lines.append(
+                            await self._channel_linker.mirror_channel(
+                                local_connector=local_connector,
+                                local_channel_id=cid,
+                                local_channel_name=cname,
+                                destination=destination,
+                                local_channel_category=dest_category_name,
+                            )
+                        )
+                except Exception as exc:
+                    logger.warning("mirror-category: child %r -> %s failed: %s", cname, destination, exc)
+                    lines.append(f"{dest_label}: '{cname}' failed: {exc}")
+        return "\n".join(lines)
+
+    async def mirror_category_all(
+        self,
+        *,
+        local_connector: str,
+        local_category_id: str | None = None,
+        local_category: str | None = None,
+        local_category_name: str | None = None,
+    ) -> str:
+        """`/mirror category <local> all` - mirror_category() against every
+        other configured connector."""
+        results = [
+            await self.mirror_category(
+                local_connector=local_connector,
+                local_category_id=local_category_id,
+                local_category=local_category,
+                local_category_name=local_category_name,
+                destination=destination,
+            )
+            for destination in self._connectors
+            if destination != local_connector
+        ]
+        return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
     async def sync_new_channel(
         self, *, local_connector: str, local_category_id: str, channel_id: str, channel_name: str
@@ -698,6 +864,18 @@ class CategoryLinker:
         and by StoatSenderService to decide whether to group a thread
         Category's parent channel into it."""
         return await self._thread_categories.is_thread_category(connector_id, category_id)
+
+    async def _resolve_to_id(self, connector: str, token: str) -> str:
+        info = self._connectors.get(connector)
+        if info is not None and info.resolve_category_id_by_name is not None:
+            try:
+                category_id = await info.resolve_category_id_by_name(token)
+            except Exception:
+                logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
+                category_id = None
+            if category_id:
+                return category_id
+        return token
 
     async def _resolve_name(self, connector_id: str, category_id: str) -> str:
         info = self._connectors.get(connector_id)

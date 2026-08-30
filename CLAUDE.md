@@ -153,16 +153,17 @@ Every admin/status command (`/status`, the channel commands `/link channel` /
 `/unlink channel` / `/mirror channel` / `/linked channels`, the role commands
 `/link role` / `/mirror role` / `/linked roles` / `/unlink role`
 (Discord/Stoat only), the user commands `/link user` / `/unlink user` /
-`/linked users`, `/link-emote`, `/mirror-channels`, `/link-category`,
-`/unlink-category`, `/linked-categories`) and how to reach it on each
-connector is documented in `COMMANDS.md`, not duplicated here. On Discord the
-channel, role and user commands are real `app_commands` subcommand groups
-(`/link`, `/unlink`, `/mirror`, `/linked`); on Stoat/IRC they're
-space-separated (`LINK CHANNEL …` / `LINK USER …` on IRC). Category/emote
-commands are still flat. Every id argument to a channel or role command also
-accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /
-`resolve_role_id_by_name`), as does every id argument to a user command
-(`resolve_user_id_by_name`). Shared logic
+`/linked users`, the category commands `/link category` / `/unlink category` /
+`/mirror category` / `/linked categories` (Discord/Stoat only), `/link-emote`,
+`/mirror-channels`) and how to reach it on each connector is documented in
+`COMMANDS.md`, not duplicated here. On Discord the channel, role, user and
+category commands are real `app_commands` subcommand groups (`/link`,
+`/unlink`, `/mirror`, `/linked`); on Stoat/IRC they're space-separated
+(`LINK CHANNEL …` / `LINK USER …` on IRC). Only emote commands are still flat.
+Every id argument to a channel, role, user or category command also accepts a
+bare name (`ConnectorInfo.resolve_channel_id_by_name` /
+`resolve_role_id_by_name` / `resolve_user_id_by_name` /
+`resolve_category_id_by_name`). Shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
 `EmoteLinker` / `UserLinker` / `RoleLinker` / `StructureMirrorer`), called
 identically from each connector's own `services/*.py` module. Nothing is
@@ -229,7 +230,7 @@ is confirmed (`on_youreoper` — it's oper-only, and channels created before
 then are parked in `_pending_permanent_modes`), and is withheld from
 ephemeral Discord-thread channels (`ensure_channel`'s `is_thread_category`).
 
-Category linking (`/link-category`) is Discord/Stoat-only (IRC has no
+Category linking (`/link category`) is Discord/Stoat-only (IRC has no
 Category concept) and, unlike channel linking, has an automatic-sync side
 effect: once two Categories are linked, a new channel created inside either
 one is auto-mirrored (created + linked) into every other connector's own
@@ -268,7 +269,7 @@ fires when the thread's parent channel is itself already bridged; one-way
 (Discord → Stoat/IRC). The destination Category is bound to the destination's
 own parent channel id via `CategoryLinker.bind_thread_category` (backed by
 `storage/category_mappings.py`'s `ThreadCategoryRepository`, keyed by
-`(connector, parent_channel_id)`), which `/link-category` checks to refuse ever
+`(connector, parent_channel_id)`), which `/link category` checks to refuse ever
 linking it into the bridge. That binding is what later threads resolve the
 Category by — **by id, not by title** — so renaming the Category on Stoat no
 longer spawns a fresh one, and `group_parent_channel_with_threads` finds the

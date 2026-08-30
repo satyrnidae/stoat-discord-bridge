@@ -251,37 +251,6 @@ class DiscordSenderService(SenderService):
         async def status_command(interaction: discord.Interaction) -> None:
             await interaction.response.send_message(self._health.render(), ephemeral=True)
 
-        @self.tree.command(
-            name="linked-categories",
-            description="List every Category linked to this channel's Category across the bridge",
-            guild=self._guild,
-        )
-        async def linked_categories_command(interaction: discord.Interaction) -> None:
-            await self._handle_linked_categories(interaction)
-
-        async def link_category_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._category_linker.connectors if self._category_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors)
-
-        @self.tree.command(
-            name="link-category",
-            description="Link a Category from another connector; new channels in either side sync automatically",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to link from (see /status for configured connectors)",
-            external_id="Category id on that connector",
-            local_id="Category id on this connector (defaults to the current channel's Category)",
-        )
-        @app_commands.autocomplete(service=link_category_service_autocomplete)
-        async def link_category_command(
-            interaction: discord.Interaction, service: str, external_id: str, local_id: str | None = None
-        ) -> None:
-            await self._handle_link_category(interaction, service, external_id, local_id)
-
         async def link_emote_service_autocomplete(
             interaction: discord.Interaction, current: str
         ) -> list[app_commands.Choice[str]]:
@@ -305,29 +274,10 @@ class DiscordSenderService(SenderService):
         ) -> None:
             await self._handle_link_emote(interaction, service, external_id, local_id)
 
-        async def unlink_category_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._category_linker.connectors if self._category_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors, include_all=True)
-
-        @self.tree.command(
-            name="unlink-category",
-            description="Unlink this channel's Category's bridge - one connector, or the whole group (default: all)",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to unlink, or 'all' to dissolve the whole bridge group (default: all)",
-        )
-        @app_commands.autocomplete(service=unlink_category_service_autocomplete)
-        async def unlink_category_command(interaction: discord.Interaction, service: str | None = None) -> None:
-            await self._handle_unlink_category(interaction, service)
-
-        # Channels, roles and users use the `/link <noun>`, `/unlink <noun>`,
-        # `/linked <noun>`, `/mirror <noun>` subcommand form (app_commands
-        # groups). Categories and emotes still use the flat `-category`
-        # / `-emote` names above - a later step migrates those too.
+        # Channels, roles, users and Categories use the `/link <noun>`,
+        # `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>` subcommand form
+        # (app_commands groups). Emotes still use the flat `-emote` name above
+        # - a later step migrates that too.
         def _linker_service_autocomplete(get_linker, *, include_all: bool):
             async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
                 linker = get_linker()
@@ -344,6 +294,9 @@ class DiscordSenderService(SenderService):
 
         def user_service_autocomplete(*, include_all: bool):
             return _linker_service_autocomplete(lambda: self._user_linker, include_all=include_all)
+
+        def category_service_autocomplete(*, include_all: bool):
+            return _linker_service_autocomplete(lambda: self._category_linker, include_all=include_all)
 
         _manage = discord.Permissions(manage_guild=True)
         link_group = app_commands.Group(
@@ -482,6 +435,56 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, local_id: discord.Member | None = None
         ) -> None:
             await self._handle_linked_users(interaction, local_id)
+
+        @link_group.command(
+            name="category",
+            description="Link a Category from another connector; new channels in either side sync automatically",
+        )
+        @app_commands.describe(
+            local_id="Category id or name on this connector (defaults to the current channel's Category)",
+            service="Connector id to link from",
+            external_id="Category id or name on that connector",
+        )
+        @app_commands.autocomplete(service=category_service_autocomplete(include_all=False))
+        async def link_category_command(
+            interaction: discord.Interaction, service: str, external_id: str, local_id: str | None = None
+        ) -> None:
+            await self._handle_link_category(interaction, service, external_id, local_id)
+
+        @unlink_group.command(
+            name="category", description="Unlink a Category's bridge - one connector, or the whole group (default: all)"
+        )
+        @app_commands.describe(
+            local_id="Category id or name on this connector (defaults to the current channel's Category)",
+            service="Connector id to unlink, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=category_service_autocomplete(include_all=True))
+        async def unlink_category_command(
+            interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        ) -> None:
+            await self._handle_unlink_category(interaction, local_id, service)
+
+        @linked_group.command(
+            name="categories", description="List Categories linked across the bridge (omit to use this channel's)"
+        )
+        @app_commands.describe(local_id="Category id or name on this connector (defaults to the current channel's)")
+        async def linked_categories_command(
+            interaction: discord.Interaction, local_id: str | None = None
+        ) -> None:
+            await self._handle_linked_categories(interaction, local_id)
+
+        @mirror_group.command(
+            name="category", description="Ensure a linked counterpart Category exists elsewhere and mirror its channels"
+        )
+        @app_commands.describe(
+            local_id="Category id or name on this connector (defaults to the current channel's Category)",
+            service="Connector id to mirror to, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=category_service_autocomplete(include_all=True))
+        async def mirror_category_command(
+            interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        ) -> None:
+            await self._handle_mirror_category(interaction, local_id, service)
 
     @property
     def client(self) -> discord.Client:
@@ -1087,6 +1090,76 @@ class DiscordSenderService(SenderService):
         role = await guild.create_role(name=name, reason="bridge role mirror")
         return str(role.id)
 
+    async def resolve_category_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare Category name to its id so `/link category` etc.
+        accept either. A token that's already a real Category id is returned
+        as-is; an unrecognized token yields None (CategoryLinker then treats
+        it as a literal id). Case-insensitive; first match wins."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        if token.isdigit():
+            for category in guild.categories:
+                if category.id == int(token):
+                    return token
+        lowered = token.casefold()
+        for category in guild.categories:
+            if category.name.casefold() == lowered:
+                return str(category.id)
+        return None
+
+    async def ensure_category(self, name: str) -> str:
+        """Get-or-create a Category named `name`, returning its id - this
+        connector's `ConnectorInfo.ensure_category` for `/mirror category`."""
+        guild = self._guild_or_none()
+        if guild is None:
+            raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
+        lowered = name.casefold()
+        for category in guild.categories:
+            if category.name.casefold() == lowered:
+                return str(category.id)
+        category = await guild.create_category(name, reason="bridge category mirror")
+        return str(category.id)
+
+    async def channels_in_category(self, category_id: str) -> list[tuple[str, str]]:
+        """Every channel inside Category `category_id`, as (id, name) pairs -
+        this connector's `ConnectorInfo.channels_in_category`."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return []
+        try:
+            category = guild.get_channel(int(category_id))
+        except ValueError:
+            return []
+        if not isinstance(category, discord.CategoryChannel):
+            return []
+        return [(str(c.id), c.name) for c in category.channels]
+
+    async def move_channel_to_category(self, channel_id: str, category_id: str) -> None:
+        """Move channel `channel_id` into Category `category_id` - idempotent,
+        best-effort (logs and swallows failures)."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return
+        try:
+            channel = guild.get_channel(int(channel_id))
+            category = guild.get_channel(int(category_id))
+        except ValueError:
+            return
+        if channel is None or not isinstance(category, discord.CategoryChannel):
+            return
+        if getattr(channel, "category_id", None) == category.id:
+            return
+        try:
+            await channel.edit(category=category, reason="bridge category mirror")
+        except Exception:
+            logger.exception(
+                "[discord:%s] category mirror: move of channel %s into %s failed",
+                self.connector_id,
+                channel_id,
+                category_id,
+            )
+
     def snapshot_guild_structure(self) -> GuildStructure:
         """Build a platform-neutral snapshot of the bridged guild's current
         categories/channels, for the Stoat `/mirror-channels` command.
@@ -1185,16 +1258,24 @@ class DiscordSenderService(SenderService):
             return
         await interaction.response.send_message(summary, ephemeral=True)
 
-    async def _handle_linked_categories(self, interaction: discord.Interaction) -> None:
+    def _invoking_category_id(self, interaction: discord.Interaction) -> str | None:
+        category = getattr(interaction.channel, "category", None)
+        return str(category.id) if category is not None else None
+
+    async def _handle_linked_categories(
+        self, interaction: discord.Interaction, local_id: str | None = None
+    ) -> None:
         if self._category_linker is None:
             await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
             return
-        category = getattr(interaction.channel, "category", None)
-        if category is None:
+        local_id = _normalize_channel_id(local_id) if local_id else None
+        if local_id is None and self._invoking_category_id(interaction) is None:
             await interaction.response.send_message("This channel isn't inside a Category.", ephemeral=True)
             return
         summary = await self._category_linker.list_linked_categories(
-            local_connector=self.connector_id, local_category_id=str(category.id)
+            local_connector=self.connector_id,
+            local_category_id=self._invoking_category_id(interaction),
+            local_category=local_id,
         )
         await interaction.response.send_message(summary, ephemeral=True)
 
@@ -1205,14 +1286,13 @@ class DiscordSenderService(SenderService):
             await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
             return
         category = getattr(interaction.channel, "category", None)
-        if category is None:
+        local_id = _normalize_channel_id(local_id) if local_id else None
+        if category is None and local_id is None:
             await interaction.response.send_message("This channel isn't inside a Category.", ephemeral=True)
             return
         external_id = _normalize_channel_id(external_id)
-        if local_id is not None:
-            local_id = _normalize_channel_id(local_id)
         logger.info(
-            "[discord:%s] %s ran /link-category service=%s external_id=%s local_id=%s",
+            "[discord:%s] %s ran /link category service=%s external_id=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
@@ -1222,41 +1302,81 @@ class DiscordSenderService(SenderService):
         try:
             summary = await self._category_linker.link_category(
                 local_connector=self.connector_id,
-                local_category_id=str(category.id),
-                local_category_name=category.name,
+                local_category_id=None if category is None else str(category.id),
+                local_category_name="" if category is None else category.name,
                 source=service,
                 source_id=external_id,
                 destination_id=local_id,
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /link-category rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /link category rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
 
-    async def _handle_unlink_category(self, interaction: discord.Interaction, service: str | None) -> None:
+    async def _handle_unlink_category(
+        self, interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+    ) -> None:
         if self._category_linker is None:
             await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
             return
-        category = getattr(interaction.channel, "category", None)
-        if category is None:
+        local_id = _normalize_channel_id(local_id) if local_id else None
+        if local_id is None and self._invoking_category_id(interaction) is None:
             await interaction.response.send_message("This channel isn't inside a Category.", ephemeral=True)
             return
         logger.info(
-            "[discord:%s] %s ran /unlink-category service=%s",
+            "[discord:%s] %s ran /unlink category local_id=%s service=%s",
             self.connector_id,
             interaction.user.id,
+            local_id,
             service,
         )
         try:
             summary = await self._category_linker.unlink_category(
-                local_connector=self.connector_id, local_category_id=str(category.id), destination=service
+                local_connector=self.connector_id,
+                local_category_id=self._invoking_category_id(interaction),
+                local_category=local_id,
+                destination=service,
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /unlink-category rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /unlink category rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_mirror_category(
+        self, interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+    ) -> None:
+        if self._category_linker is None:
+            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+            return
+        local_id = _normalize_channel_id(local_id) if local_id else None
+        if local_id is None and self._invoking_category_id(interaction) is None:
+            await interaction.response.send_message("This channel isn't inside a Category.", ephemeral=True)
+            return
+        logger.info(
+            "[discord:%s] %s ran /mirror category local_id=%s service=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+        )
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        kwargs = dict(
+            local_connector=self.connector_id,
+            local_category_id=self._invoking_category_id(interaction),
+            local_category=local_id,
+        )
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._category_linker.mirror_category_all(**kwargs)
+            else:
+                summary = await self._category_linker.mirror_category(destination=service, **kwargs)
+        except LinkError as exc:
+            logger.info("[discord:%s] /mirror category rejected: %s", self.connector_id, exc)
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_link_role(
         self, interaction: discord.Interaction, local_id: str, service: str, external_id: str

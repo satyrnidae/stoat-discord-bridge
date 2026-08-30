@@ -104,12 +104,26 @@ class FakeCategoryLinker:
         self.list_linked_categories_calls: list[dict] = []
         self.unlink_category_calls: list[dict] = []
         self.sync_new_channel_calls: list[dict] = []
+        self.mirror_category_calls: list[dict] = []
+        self.mirror_category_all_calls: list[dict] = []
 
     async def link_category(self, **kwargs):
         self.link_category_calls.append(kwargs)
         if self._raises is not None:
             raise self._raises
         return "category linked ok"
+
+    async def mirror_category(self, **kwargs):
+        self.mirror_category_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "mirrored ok"
+
+    async def mirror_category_all(self, **kwargs):
+        self.mirror_category_all_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "mirrored all ok"
 
     async def list_linked_categories(self, **kwargs):
         self.list_linked_categories_calls.append(kwargs)
@@ -913,9 +927,11 @@ async def test_linked_categories_reports_the_invoking_channels_category():
     sender = _make_sender(category_linker=category_linker)
     message = _admin_message(channel=channel)
 
-    await sender._handle_linked_categories(message)
+    await sender._handle_linked_categories(message, [])
 
-    assert category_linker.list_linked_categories_calls == [{"local_connector": "stoat", "local_category_id": "cat-1"}]
+    assert category_linker.list_linked_categories_calls == [
+        {"local_connector": "stoat", "local_category_id": "cat-1", "local_category": None}
+    ]
     assert channel.sent[0]["content"] == "Linked categories:\nStoat: Team (cat-1) (this Category)"
 
 
@@ -923,7 +939,7 @@ async def test_linked_categories_without_a_configured_category_linker():
     sender = _make_sender(category_linker=None)
     message = _admin_message()
 
-    await sender._handle_linked_categories(message)
+    await sender._handle_linked_categories(message, [])
 
     assert message.channel.sent[0]["content"] == "Category linking isn't configured."
 
@@ -934,7 +950,7 @@ async def test_linked_categories_when_invoking_channel_has_no_category():
     sender = _make_sender(category_linker=category_linker)
     message = _admin_message(channel=channel)
 
-    await sender._handle_linked_categories(message)
+    await sender._handle_linked_categories(message, [])
 
     assert message.channel.sent[0]["content"] == "This channel isn't in a Category."
     assert category_linker.list_linked_categories_calls == []
@@ -946,7 +962,7 @@ async def test_linked_categories_needs_no_admin_permission():
     sender = _make_sender(category_linker=category_linker)
     message = _admin_message(manage_server=False, channel=channel)
 
-    await sender._handle_linked_categories(message)  # must not be rejected
+    await sender._handle_linked_categories(message, [])  # must not be rejected
 
     assert category_linker.list_linked_categories_calls
 
@@ -992,7 +1008,10 @@ async def test_link_category_wrong_arg_count_sends_usage():
 
     await sender._handle_link_category(message, ["discord"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-category <service> <external_id> [<local_id>]"
+    assert (
+        message.channel.sent[0]["content"]
+        == "Usage: /link category <service> <external_id|name> [<local_id|name>]"
+    )
 
 
 async def test_link_category_without_a_configured_category_linker():
@@ -1038,7 +1057,7 @@ async def test_unlink_category_defaults_to_all():
     await sender._handle_unlink_category(message, [])
 
     assert category_linker.unlink_category_calls == [
-        {"local_connector": "stoat", "local_category_id": "cat-1", "destination": None}
+        {"local_connector": "stoat", "local_category_id": "cat-1", "local_category": None, "destination": None}
     ]
     assert channel.sent[0]["content"] == "category unlinked ok"
 
@@ -1049,10 +1068,10 @@ async def test_unlink_category_with_a_specific_destination():
     sender = _make_sender(category_linker=category_linker)
     message = _admin_message(channel=channel)
 
-    await sender._handle_unlink_category(message, ["discord"])
+    await sender._handle_unlink_category(message, ["Team", "discord"])
 
     assert category_linker.unlink_category_calls == [
-        {"local_connector": "stoat", "local_category_id": "cat-1", "destination": "discord"}
+        {"local_connector": "stoat", "local_category_id": "cat-1", "local_category": "Team", "destination": "discord"}
     ]
 
 
@@ -1248,4 +1267,36 @@ async def test_linked_users_two_token_needs_no_admin_permission():
     await sender._handle_message(_cmd_message("/linked users 01KH", manage_server=False))
     assert user_linker.list_linked_users_calls == [
         {"local_connector": "stoat", "local_user_id": "01KH"}
+    ]
+
+
+async def test_two_token_category_commands_route():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(category_linker=category_linker)
+    await sender._handle_message(_cmd_message("/link category discord src-cat dest-cat"))
+    await sender._handle_message(_cmd_message("/unlink category MyCat all"))
+    await sender._handle_message(_cmd_message("/linked categories MyCat"))
+    await sender._handle_message(_cmd_message("/mirror category MyCat stoat"))
+    await sender._handle_message(_cmd_message("/mirror category MyCat"))
+
+    assert category_linker.link_category_calls[0]["source"] == "discord"
+    assert category_linker.link_category_calls[0]["source_id"] == "src-cat"
+    assert category_linker.link_category_calls[0]["destination_id"] == "dest-cat"
+    assert category_linker.unlink_category_calls == [
+        {"local_connector": "stoat", "local_category_id": None, "local_category": "MyCat", "destination": "all"}
+    ]
+    assert category_linker.list_linked_categories_calls == [
+        {"local_connector": "stoat", "local_category_id": None, "local_category": "MyCat"}
+    ]
+    assert category_linker.mirror_category_calls == [
+        {
+            "local_connector": "stoat",
+            "local_category_id": None,
+            "local_category": "MyCat",
+            "local_category_name": None,
+            "destination": "stoat",
+        }
+    ]
+    assert category_linker.mirror_category_all_calls == [
+        {"local_connector": "stoat", "local_category_id": None, "local_category": "MyCat", "local_category_name": None}
     ]

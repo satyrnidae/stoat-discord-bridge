@@ -83,21 +83,22 @@ _CONTENT_LIMIT = 2000
 _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /status - sync target health, read-only
   /linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
-  /linked-categories - Categories bridged to this channel's Category, read-only
   /linked users [local_id|name] - cross-connector user links, read-only
   /linked roles [local_id|name] - roles linked across the bridge, read-only
+  /linked categories [local_id|name] - Categories bridged to this channel's Category, read-only
   /link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
-  /link-category <service> <external_id> [local_id] - bridge a Category; new channels in either sync automatically (Manage Server)
   /link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
   /link-emote <service> <external_id> <local_id> - link a custom emoji (Manage Server)
   /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
+  /link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
   /mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
   /mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
+  /mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
   /mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
   /unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
-  /unlink-category [service|all] - unlink this channel's Category (default: whole group) from one connector, or the whole group (Manage Server)
   /unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   /unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
+  /unlink category [local_id|name] [service|all] - unlink a Category (default: this channel's) from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
 
@@ -837,26 +838,29 @@ class StoatSenderService(SenderService):
         if two == "/linked users":
             await self._handle_linked_users(message, parts[2:])
             return
+        if two == "/link category":
+            await self._handle_link_category(message, parts[2:])
+            return
+        if two == "/unlink category":
+            await self._handle_unlink_category(message, parts[2:])
+            return
+        if two == "/linked categories":
+            await self._handle_linked_categories(message, parts[2:])
+            return
+        if two == "/mirror category":
+            await self._handle_mirror_category(message, parts[2:])
+            return
         if cmd == "/status":
             await message.channel.send(self._health.render())
             return
         if cmd == "/bridge-help":
             await message.channel.send(_HELP_TEXT)
             return
-        if cmd == "/linked-categories":
-            await self._handle_linked_categories(message)
-            return
         if cmd == "/mirror-channels":
             await self._handle_mirror_channels(message, parts[1:])
             return
-        if cmd == "/link-category":
-            await self._handle_link_category(message, parts[1:])
-            return
         if cmd == "/link-emote":
             await self._handle_link_emote(message, parts[1:])
-            return
-        if cmd == "/unlink-category":
-            await self._handle_unlink_category(message, parts[1:])
             return
         logger.debug(
             "[stoat:%s] message %s in channel %s from %s",
@@ -1022,16 +1026,20 @@ class StoatSenderService(SenderService):
         )
         await message.channel.send(summary)
 
-    async def _handle_linked_categories(self, message) -> None:
+    async def _handle_linked_categories(self, message, args: list[str], /) -> None:
+        """`/linked categories [<local_id|name>]` - read-only."""
         if self._category_linker is None:
             await message.channel.send("Category linking isn't configured.")
             return
+        local = args[0] if args else None
         category = _channel_category(message.channel)
-        if category is None:
+        if local is None and category is None:
             await message.channel.send("This channel isn't in a Category.")
             return
         summary = await self._category_linker.list_linked_categories(
-            local_connector=self.connector_id, local_category_id=str(category.id)
+            local_connector=self.connector_id,
+            local_category_id=str(category.id) if category is not None else None,
+            local_category=local,
         )
         await message.channel.send(summary)
 
@@ -1130,16 +1138,15 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_link_category(self, message, args: list[str], /) -> None:
-        """`/link-category <service> <external_id> [<local_id>]`: links
-        the invoking channel's Category to `external_id`'s Category on
-        `service` (or `local_id`'s Category on this connector, if
-        given). Once linked, a new channel appearing in either Category
-        auto-syncs onto the other."""
+        """`/link category <service> <external_id|name> [<local_id|name>]`:
+        links the invoking channel's Category (or `local_id`'s Category, if
+        given) to `external_id`'s Category on `service`. Once linked, a new
+        channel appearing in either Category auto-syncs onto the other."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if len(args) < 2:
-            await message.channel.send("Usage: /link-category <service> <external_id> [<local_id>]")
+            await message.channel.send("Usage: /link category <service> <external_id|name> [<local_id|name>]")
             return
         service, external_id, *rest = args
         local_id = rest[0] if rest else None
@@ -1148,11 +1155,11 @@ class StoatSenderService(SenderService):
             await message.channel.send("Category linking isn't configured.")
             return
         category = _channel_category(message.channel)
-        if category is None:
+        if category is None and local_id is None:
             await message.channel.send("This channel isn't in a Category.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-category service=%s external_id=%s local_id=%s",
+            "[stoat:%s] %s ran /link category service=%s external_id=%s local_id=%s",
             self.connector_id,
             message.author.id,
             service,
@@ -1162,14 +1169,14 @@ class StoatSenderService(SenderService):
         try:
             summary = await self._category_linker.link_category(
                 local_connector=self.connector_id,
-                local_category_id=str(category.id),
-                local_category_name=category.title,
+                local_category_id=str(category.id) if category is not None else None,
+                local_category_name=category.title if category is not None else "",
                 source=service,
                 source_id=external_id,
                 destination_id=local_id,
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /link-category rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /link category rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -1317,37 +1324,72 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_unlink_category(self, message, args: list[str], /) -> None:
-        """`/unlink-category [service|all]`: service defaults to
-        "all" (dissolving the whole bridge group); the Category is always
-        the invoking channel's own Category."""
+        """`/unlink category [<local_id|name>] [<service>|all]`: local Category
+        defaults to the invoking channel's own; service defaults to "all"
+        (dissolving the whole bridge group)."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
-        service = args[0] if args else None
+        local = args[0] if args else None
+        service = args[1] if len(args) > 1 else None
 
         if self._category_linker is None:
             await message.channel.send("Category linking isn't configured.")
             return
         category = _channel_category(message.channel)
-        if category is None:
+        if local is None and category is None:
             await message.channel.send("This channel isn't in a Category.")
             return
         logger.info(
-            "[stoat:%s] %s ran /unlink-category service=%s category_id=%s",
+            "[stoat:%s] %s ran /unlink category local=%s service=%s",
             self.connector_id,
             message.author.id,
+            local,
             service,
-            category.id,
         )
         try:
             summary = await self._category_linker.unlink_category(
-                local_connector=self.connector_id, local_category_id=str(category.id), destination=service
+                local_connector=self.connector_id,
+                local_category_id=str(category.id) if category is not None else None,
+                local_category=local,
+                destination=service,
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /unlink-category rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /unlink category rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
+
+    async def _handle_mirror_category(self, message, args: list[str], /) -> None:
+        """`/mirror category [<local_id|name>] [<service>|all]`."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if self._category_linker is None:
+            await message.channel.send("Category linking isn't configured.")
+            return
+        local = args[0] if args else None
+        service = args[1] if len(args) > 1 else None
+        category = _channel_category(message.channel)
+        if local is None and category is None:
+            await message.channel.send("This channel isn't in a Category.")
+            return
+        kwargs = dict(
+            local_connector=self.connector_id,
+            local_category_id=str(category.id) if category is not None else None,
+            local_category=local,
+            local_category_name=category.title if category is not None else None,
+        )
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._category_linker.mirror_category_all(**kwargs)
+            else:
+                summary = await self._category_linker.mirror_category(destination=service, **kwargs)
+        except LinkError as exc:
+            logger.info("[stoat:%s] /mirror category rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary or "Nothing to mirror.")
 
     async def _handle_unlink_user(self, message, args: list[str], /) -> None:
         """`/unlink user [service|all] [local_id|name]`: service defaults
@@ -1513,6 +1555,104 @@ class StoatSenderService(SenderService):
                 return str(role.id)
         role = await server.create_role(name=name)
         return str(role.id)
+
+    async def _full_server(self):
+        server = self._client.get_server(self.server_id, partial=False)
+        if not isinstance(server, stoat.Server):
+            server = await self._client.fetch_server(self.server_id)
+        return server
+
+    async def resolve_category_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare Category title to its id (case-insensitive, first
+        match); a token that's already a Category id is returned as-is, an
+        unknown token yields None - this connector's
+        `ConnectorInfo.resolve_category_id_by_name`."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            categories = list(server.categories or [])
+        except Exception:
+            return None
+        if any(str(c.id) == token for c in categories):
+            return token
+        lowered = token.casefold()
+        for c in categories:
+            if str(getattr(c, "title", "")).casefold() == lowered:
+                return str(c.id)
+        return None
+
+    async def ensure_category(self, name: str) -> str:
+        """Get-or-create a Category titled `name`, returning its id - this
+        connector's `ConnectorInfo.ensure_category` for `/mirror category`.
+        Same dedicated-endpoint-then-raw-PATCH fallback as _place_in_category
+        (see its docstring)."""
+        server = await self._full_server()
+        lowered = name.casefold()
+        existing = next(
+            (c for c in (getattr(server, "categories", None) or []) if str(getattr(c, "title", "")).casefold() == lowered),
+            None,
+        )
+        if existing is not None:
+            return str(existing.id)
+        try:
+            category = await server.create_category(name)
+            return str(category.id)
+        except stoat.HTTPException:
+            raw_categories = [
+                {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
+                for c in (getattr(server, "categories", None) or [])
+            ]
+            new_id = ulid_new()
+            raw_categories.append({"id": new_id, "title": name, "channels": []})
+            await server.state.http.request(
+                stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
+                json={"categories": raw_categories},
+            )
+            return str(new_id)
+
+    async def channels_in_category(self, category_id: str) -> list[tuple[str, str]]:
+        """Every channel inside Category `category_id`, as (id, name) pairs -
+        this connector's `ConnectorInfo.channels_in_category`."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            category = next((c for c in (server.categories or []) if str(c.id) == category_id), None)
+        except Exception:
+            return []
+        if category is None:
+            return []
+        out: list[tuple[str, str]] = []
+        for cid in getattr(category, "channels", None) or []:
+            name = str(cid)
+            try:
+                channel = self._client.get_channel(str(cid), partial=False)
+                name = getattr(channel, "name", None) or str(cid)
+            except Exception:
+                pass
+            out.append((str(cid), name))
+        return out
+
+    async def move_channel_to_category(self, channel_id: str, category_id: str) -> None:
+        """Move channel `channel_id` into Category `category_id` (removing it
+        from any other Category first) - this connector's
+        `ConnectorInfo.move_channel_to_category`. Raw-PATCH path, same as
+        _move_channel_to_category_top but appended rather than hoisted."""
+        server = await self._full_server()
+        raw_categories = [
+            {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
+            for c in (getattr(server, "categories", None) or [])
+        ]
+        target = next((c for c in raw_categories if str(c["id"]) == category_id), None)
+        if target is None:
+            return
+        if channel_id in target["channels"]:
+            return
+        for c in raw_categories:
+            if channel_id in c["channels"]:
+                c["channels"].remove(channel_id)
+        target["channels"].append(channel_id)
+        await server.state.http.request(
+            stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
+            json={"categories": raw_categories},
+        )
 
     @staticmethod
     def _roles_of(server):
