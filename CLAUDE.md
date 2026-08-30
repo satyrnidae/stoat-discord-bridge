@@ -107,7 +107,15 @@ three kinds combined. `config.yaml` is itself gitignored — see
 Discord and Stoat reactions are mirrored onto every other connector's copy of
 the same message (via `MessageSyncRepository`, which tracks cross-connector
 message IDs); custom emoji created on one connector are mirrored onto the
-others so a reaction using them can be recreated at all. Both directions are
+others so a reaction using them can be recreated at all. An inline custom
+emoji *in a relayed message's text* is likewise rewritten into the target's
+linked copy (`services/mentions.py`'s `rewrite_emoji`, run alongside the
+user/channel/role-mention rewrites, keyed off `EmojiMappingRepository`):
+`<:name:id>` on Discord, `:id:` (bare 26-char ULID) on Stoat, and — since IRC
+has no custom emoji — stripped there to a plain `:name:` shortcode (or removed
+outright if the name can't be recovered) rather than left as a raw token. An
+emoji with no link to a Discord/Stoat target is left exactly as it appeared.
+Both directions are
 best-effort and silently skip rather than error — a reaction on a message the
 bridge never relayed is dropped; a custom emoji a target connector can't
 create (slots full, name rejected, image too large, etc.) is skipped on that

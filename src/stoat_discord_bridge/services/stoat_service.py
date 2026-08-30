@@ -67,6 +67,7 @@ from stoat_discord_bridge.services.formatting import (
 )
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
+    rewrite_emoji,
     rewrite_mentions,
     rewrite_role_mentions,
 )
@@ -76,6 +77,7 @@ from stoat_discord_bridge.services.role_sync import (
 )
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -2142,12 +2144,14 @@ class StoatReceiverService(ReceiverService):
         user_mappings: UserMappingRepository | None = None,
         channel_mappings: ChannelMappingRepository | None = None,
         role_mappings: RoleMappingRepository | None = None,
+        emoji_mappings: EmojiMappingRepository | None = None,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
         self._role_mappings = role_mappings
+        self._emoji_mappings = emoji_mappings
         # target_channel_id -> monotonic deadline the keep-alive loop stops at,
         # and the loop task itself (one per channel currently "typing").
         self._typing_until: dict[str, float] = {}
@@ -2194,6 +2198,14 @@ class StoatReceiverService(ReceiverService):
                 target_kind="stoat",
                 role_mappings=self._role_mappings,
             )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                emoji_mappings=self._emoji_mappings,
+            )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):
             logger.debug(
@@ -2222,9 +2234,11 @@ class StoatReceiverService(ReceiverService):
         native = _to_stoat_emoji(emoji)
         if await self._bot_already_reacted(target_channel_id, target_message_id, native):
             return
-        message = self._sender.get_channel(target_channel_id, partial=True).get_message(
-            target_message_id, partial=True
-        )
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
         await message.react(native)
 
     async def remove_reaction(
@@ -2237,9 +2251,11 @@ class StoatReceiverService(ReceiverService):
         already = await self._bot_already_reacted(target_channel_id, target_message_id, native)
         if already is False:
             return
-        message = self._sender.get_channel(target_channel_id, partial=True).get_message(
-            target_message_id, partial=True
-        )
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
         await message.unreact(native)
 
     async def _bot_already_reacted(
@@ -2315,10 +2331,15 @@ class StoatReceiverService(ReceiverService):
                 pass
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
+        # Stoat emoji names may only contain lowercase ASCII letters, digits
+        # and underscores (1-32 chars) - sanitise whatever the source platform
+        # allowed down to that.
+        name = re.sub(r"[^a-z0-9_]", "_", emoji.name.lower())[:32].strip("_") or "emoji"
         try:
             server = self._sender.get_server(self._sender.server_id, partial=True)
             image_bytes = await _download(emoji.image_url)
-            created = await server.create_emoji(name=emoji.name[:32], image=image_bytes)
+            upload = stoat.Upload.emoji(image_bytes, filename=f"{name}.png")
+            created = await server.create_server_emoji(name, image=upload)
         except (stoat.HTTPException, aiohttp.ClientError) as exc:
             logger.warning("[stoat:%s] couldn't create emoji %r: %s", self.connector_id, emoji.name, exc)
             return None  # e.g. emoji slots full, name taken, image too large, network failure - skip this platform

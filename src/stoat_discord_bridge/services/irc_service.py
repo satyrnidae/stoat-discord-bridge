@@ -30,11 +30,13 @@ from stoat_discord_bridge.services.base import OnMessage, PartialRelayError, Rec
 from stoat_discord_bridge.services.formatting import chunk_content, render_discord_timestamps
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
+    rewrite_emoji,
     rewrite_mentions,
     rewrite_role_mentions,
 )
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -739,6 +741,7 @@ class IrcReceiverService(ReceiverService):
         enable_local_user_masquerade: bool = True,
         channel_mappings: ChannelMappingRepository | None = None,
         role_mappings: RoleMappingRepository | None = None,
+        emoji_mappings: EmojiMappingRepository | None = None,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
@@ -746,6 +749,7 @@ class IrcReceiverService(ReceiverService):
         self._enable_local_user_masquerade = enable_local_user_masquerade
         self._channel_mappings = channel_mappings
         self._role_mappings = role_mappings
+        self._emoji_mappings = emoji_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # TODO: markdown stripping belongs here too.
@@ -809,6 +813,14 @@ class IrcReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="irc",
                 role_mappings=self._role_mappings,
+            )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="irc",
+                emoji_mappings=self._emoji_mappings,
             )
         if not content.strip():
             # A synced message with no textual content (after attachment

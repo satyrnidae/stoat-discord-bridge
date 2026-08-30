@@ -198,10 +198,11 @@ class FakeServer:
             ]
         return json
 
-    async def create_emoji(self, *, name: str, image: bytes):
+    async def create_server_emoji(self, name: str, *, image, nsfw=None):
         if self._raises is not None:
             raise self._raises
-        self.created_emoji_calls.append({"name": name, "image": image})
+        # `image` is a stoat.Upload; unwrap its bytes for assertions
+        self.created_emoji_calls.append({"name": name, "image": getattr(image, "content", image)})
         emoji = FakeEmoji(id=str(self._next_emoji_id), name=name)
         self._next_emoji_id += 1
         return emoji

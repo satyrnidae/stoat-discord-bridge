@@ -171,8 +171,11 @@ sync section of `README.md`/`CLAUDE.md`). Manage Server.
 
 Ensures a linked counterpart of the emoji exists on `<service>` (or every
 other connector, if `all` - the default): reuses the existing link if the
-pair is already linked, otherwise reads the source emoji's image, recreates
-it on the destination, and links the two. Unlike `/mirror role`, an emoji
+pair is already linked; failing that, links to a same-named emoji that
+already exists on the destination (name match only - images aren't compared)
+rather than creating a duplicate; only if neither is found does it read the
+source emoji's image, recreate it on the destination, and link the two.
+Unlike `/mirror role`, an emoji
 can't be created name-only - a connector that can't read the source emoji or
 can't create it (slots full, name rejected, image too large) is reported
 per-connector. Manage Server.

@@ -120,6 +120,14 @@ class EmojiMappingRepository:
         return len(doc["refs"])
 
     async def find_equivalent(self, connector_id: str, emoji_id: str, target_connector_id: str) -> str | None:
+        ref = await self.find_equivalent_ref(connector_id, emoji_id, target_connector_id)
+        return ref.emoji_id if ref is not None else None
+
+    async def find_equivalent_ref(
+        self, connector_id: str, emoji_id: str, target_connector_id: str
+    ) -> EmojiRef | None:
+        """Like `find_equivalent` but returns the whole target ref (id + name)
+        - message-content emoji rewriting needs the name too."""
         doc = await self._collection.find_one(
             {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
         )
@@ -127,7 +135,21 @@ class EmojiMappingRepository:
             return None
         for ref in doc["refs"]:
             if ref["platform"] == target_connector_id:
-                return ref["emoji_id"]
+                return EmojiRef(connector_id=ref["platform"], emoji_id=ref["emoji_id"], name=ref["name"])
+        return None
+
+    async def find_name(self, connector_id: str, emoji_id: str) -> str | None:
+        """The stored name of a single (connector_id, emoji_id) ref, from
+        whatever group holds it - IRC emote-stripping needs the name even
+        though IRC never has its own linked copy."""
+        doc = await self._collection.find_one(
+            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
+        )
+        if doc is None:
+            return None
+        for ref in doc["refs"]:
+            if ref["platform"] == connector_id and ref["emoji_id"] == emoji_id:
+                return ref["name"]
         return None
 
     async def forget(self, connector_id: str, emoji_id: str) -> None:

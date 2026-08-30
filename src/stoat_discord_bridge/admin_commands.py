@@ -56,6 +56,25 @@ def _strip_discord_mention(raw: str) -> str:
     return match.group(1) if match else raw
 
 
+# Emote command args commonly come in as an emoji token rather than a bare
+# name/id: a `:shortcode:` (Discord/Stoat autocomplete, IRC habit) or a full
+# Discord `<:name:id>` / `<a:name:id>` custom-emoji reference (pasted from a
+# message). Reduce either to the bare name (or id) the resolve hooks expect.
+_CUSTOM_EMOJI_RE = re.compile(r"^<a?:(\w+):(\w+)>$")
+_EMOJI_SHORTCODE_RE = re.compile(r"^:([\w~+-]+):$")
+
+
+def _strip_emote_token(raw: str) -> str:
+    token = raw.strip()
+    match = _CUSTOM_EMOJI_RE.match(token)
+    if match:
+        return match.group(2)
+    match = _EMOJI_SHORTCODE_RE.match(token)
+    if match:
+        return match.group(1)
+    return token
+
+
 class LinkError(Exception):
     """User-facing error - callers should relay str(exc) back to the admin who ran the command."""
 
@@ -1000,6 +1019,23 @@ class EmoteLinker:
             if any(r.connector_id == destination for r in refs):
                 return f"{dest_info.label}: already synced - skipped."
 
+        # Prefer linking to a same-named emote that already exists on the
+        # destination over creating a duplicate (mirrors /mirror role's
+        # create-or-match). Name only - we can't compare images.
+        if dest_info.resolve_emoji_id_by_name is not None and source_name:
+            try:
+                existing_id = await dest_info.resolve_emoji_id_by_name(source_name)
+            except Exception:
+                logger.debug("mirror-emote: %s.resolve_emoji_id_by_name(%r) failed", destination, source_name, exc_info=True)
+                existing_id = None
+            if existing_id:
+                try:
+                    return await self.link_emote(
+                        local_connector=destination, local_id=existing_id, source=local_connector, source_id=source_id
+                    )
+                except LinkError as exc:
+                    return f"{dest_info.label}: {exc}"
+
         source_info = self._connectors.get(local_connector)
         if source_info is None or source_info.resolve_emoji is None:
             return f"{dest_info.label}: can't read {local_connector}'s emoji to copy it."
@@ -1094,6 +1130,7 @@ class EmoteLinker:
         return f"Unlinked {label} emote '{target.name}' ({target.emoji_id}) from this mapping group."
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
+        token = _strip_emote_token(token)
         info = self._connectors.get(connector)
         if info is not None and info.resolve_emoji_id_by_name is not None:
             try:

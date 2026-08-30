@@ -264,10 +264,21 @@ class BridgeCoordinator:
     ) -> str | CustomEmoji | None:
         if isinstance(emoji, str):
             return emoji  # unicode emoji is universal, no translation needed
-        native_id = await self._emoji_mappings.find_equivalent(origin_connector_id, emoji.native_id, target_connector_id)
-        if native_id is None:
+        ref = await self._emoji_mappings.find_equivalent_ref(
+            origin_connector_id, emoji.native_id, target_connector_id
+        )
+        if ref is None:
             return None  # never mirrored to this connector (or mirroring failed) - caller should skip
-        return CustomEmoji(native_id=native_id, name=emoji.name, image_url=emoji.image_url, animated=emoji.animated)
+        # Use the target ref's own stored name, not the origin emoji's: a
+        # reaction event's emoji often carries no name (Stoat's `_parse_stoat_emoji`
+        # leaves it blank), and a target that needs `name:id` (Discord) rejects
+        # a blank name with "Unknown Emoji".
+        return CustomEmoji(
+            native_id=ref.emoji_id,
+            name=ref.name or emoji.name,
+            image_url=emoji.image_url,
+            animated=emoji.animated,
+        )
 
     async def handle_emoji_created(self, created: StandardEmojiCreated) -> None:
         """Mirror a newly created custom emoji onto every other connector
@@ -618,6 +629,7 @@ async def run(config: BridgeConfig) -> None:
             enable_local_user_masquerade=dc.enable_local_user_masquerade,
             channel_mappings=channel_mappings,
             role_mappings=role_mappings,
+            emoji_mappings=emoji_mappings,
         )
         coordinator.register_receiver(receiver)
         # No ensure_channel: Discord has no channel-creation capability in
@@ -677,6 +689,7 @@ async def run(config: BridgeConfig) -> None:
             user_mappings=user_mappings,
             channel_mappings=channel_mappings,
             role_mappings=role_mappings,
+            emoji_mappings=emoji_mappings,
         )
         coordinator.register_receiver(receiver)
         connector_infos[sc.id] = ConnectorInfo(
@@ -725,6 +738,7 @@ async def run(config: BridgeConfig) -> None:
                 enable_local_user_masquerade=ic.enable_local_user_masquerade,
                 channel_mappings=channel_mappings,
                 role_mappings=role_mappings,
+                emoji_mappings=emoji_mappings,
             )
         )
         connector_infos[ic.id] = ConnectorInfo(

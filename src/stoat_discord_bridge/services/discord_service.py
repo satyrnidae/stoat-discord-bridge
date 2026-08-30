@@ -67,6 +67,7 @@ from stoat_discord_bridge.services.formatting import (
 )
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
+    rewrite_emoji,
     rewrite_mentions,
     rewrite_role_mentions,
 )
@@ -79,6 +80,7 @@ from stoat_discord_bridge.services.role_sync import (
 _MAPPED_DISCORD_PERM_ATTRS = {d_attr for d_attr, _ in NEUTRAL_PERMISSIONS.values()}
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -1800,6 +1802,7 @@ class DiscordReceiverService(ReceiverService):
         enable_local_user_masquerade: bool = True,
         channel_mappings: ChannelMappingRepository | None = None,
         role_mappings: RoleMappingRepository | None = None,
+        emoji_mappings: EmojiMappingRepository | None = None,
     ) -> None:
         self._client = client
         self._guild_id = guild_id
@@ -1807,6 +1810,7 @@ class DiscordReceiverService(ReceiverService):
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
         self._role_mappings = role_mappings
+        self._emoji_mappings = emoji_mappings
         self._enable_local_user_masquerade = enable_local_user_masquerade
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
@@ -1852,6 +1856,14 @@ class DiscordReceiverService(ReceiverService):
                 target_kind="discord",
                 role_mappings=self._role_mappings,
             )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                emoji_mappings=self._emoji_mappings,
+            )
         ids: list[str] = []
         for chunk in chunk_content(content, _CONTENT_LIMIT):
             logger.debug(
@@ -1883,7 +1895,7 @@ class DiscordReceiverService(ReceiverService):
         if await self._bot_has_reaction(target_channel_id, target_message_id, emoji) is True:
             return
         message = await self._get_partial_message(target_channel_id, target_message_id)
-        await message.add_reaction(_to_discord_emoji(emoji))
+        await message.add_reaction(self._discord_emoji(emoji))
 
     async def remove_reaction(
         self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji
@@ -1893,7 +1905,7 @@ class DiscordReceiverService(ReceiverService):
         if await self._bot_has_reaction(target_channel_id, target_message_id, emoji) is False:
             return
         message = await self._get_partial_message(target_channel_id, target_message_id)
-        await message.remove_reaction(_to_discord_emoji(emoji), self._client.user)
+        await message.remove_reaction(self._discord_emoji(emoji), self._client.user)
 
     async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
         channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
@@ -1933,6 +1945,19 @@ class DiscordReceiverService(ReceiverService):
         except (discord.HTTPException, ValueError):
             pass
 
+    def _discord_emoji(self, emoji: str | CustomEmoji) -> str | discord.Emoji | discord.PartialEmoji:
+        """Like the module-level `_to_discord_emoji`, but resolves a custom
+        emoji against the client cache first: the real `discord.Emoji` carries
+        the authoritative `name`/`animated`, and Discord's reaction endpoint
+        rejects a `name:id` pair whose name is blank or whose animated prefix
+        is wrong with "Unknown Emoji"."""
+        if isinstance(emoji, CustomEmoji):
+            getter = getattr(self._client, "get_emoji", None)
+            resolved = getter(int(emoji.native_id)) if getter is not None else None
+            if resolved is not None:
+                return resolved
+        return _to_discord_emoji(emoji)
+
     async def _bot_has_reaction(
         self, channel_id: str, message_id: str, emoji: str | CustomEmoji
     ) -> bool | None:
@@ -1944,7 +1969,7 @@ class DiscordReceiverService(ReceiverService):
             message = await channel.fetch_message(int(message_id))
         except Exception:
             return None
-        want = _to_discord_emoji(emoji)
+        want = self._discord_emoji(emoji)
         for reaction in message.reactions:
             if _discord_reaction_matches(reaction.emoji, want):
                 return bool(reaction.me)

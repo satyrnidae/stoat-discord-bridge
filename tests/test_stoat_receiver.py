@@ -460,6 +460,19 @@ async def test_create_emoji_downloads_and_mirrors_it(monkeypatch):
     assert result.name == "smile"
 
 
+async def test_create_emoji_sanitises_the_name_to_stoats_charset(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"image-bytes"))
+    client = FakeClient()
+    server = client.add_server(FakeServer(id="srv-1"))
+    receiver = _make_receiver(client)
+
+    await receiver.create_emoji(
+        CustomEmoji(native_id="e1", name="Big Smile!", image_url="https://cdn.example/e.png")
+    )
+
+    assert server.created_emoji_calls == [{"name": "big_smile", "image": b"image-bytes"}]
+
+
 async def test_create_emoji_returns_none_on_http_failure(monkeypatch):
     monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"image-bytes"))
     client = FakeClient()

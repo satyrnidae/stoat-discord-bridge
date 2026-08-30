@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
@@ -33,6 +34,11 @@ _STOAT_MENTION = re.compile(r"<@([A-Za-z0-9]{26})>")
 
 _DISCORD_CHANNEL_MENTION = re.compile(r"<#(\d+)>")
 _STOAT_CHANNEL_MENTION = re.compile(r"<#([A-Za-z0-9]{26})>")
+
+_DISCORD_CUSTOM_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
+# Stoat renders a custom emoji as its bare 26-char ULID between colons;
+# `:word:` shortcodes (Unicode emoji) never match this and are left alone.
+_STOAT_CUSTOM_EMOJI = re.compile(r":([0-9A-Za-z]{26}):")
 
 _DISCORD_ROLE_MENTION = re.compile(r"<@&(\d+)>")
 # Stoat/Revolt role-mention syntax - TODO: unverified against a live server,
@@ -115,6 +121,60 @@ async def rewrite_role_mentions(
                 replacement = f"@{target.role_name}"
             content = content.replace(match.group(0), replacement)
     return content
+
+
+async def rewrite_emoji(
+    content: str,
+    *,
+    origin_connector_id: str,
+    target_connector_id: str,
+    target_kind: str,
+    emoji_mappings: EmojiMappingRepository,
+) -> str:
+    """Rewrite an inline custom-emoji reference - `<:name:id>` / `<a:name:id>`
+    (Discord) or `:26-char-ULID:` (Stoat) - into the target connector's own
+    linked copy of that emoji: `<:name:id>` on Discord, `:id:` on Stoat.
+
+    IRC has no custom emoji, so there it's stripped to a plain `:name:`
+    shortcode (or removed entirely if the name can't be recovered) rather
+    than left as a raw `<:name:id>` / bare-ULID token.
+
+    On Discord/Stoat, an emoji with no link to the target connector is left
+    exactly as it appeared (same rule as the mention rewrites). Both id
+    shapes are always tried; a Discord numeric id and a Stoat ULID never
+    collide."""
+    for match in list(_DISCORD_CUSTOM_EMOJI.finditer(content)):
+        ref = await emoji_mappings.find_equivalent_ref(
+            origin_connector_id, match.group(3), target_connector_id
+        )
+        if ref is not None:
+            replacement = _render_emoji(target_kind, ref.emoji_id, ref.name or match.group(2))
+        elif target_kind == "irc":
+            replacement = f":{match.group(2)}:"  # name is right there in the Discord token
+        else:
+            continue
+        content = content.replace(match.group(0), replacement)
+    for match in list(_STOAT_CUSTOM_EMOJI.finditer(content)):
+        ref = await emoji_mappings.find_equivalent_ref(
+            origin_connector_id, match.group(1), target_connector_id
+        )
+        if ref is not None:
+            replacement = _render_emoji(target_kind, ref.emoji_id, ref.name)
+        elif target_kind == "irc":
+            name = await emoji_mappings.find_name(origin_connector_id, match.group(1))
+            replacement = f":{name}:" if name else ""
+        else:
+            continue
+        content = content.replace(match.group(0), replacement)
+    return content
+
+
+def _render_emoji(target_kind: str, emoji_id: str, name: str | None) -> str:
+    if target_kind == "discord":
+        return f"<:{name or 'emoji'}:{emoji_id}>"
+    if target_kind == "stoat":
+        return f":{emoji_id}:"
+    return f":{name or emoji_id}:"
 
 
 async def rewrite_mentions(
