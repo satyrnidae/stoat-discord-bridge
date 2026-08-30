@@ -151,7 +151,7 @@ connector, and IRC's receiver leaves them at the base-class default (`False`).
 
 Every admin/status command (`/status`, `/link channel`, `/linked channels`,
 `/mirror channel`, `/unlink channel`, `/link role`, `/link user`,
-`/linked users`, `/link-emote`, `/mirror-channels`) and how to reach it on
+`/linked users`, `/link emote`, `/mirror-channels`) and how to reach it on
 each connector is documented in [`COMMANDS.md`](COMMANDS.md).
 
 ## Layout

@@ -1,6 +1,6 @@
 """Tests for IrcSenderService's DM-command surface - _handle_privmsg's
 routing (STATUS vs. the oper-gated LINK CHANNEL / MIRROR CHANNEL /
-UNLINK CHANNEL / LINK_EMOTE / LINK_USER admin commands) and _handle_dm_command's command bodies.
+UNLINK CHANNEL / LINK USER admin commands) and _handle_dm_command's command bodies.
 Previously untested (0% coverage on this whole code path).
 
 The oper check itself (_check_is_oper/_resolve_whois, the WHOIS Future
@@ -74,18 +74,6 @@ class FakeLinker:
         return "unlinked ok"
 
 
-class FakeEmoteLinker:
-    def __init__(self, *, raises: LinkError | None = None) -> None:
-        self._raises = raises
-        self.calls: list[dict] = []
-
-    async def link_emote(self, **kwargs):
-        self.calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "emote linked ok"
-
-
 class FakeUserLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
         self._raises = raises
@@ -114,7 +102,6 @@ def _make_sender(
     *,
     is_oper: bool = True,
     linker: FakeLinker | None = None,
-    emote_linker: FakeEmoteLinker | None = None,
     user_linker: FakeUserLinker | None = None,
     **config_overrides,
 ) -> tuple[IrcSenderService, FakeIrcConnection]:
@@ -124,7 +111,6 @@ def _make_sender(
         on_message=_noop,
         health=HealthTracker({"irc": "IRC"}),
         linker=linker,
-        emote_linker=emote_linker,
         user_linker=user_linker,
     )
     sender._loop = asyncio.get_running_loop()
@@ -258,25 +244,16 @@ async def test_link_channel_reports_a_link_error():
     assert conn.notice_calls == [("alice", "already linked elsewhere")]
 
 
-# ---------------------------------------------------------------- LINK_EMOTE
+# IRC has no custom-emoji concept - the emote commands aren't offered here.
 
 
-async def test_link_emote_success():
-    emote_linker = FakeEmoteLinker()
-    sender, conn = _make_sender(emote_linker=emote_linker)
+async def test_link_emote_is_not_an_irc_command():
+    sender, conn = _make_sender()
 
-    await sender._handle_dm_command("alice", "LINK_EMOTE discord src-id local-id")
+    sender._handle_privmsg(None, FakeIrcEvent(text="LINK EMOTE discord src-id local-id", nick="alice"))
+    await asyncio.sleep(0)
 
-    assert emote_linker.calls == [{"local_connector": "irc", "local_id": "local-id", "source": "discord", "source_id": "src-id"}]
-    assert conn.notice_calls == [("alice", "emote linked ok")]
-
-
-async def test_link_emote_without_a_configured_linker():
-    sender, conn = _make_sender(emote_linker=None)
-
-    await sender._handle_dm_command("alice", "LINK_EMOTE discord src-id local-id")
-
-    assert conn.notice_calls == [("alice", "Linking isn't configured.")]
+    assert conn.notice_calls == []
 
 
 # ---------------------------------------------------------------- LINK_USER

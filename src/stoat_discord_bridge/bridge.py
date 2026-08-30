@@ -613,6 +613,10 @@ async def run(config: BridgeConfig) -> None:
             rename_role=sender.rename_role,
             get_channel_role_permission=sender.get_channel_role_permission,
             set_channel_role_permission=sender.set_channel_role_permission,
+            resolve_emoji_name=sender.get_emoji_name,
+            resolve_emoji_id_by_name=sender.resolve_emoji_id_by_name,
+            resolve_emoji=sender.resolve_emoji,
+            ensure_emoji=receiver.create_emoji,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -637,14 +641,13 @@ async def run(config: BridgeConfig) -> None:
             on_role_deleted=role_grants.handle_role_deleted,
             on_channel_role_permission_changed=role_grants.handle_channel_role_permission,
         )
-        coordinator.register_receiver(
-            StoatReceiverService(
-                sender,
-                user_mappings=user_mappings,
-                channel_mappings=channel_mappings,
-                role_mappings=role_mappings,
-            )
+        receiver = StoatReceiverService(
+            sender,
+            user_mappings=user_mappings,
+            channel_mappings=channel_mappings,
+            role_mappings=role_mappings,
         )
+        coordinator.register_receiver(receiver)
         connector_infos[sc.id] = ConnectorInfo(
             id=sc.id,
             label=sc.label,
@@ -666,6 +669,10 @@ async def run(config: BridgeConfig) -> None:
             rename_role=sender.rename_role,
             get_channel_role_permission=sender.get_channel_role_permission,
             set_channel_role_permission=sender.set_channel_role_permission,
+            resolve_emoji_name=sender.get_emoji_name,
+            resolve_emoji_id_by_name=sender.resolve_emoji_id_by_name,
+            resolve_emoji=sender.resolve_emoji,
+            ensure_emoji=receiver.create_emoji,
         )
         senders.append(sender)
         closables.append(sender)
@@ -678,7 +685,6 @@ async def run(config: BridgeConfig) -> None:
             on_message=coordinator.handle_incoming,
             health=health,
             linker=linker,
-            emote_linker=emote_linker,
             user_linker=user_linker,
         )
         coordinator.register_receiver(

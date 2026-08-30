@@ -8,6 +8,7 @@ from stoat_discord_bridge.admin_commands import (
     StructureMirrorer,
     UserLinker,
 )
+from stoat_discord_bridge.models import CustomEmoji
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
@@ -393,6 +394,104 @@ async def test_link_emote_conflicting_groups_raises(fake_db, connectors):
 
     with pytest.raises(LinkError, match="different mapping groups"):
         await linker.link_emote(local_connector="irc", local_id="i1", source="discord", source_id="d1")
+
+
+# ---------------------------------------------------------------- EmoteLinker: unlink / mirror / linked
+
+
+@pytest.fixture
+def emote_connectors():
+    created: dict[str, list[CustomEmoji]] = {"discord": [], "stoat": []}
+
+    def _resolve_emoji(conn):
+        async def _inner(emoji_id):
+            if emoji_id == f"{conn[0]}src":
+                return CustomEmoji(native_id=emoji_id, name="blob", image_url="http://x/blob.png", animated=False)
+            return None
+
+        return _inner
+
+    def _ensure_emoji(conn):
+        async def _inner(emoji: CustomEmoji):
+            new = CustomEmoji(
+                native_id=f"{conn[0]}new", name=emoji.name, image_url=emoji.image_url, animated=emoji.animated
+            )
+            created[conn].append(new)
+            return new
+
+        return _inner
+
+    return {
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", resolve_emoji=_resolve_emoji("discord"), ensure_emoji=_ensure_emoji("discord")
+        ),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", resolve_emoji=_resolve_emoji("stoat"), ensure_emoji=_ensure_emoji("stoat")
+        ),
+    }
+
+
+async def test_unlink_emote_all_dissolves_the_group(fake_db, connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, connectors)
+    await linker.link_emote(local_connector="stoat", local_id="s1", source="discord", source_id="d1")
+
+    summary = await linker.unlink_emote(local_connector="discord", local_emote="d1", destination=None)
+
+    assert "entire mapping group" in summary
+    assert await emoji_mappings.get_group_id("stoat", "s1") is None
+
+
+async def test_unlink_emote_one_member_strands_lone_survivor_so_dissolves(fake_db, connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, connectors)
+    await linker.link_emote(local_connector="stoat", local_id="s1", source="discord", source_id="d1")
+
+    await linker.unlink_emote(local_connector="discord", local_emote="d1", destination="stoat")
+
+    assert await emoji_mappings.get_group_id("discord", "d1") is None
+
+
+async def test_unlink_emote_unlinked_raises(fake_db, connectors):
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+    with pytest.raises(LinkError, match="isn't linked"):
+        await linker.unlink_emote(local_connector="discord", local_emote="d1", destination=None)
+
+
+async def test_list_linked_emotes_no_argument_lists_every_group(fake_db, connectors):
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+    await linker.link_emote(local_connector="stoat", local_id="s1", source="discord", source_id="d1")
+
+    summary = await linker.list_linked_emotes(local_connector="discord")
+
+    assert summary.startswith("Linked emotes:")
+    assert "Discord: d1" in summary and "Stoat: s1" in summary
+
+
+async def test_mirror_emote_recreates_and_links(fake_db, emote_connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "Linked" in summary
+    assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "snew"
+
+
+async def test_mirror_emote_already_synced_is_skipped(fake_db, emote_connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+    await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "already synced" in summary
+
+
+async def test_mirror_emote_missing_source_reports(fake_db, emote_connectors):
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), emote_connectors)
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="nope", destination="stoat")
+    assert "not found" in summary
 
 
 # ---------------------------------------------------------------- UserLinker.link_user

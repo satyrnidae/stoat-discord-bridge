@@ -77,6 +77,48 @@ class EmojiMappingRepository:
         )
         return str(doc["_id"]) if doc else None
 
+    async def get_refs(self, group_id: str) -> list[EmojiRef]:
+        """Every ref in `group_id` - for `/linked emotes` and
+        `EmoteLinker.unlink_emote`'s survivor bookkeeping."""
+        doc = await self._collection.find_one({"_id": ObjectId(group_id)})
+        if doc is None:
+            return []
+        return [EmojiRef(connector_id=r["platform"], emoji_id=r["emoji_id"], name=r["name"]) for r in doc["refs"]]
+
+    async def get_all_groups(self) -> dict[str, list[EmojiRef]]:
+        """Every mapping group, keyed by group id - for the no-argument
+        `/linked emotes` listing."""
+        groups: dict[str, list[EmojiRef]] = {}
+        async for doc in self._collection.find({}):
+            groups[str(doc["_id"])] = [
+                EmojiRef(connector_id=r["platform"], emoji_id=r["emoji_id"], name=r["name"]) for r in doc["refs"]
+            ]
+        return groups
+
+    async def delete_ref(self, connector_id: str, emoji_id: str) -> None:
+        """Pull just `connector_id`'s ref from whatever group holds it, with
+        no group cleanup - `EmoteLinker.unlink_emote` decides when a group is
+        no longer a bridge (unlike `forget`, which is delete-sync bookkeeping
+        and keeps the group alive until every copy is gone)."""
+        doc = await self._collection.find_one(
+            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
+        )
+        if doc is None:
+            return
+        remaining = [
+            ref for ref in doc["refs"] if not (ref["platform"] == connector_id and ref["emoji_id"] == emoji_id)
+        ]
+        await self._collection.update_one({"_id": doc["_id"]}, {"$set": {"refs": remaining}})
+
+    async def delete_group(self, group_id: str) -> int:
+        """Drop a whole mapping group - `/unlink emote` with no/`all` target.
+        Returns the number of refs it held."""
+        doc = await self._collection.find_one({"_id": ObjectId(group_id)})
+        if doc is None:
+            return 0
+        await self._collection.delete_one({"_id": doc["_id"]})
+        return len(doc["refs"])
+
     async def find_equivalent(self, connector_id: str, emoji_id: str, target_connector_id: str) -> str | None:
         doc = await self._collection.find_one(
             {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}

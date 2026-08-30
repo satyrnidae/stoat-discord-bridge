@@ -65,12 +65,38 @@ class FakeEmoteLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
         self._raises = raises
         self.calls: list[dict] = []
+        self.unlink_emote_calls: list[dict] = []
+        self.list_linked_emotes_calls: list[dict] = []
+        self.mirror_emote_calls: list[dict] = []
+        self.mirror_emote_all_calls: list[dict] = []
 
     async def link_emote(self, **kwargs):
         self.calls.append(kwargs)
         if self._raises is not None:
             raise self._raises
         return "emote linked ok"
+
+    async def unlink_emote(self, **kwargs):
+        self.unlink_emote_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "emote unlinked ok"
+
+    async def list_linked_emotes(self, **kwargs):
+        self.list_linked_emotes_calls.append(kwargs)
+        return "Linked emotes:\nDiscord: blob ↔ Stoat: blob"
+
+    async def mirror_emote(self, **kwargs):
+        self.mirror_emote_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "emote mirrored ok"
+
+    async def mirror_emote_all(self, **kwargs):
+        self.mirror_emote_all_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "emote mirrored to all ok"
 
 
 class FakeUserLinker:
@@ -347,7 +373,7 @@ async def test_link_emote_wrong_arg_count_sends_usage():
 
     await sender._handle_link_emote(message, ["discord", "src-id"])
 
-    assert message.channel.sent[0]["content"] == "Usage: /link-emote <service> <external_id> <local_id>"
+    assert message.channel.sent[0]["content"] == "Usage: /link emote <service> <external_id|name> <local_id|name>"
 
 
 async def test_link_emote_without_a_configured_linker():
@@ -357,6 +383,55 @@ async def test_link_emote_without_a_configured_linker():
     await sender._handle_link_emote(message, ["discord", "src-id", "local-id"])
 
     assert message.channel.sent[0]["content"] == "Linking isn't configured."
+
+
+async def test_unlink_emote_defaults_destination_to_none():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    message = _admin_message()
+
+    await sender._handle_unlink_emote(message, ["blob"])
+
+    assert emote_linker.unlink_emote_calls == [
+        {"local_connector": "stoat", "local_emote": "blob", "destination": None}
+    ]
+    assert message.channel.sent[0]["content"] == "emote unlinked ok"
+
+
+async def test_linked_emotes_lists_the_group():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    message = _admin_message()
+
+    await sender._handle_linked_emotes(message, [])
+
+    assert emote_linker.list_linked_emotes_calls == [
+        {"local_connector": "stoat", "local_emote": None, "service": None}
+    ]
+    assert message.channel.sent[0]["content"].startswith("Linked emotes:")
+
+
+async def test_mirror_emote_to_all_by_default():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    message = _admin_message()
+
+    await sender._handle_mirror_emote(message, ["blob"])
+
+    assert emote_linker.mirror_emote_all_calls == [{"local_connector": "stoat", "local_emote": "blob"}]
+    assert message.channel.sent[0]["content"] == "emote mirrored to all ok"
+
+
+async def test_mirror_emote_to_a_single_destination():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    message = _admin_message()
+
+    await sender._handle_mirror_emote(message, ["blob", "discord"])
+
+    assert emote_linker.mirror_emote_calls == [
+        {"local_connector": "stoat", "local_emote": "blob", "destination": "discord"}
+    ]
 
 
 # ---------------------------------------------------------------- _handle_link_user

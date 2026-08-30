@@ -86,18 +86,21 @@ _HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
   /linked users [local_id|name] - cross-connector user links, read-only
   /linked roles [local_id|name] - roles linked across the bridge, read-only
   /linked categories [local_id|name] - Categories bridged to this channel's Category, read-only
+  /linked emotes [local_id|name] - custom emoji linked across the bridge, read-only
   /link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
   /link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
-  /link-emote <service> <external_id> <local_id> - link a custom emoji (Manage Server)
+  /link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
   /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
   /link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
   /mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
   /mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
+  /mirror emote <local_id|name> [service|all] - recreate a custom emoji on another connector and link the two (Manage Server)
   /mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
   /mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
   /unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   /unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   /unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
+  /unlink emote <local_id|name> [service|all] - unlink a custom emoji from one connector, or the whole group (Manage Server)
   /unlink category [local_id|name] [service|all] - unlink a Category (default: this channel's) from one connector, or the whole group (Manage Server)
   /bridge-help - this message"""
 
@@ -850,6 +853,18 @@ class StoatSenderService(SenderService):
         if two == "/mirror category":
             await self._handle_mirror_category(message, parts[2:])
             return
+        if two == "/link emote":
+            await self._handle_link_emote(message, parts[2:])
+            return
+        if two == "/unlink emote":
+            await self._handle_unlink_emote(message, parts[2:])
+            return
+        if two == "/linked emotes":
+            await self._handle_linked_emotes(message, parts[2:])
+            return
+        if two == "/mirror emote":
+            await self._handle_mirror_emote(message, parts[2:])
+            return
         if cmd == "/status":
             await message.channel.send(self._health.render())
             return
@@ -858,9 +873,6 @@ class StoatSenderService(SenderService):
             return
         if cmd == "/mirror-channels":
             await self._handle_mirror_channels(message, parts[1:])
-            return
-        if cmd == "/link-emote":
-            await self._handle_link_emote(message, parts[1:])
             return
         logger.debug(
             "[stoat:%s] message %s in channel %s from %s",
@@ -1182,11 +1194,12 @@ class StoatSenderService(SenderService):
         await message.channel.send(summary)
 
     async def _handle_link_emote(self, message, args: list[str], /) -> None:
+        """`/link emote <service> <external_id|name> <local_id|name>`."""
         if not self._is_admin(message):
             await message.channel.send("You need the Manage Server permission to do that.")
             return
         if len(args) < 3:
-            await message.channel.send("Usage: /link-emote <service> <external_id> <local_id>")
+            await message.channel.send("Usage: /link emote <service> <external_id|name> <local_id|name>")
             return
         service, external_id, local_id = args[:3]
 
@@ -1194,7 +1207,7 @@ class StoatSenderService(SenderService):
             await message.channel.send("Linking isn't configured.")
             return
         logger.info(
-            "[stoat:%s] %s ran /link-emote service=%s external_id=%s local_id=%s",
+            "[stoat:%s] %s ran /link emote service=%s external_id=%s local_id=%s",
             self.connector_id,
             message.author.id,
             service,
@@ -1209,7 +1222,70 @@ class StoatSenderService(SenderService):
                 source_id=external_id,
             )
         except LinkError as exc:
-            logger.info("[stoat:%s] /link-emote rejected: %s", self.connector_id, exc)
+            logger.info("[stoat:%s] /link emote rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_unlink_emote(self, message, args: list[str], /) -> None:
+        """`/unlink emote <local_id|name> [<service>|all]`."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if self._emote_linker is None:
+            await message.channel.send("Linking isn't configured.")
+            return
+        if not args:
+            await message.channel.send("Usage: /unlink emote <local_id|name> [<service>|all]")
+            return
+        local_id = args[0]
+        service = args[1] if len(args) > 1 else None
+        try:
+            summary = await self._emote_linker.unlink_emote(
+                local_connector=self.connector_id, local_emote=local_id, destination=service
+            )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /unlink emote rejected: %s", self.connector_id, exc)
+            await message.channel.send(str(exc))
+            return
+        await message.channel.send(summary)
+
+    async def _handle_linked_emotes(self, message, args: list[str], /) -> None:
+        """`/linked emotes [<local_id|name>] [<service>|all]` - read-only."""
+        if self._emote_linker is None:
+            await message.channel.send("Linking isn't configured.")
+            return
+        local_id = args[0] if args else None
+        service = args[1] if len(args) > 1 else None
+        summary = await self._emote_linker.list_linked_emotes(
+            local_connector=self.connector_id, local_emote=local_id, service=service
+        )
+        await message.channel.send(summary)
+
+    async def _handle_mirror_emote(self, message, args: list[str], /) -> None:
+        """`/mirror emote <local_id|name> [<service>|all]`."""
+        if not self._is_admin(message):
+            await message.channel.send("You need the Manage Server permission to do that.")
+            return
+        if self._emote_linker is None:
+            await message.channel.send("Linking isn't configured.")
+            return
+        if not args:
+            await message.channel.send("Usage: /mirror emote <local_id|name> [<service>|all]")
+            return
+        local_id = args[0]
+        service = args[1] if len(args) > 1 else None
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._emote_linker.mirror_emote_all(
+                    local_connector=self.connector_id, local_emote=local_id
+                )
+            else:
+                summary = await self._emote_linker.mirror_emote(
+                    local_connector=self.connector_id, local_emote=local_id, destination=service
+                )
+        except LinkError as exc:
+            logger.info("[stoat:%s] /mirror emote rejected: %s", self.connector_id, exc)
             await message.channel.send(str(exc))
             return
         await message.channel.send(summary)
@@ -1555,6 +1631,63 @@ class StoatSenderService(SenderService):
                 return str(role.id)
         role = await server.create_role(name=name)
         return str(role.id)
+
+    async def _all_emojis(self) -> list:
+        """Every custom emoji on this server - `server.emojis` if the cache
+        has it, else a REST fetch."""
+        server = self._client.get_server(self.server_id, partial=True)
+        emojis = getattr(server, "emojis", None)
+        if emojis:
+            return list(emojis)
+        try:
+            return list(await server.fetch_emojis())
+        except Exception:
+            return []
+
+    async def get_emoji_name(self, emoji_id: str) -> str | None:
+        """Best-effort emoji-id -> name lookup, this connector's
+        `ConnectorInfo.resolve_emoji_name`."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            emoji = server.get_emoji(emoji_id)
+        except Exception:
+            emoji = None
+        if emoji is None:
+            emoji = next((e for e in await self._all_emojis() if str(e.id) == emoji_id), None)
+        return getattr(emoji, "name", None) if emoji is not None else None
+
+    async def resolve_emoji_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare custom-emoji name to its id (case-insensitive, first
+        match); a token that's already an emoji id is returned as-is, an
+        unknown token yields None - this connector's
+        `ConnectorInfo.resolve_emoji_id_by_name`."""
+        emojis = await self._all_emojis()
+        if any(str(getattr(e, "id", "")) == token for e in emojis):
+            return token
+        lowered = token.casefold()
+        for e in emojis:
+            if str(getattr(e, "name", "")).casefold() == lowered:
+                return str(e.id)
+        return None
+
+    async def resolve_emoji(self, emoji_id: str) -> "CustomEmoji | None":
+        """emoji-id -> full CustomEmoji, this connector's
+        `ConnectorInfo.resolve_emoji` (the source side of `/mirror emote`)."""
+        try:
+            server = self._client.get_server(self.server_id, partial=True)
+            emoji = server.get_emoji(emoji_id)
+        except Exception:
+            emoji = None
+        if emoji is None:
+            emoji = next((e for e in await self._all_emojis() if str(e.id) == emoji_id), None)
+        if emoji is None:
+            return None
+        return CustomEmoji(
+            native_id=str(emoji.id),
+            name=emoji.name,
+            image_url=emoji.image.url(),
+            animated=getattr(emoji, "animated", False),
+        )
 
     async def _full_server(self):
         server = self._client.get_server(self.server_id, partial=False)

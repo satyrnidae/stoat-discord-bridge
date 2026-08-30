@@ -35,6 +35,7 @@ from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingR
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 
 if TYPE_CHECKING:
+    from stoat_discord_bridge.models import CustomEmoji
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,29 @@ class ConnectorInfo:
     set_channel_role_permission: (
         Callable[[str, str, "RolePermissionOverride"], Awaitable[None]] | None
     ) = None
+    # --- Emoji hooks (Discord/Stoat only; None everywhere on IRC, which has
+    # no custom-emoji concept). See EmoteLinker below. ---
+    # Best-effort native-emoji-id -> name lookup, the emoji counterpart of
+    # resolve_role_name (same None/exception/falsy -> raw-id fallback).
+    resolve_emoji_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Best-effort native-emoji-NAME -> id lookup, so `/link emote` / `/mirror
+    # emote` / `/unlink emote` accept a bare emoji name anywhere an id is
+    # expected. None/exception/falsy return all mean "treat the token as an id
+    # already" (EmoteLinker._resolve_to_id).
+    resolve_emoji_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
+    # native-emoji-id -> full CustomEmoji (name, image_url, animated) for the
+    # source side of `/mirror emote`, which needs the image to recreate the
+    # emoji elsewhere (unlike `/mirror role`, an emoji can't be created
+    # name-only). None/missing emoji -> `/mirror emote` reports it can't read
+    # the source.
+    resolve_emoji: Callable[[str], Awaitable["CustomEmoji | None"]] | None = None
+    # Create a copy of `emoji` on this connector, returning the created
+    # CustomEmoji (with its new native id) or None if it couldn't - full
+    # emoji slots, rejected name, image too large, etc. None (the hook
+    # itself) if this connector kind can't create emoji - `/mirror emote`
+    # then reports that connector as unsupported. Wired straight to the
+    # receiver's existing create_emoji.
+    ensure_emoji: Callable[["CustomEmoji"], Awaitable["CustomEmoji | None"]] | None = None
 
 
 class ChannelLinker:
@@ -890,6 +914,19 @@ class CategoryLinker:
 
 
 class EmoteLinker:
+    """`/link emote` / `/mirror emote` / `/unlink emote` / `/linked emotes` -
+    the custom-emoji counterpart of RoleLinker, backed by
+    EmojiMappingRepository (the same store reaction/emoji sync uses).
+
+    Emoji are Discord/Stoat only; IRC has no custom-emoji concept, so no
+    connector there registers any emoji hook and the emote commands aren't
+    offered.
+
+    Every id argument also accepts a bare emoji NAME - resolved to an id via
+    the connector's resolve_emoji_id_by_name hook, falling back to treating
+    the token as an id if the hook is absent or comes up empty.
+    """
+
     def __init__(self, emoji_mappings: EmojiMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
         self._emoji_mappings = emoji_mappings
         self._connectors = connectors
@@ -899,11 +936,15 @@ class EmoteLinker:
         return self._connectors
 
     async def link_emote(self, *, local_connector: str, local_id: str, source: str, source_id: str) -> str:
-        """Link `source`'s `source_id` emoji to `local_id` on `local_connector`.
-        Raises LinkError if `source` is unknown, the two are the same emoji,
-        or both already belong to two *different* existing mapping groups."""
+        """Link `source`'s emoji to a local emoji on `local_connector`. Both
+        emoji arguments accept an id or a bare name. Raises LinkError if
+        `source` is unknown, the two are the same emoji, or both already
+        belong to two *different* existing mapping groups."""
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
+
+        source_id = await self._resolve_to_id(source, source_id)
+        local_id = await self._resolve_to_id(local_connector, local_id)
         if source == local_connector and source_id == local_id:
             raise LinkError("can't link an emote to itself.")
 
@@ -914,22 +955,166 @@ class EmoteLinker:
                 "both emotes are already linked, but to different mapping groups - unlink one before relinking."
             )
 
+        source_name = await self._resolve_name(source, source_id)
+        local_name = await self._resolve_name(local_connector, local_id)
+        source_ref = EmojiRef(connector_id=source, emoji_id=source_id, name=source_name)
+        local_ref = EmojiRef(connector_id=local_connector, emoji_id=local_id, name=local_name)
+
         if source_group is None and local_group is None:
-            group_id = await self._emoji_mappings.try_reserve(EmojiRef(connector_id=source, emoji_id=source_id, name=source_id))
+            group_id = await self._emoji_mappings.try_reserve(source_ref)
             if group_id is None:
                 # lost a race to a concurrent reservation - fall back to whatever group now owns it
                 group_id = await self._emoji_mappings.get_group_id(source, source_id)
-            await self._emoji_mappings.add_refs(group_id, [EmojiRef(connector_id=local_connector, emoji_id=local_id, name=local_id)])
+            await self._emoji_mappings.add_refs(group_id, [local_ref])
         elif local_group is None:
-            await self._emoji_mappings.add_refs(source_group, [EmojiRef(connector_id=local_connector, emoji_id=local_id, name=local_id)])
+            await self._emoji_mappings.add_refs(source_group, [local_ref])
         elif source_group is None:
-            await self._emoji_mappings.add_refs(local_group, [EmojiRef(connector_id=source, emoji_id=source_id, name=source_id)])
+            await self._emoji_mappings.add_refs(local_group, [source_ref])
         # else: source_group == local_group already - no-op, already linked
 
         source_label = self._connectors[source].label
         local_info = self._connectors.get(local_connector)
         local_label = local_info.label if local_info else local_connector
-        return f"Linked {source_label} emote '{source_id}' to {local_label} emote '{local_id}'."
+        return f"Linked {source_label} emote '{source_name}' to {local_label} emote '{local_name}'."
+
+    async def mirror_emote(self, *, local_connector: str, local_emote: str, destination: str) -> str:
+        """Ensure `local_emote` (id or bare name, on `local_connector`) has a
+        linked counterpart on `destination`: reuses the existing link if the
+        pair is already linked, otherwise reads the source emoji's image via
+        `local_connector`'s resolve_emoji hook, recreates it on `destination`
+        via its ensure_emoji hook, and links the two. Reports rather than
+        raises per problem so `mirror_emote_all` can carry on past one bad
+        destination."""
+        if destination not in self._connectors:
+            raise LinkError(f"'{destination}' isn't a known connector.")
+        if destination == local_connector:
+            raise LinkError("can't mirror an emote to its own connector.")
+
+        source_id = await self._resolve_to_id(local_connector, local_emote)
+        source_name = await self._resolve_name(local_connector, source_id)
+        dest_info = self._connectors[destination]
+
+        group_id = await self._emoji_mappings.get_group_id(local_connector, source_id)
+        if group_id is not None:
+            refs = await self._emoji_mappings.get_refs(group_id)
+            if any(r.connector_id == destination for r in refs):
+                return f"{dest_info.label}: already synced - skipped."
+
+        source_info = self._connectors.get(local_connector)
+        if source_info is None or source_info.resolve_emoji is None:
+            return f"{dest_info.label}: can't read {local_connector}'s emoji to copy it."
+        if dest_info.ensure_emoji is None:
+            return f"{dest_info.label}: doesn't support emoji creation - link it manually with /link emote."
+
+        try:
+            custom_emoji = await source_info.resolve_emoji(source_id)
+        except Exception as exc:
+            logger.warning("mirror-emote: %s.resolve_emoji(%r) failed: %s", local_connector, source_id, exc)
+            return f"{dest_info.label}: couldn't read the source emoji: {exc}"
+        if custom_emoji is None:
+            return f"{dest_info.label}: source emoji '{source_name}' not found."
+
+        try:
+            created = await dest_info.ensure_emoji(custom_emoji)
+        except Exception as exc:
+            logger.warning("mirror-emote: %s.ensure_emoji(%r) failed: %s", destination, source_name, exc)
+            return f"{dest_info.label}: failed to create the emoji: {exc}"
+        if created is None:
+            return f"{dest_info.label}: couldn't create the emoji (slots full, name rejected, image too large?)."
+
+        try:
+            return await self.link_emote(
+                local_connector=destination, local_id=created.native_id, source=local_connector, source_id=source_id
+            )
+        except LinkError as exc:
+            return f"{dest_info.label}: {exc}"
+
+    async def mirror_emote_all(self, *, local_connector: str, local_emote: str) -> str:
+        """`/mirror emote <local> all` - mirror_emote() against every other
+        configured connector, one line of summary/skip/error per connector."""
+        results = [
+            await self.mirror_emote(local_connector=local_connector, local_emote=local_emote, destination=destination)
+            for destination in self._connectors
+            if destination != local_connector
+        ]
+        return "\n".join(r for r in results if r) if results else "no other connectors configured."
+
+    async def list_linked_emotes(
+        self, *, local_connector: str, local_emote: str | None = None, service: str | None = None
+    ) -> str:
+        """Read-only listing, for `/linked emotes` - never raises LinkError.
+        With a `local_emote`, shows just that emoji's group; without one (or
+        with `service == "all"`), lists every group."""
+        if local_emote is not None and (service is None or service.lower() != "all"):
+            local_id = await self._resolve_to_id(local_connector, local_emote)
+            group_id = await self._emoji_mappings.get_group_id(local_connector, local_id)
+            if group_id is None:
+                return "This emote isn't linked to any others."
+            groups = [await self._emoji_mappings.get_refs(group_id)]
+        else:
+            all_groups = await self._emoji_mappings.get_all_groups()
+            if not all_groups:
+                return "No emotes are linked yet."
+            groups = list(all_groups.values())
+
+        lines = []
+        for refs in groups:
+            parts = []
+            for ref in sorted(refs, key=lambda r: (r.connector_id, r.emoji_id)):
+                info = self._connectors.get(ref.connector_id)
+                label = info.label if info else ref.connector_id
+                name = await self._resolve_name(ref.connector_id, ref.emoji_id)
+                parts.append(f"{label}: {name}" if name == ref.emoji_id else f"{label}: {name} ({ref.emoji_id})")
+            lines.append(" ↔ ".join(parts))
+        return "Linked emotes:\n" + "\n".join(lines)
+
+    async def unlink_emote(self, *, local_connector: str, local_emote: str, destination: str | None) -> str:
+        """`/unlink emote`. `destination` (a connector id) kicks just that one
+        member out of the emoji's mapping group; None/"all" (the default)
+        dissolves the whole group. A kick that would strand a lone survivor
+        dissolves the group instead (a group of one isn't a bridge)."""
+        local_id = await self._resolve_to_id(local_connector, local_emote)
+        group_id = await self._emoji_mappings.get_group_id(local_connector, local_id)
+        if group_id is None:
+            raise LinkError("this emote isn't linked to anything.")
+
+        if destination is None or destination.lower() == "all":
+            count = await self._emoji_mappings.delete_group(group_id)
+            return f"Unlinked this emote's entire mapping group ({count} emote(s) removed)."
+
+        refs = await self._emoji_mappings.get_refs(group_id)
+        target = next((r for r in refs if r.connector_id == destination), None)
+        if target is None:
+            raise LinkError(f"'{destination}' isn't linked in this emote's mapping group.")
+        await self._emoji_mappings.delete_ref(destination, target.emoji_id)
+        survivors = [r for r in refs if r.connector_id != destination]
+        if len(survivors) <= 1:
+            await self._emoji_mappings.delete_group(group_id)
+        label = self._connectors[destination].label if destination in self._connectors else destination
+        return f"Unlinked {label} emote '{target.name}' ({target.emoji_id}) from this mapping group."
+
+    async def _resolve_to_id(self, connector: str, token: str) -> str:
+        info = self._connectors.get(connector)
+        if info is not None and info.resolve_emoji_id_by_name is not None:
+            try:
+                emoji_id = await info.resolve_emoji_id_by_name(token)
+            except Exception:
+                logger.debug("couldn't resolve emoji name %r on %s", token, connector, exc_info=True)
+                emoji_id = None
+            if emoji_id:
+                return emoji_id
+        return token
+
+    async def _resolve_name(self, connector_id: str, emoji_id: str) -> str:
+        info = self._connectors.get(connector_id)
+        if info is None or info.resolve_emoji_name is None:
+            return emoji_id
+        try:
+            name = await info.resolve_emoji_name(emoji_id)
+        except Exception:
+            logger.debug("couldn't resolve emoji name for %s on %s", emoji_id, connector_id, exc_info=True)
+            return emoji_id
+        return name or emoji_id
 
 
 class UserLinker:

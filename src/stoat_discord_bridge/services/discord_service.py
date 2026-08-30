@@ -251,33 +251,9 @@ class DiscordSenderService(SenderService):
         async def status_command(interaction: discord.Interaction) -> None:
             await interaction.response.send_message(self._health.render(), ephemeral=True)
 
-        async def link_emote_service_autocomplete(
-            interaction: discord.Interaction, current: str
-        ) -> list[app_commands.Choice[str]]:
-            connectors = self._emote_linker.connectors if self._emote_linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors)
-
-        @self.tree.command(
-            name="link-emote",
-            description="Link a custom emoji from another bridge connector to a local custom emoji",
-            guild=self._guild,
-        )
-        @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(
-            service="Connector id to link from (see /status for configured connectors)",
-            external_id="Emoji id on that connector",
-            local_id="Emoji id on this connector",
-        )
-        @app_commands.autocomplete(service=link_emote_service_autocomplete)
-        async def link_emote_command(
-            interaction: discord.Interaction, service: str, external_id: str, local_id: str
-        ) -> None:
-            await self._handle_link_emote(interaction, service, external_id, local_id)
-
-        # Channels, roles, users and Categories use the `/link <noun>`,
-        # `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>` subcommand form
-        # (app_commands groups). Emotes still use the flat `-emote` name above
-        # - a later step migrates that too.
+        # Channels, roles, users, Categories and emotes all use the `/link
+        # <noun>`, `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>`
+        # subcommand form (app_commands groups).
         def _linker_service_autocomplete(get_linker, *, include_all: bool):
             async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
                 linker = get_linker()
@@ -297,6 +273,9 @@ class DiscordSenderService(SenderService):
 
         def category_service_autocomplete(*, include_all: bool):
             return _linker_service_autocomplete(lambda: self._category_linker, include_all=include_all)
+
+        def emote_service_autocomplete(*, include_all: bool):
+            return _linker_service_autocomplete(lambda: self._emote_linker, include_all=include_all)
 
         _manage = discord.Permissions(manage_guild=True)
         link_group = app_commands.Group(
@@ -485,6 +464,53 @@ class DiscordSenderService(SenderService):
             interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
         ) -> None:
             await self._handle_mirror_category(interaction, local_id, service)
+
+        @link_group.command(name="emote", description="Link a custom emoji from another connector to a local one")
+        @app_commands.describe(
+            service="Connector id to link from (see /status for configured connectors)",
+            external_id="Emoji id or name on that connector",
+            local_id="Emoji id or name on this connector",
+        )
+        @app_commands.autocomplete(service=emote_service_autocomplete(include_all=False))
+        async def link_emote_command(
+            interaction: discord.Interaction, service: str, external_id: str, local_id: str
+        ) -> None:
+            await self._handle_link_emote(interaction, service, external_id, local_id)
+
+        @unlink_group.command(
+            name="emote", description="Unlink a custom emoji - one connector, or the whole group (default: all)"
+        )
+        @app_commands.describe(
+            local_id="Emoji id or name on this connector",
+            service="Connector id to unlink, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True))
+        async def unlink_emote_command(
+            interaction: discord.Interaction, local_id: str, service: str | None = None
+        ) -> None:
+            await self._handle_unlink_emote(interaction, local_id, service)
+
+        @linked_group.command(
+            name="emotes", description="List custom emoji linked across the bridge (omit the emote to list all)"
+        )
+        @app_commands.describe(local_id="Emoji id or name on this connector (omit to list every linked emote)")
+        async def linked_emotes_command(
+            interaction: discord.Interaction, local_id: str | None = None
+        ) -> None:
+            await self._handle_linked_emotes(interaction, local_id)
+
+        @mirror_group.command(
+            name="emote", description="Recreate a custom emoji on another connector and link the two"
+        )
+        @app_commands.describe(
+            local_id="Emoji id or name on this connector",
+            service="Connector id to mirror to, or 'all' (default: all)",
+        )
+        @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True))
+        async def mirror_emote_command(
+            interaction: discord.Interaction, local_id: str, service: str | None = None
+        ) -> None:
+            await self._handle_mirror_emote(interaction, local_id, service)
 
     @property
     def client(self) -> discord.Client:
@@ -1090,6 +1116,50 @@ class DiscordSenderService(SenderService):
         role = await guild.create_role(name=name, reason="bridge role mirror")
         return str(role.id)
 
+    async def get_emoji_name(self, emoji_id: str) -> str | None:
+        """Best-effort emoji-id -> name lookup, this connector's
+        `ConnectorInfo.resolve_emoji_name`."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            emoji = guild.get_emoji(int(emoji_id))
+        except ValueError:
+            return None
+        return emoji.name if emoji is not None else None
+
+    async def resolve_emoji_id_by_name(self, token: str) -> str | None:
+        """Resolve a bare custom-emoji name to its id so `/link emote` etc.
+        accept either. A token that's already a real emoji id is returned
+        as-is; an unrecognized token yields None (EmoteLinker then treats it
+        as a literal id). Case-insensitive; first match wins."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        if token.isdigit() and guild.get_emoji(int(token)) is not None:
+            return token
+        lowered = token.casefold()
+        for emoji in guild.emojis:
+            if emoji.name.casefold() == lowered:
+                return str(emoji.id)
+        return None
+
+    async def resolve_emoji(self, emoji_id: str) -> "CustomEmoji | None":
+        """emoji-id -> full CustomEmoji, this connector's
+        `ConnectorInfo.resolve_emoji` (the source side of `/mirror emote`)."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            emoji = guild.get_emoji(int(emoji_id))
+        except ValueError:
+            return None
+        if emoji is None:
+            return None
+        return CustomEmoji(
+            native_id=str(emoji.id), name=emoji.name, image_url=str(emoji.url), animated=emoji.animated
+        )
+
     async def resolve_category_id_by_name(self, token: str) -> str | None:
         """Resolve a bare Category name to its id so `/link category` etc.
         accept either. A token that's already a real Category id is returned
@@ -1480,7 +1550,7 @@ class DiscordSenderService(SenderService):
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
         logger.info(
-            "[discord:%s] %s ran /link-emote service=%s external_id=%s local_id=%s",
+            "[discord:%s] %s ran /link emote service=%s external_id=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
@@ -1495,7 +1565,69 @@ class DiscordSenderService(SenderService):
                 source_id=external_id,
             )
         except LinkError as exc:
-            logger.info("[discord:%s] /link-emote rejected: %s", self.connector_id, exc)
+            logger.info("[discord:%s] /link emote rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_unlink_emote(
+        self, interaction: discord.Interaction, local_id: str, service: str | None
+    ) -> None:
+        if self._emote_linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        logger.info(
+            "[discord:%s] %s ran /unlink emote local_id=%s service=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+        )
+        try:
+            summary = await self._emote_linker.unlink_emote(
+                local_connector=self.connector_id, local_emote=local_id, destination=service
+            )
+        except LinkError as exc:
+            logger.info("[discord:%s] /unlink emote rejected: %s", self.connector_id, exc)
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_linked_emotes(
+        self, interaction: discord.Interaction, local_id: str | None
+    ) -> None:
+        if self._emote_linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        summary = await self._emote_linker.list_linked_emotes(
+            local_connector=self.connector_id, local_emote=local_id
+        )
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    async def _handle_mirror_emote(
+        self, interaction: discord.Interaction, local_id: str, service: str | None
+    ) -> None:
+        if self._emote_linker is None:
+            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        logger.info(
+            "[discord:%s] %s ran /mirror emote local_id=%s service=%s",
+            self.connector_id,
+            interaction.user.id,
+            local_id,
+            service,
+        )
+        try:
+            if service is None or service.lower() == "all":
+                summary = await self._emote_linker.mirror_emote_all(
+                    local_connector=self.connector_id, local_emote=local_id
+                )
+            else:
+                summary = await self._emote_linker.mirror_emote(
+                    local_connector=self.connector_id, local_emote=local_id, destination=service
+                )
+        except LinkError as exc:
+            logger.info("[discord:%s] /mirror emote rejected: %s", self.connector_id, exc)
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(summary, ephemeral=True)

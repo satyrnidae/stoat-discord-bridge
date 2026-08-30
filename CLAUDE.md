@@ -154,14 +154,17 @@ Every admin/status command (`/status`, the channel commands `/link channel` /
 `/link role` / `/mirror role` / `/linked roles` / `/unlink role`
 (Discord/Stoat only), the user commands `/link user` / `/unlink user` /
 `/linked users`, the category commands `/link category` / `/unlink category` /
-`/mirror category` / `/linked categories` (Discord/Stoat only), `/link-emote`,
-`/mirror-channels`) and how to reach it on each connector is documented in
-`COMMANDS.md`, not duplicated here. On Discord the channel, role, user and
-category commands are real `app_commands` subcommand groups (`/link`,
-`/unlink`, `/mirror`, `/linked`); on Stoat/IRC they're space-separated
-(`LINK CHANNEL …` / `LINK USER …` on IRC). Only emote commands are still flat.
-Every id argument to a channel, role, user or category command also accepts a
-bare name (`ConnectorInfo.resolve_channel_id_by_name` /
+`/mirror category` / `/linked categories` (Discord/Stoat only), the emote
+commands `/link emote` / `/mirror emote` / `/linked emotes` / `/unlink emote`
+(Discord/Stoat only - IRC has no custom emoji), `/mirror-channels`) and how to
+reach it on each connector is documented in
+`COMMANDS.md`, not duplicated here. On Discord the channel, role, user,
+category and emote commands are real `app_commands` subcommand groups
+(`/link`, `/unlink`, `/mirror`, `/linked`); on Stoat/IRC they're
+space-separated (`LINK CHANNEL …` / `LINK USER …` on IRC). No flat admin
+commands remain.
+Every id argument to a channel, role, user, category or emote command also
+accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /
 `resolve_role_id_by_name` / `resolve_user_id_by_name` /
 `resolve_category_id_by_name`). Shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
