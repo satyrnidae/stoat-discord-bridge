@@ -7,9 +7,11 @@ each Stoat deployment needs its own client/session.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 import urllib.request
 from collections import deque
 from inspect import isawaitable
@@ -41,6 +43,7 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
@@ -50,6 +53,7 @@ from stoat_discord_bridge.services.base import (
     OnMessage,
     OnPin,
     OnReaction,
+    OnTyping,
     OnRoleDeleted,
     OnRoleRenamed,
     PartialRelayError,
@@ -261,6 +265,10 @@ class _StoatClient(stoat_commands.Bot):
         # channels, each with a .role_permissions dict[str, PermissionOverride]).
         await self._owner._handle_channel_update(event)
 
+    async def on_channel_start_typing(self, event, /) -> None:
+        # stoat.events.ChannelStartTypingEvent (.channel_id, .user_id).
+        await self._owner._handle_typing(event)
+
     async def on_message_react(self, event, /) -> None:
         await self._owner._handle_message_react(event, added=True)
 
@@ -438,6 +446,7 @@ class StoatSenderService(SenderService):
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
+        on_typing: OnTyping | None = None,
         linker: ChannelLinker | None = None,
         mirrorer: StructureMirrorer | None = None,
         emote_linker: "EmoteLinker | None" = None,
@@ -453,7 +462,9 @@ class StoatSenderService(SenderService):
         # are only needed to serve the corresponding `/link-*` / `/link ...`
         # commands; None is accepted (e.g. for tests) but those commands will
         # then report themselves unconfigured.
-        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin)
+        SenderService.__init__(
+            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing
+        )
         self._config = config
         self.server_id = config.server_id
         self.connector_id = config.id
@@ -1090,6 +1101,33 @@ class StoatSenderService(SenderService):
         """The bridge bot's own Stoat user id (set once on_ready fires),
         exposed for the receiver's own-reaction idempotency check."""
         return self._self_id
+
+    async def _handle_typing(self, event) -> None:
+        """`stoat.events.ChannelStartTypingEvent`: someone started typing.
+        Relay it across the bridge (BridgeCoordinator scopes it to a mapped
+        channel). Dropped for the bridge bot's own typing, which the
+        receiver-side `trigger_typing` would otherwise echo back here."""
+        if self._on_typing is None:
+            return
+        user_id = str(getattr(event, "user_id", "") or "")
+        channel_id = str(getattr(event, "channel_id", "") or "")
+        if not user_id or not channel_id or user_id == self._self_id:
+            return
+        name = user_id
+        try:
+            user = self._client.get_user(user_id)
+        except Exception:
+            user = None
+        if user is not None:
+            name = _display_name(user) or user_id
+        await self._on_typing(
+            StandardTyping(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=channel_id,
+                sender_name=name,
+                sender_user_id=user_id,
+            )
+        )
 
     async def _handle_message_react(self, event, *, added: bool) -> None:
         """`stoat.events.MessageReactEvent` / `MessageUnreactEvent`: someone
@@ -2087,6 +2125,15 @@ class StoatReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
     supports_pins = True
+    supports_typing = True
+
+    # How long a single relayed typing indicator lingers before it's ended,
+    # unless `trigger_typing` is called again first. Stoat/Revolt keeps a
+    # BeginTyping alive until an explicit EndTyping, so - unlike Discord's
+    # self-lapsing indicator - the receiver has to run a small keep-alive
+    # loop and stop it once the origin user stops typing.
+    _TYPING_LINGER = 6.0
+    _TYPING_REFRESH = 2.5
 
     def __init__(
         self,
@@ -2100,6 +2147,10 @@ class StoatReceiverService(ReceiverService):
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
         self._role_mappings = role_mappings
+        # target_channel_id -> monotonic deadline the keep-alive loop stops at,
+        # and the loop task itself (one per channel currently "typing").
+        self._typing_until: dict[str, float] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         channel = self._sender.get_channel(target_channel_id, partial=True)
@@ -2229,6 +2280,38 @@ class StoatReceiverService(ReceiverService):
                 target_message_id,
                 target_channel_id,
             )
+
+    async def trigger_typing(self, *, target_channel_id: str) -> None:
+        """Show a typing indicator in the channel, attributed to the bridge
+        bot (Stoat masquerade doesn't extend to typing). Extends the linger
+        deadline and, if no keep-alive loop is running for this channel,
+        starts one that re-sends BeginTyping until the deadline, then ends
+        it. Best-effort: a bad channel / transient error just stops the loop."""
+        self._typing_until[target_channel_id] = time.monotonic() + self._TYPING_LINGER
+        task = self._typing_tasks.get(target_channel_id)
+        if task is not None and not task.done():
+            return
+        self._typing_tasks[target_channel_id] = asyncio.ensure_future(
+            self._keep_typing(target_channel_id)
+        )
+
+    async def _keep_typing(self, channel_id: str) -> None:
+        channel = self._sender.get_channel(channel_id, partial=True)
+        try:
+            while time.monotonic() < self._typing_until.get(channel_id, 0.0):
+                await channel.begin_typing()
+                await asyncio.sleep(self._TYPING_REFRESH)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("[stoat:%s] typing keep-alive for channel %s failed", self.connector_id, channel_id)
+        finally:
+            self._typing_until.pop(channel_id, None)
+            self._typing_tasks.pop(channel_id, None)
+            try:
+                await channel.end_typing()
+            except Exception:
+                pass
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         try:

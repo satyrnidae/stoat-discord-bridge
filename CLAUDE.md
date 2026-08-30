@@ -147,6 +147,26 @@ Stoat's `message_pinned` / `message_unpinned` system events (detected via
 As a catch-all, `IrcReceiverService.receive` drops any synced message with no
 textual content — which is how IRC ignores pin notifications from both sides.
 
+### Typing sync
+
+A "someone is typing" event in a bridged channel is relayed onto every other
+connector's mapped channel (`BridgeCoordinator.handle_typing` →
+`ReceiverService.trigger_typing`, gated by `supports_typing` and keyed off
+the same `ChannelMappingRepository` group message relay uses — no
+`MessageSyncRepository` entry, no per-message id). Discord ⇄ Stoat only —
+**IRC has no typing concept** (`supports_typing` stays `False`).
+Fire-and-forget: nothing is recorded, and there's no echo guard — the bridge
+posts via webhook/masquerade (which don't emit typing events) and each
+sender drops typing from its own bot user (`_handle_typing`). Best-effort and
+silent (unbridged channel, unsupported target, or a raising `trigger_typing`
+are all skipped). The relayed indicator is always attributed to the bridge
+bot itself — neither Discord (webhook) nor Stoat (masquerade) can surface a
+typing indicator under another identity, so `StandardTyping.sender_name` is
+cosmetic. Discord's indicator self-lapses (~10s); Stoat's needs an explicit
+stop, so `StoatReceiverService` runs a short per-channel keep-alive loop
+(`begin_typing` every `_TYPING_REFRESH`s) that ends after `_TYPING_LINGER`s
+of no further events.
+
 ### Admin & status commands
 
 Every admin/status command (`/status`, the channel commands `/link channel` /

@@ -499,3 +499,36 @@ async def test_set_pinned_is_a_noop_when_already_in_the_target_state():
     await receiver.set_pinned(target_channel_id="c-1", target_message_id="m7", pinned=True)
 
     assert msg.pin_calls == 0
+
+
+# ---------------------------------------------------------------- trigger_typing
+
+
+async def test_trigger_typing_keeps_typing_then_ends_it():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 0.05
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="c-1")
+    await receiver._typing_tasks["c-1"]
+
+    assert channel.typing_events[0] == "begin"
+    assert channel.typing_events[-1] == "end"
+    assert receiver._typing_tasks == {}
+
+
+async def test_trigger_typing_reuses_the_running_loop_for_repeat_calls():
+    client = FakeClient()
+    client.add_channel(FakeChannel(id="c-1"))
+    receiver = _make_receiver(client)
+    receiver._TYPING_LINGER = 0.05
+    receiver._TYPING_REFRESH = 0.01
+
+    await receiver.trigger_typing(target_channel_id="c-1")
+    task = receiver._typing_tasks["c-1"]
+    await receiver.trigger_typing(target_channel_id="c-1")
+
+    assert receiver._typing_tasks["c-1"] is task
+    await task

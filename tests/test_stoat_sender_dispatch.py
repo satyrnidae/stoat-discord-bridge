@@ -29,12 +29,16 @@ class _Recorder:
         self.emoji_created: list = []
         self.emoji_deleted: list = []
         self.pins: list = []
+        self.typing: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
 
     async def on_pin(self, pin) -> None:
         self.pins.append(pin)
+
+    async def on_typing(self, typing) -> None:
+        self.typing.append(typing)
 
     async def on_reaction(self, reaction) -> None:
         self.reactions.append(reaction)
@@ -67,6 +71,7 @@ def _make_sender(
     sender._on_emoji_created = recorder.on_emoji_created if with_emoji else None
     sender._on_emoji_deleted = recorder.on_emoji_deleted if with_emoji else None
     sender._on_pin = recorder.on_pin
+    sender._on_typing = recorder.on_typing
     return sender
 
 
@@ -271,6 +276,37 @@ async def test_handle_message_maps_attachments_onto_the_standard_message():
     assert message.attachments[0].filename == "f.png"
     assert message.attachments[0].content_type == "image/png"
     assert message.attachments[0].size_bytes == 10
+
+
+# ---------------------------------------------------------------- _handle_typing
+
+
+async def test_handle_typing_emits_a_standard_typing():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_typing(SimpleNamespace(channel_id="c1", user_id="u1"))
+
+    assert [(t.origin_channel_id, t.sender_user_id) for t in recorder.typing] == [("c1", "u1")]
+
+
+async def test_handle_typing_drops_the_bridges_own_echoed_typing():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), self_id="bridge-bot-id")
+
+    await sender._handle_typing(SimpleNamespace(channel_id="c1", user_id="bridge-bot-id"))
+
+    assert recorder.typing == []
+
+
+async def test_handle_typing_is_a_noop_when_typing_isnt_wired_up():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    sender._on_typing = None
+
+    await sender._handle_typing(SimpleNamespace(channel_id="c1", user_id="u1"))  # must not raise
+
+    assert recorder.typing == []
 
 
 # ---------------------------------------------------------------- _handle_message_react

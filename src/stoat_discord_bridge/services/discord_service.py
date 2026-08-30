@@ -44,6 +44,7 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 from stoat_discord_bridge.services.base import (
     OnEmojiCreated,
@@ -53,6 +54,7 @@ from stoat_discord_bridge.services.base import (
     OnMessage,
     OnPin,
     OnReaction,
+    OnTyping,
     OnRoleDeleted,
     OnRoleRenamed,
     PartialRelayError,
@@ -166,6 +168,9 @@ class _DiscordClient(discord.Client):
     async def on_thread_create(self, thread: discord.Thread) -> None:
         await self._owner._handle_thread_create(thread)
 
+    async def on_typing(self, channel, user, when) -> None:
+        await self._owner._handle_typing(channel, user)
+
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
         await self._owner._handle_channel_create(channel)
 
@@ -205,6 +210,7 @@ class DiscordSenderService(SenderService):
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
+        on_typing: OnTyping | None = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -219,7 +225,9 @@ class DiscordSenderService(SenderService):
         # needed to serve the corresponding `/link-*` commands; None is
         # accepted (e.g. for tests) but those commands will then report
         # themselves unconfigured.
-        SenderService.__init__(self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin)
+        SenderService.__init__(
+            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing
+        )
         self._config = config
         self.connector_id = config.id
         self._health = health
@@ -601,6 +609,28 @@ class DiscordSenderService(SenderService):
                 origin_channel_id=str(payload.channel_id),
                 origin_message_id=str(payload.message_id),
                 pinned=bool(data["pinned"]),
+            )
+        )
+
+    async def _handle_typing(self, channel, user) -> None:
+        """`on_typing`: a user started typing in a channel. Relay it across the
+        bridge (BridgeCoordinator scopes it to a mapped channel). Dropped for
+        DMs, other guilds, and the bridge bot's own typing (which its own
+        `trigger_typing` on the receiver side would otherwise echo back)."""
+        if self._on_typing is None:
+            return
+        guild = getattr(channel, "guild", None)
+        if guild is None or guild.id != self._config.guild_id:
+            return
+        self_user = self._client.user
+        if getattr(user, "bot", False) or (self_user is not None and user.id == self_user.id):
+            return
+        await self._on_typing(
+            StandardTyping(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(channel.id),
+                sender_name=getattr(user, "display_name", None) or getattr(user, "name", str(user.id)),
+                sender_user_id=str(user.id),
             )
         )
 
@@ -1759,6 +1789,7 @@ class DiscordReceiverService(ReceiverService):
     supports_reactions = True
     supports_emoji = True
     supports_pins = True
+    supports_typing = True
 
     def __init__(
         self,
@@ -1887,6 +1918,20 @@ class DiscordReceiverService(ReceiverService):
                 target_message_id,
                 target_channel_id,
             )
+
+    async def trigger_typing(self, *, target_channel_id: str) -> None:
+        """Fire a single typing indicator into the channel (Discord shows it
+        for ~10s, then it lapses on its own unless the coordinator calls
+        again). Attributed to the bridge bot - Discord can't show a webhook
+        identity as typing. Best-effort: a missing channel or a transient API
+        error is swallowed."""
+        try:
+            channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
+                int(target_channel_id)
+            )
+            await channel.typing()
+        except (discord.HTTPException, ValueError):
+            pass
 
     async def _bot_has_reaction(
         self, channel_id: str, message_id: str, emoji: str | CustomEmoji

@@ -151,6 +151,10 @@ class FakeChannel:
         self.created_webhooks: list[FakeWebhook] = []
         self.partial_messages: dict[int, FakePartialMessage] = {}
         self.full_messages: dict[int, FakeFullMessage] = {}
+        self.typing_calls = 0
+
+    async def typing(self) -> None:
+        self.typing_calls += 1
 
     async def webhooks(self) -> list[FakeWebhook]:
         return list(self._webhooks)

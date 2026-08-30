@@ -107,6 +107,15 @@ class FakeChannel:
         self._messages: dict[str, FakeStoatMessage] = {}
         self._next_message_id = 1
         self.category = category
+        self.typing_events: list[str] = []
+
+    async def begin_typing(self) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.typing_events.append("begin")
+
+    async def end_typing(self) -> None:
+        self.typing_events.append("end")
 
     async def send(self, content: str, *, masquerade=None) -> FakeSentMessage:
         if self._raises is not None:

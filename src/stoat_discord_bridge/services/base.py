@@ -32,11 +32,13 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 
 OnMessage = Callable[[StandardMessage], Awaitable[None]]
 OnReaction = Callable[[StandardReaction], Awaitable[None]]
 OnPin = Callable[[StandardPin], Awaitable[None]]
+OnTyping = Callable[[StandardTyping], Awaitable[None]]
 OnEmojiCreated = Callable[[StandardEmojiCreated], Awaitable[None]]
 OnEmojiDeleted = Callable[[StandardEmojiDeleted], Awaitable[None]]
 # (origin_connector_id, user_id, added_role_ids, removed_role_ids) - a linked
@@ -63,12 +65,14 @@ class SenderService(ABC):
         on_emoji_created: OnEmojiCreated | None = None,
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
+        on_typing: OnTyping | None = None,
     ) -> None:
         self._on_message = on_message
         self._on_reaction = on_reaction
         self._on_emoji_created = on_emoji_created
         self._on_emoji_deleted = on_emoji_deleted
         self._on_pin = on_pin
+        self._on_typing = on_typing
 
     @abstractmethod
     async def start(self) -> None:
@@ -82,6 +86,7 @@ class ReceiverService(ABC):
     supports_reactions: bool = False
     supports_emoji: bool = False
     supports_pins: bool = False
+    supports_typing: bool = False
 
     @abstractmethod
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
@@ -113,6 +118,15 @@ class ReceiverService(ABC):
         """Pin (`pinned=True`) or unpin (`pinned=False`) `target_message_id`.
         Idempotent — a no-op if the message is already in that state. Only
         called when `supports_pins`."""
+        raise NotImplementedError
+
+    async def trigger_typing(self, *, target_channel_id: str) -> None:
+        """Show a "someone is typing" indicator in `target_channel_id` for a
+        few seconds. Only called when `supports_typing`. Best-effort and
+        safe to call repeatedly while the origin user keeps typing — the
+        indicator naturally lapses once the calls stop. The indicator is
+        always attributed to the bridge bot itself; no platform in this
+        bridge can surface it under the originating user's name."""
         raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:

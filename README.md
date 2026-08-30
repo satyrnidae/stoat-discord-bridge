@@ -147,6 +147,16 @@ IRC has no reaction or custom-emoji concept, so it's excluded from both —
 `ReceiverService.supports_reactions` / `supports_emoji` gate this per
 connector, and IRC's receiver leaves them at the base-class default (`False`).
 
+## Typing sync
+
+When someone starts typing in a bridged channel, a typing indicator is shown
+in every other connector's mapped channel (`supports_typing` /
+`trigger_typing`, Discord ⇄ Stoat only — IRC has no typing concept).
+Fire-and-forget and best-effort: nothing is tracked, no per-message id is
+involved, and an unbridged channel or a transient failure is silently
+skipped. The indicator always shows as the bridge bot — neither a Discord
+webhook nor a Stoat masquerade can attribute typing to the origin user.
+
 ## Commands
 
 Every admin/status command (`/status`, `/link channel`, `/linked channels`,

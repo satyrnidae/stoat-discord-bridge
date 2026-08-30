@@ -426,3 +426,22 @@ async def test_set_pinned_is_a_noop_when_already_in_the_target_state():
     await receiver.set_pinned(target_channel_id="42", target_message_id="7", pinned=True)
 
     assert pinned_msg.pin_calls == []
+
+
+# ---------------------------------------------------------------- trigger_typing
+
+
+async def test_trigger_typing_fires_a_single_indicator():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.trigger_typing(target_channel_id="42")
+
+    assert channel.typing_calls == 1
+
+
+async def test_trigger_typing_swallows_a_missing_channel():
+    receiver = _make_receiver(FakeClient())
+
+    await receiver.trigger_typing(target_channel_id="999")  # must not raise

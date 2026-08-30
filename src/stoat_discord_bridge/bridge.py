@@ -34,6 +34,7 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.discord_service import (
@@ -155,6 +156,34 @@ class BridgeCoordinator:
             MessageRef(connector_id=target.connector_id, channel_id=target.channel_id, message_id=native_id)
             for native_id in native_ids
         ]
+
+    async def handle_typing(self, typing: StandardTyping) -> None:
+        """Relay a "someone is typing" indicator onto every other connector's
+        channel mapped into the same bridge group. Fire-and-forget: nothing is
+        recorded and no echo guard is needed - the bridge posts via
+        webhook/masquerade, which don't themselves emit typing events, and
+        each sender already drops typing from its own bot user. Silently does
+        nothing if the origin channel isn't bridged or a target doesn't
+        advertise `supports_typing` (IRC)."""
+        bridge_group = await self._channel_mappings.get_bridge_group(
+            typing.origin_connector_id, typing.origin_channel_id
+        )
+        if bridge_group is None:
+            return  # this channel isn't bridged
+
+        targets = await self._channel_mappings.get_mapped_channels(bridge_group)
+        for target in targets:
+            if target.connector_id == typing.origin_connector_id:
+                continue
+            receiver = self._receivers.get(target.connector_id)
+            if receiver is None or not receiver.supports_typing:
+                continue
+            try:
+                await receiver.trigger_typing(target_channel_id=target.channel_id)
+            except Exception:
+                logger.exception(
+                    "typing relay from %s to %s failed", typing.origin_connector_id, target.connector_id
+                )
 
     async def handle_reaction(self, reaction: StandardReaction) -> None:
         """Relay a reaction add/remove onto every other connector's copy of
@@ -569,6 +598,7 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_created=coordinator.handle_emoji_created,
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             on_pin=coordinator.handle_pin,
+            on_typing=coordinator.handle_typing,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -630,6 +660,7 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_created=coordinator.handle_emoji_created,
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             on_pin=coordinator.handle_pin,
+            on_typing=coordinator.handle_typing,
             linker=linker,
             mirrorer=mirrorer,
             emote_linker=emote_linker,

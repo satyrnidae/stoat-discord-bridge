@@ -37,4 +37,12 @@
   - `StoatConnectorConfig.command_prefix` (env `STOAT__<i>__COMMAND_PREFIX`);
     threaded into `_StoatClient`'s `commands.Bot` ctor and the `/bridge-help`
     / usage strings (`_help_text`, `_StoatClient._prefix`).
-15. [ ] Feat: x is typing... forwarding
+15. [x] Feat: x is typing... forwarding
+  - `StandardTyping` + `SenderService.on_typing` / `ReceiverService.supports_typing`
+    / `trigger_typing`; `BridgeCoordinator.handle_typing` fans a typing event
+    out to every mapped channel on a connector that supports it. Discord
+    (`on_typing` -> `channel.typing()`, self-lapsing) and Stoat
+    (`channel_start_typing` -> masqueless keep-alive `begin_typing` loop that
+    ends after `_TYPING_LINGER`s). IRC has no typing concept - not wired.
+    Indicator always shows as the bridge bot (no platform can attribute a
+    relayed typing indicator to the origin user).

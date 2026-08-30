@@ -95,6 +95,22 @@ class StandardPin:
 
 
 @dataclass(frozen=True)
+class StandardTyping:
+    """A "user started typing" event, in the platform-neutral shape senders/
+    receivers pass around. Relayed only onto connectors that advertise
+    `ReceiverService.supports_typing` and only for a channel the bridge has a
+    mapping for — see BridgeCoordinator.handle_typing. Fire-and-forget: no
+    message id, no sync tracking, nothing recorded. `sender_name` is
+    best-effort and only cosmetic — neither Discord nor Stoat can attribute a
+    relayed typing indicator to anyone but the bridge bot itself."""
+
+    origin_connector_id: ConnectorId
+    origin_channel_id: str
+    sender_name: str
+    sender_user_id: str
+
+
+@dataclass(frozen=True)
 class StandardReaction:
     """A reaction add/remove event, in the platform-neutral shape senders/
     receivers pass around. `emoji` is a bare unicode string (universal across

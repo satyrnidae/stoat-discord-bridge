@@ -22,6 +22,7 @@ from stoat_discord_bridge.models import (
     StandardMessage,
     StandardPin,
     StandardReaction,
+    StandardTyping,
 )
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.status import HealthState, HealthTracker
@@ -38,6 +39,7 @@ class FakeReceiver(ReceiverService):
         supports_reactions: bool = False,
         supports_emoji: bool = False,
         supports_pins: bool = False,
+        supports_typing: bool = False,
         native_ids: list[str] | None = None,
         raises: BaseException | None = None,
         created_emoji: CustomEmoji | None = None,
@@ -46,6 +48,7 @@ class FakeReceiver(ReceiverService):
         self.supports_reactions = supports_reactions
         self.supports_emoji = supports_emoji
         self.supports_pins = supports_pins
+        self.supports_typing = supports_typing
         self._native_ids = native_ids if native_ids is not None else ["native-1"]
         self._raises = raises
         self._created_emoji = created_emoji
@@ -53,6 +56,7 @@ class FakeReceiver(ReceiverService):
         self.reactions: list[tuple] = []
         self.created_calls: list[CustomEmoji] = []
         self.pins: list[tuple] = []
+        self.typing: list[str] = []
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         self.received.append((message, target_channel_id))
@@ -80,6 +84,11 @@ class FakeReceiver(ReceiverService):
         if self._raises is not None:
             raise self._raises
         self.pins.append((target_channel_id, target_message_id, pinned))
+
+    async def trigger_typing(self, *, target_channel_id) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.typing.append(target_channel_id)
 
 
 def _message(**overrides) -> StandardMessage:
@@ -496,6 +505,62 @@ async def test_pin_relay_that_raises_is_swallowed(coordinator_parts):
     )  # must not raise
 
     assert working.pins == [("300", "i1", False)]
+
+
+# ---------------------------------------------------------------- handle_typing
+
+
+async def test_typing_forwards_only_to_mapped_connectors_that_support_it(coordinator_parts):
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    await _link(channel_mappings, "general", "irc", "300")
+    stoat_receiver = FakeReceiver("stoat", supports_typing=True)
+    irc_receiver = FakeReceiver("irc", supports_typing=False)
+    coordinator.register_receiver(stoat_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    await coordinator.handle_typing(
+        StandardTyping(
+            origin_connector_id="discord", origin_channel_id="100", sender_name="Alice", sender_user_id="a"
+        )
+    )
+
+    assert stoat_receiver.typing == ["200"]
+    assert irc_receiver.typing == []
+
+
+async def test_typing_is_a_noop_for_an_unbridged_channel(coordinator_parts):
+    coordinator, _channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    receiver = FakeReceiver("stoat", supports_typing=True)
+    coordinator.register_receiver(receiver)
+
+    await coordinator.handle_typing(
+        StandardTyping(
+            origin_connector_id="discord", origin_channel_id="nope", sender_name="Alice", sender_user_id="a"
+        )
+    )
+
+    assert receiver.typing == []
+
+
+async def test_typing_relay_that_raises_is_swallowed(coordinator_parts):
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    await _link(channel_mappings, "general", "irc", "300")
+    failing = FakeReceiver("stoat", supports_typing=True, raises=RuntimeError("boom"))
+    working = FakeReceiver("irc", supports_typing=True)
+    coordinator.register_receiver(failing)
+    coordinator.register_receiver(working)
+
+    await coordinator.handle_typing(
+        StandardTyping(
+            origin_connector_id="discord", origin_channel_id="100", sender_name="Alice", sender_user_id="a"
+        )
+    )  # must not raise
+
+    assert working.typing == ["300"]
 
 
 # ---------------------------------------------------------------- helpers
