@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+import typing
 import urllib.request
 from collections import deque
 from inspect import isawaitable
@@ -348,7 +349,7 @@ class _StoatClient(stoat_commands.Bot):
             await owner._reply(ctx, f"Usage: {p}mirror <channel|role|category|emote> …")
 
         @link.command(name="channel")
-        async def link_channel(ctx, service: str, external_id: str, local_id: str | None = None):
+        async def link_channel(ctx, service: str, external_id: str, local_id: typing.Optional[str] = None):
             await owner._link_channel(ctx, service, external_id, local_id)
 
         @link.command(name="role")
@@ -360,7 +361,7 @@ class _StoatClient(stoat_commands.Bot):
             await owner._link_user(ctx, service, external_id, local_id)
 
         @link.command(name="category")
-        async def link_category(ctx, service: str, external_id: str, local_id: str | None = None):
+        async def link_category(ctx, service: str, external_id: str, local_id: typing.Optional[str] = None):
             await owner._link_category(ctx, service, external_id, local_id)
 
         @link.command(name="emote")
@@ -368,59 +369,59 @@ class _StoatClient(stoat_commands.Bot):
             await owner._link_emote(ctx, service, external_id, local_id)
 
         @unlink.command(name="channel")
-        async def unlink_channel(ctx, local_id: str | None = None, service: str | None = None):
+        async def unlink_channel(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
             await owner._unlink_channel(ctx, local_id, service)
 
         @unlink.command(name="role")
-        async def unlink_role(ctx, local_id: str, service: str | None = None):
+        async def unlink_role(ctx, local_id: str, service: typing.Optional[str] = None):
             await owner._unlink_role(ctx, local_id, service)
 
         @unlink.command(name="user")
-        async def unlink_user(ctx, service: str | None = None, local_id: str | None = None):
+        async def unlink_user(ctx, service: typing.Optional[str] = None, local_id: typing.Optional[str] = None):
             await owner._unlink_user(ctx, service, local_id)
 
         @unlink.command(name="category")
-        async def unlink_category(ctx, local_id: str | None = None, service: str | None = None):
+        async def unlink_category(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
             await owner._unlink_category(ctx, local_id, service)
 
         @unlink.command(name="emote")
-        async def unlink_emote(ctx, local_id: str, service: str | None = None):
+        async def unlink_emote(ctx, local_id: str, service: typing.Optional[str] = None):
             await owner._unlink_emote(ctx, local_id, service)
 
         @linked.command(name="channels")
-        async def linked_channels(ctx, local_id: str | None = None):
+        async def linked_channels(ctx, local_id: typing.Optional[str] = None):
             await owner._linked_channels(ctx, local_id)
 
         @linked.command(name="roles")
-        async def linked_roles(ctx, local_id: str | None = None):
+        async def linked_roles(ctx, local_id: typing.Optional[str] = None):
             await owner._linked_roles(ctx, local_id)
 
         @linked.command(name="users")
-        async def linked_users(ctx, local_id: str | None = None):
+        async def linked_users(ctx, local_id: typing.Optional[str] = None):
             await owner._linked_users(ctx, local_id)
 
         @linked.command(name="categories")
-        async def linked_categories(ctx, local_id: str | None = None):
+        async def linked_categories(ctx, local_id: typing.Optional[str] = None):
             await owner._linked_categories(ctx, local_id)
 
         @linked.command(name="emotes")
-        async def linked_emotes(ctx, local_id: str | None = None):
+        async def linked_emotes(ctx, local_id: typing.Optional[str] = None):
             await owner._linked_emotes(ctx, local_id)
 
         @mirror.command(name="channel")
-        async def mirror_channel(ctx, local_id: str | None = None, service: str | None = None):
+        async def mirror_channel(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
             await owner._mirror_channel(ctx, local_id, service)
 
         @mirror.command(name="role")
-        async def mirror_role(ctx, local_id: str, service: str | None = None):
+        async def mirror_role(ctx, local_id: str, service: typing.Optional[str] = None):
             await owner._mirror_role(ctx, local_id, service)
 
         @mirror.command(name="category")
-        async def mirror_category(ctx, local_id: str | None = None, service: str | None = None):
+        async def mirror_category(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
             await owner._mirror_category(ctx, local_id, service)
 
         @mirror.command(name="emote")
-        async def mirror_emote(ctx, local_id: str, service: str | None = None):
+        async def mirror_emote(ctx, local_id: str, service: typing.Optional[str] = None):
             await owner._mirror_emote(ctx, local_id, service)
 
         @self.command(name="status")
