@@ -219,8 +219,13 @@ members intent** (enabled on `_DiscordClient` and in the developer portal) or
 the Discord→other direction of auto-grant never fires.
 
 The `services/role_sync.py` permission-name translation is a deliberately
-conservative subset. stoat.py's member/role/channel gateway events are
-assumed from `stoat.events` and unverified against a live server (`TODO`s in
+conservative subset — only bits that mean the same on both platforms — but
+the discord.py/stoat.py flag names on both sides of that subset are verified
+against each library's `Permissions` flag class. The Stoat command-execution
+gate (`StoatSenderService._is_admin`) likewise checks the real
+`Permissions.manage_server` flag (server owners always pass). stoat.py's
+member/role/channel gateway *event shapes* are still assumed from
+`stoat.events` and unverified against a live server (`TODO`s in
 `stoat_service.py`).
 
 `ChannelLinker.unlink_channel` dissolves a bridge group down to nothing

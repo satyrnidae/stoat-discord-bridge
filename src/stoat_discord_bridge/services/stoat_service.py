@@ -2044,8 +2044,24 @@ class StoatSenderService(SenderService):
             )
 
     def _is_admin(self, message) -> bool:
+        """True if the command author has Stoat's Manage Server permission
+        (mirrors the ``manage_guild`` default on Discord's command tree).
+        Server owners always pass; a permissions-cache miss (or any other
+        error) fails closed."""
         try:
-            return bool(message.author_as_member.server_permissions.manage_server)
+            member = message.author_as_member
+        except Exception:
+            return False
+        if member is None:
+            return False
+        try:
+            server = member.get_server()
+            if server is not None and getattr(server, "owner_id", None) == member.id:
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(member.server_permissions.manage_server)
         except Exception:
             return False
 

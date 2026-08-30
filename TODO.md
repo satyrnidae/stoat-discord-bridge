@@ -25,9 +25,13 @@
   - mongo db
   - formatting
   - setup / teardown
-13. [ ] Fix: Ensure stoat commands check against actual permissions as defined on https://stoatpy.readthedocs.io/en/latest/api/enums_and_flag_classes.html#permissions
+13. [x] Fix: Ensure stoat commands check against actual permissions as defined on https://stoatpy.readthedocs.io/en/latest/api/enums_and_flag_classes.html#permissions
   - command execution gating (manage_server)
   - role sync (discord perm <-> stoat perm)
   - for discord perms, see https://discordpy.readthedocs.io/en/latest/api.html?highlight=permission#discord.Permissions
+  - resolved: flag names on both sides verified against the stoat.py /
+    discord.py `Permissions` classes (all were already correct);
+    `NEUTRAL_PERMISSIONS` widened with embed_links/attach_files/add_reactions;
+    `_is_admin` gained a server-owner fallback for permission-cache misses.
 14. [ ] Feat: Configurable Stoat command prefix char ('/' default, can be '!' etc.)
 15. [ ] Feat: x is typing... forwarding

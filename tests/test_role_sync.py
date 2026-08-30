@@ -47,7 +47,7 @@ def test_override_rejects_contradiction():
 
 
 def test_discord_overwrite_round_trips_mapped_bits_only():
-    allow = _Perms(send_messages=True, add_reactions=True)  # add_reactions is unmapped
+    allow = _Perms(send_messages=True, ban_members=True)  # ban_members is unmapped
     deny = _Perms(view_channel=True)
     neutral = discord_overwrite_to_neutral(allow, deny)
     assert neutral.allow == frozenset({"send_messages"})
@@ -56,6 +56,18 @@ def test_discord_overwrite_round_trips_mapped_bits_only():
     a, d = neutral_to_discord_pair(neutral, _Perms)
     assert a.send_messages is True and a.view_channel is False
     assert d.view_channel is True
+
+
+def test_added_neutral_bits_map_to_stoat_attrs():
+    neutral = RolePermissionOverride(
+        allow=frozenset({"embed_links", "attach_files"}),
+        deny=frozenset({"add_reactions"}),
+    )
+    a, d = neutral_to_stoat_pair(neutral, _Perms)
+    assert a.send_embeds is True and a.upload_files is True
+    assert d.react is True
+    # and back
+    assert stoat_override_to_neutral(a, d) == neutral
 
 
 def test_stoat_override_round_trips():
