@@ -13,10 +13,11 @@ import stoat.ext.commands as stoat_commands
 from stoat_discord_bridge.services.stoat_service import StoatSenderService, _StoatClient
 
 
-def _bare_bot(owner=None) -> _StoatClient:
+def _bare_bot(owner=None, *, prefix: str = "/") -> _StoatClient:
     bot = object.__new__(_StoatClient)
-    stoat_commands.Bot.__init__(bot, "/")
+    stoat_commands.Bot.__init__(bot, prefix)
     bot._owner = owner
+    bot._prefix = prefix
     bot._state._me = SimpleNamespace(id="bridge-bot")
     bot._register_commands()
     return bot
@@ -92,6 +93,29 @@ async def test_on_command_error_reports_bad_usage():
     await bot.on_command_error(event)
 
     assert owner.replies == ["Usage: /link channel <service> <external_id>"]
+
+
+async def test_on_command_error_usage_honours_a_custom_prefix():
+    owner = _ReplyOwner()
+    bot = _bare_bot(owner, prefix="!")
+    ctx = SimpleNamespace(command=SimpleNamespace(qualified_name="link channel", signature="<service> <external_id>"))
+    event = SimpleNamespace(error=stoat_commands.UserInputError("missing"), context=ctx)
+
+    await bot.on_command_error(event)
+
+    assert owner.replies == ["Usage: !link channel <service> <external_id>"]
+
+
+async def test_group_usage_and_help_honour_a_custom_prefix():
+    owner = _ReplyOwner()
+    bot = _bare_bot(owner, prefix="!")
+
+    await bot.all_commands["link"].callback(SimpleNamespace())
+    await bot.all_commands["bridge-help"].callback(SimpleNamespace())
+
+    assert owner.replies[0].startswith("Usage: !link ")
+    assert "\n  !status - " in owner.replies[1]
+    assert "/status" not in owner.replies[1]
 
 
 async def test_on_command_error_ignores_command_not_found():

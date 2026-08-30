@@ -90,6 +90,12 @@ class StoatConnectorConfig:
     # Category. Re-checked on every relayed message, so turning it on
     # mid-deployment takes effect without a restart. Defaults on.
     group_parent_channel_with_threads: bool = True
+    # Prefix char(s) the Stoat message-command parser triggers on. Defaults
+    # to "/" (matching Discord's slash commands); set e.g. "!" or "?" to
+    # avoid clashing with another bot or with clients that swallow a leading
+    # "/". Only affects how commands are typed - the command names are
+    # unchanged.
+    command_prefix: str = "/"
 
 
 @dataclass(frozen=True)
@@ -331,6 +337,9 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 group_parent_channel_with_threads=_as_bool(
                     _resolve(entry, section="stoat", index=index, field="group_parent_channel_with_threads"),
                     default=True,
+                ),
+                command_prefix=(
+                    (_resolve(entry, section="stoat", index=index, field="command_prefix") or "/").strip() or "/"
                 ),
             )
         )

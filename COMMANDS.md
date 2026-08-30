@@ -26,7 +26,8 @@ id on the connector the command is run on.
   the Manage Server permission; read-only commands (`/status`,
   `/linked channels`, `/linked users`) don't.
 - **Stoat**: message commands (type the command as a plain chat message,
-  `/` prefix). Parsed by `stoat.ext.commands` - `/link`, `/unlink`, `/linked`,
+  `/` prefix by default — configurable per connector via `command_prefix`,
+  e.g. `!link channel …`). Parsed by `stoat.ext.commands` - `/link`, `/unlink`, `/linked`,
   `/mirror` are real command groups with `channel` / `role` / `user` /
   `category` / `emote` subcommands, the same shape as Discord's `app_commands`
   groups. Same Manage Server / read-only split as Discord. The invoking

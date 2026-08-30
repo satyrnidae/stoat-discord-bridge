@@ -83,29 +83,35 @@ _CONTENT_LIMIT = 2000
 # Discord has native slash-command discoverability; Stoat's commands are
 # plain chat messages with no such affordance, hence /bridge-help. See
 # COMMANDS.md for full per-command detail - this is a compact pointer to it.
-_HELP_TEXT = """Bridge commands (see COMMANDS.md for full detail):
-  /status - sync target health, read-only
-  /linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
-  /linked users [local_id|name] - cross-connector user links, read-only
-  /linked roles [local_id|name] - roles linked across the bridge, read-only
-  /linked categories [local_id|name] - Categories bridged to this channel's Category, read-only
-  /linked emotes [local_id|name] - custom emoji linked across the bridge, read-only
-  /link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
-  /link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
-  /link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
-  /link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
-  /link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
-  /mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
-  /mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
-  /mirror emote <local_id|name> [service|all] - recreate a custom emoji on another connector and link the two (Manage Server)
-  /mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
-  /mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
-  /unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
-  /unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
-  /unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
-  /unlink emote <local_id|name> [service|all] - unlink a custom emoji from one connector, or the whole group (Manage Server)
-  /unlink category [local_id|name] [service|all] - unlink a Category (default: this channel's) from one connector, or the whole group (Manage Server)
-  /bridge-help - this message"""
+# `{p}` is filled with the connector's configured command prefix
+# (`StoatConnectorConfig.command_prefix`, "/" by default) - see `_help_text`.
+_HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
+  {p}status - sync target health, read-only
+  {p}linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
+  {p}linked users [local_id|name] - cross-connector user links, read-only
+  {p}linked roles [local_id|name] - roles linked across the bridge, read-only
+  {p}linked categories [local_id|name] - Categories bridged to this channel's Category, read-only
+  {p}linked emotes [local_id|name] - custom emoji linked across the bridge, read-only
+  {p}link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
+  {p}link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
+  {p}link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
+  {p}link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
+  {p}link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
+  {p}mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
+  {p}mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
+  {p}mirror emote <local_id|name> [service|all] - recreate a custom emoji on another connector and link the two (Manage Server)
+  {p}mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
+  {p}mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
+  {p}unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
+  {p}unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
+  {p}unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
+  {p}unlink emote <local_id|name> [service|all] - unlink a custom emoji from one connector, or the whole group (Manage Server)
+  {p}unlink category [local_id|name] [service|all] - unlink a Category (default: this channel's) from one connector, or the whole group (Manage Server)
+  {p}bridge-help - this message"""
+
+
+def _help_text(prefix: str) -> str:
+    return _HELP_TEXT_TEMPLATE.format(p=prefix)
 
 
 def _discover_node_config(http_base: str, *, connector_id: str = "stoat") -> dict | None:
@@ -216,8 +222,9 @@ class _StoatClient(stoat_commands.Bot):
 
     def __init__(self, owner: StoatSenderService, config: StoatConnectorConfig) -> None:
         node_config = _discover_node_config(config.api_url, connector_id=config.id)
+        self._prefix = config.command_prefix
         super().__init__(
-            "/",
+            config.command_prefix,
             token=config.bot_token,
             http_base=config.api_url,
             websocket_base=_discover_websocket_base(node_config),
@@ -293,7 +300,7 @@ class _StoatClient(stoat_commands.Bot):
         if isinstance(error, stoat_commands.UserInputError):
             if ctx.command is not None:
                 sig = ctx.command.signature
-                usage = f"Usage: /{ctx.command.qualified_name}" + (f" {sig}" if sig else "")
+                usage = f"Usage: {self._prefix}{ctx.command.qualified_name}" + (f" {sig}" if sig else "")
             else:
                 usage = "Bad command usage."
             await self._owner._reply(ctx, usage)
@@ -314,22 +321,23 @@ class _StoatClient(stoat_commands.Bot):
         matching `StoatSenderService._<verb>_<noun>` method, which holds the
         shared linking logic and the Manage-Server gate."""
         owner = self._owner
+        p = self._prefix
 
         @self.group(name="link", invoke_without_command=True)
         async def link(ctx):
-            await owner._reply(ctx, "Usage: /link <channel|role|user|category|emote> …")
+            await owner._reply(ctx, f"Usage: {p}link <channel|role|user|category|emote> …")
 
         @self.group(name="unlink", invoke_without_command=True)
         async def unlink(ctx):
-            await owner._reply(ctx, "Usage: /unlink <channel|role|user|category|emote> …")
+            await owner._reply(ctx, f"Usage: {p}unlink <channel|role|user|category|emote> …")
 
         @self.group(name="linked", invoke_without_command=True)
         async def linked(ctx):
-            await owner._reply(ctx, "Usage: /linked <channels|roles|users|categories|emotes> …")
+            await owner._reply(ctx, f"Usage: {p}linked <channels|roles|users|categories|emotes> …")
 
         @self.group(name="mirror", invoke_without_command=True)
         async def mirror(ctx):
-            await owner._reply(ctx, "Usage: /mirror <channel|role|category|emote> …")
+            await owner._reply(ctx, f"Usage: {p}mirror <channel|role|category|emote> …")
 
         @link.command(name="channel")
         async def link_channel(ctx, service: str, external_id: str, local_id: str | None = None):
@@ -413,7 +421,7 @@ class _StoatClient(stoat_commands.Bot):
 
         @self.command(name="bridge-help")
         async def bridge_help(ctx):
-            await owner._reply(ctx, _HELP_TEXT)
+            await owner._reply(ctx, _help_text(p))
 
         @self.command(name="mirror-channels")
         async def mirror_channels(ctx, service: str):

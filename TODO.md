@@ -33,5 +33,8 @@
     discord.py `Permissions` classes (all were already correct);
     `NEUTRAL_PERMISSIONS` widened with embed_links/attach_files/add_reactions;
     `_is_admin` gained a server-owner fallback for permission-cache misses.
-14. [ ] Feat: Configurable Stoat command prefix char ('/' default, can be '!' etc.)
+14. [x] Feat: Configurable Stoat command prefix char ('/' default, can be '!' etc.)
+  - `StoatConnectorConfig.command_prefix` (env `STOAT__<i>__COMMAND_PREFIX`);
+    threaded into `_StoatClient`'s `commands.Bot` ctor and the `/bridge-help`
+    / usage strings (`_help_text`, `_StoatClient._prefix`).
 15. [ ] Feat: x is typing... forwarding

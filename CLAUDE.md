@@ -161,7 +161,8 @@ reach it on each connector is documented in
 `COMMANDS.md`, not duplicated here. On Discord the channel, role, user,
 category and emote commands are real `app_commands` subcommand groups
 (`/link`, `/unlink`, `/mirror`, `/linked`); on Stoat they're the equivalent
-`stoat.ext.commands` groups (`_StoatClient` subclasses `commands.Bot`; the
+`stoat.ext.commands` groups, triggered on a per-connector `command_prefix`
+(`StoatConnectorConfig`, `/` by default) (`_StoatClient` subclasses `commands.Bot`; the
 `_<verb>_<noun>` methods on `StoatSenderService` are what the subcommands
 forward to, and `_handle_message` skips relaying anything the command
 processor already claimed - tracked by message id in `_command_message_ids`,
