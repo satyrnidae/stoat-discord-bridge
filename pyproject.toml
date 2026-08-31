@@ -34,3 +34,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # Upstream stoat.py: stoat/ext/commands/core.py uses the deprecated
+    # asyncio.iscoroutinefunction (removed in Python 3.16). Not ours to fix. See issue #11.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:stoat.ext.commands.core",
+]
