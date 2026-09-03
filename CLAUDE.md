@@ -215,15 +215,20 @@ masquerade cap; on Discord a source label containing "discord" is masked by
 `_sanitize_username` (the webhook API rejects that substring).
 
 **Pronoun resolution** is best-effort and network-fed, since neither
-discord.py 2.7.1 nor stoat.py 1.2.1 models a pronoun field. Each sender
-resolves per-user (cached ~10 min, `services/caching.AsyncTTLCache` on
-`_pronoun_cache`), skips entirely when its own `pronoun_forwarding` is off,
-and swallows every failure to `None`:
+discord.py 2.7.1 nor stoat.py 1.2.1 models a pronoun field. A sender that
+resolves does so per-user (cached ~10 min, `services/caching.AsyncTTLCache`
+on `_pronoun_cache`), skips entirely when its own `pronoun_forwarding` is
+off, and swallows every failure to `None`:
 
-- **Discord** (`DiscordSenderService._fetch_pronouns_from_profile`): the
-  undocumented `GET /users/{id}/profile?guild_id=…` REST endpoint, hit by
-  hand via `client.http`. `guild_member_profile.pronouns` (this guild's
-  per-server value) preferred over `user_profile.pronouns` (account-wide).
+- **Discord**: **disabled** — `sender_pronouns` is always `None`
+  (`DiscordSenderService._resolve_sender_pronouns` is a stub). The only
+  source, the undocumented `GET /users/{id}/profile` REST endpoint, is
+  hard-blocked for bot tokens (`403`, error code `20001` "Bots cannot use
+  this endpoint"), so it failed on every relayed message (issue #58). The
+  profile-fetch code is preserved commented-out for a future where Discord
+  exposes pronouns to bots; a pronoun-role scan is a possible fallback, not
+  yet done. Discord's `pronoun_forwarding` now only governs whether an
+  *inbound* message's pronouns show in the webhook name (as on IRC).
 - **Stoat** (`StoatSenderService._fetch_pronouns`): a raw
   `http.request` for the server member (`SERVERS_MEMBER_FETCH`), then the
   account user, then the user profile — first `pronouns` key wins

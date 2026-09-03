@@ -48,11 +48,12 @@ discord:
     # name. (A source label that contains "discord" is masked by Discord's
     # own webhook-username rules.)
     source_forwarding: true
-    # Whether this connector resolves its own users' pronouns (via Discord's
-    # profile endpoint - this guild's per-server value preferred over the
-    # account-wide one) and shows a relayed sender's pronouns as
-    # "name [Stoat (public), she/her]". Defaults to true; set false (or
-    # DISCORD__0__PRONOUN_FORWARDING=false) to skip the lookup.
+    # Whether a relayed inbound message shows the origin sender's pronouns as
+    # "name [Stoat (public), she/her]" in the webhook name. Defaults to true;
+    # set false (or DISCORD__0__PRONOUN_FORWARDING=false) to suppress it.
+    # NOTE: Discord can't resolve its *own* users' pronouns - the profile
+    # endpoint is blocked for bots (issue #58) - so this only affects inbound
+    # display here, never what this connector forwards outward.
     pronoun_forwarding: true
 
 stoat:
