@@ -9,7 +9,10 @@ description = "Multi-way chat bridge: Discord <-> Stoat (public + self-hosted) <
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "discord.py>=2.4.0",
+    # 2.5.0 is the first release to declare `audioop-lts; python_version >= "3.13"`,
+    # which supplies the `audioop` module discord.py's player.py imports after PEP 594
+    # removed it from the stdlib in 3.13. See issue #22.
+    "discord.py>=2.5.0",
     "stoat.py>=1.2.0",
     "irc>=20.3.0",
     "python-dotenv>=1.0.1",
@@ -41,4 +44,8 @@ filterwarnings = [
     # Upstream stoat.py: stoat/ext/commands/core.py uses the deprecated
     # asyncio.iscoroutinefunction (removed in Python 3.16). Not ours to fix. See issue #11.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:stoat.ext.commands.core",
+    # Upstream discord.py: player.py does a module-level `import audioop` (used only on
+    # the voice-playback path the bridge never touches). Deprecated on 3.11-3.12; on 3.13
+    # discord.py pulls the `audioop-lts` backport instead. Not ours to fix. See issue #22.
+    "ignore:'audioop' is deprecated:DeprecationWarning:discord.player",
 ]
