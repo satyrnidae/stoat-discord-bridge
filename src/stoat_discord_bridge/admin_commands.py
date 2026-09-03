@@ -226,6 +226,26 @@ class ConnectorInfo:
     # receiver's existing create_emoji.
     ensure_emoji: Callable[["CustomEmoji"], Awaitable["CustomEmoji | None"]] | None = None
 
+    # --- Capability flags, derived from which hooks are wired ---------------
+    # Whether this connector kind has the concept a given command family
+    # operates on. IRC has none of roles/Categories/custom emoji, so it wires
+    # none of those hooks - `/link role`, `/link category`, `/link emote` and
+    # their siblings can't meaningfully target it, and Discord's slash-command
+    # `service` autocomplete filters it out of those subcommands (see
+    # services/discord_service/commands.py). Channels and users exist on every
+    # connector kind, so there's no `supports_channels` / `supports_users`.
+    @property
+    def supports_roles(self) -> bool:
+        return self.resolve_role_name is not None
+
+    @property
+    def supports_categories(self) -> bool:
+        return self.resolve_category_name is not None
+
+    @property
+    def supports_emotes(self) -> bool:
+        return self.resolve_emoji_name is not None
+
 
 class ChannelLinker:
     def __init__(self, channel_mappings: ChannelMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
