@@ -50,10 +50,12 @@ _REDACTED = "***"
 # debugging - left at WARNING unless the whole bridge is running at DEBUG.
 _NOISY_THIRD_PARTY_LOGGERS = ("discord", "aiohttp", "websockets", "irc")
 
-# Verbatim secret strings to scrub from every log line. Populated by
-# register_secret_values() once config has been resolved. Sorted longest-first
-# at redaction time so an overlapping substring can't leave a fragment behind.
+# Verbatim secret strings to scrub from every log line, populated by
+# register_secret_values() once config has been resolved, and the same set
+# pre-sorted longest-first (so an overlapping substring can't leave a fragment
+# behind) - rebuilt on each registration rather than re-sorted per log line.
 _secret_values: set[str] = set()
+_secret_values_by_length: tuple[str, ...] = ()
 
 # A registered value shorter than this is ignored - too likely to be a common
 # substring (a "/" command prefix, a two-letter oper name) whose blanket
@@ -61,15 +63,18 @@ _secret_values: set[str] = set()
 _MIN_SECRET_LEN = 5
 
 # Credential-bearing IRC commands as they appear in the `irc` library's raw
-# `TO SERVER:` / `FROM SERVER:` debug lines - `OPER <name> <password>`, bare
-# `PASS <password>`, and `IDENTIFY [account] <password>` (NickServ, whether
-# sent as `PRIVMSG NickServ :IDENTIFY ...` or bare). Anchored to end-of-line
-# (the whole raw command is one log line) so an ordinary sentence that merely
-# contains the word "OPER"/"identify" isn't mangled.
-_IRC_OPER_RE = re.compile(r"\b(OPER\s+\S+\s+)\S+\s*$", re.IGNORECASE | re.MULTILINE)
-_IRC_PASS_RE = re.compile(r"\b(PASS\s+)\S+\s*$", re.IGNORECASE | re.MULTILINE)
-_NICKSERV_IDENTIFY_RE = re.compile(
-    r"\b(IDENTIFY\s+)(?:(\S+)\s+)?\S+\s*$",
+# protocol echo - it logs every sent/received line through its logger as
+# "TO SERVER: <line>" / "FROM SERVER: <line>" at DEBUG. Three carry a
+# password: `OPER <name> <password>`, bare `PASS <password>`, and
+# `PRIVMSG NickServ :IDENTIFY [account] <password>` (or a bare `IDENTIFY`).
+# Gated on the "SERVER:" marker so this only fires on a real protocol echo -
+# an ordinary log line that happens to contain the word "OPER"/"identify" is
+# left alone - and, once matched, everything from the credential to
+# end-of-line is redacted in one go (`OPER`'s <name> is kept; `IDENTIFY`'s
+# optional <account> is not - erring safe beats trying to tell account and
+# password apart when the password needn't be the last token).
+_IRC_CRED_RE = re.compile(
+    r"(SERVER:.*?\b(?:OPER\s+\S+\s+|PASS\s+|IDENTIFY\s+))\S.*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -87,6 +92,7 @@ def register_secret_values(*values: object) -> None:
     additionally split so its embedded `user:pass@` userinfo is redacted even
     though the full URI never appears verbatim in a log line.
     """
+    global _secret_values_by_length
     for value in values:
         if not isinstance(value, str) or len(value) < _MIN_SECRET_LEN:
             continue
@@ -100,19 +106,15 @@ def register_secret_values(*values: object) -> None:
                 for form in {part, unquote(part)} if part else ():
                     if len(form) >= _MIN_SECRET_LEN:
                         _secret_values.add(form)
+    _secret_values_by_length = tuple(sorted(_secret_values, key=len, reverse=True))
 
 
 def _redact(text: str) -> str:
-    for secret in sorted(_secret_values, key=len, reverse=True):
+    for secret in _secret_values_by_length:
         if secret in text:
             text = text.replace(secret, _REDACTED)
 
-    text = _IRC_OPER_RE.sub(lambda m: m.group(1) + _REDACTED, text)
-    text = _IRC_PASS_RE.sub(lambda m: m.group(1) + _REDACTED, text)
-    text = _NICKSERV_IDENTIFY_RE.sub(
-        lambda m: m.group(1) + (f"{m.group(2)} " if m.group(2) else "") + _REDACTED,
-        text,
-    )
+    text = _IRC_CRED_RE.sub(lambda m: m.group(1) + _REDACTED, text)
 
     if _redact_ids_enabled():
         text = _SNOWFLAKE_RE.sub(_REDACTED, text)

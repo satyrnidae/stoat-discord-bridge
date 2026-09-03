@@ -21,6 +21,7 @@ from stoat_discord_bridge.logging_setup import (
 @pytest.fixture(autouse=True)
 def _clean_secret_registry(monkeypatch):
     monkeypatch.setattr(logging_setup, "_secret_values", set())
+    monkeypatch.setattr(logging_setup, "_secret_values_by_length", ())
     monkeypatch.delenv("LOG_REDACT_IDS", raising=False)
 
 
@@ -76,11 +77,24 @@ def test_bare_pass_line_is_redacted():
 def test_nickserv_identify_password_is_redacted():
     with_account = _format("TO SERVER: PRIVMSG NickServ :IDENTIFY botnick nickservpw123")
     assert "nickservpw123" not in with_account
-    assert "IDENTIFY botnick ***" in with_account
+    assert "IDENTIFY ***" in with_account
 
     without_account = _format("TO SERVER: PRIVMSG NickServ :IDENTIFY nickservpw123")
     assert "nickservpw123" not in without_account
     assert "IDENTIFY ***" in without_account
+
+
+def test_identify_redacts_the_whole_tail_not_just_the_last_token():
+    # Everything after IDENTIFY goes, so the password is scrubbed even when
+    # it isn't the final token.
+    out = _format("TO SERVER: PRIVMSG NickServ :IDENTIFY nickservpw123 trailing junk")
+    assert "nickservpw123" not in out
+    assert "IDENTIFY ***" in out
+
+
+def test_identify_outside_a_protocol_echo_is_left_alone():
+    line = "could not identify user someone in the roster"
+    assert _format("%s", line).endswith(line)
 
 
 def test_exception_traceback_is_redacted():
