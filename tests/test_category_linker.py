@@ -380,7 +380,8 @@ async def test_mirror_category_creates_links_and_mirrors_child_channels(fake_db)
 
     assert created == ["Team"]
     assert moved == [("d-chan-2", "dest-Team")]
-    assert ("general", "dest-Team") in ensure_channel_calls
+    # child channels are placed by Category *name*, not the raw id (issue #64)
+    assert ("general", "Team") in ensure_channel_calls
     assert "Linked" in summary
 
 
@@ -414,7 +415,51 @@ async def test_mirror_category_new_name_titles_the_counterpart_only(fake_db):
     )
 
     assert created == ["Team Chat"]
-    assert ensure_channel_calls == [("general", "dest-Team Chat")]
+    assert ensure_channel_calls == [("general", "Team Chat")]
+
+
+async def test_mirror_category_stores_the_name_not_the_id_when_the_cache_is_stale(fake_db):
+    # issue #64: the connector's resolve_category_name can't see a
+    # just-created Category yet (its cache is populated at connect and blind
+    # to fresh edits), so _resolve_name falls back to echoing the id. The
+    # mirrored Category must still be recorded - and its children placed -
+    # under the real title, not "dest-Team".
+    ensure_category, created = _ensure_category_fake()
+    ensure_channel_calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        ensure_channel_calls.append((name, category))
+        return f"dest-chan-{name}"
+
+    async def channels_in_category(cid):
+        return [("s-chan-1", "general")]
+
+    async def resolve_category_name(cid):
+        return None  # stale cache: the freshly created Category isn't visible
+
+    connectors = {
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", channels_in_category=channels_in_category),
+        "discord": ConnectorInfo(
+            id="discord",
+            label="Discord",
+            ensure_category=ensure_category,
+            ensure_channel=ensure_channel,
+            resolve_category_name=resolve_category_name,
+        ),
+    }
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert created == ["Team"]
+    assert ensure_channel_calls == [("general", "Team")]  # not ("general", "dest-Team")
+    group = await category_mappings.get_bridge_group("discord", "dest-Team")
+    mapped = await category_mappings.get_mapped_categories(group)
+    dest = next(m for m in mapped if m.connector_id == "discord")
+    assert dest.category_name == "Team"
+    assert "'Team'" in summary
 
 
 async def test_mirror_category_from_new_name_titles_the_new_local_category(fake_db):

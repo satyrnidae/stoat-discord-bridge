@@ -1004,11 +1004,24 @@ class CategoryLinker:
 
         bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
         dest_category_id: str | None = None
+        match = None
         if bridge_group is not None:
             existing = await self._category_mappings.get_mapped_categories(bridge_group)
             match = next((m for m in existing if m.connector_id == destination), None)
             if match is not None:
                 dest_category_id = match.category_id
+
+        # Resolve the destination Category's name, but fall back to a known-good
+        # `fallback` rather than echoing the raw id when the lookup comes up
+        # empty. `ensure_category` just created-or-matched the Category as
+        # `target_name`, and the connector's cache won't show a brand-new one
+        # yet, so `_resolve_name` would hand back the id - which then gets
+        # stored as the Category's name and, worse, passed to child-channel
+        # placement as a Category *title*, spawning a second Category literally
+        # named after the id (issue #64).
+        async def _dest_name(fallback: str) -> str:
+            resolved = await self._resolve_name(destination, dest_category_id)
+            return resolved if resolved != dest_category_id else fallback
 
         lines: list[str] = []
         if dest_category_id is None:
@@ -1024,7 +1037,7 @@ class CategoryLinker:
                     await self.link_category(
                         local_connector=destination,
                         local_category_id=dest_category_id,
-                        local_category_name=await self._resolve_name(destination, dest_category_id),
+                        local_category_name=await _dest_name(target_name),
                         source=local_connector,
                         source_id=local_category_id,
                         destination_id=None,
@@ -1035,7 +1048,9 @@ class CategoryLinker:
         else:
             lines.append(f"{dest_label}: already linked - reusing '{dest_category_id}'.")
 
-        dest_category_name = await self._resolve_name(destination, dest_category_id)
+        dest_category_name = await _dest_name(
+            (match.category_name if match is not None else None) or target_name
+        )
         info = self._connectors.get(local_connector)
         if info is not None and info.channels_in_category is not None:
             try:
