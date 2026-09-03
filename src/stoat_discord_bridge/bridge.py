@@ -758,6 +758,8 @@ async def run(config: BridgeConfig) -> None:
             on_channel_linked=sender.join_channel,
             on_channel_unlinked=sender.part_channel,
             ensure_channel=sender.ensure_channel,
+            resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
+            list_channels=sender.list_channels,
         )
         senders.append(sender)
         closables.append(sender)

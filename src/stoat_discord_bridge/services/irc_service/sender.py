@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections.abc import Awaitable
 
@@ -31,6 +30,7 @@ from stoat_discord_bridge.services.irc_service.formatting import (
     _PERMANENT_CHANNEL_MODE,
     _split_permanent_mode,
     _synthetic_message_id,
+    normalize_channel_name,
 )
 from stoat_discord_bridge.status import HealthTracker
 
@@ -326,11 +326,31 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         `description` is usable - it becomes the channel TOPIC, set only when
         this JOIN just created the channel (see join_channel); NSFW / icon
         have no IRC equivalent and are ignored."""
-        normalized = re.sub(r"\s+", "-", name.strip().lower())
-        channel = normalized if normalized.startswith("#") else f"#{normalized}"
+        channel = normalize_channel_name(name)
         topic = metadata.description if metadata is not None else None
         await self.join_channel(channel, permanent=not is_thread_category, topic=topic)
         return channel
+
+    async def resolve_channel_id_by_name(self, token: str) -> str | None:
+        """Wired into `ConnectorInfo.resolve_channel_id_by_name` so every
+        channel command (`/link channel irc general`, `MIRROR CHANNEL …`,
+        `/unlink channel …`) accepts a bare channel name and gets the same
+        `#name` sterilization `#general` would (issue #41). Unlike
+        Discord/Stoat's version this is not a name->id lookup - an IRC
+        channel id *is* its name - it just normalizes the token (adds the
+        `#`, strips characters IRC channel names can't hold; see
+        normalize_channel_name)."""
+        return normalize_channel_name(token)
+
+    async def list_channels(self) -> list[tuple[str, str]]:
+        """Autocomplete source for Discord's `/link channel` `external_id`
+        option when its `service` is this IRC connector (issue #41). IRC has
+        no queryable channel directory, so this offers the channels this
+        connector already knows - the ones from config plus any it's been
+        linked into - which is what an operator is picking from anyway. The
+        display name drops the `#` (the id keeps it) so the rendered choice
+        reads `general (#general)` rather than doubling the prefix."""
+        return [(c, c.lstrip("#")) for c in self._channels]
 
     def _schedule(self, coro: Awaitable[None]) -> None:
         # on_pubmsg/on_privmsg run on the IRC reactor's blocking select loop,

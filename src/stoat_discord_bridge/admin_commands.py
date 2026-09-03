@@ -91,8 +91,11 @@ class ConnectorInfo:
     # channels`) accept a bare channel name anywhere an id is expected.
     # None/exception/falsy return all mean "treat the token as an id already"
     # (ChannelLinker._resolve_to_id) - the same contract as
-    # resolve_role_id_by_name. IRC leaves this unset: a channel id there is
-    # already `#name`.
+    # resolve_role_id_by_name. IRC wires this too (issue #41): a channel id
+    # there is already `#name`, but the hook still sterilizes a bare token
+    # into that shape (adds the `#`, drops characters IRC channel names
+    # can't hold - see irc_service.formatting.normalize_channel_name), so
+    # `/link channel irc general` behaves like `/link channel irc #general`.
     resolve_channel_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
     # Best-effort native-channel-id -> (category_id, category_name) lookup for
     # the Category a channel sits in, or None if it's uncategorised / can't be
@@ -261,9 +264,11 @@ class ConnectorInfo:
     # real channel/role/user/Category/emoji from the menu instead of pasting
     # a raw id. Best-effort: None (unset), an exception, or an empty list all
     # just mean "no suggestions" - the option still accepts a hand-typed id
-    # or name. IRC leaves every one unset (its ids are already human-typable
-    # names). list_roles / list_categories / list_emotes are Discord/Stoat
-    # only, like the rest of their hook families. ---
+    # or name. IRC wires only list_channels (issue #41), from the channels it
+    # already knows - config plus anything linked; its other ids are already
+    # human-typable names with nothing to enumerate. list_roles /
+    # list_categories / list_emotes are Discord/Stoat only, like the rest of
+    # their hook families. ---
     list_channels: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     list_categories: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     list_roles: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None

@@ -227,13 +227,20 @@ space-separated (`LINK CHANNEL …` / `LINK USER …` / `MIRROR CHANNEL TO …` 
 Every id argument to a channel, role, user, category or emote command also
 accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /
 `resolve_role_id_by_name` / `resolve_user_id_by_name` /
-`resolve_category_id_by_name`). On Discord those id options are also
+`resolve_category_id_by_name`). On IRC `resolve_channel_id_by_name` isn't a
+lookup (a channel id there *is* its name) — it just sterilizes the token
+into the `#name` shape the server accepts (prepends `#`, drops characters
+IRC channel names can't hold — `irc_service.formatting.normalize_channel_name`,
+also used by `ensure_channel`), so `/link channel irc general` works the
+same as `/link channel irc #general` (issue #41). On Discord those id options are also
 **autocompleted**: the `external_id` option lists the real
 channels/roles/users/Categories/emoji on whatever connector the `service`
 option names, and `local_id` lists this guild's own — pulled live from the
 target `ConnectorInfo.list_channels` / `list_categories` / `list_roles` /
 `list_users` / `list_emotes` hooks (Discord + Stoat implement them off their
-cached guild/server; IRC leaves them unset). `_entity_autocomplete_choices`
+cached guild/server; IRC wires only `list_channels`, from the channels it
+already knows — config plus anything linked — and leaves the rest unset).
+`_entity_autocomplete_choices`
 (`services/discord_service/commands.py`) is the shared filter, the entity-id
 counterpart of `_connector_autocomplete_choices`; every lookup is
 best-effort (an un-picked `service`, an unset or raising hook, or a
