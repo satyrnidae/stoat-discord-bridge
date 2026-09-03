@@ -250,22 +250,38 @@ class _StoatClient(stoat_commands.Bot):
         await self._owner._handle_channel_create(event.channel)
 
     async def on_server_member_update(self, event, /) -> None:
-        # TODO: unverified against a live server - event/attr shape assumed
-        # from stoat.events.ServerMemberUpdateEvent (.before / .after Member).
+        # stoat.events.ServerMemberUpdateEvent: `.member` (PartialMember,
+        # the changed fields), `.before` / `.after` (Optional[Member], both
+        # carrying `.id` / `.server_id` / `.role_ids`). `before` / `after` are
+        # None when the member isn't cached. Verified against stoat.py 1.2.1
+        # (event_name 'server_member_update' -> this handler); live-server
+        # payload completeness still unverified.
         await self._owner._handle_member_update(event)
 
     async def on_raw_server_role_update(self, event, /) -> None:
-        # TODO: unverified - stoat.events.RawServerRoleUpdateEvent, combined
-        # create+update; .old_role is None => created (ignored here).
+        # stoat.events.RawServerRoleUpdateEvent (event_name
+        # 'raw_server_role_update'): `.role` (PartialRole), `.old_role` /
+        # `.new_role` (Optional[Role]), `.server` (Optional[Server]). Combined
+        # create+update; `.old_role is None` => created *or* server uncached
+        # (ignored here either way). Verified against stoat.py 1.2.1; live
+        # server unverified.
         await self._owner._handle_role_update(event)
 
     async def on_server_role_delete(self, event, /) -> None:
-        # TODO: unverified - stoat.events.ServerRoleDeleteEvent (.role_id, .server_id).
+        # stoat.events.ServerRoleDeleteEvent (event_name 'server_role_delete'):
+        # `.server_id`, `.role_id`, plus Optional `.server` / `.role`. Verified
+        # against stoat.py 1.2.1; live server unverified.
         await self._owner._handle_role_delete(event)
 
     async def on_channel_update(self, event, /) -> None:
-        # TODO: unverified - stoat.events.ChannelUpdateEvent (.before / .after
-        # channels, each with a .role_permissions dict[str, PermissionOverride]).
+        # stoat.events.ChannelUpdateEvent (event_name 'channel_update'):
+        # `.channel` (PartialChannel, the changed fields), `.before` / `.after`
+        # (Optional[Channel]). A server channel's `.role_permissions` is
+        # `dict[str, PermissionOverride]` (each with `.allow` / `.deny`
+        # Permissions); PartialChannel carries it too but only when it changed,
+        # and the private-channel members of the Channel union lack it - hence
+        # the getattr guards in _handle_channel_update. Verified against
+        # stoat.py 1.2.1; live server unverified.
         await self._owner._handle_channel_update(event)
 
     async def on_channel_start_typing(self, event, /) -> None:
@@ -1977,8 +1993,10 @@ class StoatSenderService(SenderService):
 
     async def _handle_member_update(self, event) -> None:
         """A server member changed - diff their role id set for role
-        auto-grant. TODO: attr shape (event.before / event.after, both
-        Member with .role_ids) assumed from stoat.events - unverified."""
+        auto-grant. `event.before` / `event.after` are Optional[Member], each
+        with `.id` / `.server_id` / `.role_ids` (verified against stoat.py
+        1.2.1); `after is None` when the member wasn't cached, so nothing to
+        diff. `event.member` (PartialMember) is the id fallback."""
         if self._on_member_roles_changed is None:
             return
         before = getattr(event, "before", None)
@@ -1998,8 +2016,12 @@ class StoatSenderService(SenderService):
 
     async def _handle_role_update(self, event) -> None:
         """A role was created or edited - propagate a rename to linked
-        copies. `old_role is None` means created, which we ignore (roles
-        aren't auto-mirrored on creation)."""
+        copies. `RawServerRoleUpdateEvent` is the combined create+update
+        event: `event.old_role` (Optional[Role]) is None both when the role
+        was just created and when the server isn't cached, so a None
+        `old_role` is skipped either way (roles aren't auto-mirrored on
+        creation). `event.new_role` falls back to `event.role` (PartialRole).
+        Verified against stoat.py 1.2.1."""
         if self._on_role_renamed is None:
             return
         old_role = getattr(event, "old_role", None)
@@ -2024,7 +2046,12 @@ class StoatSenderService(SenderService):
 
     async def _handle_channel_update(self, event) -> None:
         """A channel was edited - diff its role permission overrides for
-        permission mirroring. TODO: attr shapes unverified."""
+        permission mirroring. `event.before` / `event.after` are
+        Optional[Channel]; a server channel exposes `.role_permissions` as
+        `dict[str, PermissionOverride]` (each override with `.allow` / `.deny`).
+        `event.channel` (PartialChannel) is the fallback when `after` is None -
+        it carries only the fields that changed. Verified against stoat.py
+        1.2.1."""
         if self._on_channel_role_permission_changed is None:
             return
         before = getattr(event, "before", None)

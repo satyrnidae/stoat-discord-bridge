@@ -263,9 +263,12 @@ stoat.py 1.2.1) and pinned there by
 `tests/test_stoat_permission_flag_names.py`. The Stoat command-execution
 gate (`StoatSenderService._is_admin`) likewise checks the real
 `Permissions.manage_server` flag (server owners always pass). stoat.py's
-member/role/channel gateway *event shapes* are still assumed from
-`stoat.events` and unverified against a live server (`TODO`s in
-`stoat_service.py`).
+member/role/channel gateway *event shapes* — `ServerMemberUpdateEvent`,
+`RawServerRoleUpdateEvent`, `ServerRoleDeleteEvent`, `ChannelUpdateEvent`,
+including the `event_name`→`on_*` handler mapping — are verified against
+stoat.py 1.2.1 (`stoat.events`); only live-server payload completeness
+(whether `before`/`after` arrive populated, which depends on cache state)
+is still unverified.
 
 `ChannelLinker.unlink_channel` dissolves a bridge group down to nothing
 rather than leaving a lone member (a group of one isn't a bridge), and fires
