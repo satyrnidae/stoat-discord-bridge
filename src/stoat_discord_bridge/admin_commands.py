@@ -419,7 +419,12 @@ class ChannelLinker:
         bad destination abort the rest. `local_channel_category`, if given,
         is the Category the source channel belongs to on `local_connector` -
         `destination`'s ensure_channel() places the mirrored channel into a
-        same-named Category there too. `is_thread_category` is only ever
+        Category there too. If the source channel's Category is itself already
+        linked (via `/link category`) to a Category on `destination`, the
+        mirrored channel lands in *that* linked Category rather than a fresh
+        same-named one (issue #50) - so `/mirror channel` (both directions and
+        `all`) respects linked Categories the same way `/mirror channel from`
+        already did. `is_thread_category` is only ever
         True from DiscordSenderService._handle_thread_create's auto-mirror -
         it marks that destination Category as thread-only, so
         `/link-category` later refuses to link it.
@@ -478,6 +483,16 @@ class ChannelLinker:
                 category_parent_channel_id = linked_parent.channel_id
                 if linked_parent.channel_name:
                     category = linked_parent.channel_name
+        else:
+            # Respect linked Categories: if `local_channel_id`'s Category on
+            # `local_connector` is already linked to one on `destination`,
+            # land the mirrored channel in that linked Category (by its name
+            # on `destination`) instead of a fresh same-named one (issue #50).
+            linked_category = await self._local_category_for_source_channel(
+                destination, local_connector, local_channel_id
+            )
+            if linked_category is not None:
+                category = linked_category
 
         # Cosmetic metadata (description / maturity / icon) off the source
         # channel, so the mirrored channel isn't created blank (issue #32).
@@ -553,11 +568,11 @@ class ChannelLinker:
 
         Mechanically this is `mirror_channel` with the connectors swapped
         (push `source`'s channel to `local_connector`), which gets bridge-
-        group reuse for free via `link_channel`. On top of that it "respects
-        other linked entities": if the source channel sits in a Category
-        that's already linked (via `/link category`) to a Category here, the
-        new local channel is placed into *that* linked Category rather than a
-        fresh same-named one.
+        group reuse for free via `link_channel` and linked-Category respect
+        for free via `mirror_channel`'s own resolution (issue #50): if the
+        source channel sits in a Category that's already linked (via
+        `/link category`) to a Category here, the new local channel is placed
+        into *that* linked Category rather than a fresh same-named one.
 
         `new_name`, if given, names the freshly-created local channel instead
         of carrying the source channel's name over (issue #44)."""
@@ -569,24 +584,25 @@ class ChannelLinker:
         source_id = await self._resolve_to_id(source, source_id)
         source_name = await self._resolve_name(source, source_id)
 
-        category_name = await self._local_category_for_source_channel(local_connector, source, source_id)
-
         return await self.mirror_channel(
             local_connector=source,
             local_channel_id=source_id,
             local_channel_name=source_name,
             destination=local_connector,
-            local_channel_category=category_name,
             new_name=new_name,
         )
 
     async def _local_category_for_source_channel(
         self, local_connector: str, source: str, source_channel_id: str
     ) -> str | None:
-        """The name of the Category `source_channel_id`'s Category is linked
-        to on `local_connector` (so `mirror_channel_from` lands the new
-        channel there), or the source Category's own name if it isn't linked,
-        or None if the source channel is uncategorised / unresolvable."""
+        """The name, on `local_connector`, of the Category that
+        `source_channel_id`'s Category (on `source`) is linked to via
+        `/link category` - so `mirror_channel` / `mirror_channel_from` land the
+        new channel there - or the source Category's own name if it isn't
+        linked, or None if the source channel is uncategorised / unresolvable.
+        `source` and `local_connector` are just "the connector the channel is
+        on" and "the connector we want the linked Category name on"; either
+        direction of `/mirror channel` fills them in."""
         info = self._connectors.get(source)
         if info is None or info.resolve_channel_category is None:
             return None

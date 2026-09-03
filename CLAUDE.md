@@ -215,8 +215,12 @@ reach it on each connector is documented in
 `to` pushes a local entity onto another connector (the historical
 `/mirror <noun>` behaviour), `from <service> <external_id>` pulls a remote
 entity in and creates the local copy - respecting already-linked entities
-(a `from` channel lands in the local counterpart of the source channel's
-linked Category; bridge/mapping groups are reused). Both directions of every
+(bridge/mapping groups are reused). `/mirror channel` in *either* direction
+(and `all`) lands the counterpart in the destination's own copy of the source
+channel's linked Category when that Category is `/link category`-linked -
+resolved by `ChannelLinker._local_category_for_source_channel`, not by an
+exact Category-name match - and only falls back to a same-named Category when
+it isn't linked (issue #50). Both directions of every
 `/mirror <noun>` take an optional trailing `new_name` (`admin_commands.py`'s
 `_clean_new_name`): the name the counterpart is created/matched under on the
 destination instead of carrying the source name over - routed through the

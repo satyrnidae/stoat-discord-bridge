@@ -1130,6 +1130,100 @@ async def test_mirror_channel_forwards_category_to_ensure_channel(fake_db):
     assert calls == [("general", "Team Alpha")]
 
 
+async def test_mirror_channel_to_uses_the_linked_destination_category(fake_db):
+    # The source channel's Category is linked to a *differently-named*
+    # Category on the destination - the mirrored channel must land in that
+    # linked Category, not a fresh same-named one (issue #50).
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    async def resolve_channel_category(cid):
+        return ("dcat", "Discord Team")
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_channel_category=resolve_channel_category),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    category_mappings = CategoryMappingRepository(fake_db)
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="discord", category_id="dcat", category_name="Discord Team")
+    )
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="stoat", category_id="scat", category_name="Stoat Team")
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, category_mappings)
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        local_channel_category="Discord Team",
+    )
+    assert calls == [("general", "Stoat Team")]
+
+
+async def test_mirror_channel_to_falls_back_to_source_category_when_unlinked(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    async def resolve_channel_category(cid):
+        return ("dcat", "Discord Team")
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_channel_category=resolve_channel_category),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, CategoryMappingRepository(fake_db))
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        local_channel_category="ignored",
+    )
+    assert calls == [("general", "Discord Team")]
+
+
+async def test_mirror_channel_all_uses_each_destinations_linked_category(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    async def resolve_channel_category(cid):
+        return ("dcat", "Discord Team")
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_channel_category=resolve_channel_category),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    category_mappings = CategoryMappingRepository(fake_db)
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="discord", category_id="dcat", category_name="Discord Team")
+    )
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="stoat", category_id="scat", category_name="Stoat Team")
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, category_mappings)
+
+    await linker.mirror_channel_all(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        local_channel_category="Discord Team",
+    )
+    assert calls == [("general", "Stoat Team")]
+
+
 async def test_mirror_channel_reads_source_metadata_and_forwards_it_to_ensure_channel(fake_db):
     ensure_calls = []
 
