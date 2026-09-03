@@ -189,6 +189,31 @@ async def test_mapped_but_no_target_side_expanded_to_origin_name(fake_db):
     assert result == "hi @Alice there"
 
 
+async def test_expanded_name_cannot_mass_ping_or_inject_mentions(fake_db):
+    # a hostile display name must not turn into a live @everyone / <@&role> ping
+    repo = UserMappingRepository(fake_db)
+    result = await rewrite_mentions(
+        "hi <@999>", origin_connector_id="discord", target_connector_id="discord",
+        target_kind="discord", user_mappings=repo,
+        mentioned_users={"999": "everyone <@&123>"},
+    )
+    assert "@everyone" not in result
+    assert "<@&123>" not in result
+    zwsp = "\u200b"
+    assert result == f"hi @{zwsp}everyone <{zwsp}@&123>"
+
+
+async def test_expanded_plain_name_is_untouched(fake_db):
+    # the defang only wedges in a zero-width space where a ping could form;
+    # an ordinary name passes through verbatim.
+    repo = UserMappingRepository(fake_db)
+    result = await rewrite_mentions(
+        "hi <@999>", origin_connector_id="discord", target_connector_id="discord",
+        target_kind="discord", user_mappings=repo, mentioned_users={"999": "Morning Witch"},
+    )
+    assert result == "hi @Morning Witch"
+
+
 async def test_linked_mention_still_wins_over_origin_name(fake_db):
     repo = await _linked(fake_db, ("g1", "discord", "111"), ("g1", "stoat", "s1"))
     result = await rewrite_mentions(

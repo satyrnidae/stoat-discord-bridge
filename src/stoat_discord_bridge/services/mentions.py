@@ -198,6 +198,10 @@ async def rewrite_mentions(
     rather than relayed as the raw id token (issue #56); a mention still not
     covered by the map is left exactly as it appeared."""
     mentioned_users = mentioned_users or {}
+    # Unlinked `<@id>` mentions we can name are expanded only *after* the
+    # plain-word nick scan below, so an injected display name can't itself be
+    # re-read as a nick mention - the raw token is inert to that scan.
+    pending_expansions: list[tuple[str, str]] = []
     for pattern in (_DISCORD_MENTION, _STOAT_MENTION):
         for match in list(pattern.finditer(content)):
             target_id, target_name = await _resolve_target(
@@ -206,7 +210,7 @@ async def rewrite_mentions(
             if target_id is not None:
                 content = content.replace(match.group(0), _render_mention(target_kind, target_id, target_name))
             elif match.group(1) in mentioned_users:
-                content = content.replace(match.group(0), f"@{mentioned_users[match.group(1)]}")
+                pending_expansions.append((match.group(0), mentioned_users[match.group(1)]))
 
     # IRC-origin (and, harmlessly, any other origin) plain-word nick scan:
     # any linked identity whose *own* user_id literally appears in the text
@@ -221,7 +225,27 @@ async def rewrite_mentions(
         if target_id is not None:
             content = pattern.sub(_render_mention(target_kind, target_id, target_name), content)
 
+    for token, name in pending_expansions:
+        content = content.replace(token, _defang_mentions("@" + name))
+
     return content
+
+
+_ZWSP = "\u200b"
+_PING_KEYWORD = re.compile(r"@(everyone|here)\b")
+
+
+def _defang_mentions(text: str) -> str:
+    """Neutralise anything in a `@<origin display name>` expansion that a
+    target could parse as a live mention before it's spliced into relayed
+    text - an `@everyone` / `@here` mass ping (whether it's the leading `@`
+    we added or one inside the name) and any stray `<@id>` / `<#id>` /
+    `<@&id>` / `<%id>` token - by wedging a zero-width space in after the
+    sigil. It still reads the same; it just can't ping. (The bridge sets no
+    `allowed_mentions` on its webhook/masquerade sends, so an un-defanged
+    `@everyone` in a display name would be a live mass ping.)"""
+    text = _PING_KEYWORD.sub(rf"@{_ZWSP}\1", text)
+    return text.replace("<@", f"<{_ZWSP}@").replace("<#", f"<{_ZWSP}#").replace("<%", f"<{_ZWSP}%")
 
 
 async def _resolve_target(

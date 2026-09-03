@@ -313,7 +313,14 @@ user's name on the origin, carried on `StandardMessage.mentioned_users` —
 populated best-effort by the Discord/Stoat senders off the message's
 `mentions`, absent on IRC which has no structured mentions) rather than
 relaying the raw `<@id>` token (issue #56). A mention the map can't name is
-still left exactly as it appeared.
+still left exactly as it appeared. That expansion is the one place relayed
+text picks up an `@`-prefixed token from an attacker-controlled string, so
+it's run through `mentions._defang_mentions` (a zero-width space wedged in
+after the sigil of any `@everyone` / `@here` / `<@…>` / `<#…>` / `<%…>` it
+contains) — the bridge sets no `allowed_mentions` on its webhook/masquerade
+sends, so an un-defanged `@everyone` in a display name would be a live mass
+ping. It's also applied *after* the plain-word nick scan so an injected
+name can't itself be re-read as a nick mention.
 
 `RoleSyncCoordinator` (`bridge.py`) keeps linked roles coherent:
 
