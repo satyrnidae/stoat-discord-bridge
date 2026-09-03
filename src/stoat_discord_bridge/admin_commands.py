@@ -376,6 +376,35 @@ class ConnectorInfo:
         return self.resolve_emoji_name is not None
 
 
+# The Category id<->name walk shared by ChannelLinker._resolve_destination_category_name
+# and CategoryLinker._resolve_to_id / _resolve_name (issue #78). Both take an already
+# looked-up `ConnectorInfo` (or None) plus the connector id for logging.
+async def _resolve_category_id(info: ConnectorInfo | None, token: str, *, connector: str) -> str:
+    """Resolve a Category name `token` to its id via `resolve_category_id_by_name`,
+    falling back to `token` unchanged (already an id, no hook, or unresolvable)."""
+    if info is None or info.resolve_category_id_by_name is None:
+        return token
+    try:
+        resolved = await info.resolve_category_id_by_name(token)
+    except Exception:
+        logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
+        return token
+    return resolved or token
+
+
+async def _resolve_category_title(info: ConnectorInfo | None, category_id: str, *, connector: str) -> str | None:
+    """Resolve a Category id to its canonical title via `resolve_category_name`, or
+    None (no hook, unresolvable, or the hook raised)."""
+    if info is None or info.resolve_category_name is None:
+        return None
+    try:
+        name = await info.resolve_category_name(category_id)
+    except Exception:
+        logger.debug("couldn't resolve category id %r on %s", category_id, connector, exc_info=True)
+        return None
+    return name or None
+
+
 class ChannelLinker:
     def __init__(
         self,
@@ -723,23 +752,10 @@ class ChannelLinker:
         info = self._connectors.get(connector)
         if info is None:
             return token
-        category_id = token
-        if info.resolve_category_id_by_name is not None:
-            try:
-                resolved = await info.resolve_category_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
-                resolved = None
-            if resolved:
-                category_id = resolved
-        if info.resolve_category_name is not None:
-            try:
-                name = await info.resolve_category_name(category_id)
-            except Exception:
-                logger.debug("couldn't resolve category id %r on %s", category_id, connector, exc_info=True)
-                name = None
-            if name:
-                return name
+        category_id = await _resolve_category_id(info, token, connector=connector)
+        name = await _resolve_category_title(info, category_id, connector=connector)
+        if name:
+            return name
         if _BARE_ID_RE.match(token):
             raise LinkError(
                 f"couldn't find a Category matching '{token}' on {info.label} - "
@@ -1342,27 +1358,13 @@ class CategoryLinker:
         return await self._thread_categories.is_thread_category(connector_id, category_id)
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
-        info = self._connectors.get(connector)
-        if info is not None and info.resolve_category_id_by_name is not None:
-            try:
-                category_id = await info.resolve_category_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
-                category_id = None
-            if category_id:
-                return category_id
-        return token
+        return await _resolve_category_id(self._connectors.get(connector), token, connector=connector)
 
     async def _resolve_name(self, connector_id: str, category_id: str) -> str:
-        info = self._connectors.get(connector_id)
-        if info is None or info.resolve_category_name is None:
-            return category_id
-        try:
-            name = await info.resolve_category_name(category_id)
-        except Exception:
-            logger.debug("couldn't resolve category name for %s on %s", category_id, connector_id, exc_info=True)
-            return category_id
-        return name or category_id
+        title = await _resolve_category_title(
+            self._connectors.get(connector_id), category_id, connector=connector_id
+        )
+        return title or category_id
 
 
 class EmoteLinker:
