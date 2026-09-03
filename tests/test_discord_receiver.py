@@ -15,7 +15,7 @@ import asyncio
 import aiohttp
 import pytest
 
-from stoat_discord_bridge.models import CustomEmoji, StandardMessage
+from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.discord_service import DiscordReceiverService
 from stoat_discord_bridge.services.base import PartialRelayError
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
@@ -489,3 +489,81 @@ async def test_stop_typing_is_a_safe_noop_when_nothing_is_typing():
     receiver = _make_receiver(FakeClient())
 
     await receiver.stop_typing(target_channel_id="42")  # must not raise
+
+
+# ---------------------------------------------------------------- attachments (#39)
+
+
+async def test_receive_reuploads_attachments_as_native_files(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    ids = await receiver.receive(
+        _message(
+            content_markdown="look at this",
+            attachments=[
+                Attachment(url="https://cdn.discordapp.com/attachments/1/2/pic.png?ex=abc", filename="pic.png")
+            ],
+        ),
+        target_channel_id="42",
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert len(webhook.sent) == 1
+    assert webhook.sent[0]["content"] == "look at this"  # URL is not pasted into the text
+    assert webhook.sent[0]["files"] == [("pic.png", b"img")]
+    assert ids == ["1000"]
+
+
+async def test_receive_sends_a_file_only_message_with_empty_content(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(content_markdown="", attachments=[Attachment(url="https://cdn.example/a.png")]),
+        target_channel_id="42",
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.sent[0]["content"] == ""
+    assert webhook.sent[0]["files"] == [("a.png", b"img")]
+
+
+async def test_receive_falls_back_to_the_url_when_an_attachment_cant_be_downloaded(monkeypatch):
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"", status=404)
+    )
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(content_markdown="hi", attachments=[Attachment(url="https://cdn.example/gone.png")]),
+        target_channel_id="42",
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.sent[0]["content"] == "hi\nhttps://cdn.example/gone.png"
+    assert "files" not in webhook.sent[0]
+
+
+async def test_receive_attaches_files_to_the_last_chunk_of_a_split_message(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    monkeypatch.setattr("stoat_discord_bridge.services.discord_service._CONTENT_LIMIT", 5)
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(content_markdown="abcdefghij", attachments=[Attachment(url="https://cdn.example/a.png")]),
+        target_channel_id="42",
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert [c["content"] for c in webhook.sent] == ["abcde", "fghij"]
+    assert "files" not in webhook.sent[0]
+    assert webhook.sent[1]["files"] == [("a.png", b"img")]

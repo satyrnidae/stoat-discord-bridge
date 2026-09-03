@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
 
+import aiohttp
 import pytest
 
-from stoat_discord_bridge.models import Attachment, StandardMessage
+from stoat_discord_bridge.models import Attachment
 from stoat_discord_bridge.services.formatting import (
     chunk_content,
-    content_with_attachments,
+    download_attachments,
+    inline_attachment_urls,
     render_discord_timestamps,
     strip_markdown,
 )
@@ -15,31 +17,97 @@ _EPOCH = 1788040800
 _NOW = datetime(2026, 8, 29, 22, 0, 0, tzinfo=timezone.utc)
 
 
-def _message(content="hello", attachments=None):
-    return StandardMessage(
-        origin_connector_id="discord",
-        origin_channel_id="c1",
-        channel_name="general",
-        sender_name="Alice",
-        sender_avatar_url=None,
-        sender_user_id="alice-id",
-        content_markdown=content,
-        message_id="m1",
-        attachments=attachments or [],
+def test_inline_attachment_urls_appends_urls():
+    assert (
+        inline_attachment_urls("hello", [Attachment(url="https://example.com/a.png")])
+        == "hello\nhttps://example.com/a.png"
     )
 
 
-def test_content_with_attachments_appends_urls():
-    message = _message("hello", [Attachment(url="https://example.com/a.png")])
-    assert content_with_attachments(message) == "hello\nhttps://example.com/a.png"
+def test_inline_attachment_urls_no_attachments():
+    assert inline_attachment_urls("hello", []) == "hello"
 
 
-def test_content_with_attachments_no_attachments():
-    assert content_with_attachments(_message("hello", [])) == "hello"
+def test_inline_attachment_urls_empty_uses_zero_width_space():
+    assert inline_attachment_urls("", []) == "​"
 
 
-def test_content_with_attachments_empty_message_uses_zero_width_space():
-    assert content_with_attachments(_message("", [])) == "​"
+def test_inline_attachment_urls_skips_urlless_attachments():
+    assert inline_attachment_urls("hi", [Attachment(url="")]) == "hi"
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, body: bytes, *, status: int = 200) -> None:
+        self._body = body
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(None, (), status=self.status)
+
+    async def read(self) -> bytes:
+        return self._body
+
+
+async def test_download_attachments_fetches_bytes_and_names_them(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"png-bytes"))
+
+    downloaded, undownloadable = await download_attachments(
+        [Attachment(url="https://cdn.example/x/photo.png", filename="photo.png")]
+    )
+
+    assert downloaded == [("photo.png", b"png-bytes")]
+    assert undownloadable == []
+
+
+async def test_download_attachments_derives_filename_from_url_when_missing(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x"))
+
+    downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/a/b/pic.jpg?ex=deadbeef")])
+
+    assert downloaded == [("pic.jpg", b"x")]
+
+
+async def test_download_attachments_falls_back_on_fetch_failure(monkeypatch):
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"", status=404)
+    )
+    att = Attachment(url="https://cdn.example/gone.png")
+
+    downloaded, undownloadable = await download_attachments([att])
+
+    assert downloaded == []
+    assert undownloadable == [att]
+
+
+async def test_download_attachments_falls_back_when_too_large(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x" * 100))
+    att = Attachment(url="https://cdn.example/big.zip", size_bytes=999_999_999)
+
+    downloaded, undownloadable = await download_attachments([att], max_bytes=50)
+
+    assert downloaded == []
+    assert undownloadable == [att]
+
+
+async def test_download_attachments_falls_back_when_downloaded_body_exceeds_limit(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x" * 100))
+    att = Attachment(url="https://cdn.example/big.png")  # size unknown up front
+
+    downloaded, undownloadable = await download_attachments([att], max_bytes=50)
+
+    assert downloaded == []
+    assert undownloadable == [att]
+
+
+async def test_download_attachments_empty_list_is_a_noop():
+    assert await download_attachments([]) == ([], [])
 
 
 def test_chunk_content_under_limit_is_one_chunk():

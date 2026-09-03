@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import aiohttp
 import pytest
 
-from stoat_discord_bridge.models import CustomEmoji, StandardMessage
+from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError
 from stoat_discord_bridge.services.stoat_service import StoatReceiverService, StoatSenderService
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
@@ -571,3 +571,56 @@ async def test_stop_typing_is_a_safe_noop_when_nothing_is_typing():
     await receiver.stop_typing(target_channel_id="c-1")  # must not raise
 
     assert channel.typing_events == ["end"]
+
+
+# ---------------------------------------------------------------- attachments (#39)
+
+
+async def test_receive_reuploads_attachments_as_native_files(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(
+            content_markdown="look",
+            attachments=[Attachment(url="https://cdn.example/pic.png", filename="pic.png")],
+        ),
+        target_channel_id="42",
+    )
+
+    assert channel.sent[0]["content"] == "look"  # URL is not pasted into the text
+    assert channel.sent[0]["attachments"] == [("pic.png", b"img")]
+
+
+async def test_receive_sends_a_file_only_message_with_empty_content(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(content_markdown="", attachments=[Attachment(url="https://cdn.example/a.png")]),
+        target_channel_id="42",
+    )
+
+    assert channel.sent[0]["content"] == ""
+    assert channel.sent[0]["attachments"] == [("a.png", b"img")]
+
+
+async def test_receive_falls_back_to_the_url_when_an_attachment_cant_be_downloaded(monkeypatch):
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"", status=404)
+    )
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(content_markdown="hi", attachments=[Attachment(url="https://cdn.example/gone.png")]),
+        target_channel_id="42",
+    )
+
+    assert channel.sent[0]["content"] == "hi\nhttps://cdn.example/gone.png"
+    assert "attachments" not in channel.sent[0]

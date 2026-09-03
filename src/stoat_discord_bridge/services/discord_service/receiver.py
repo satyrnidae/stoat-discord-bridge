@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from io import BytesIO
 
 import aiohttp
 import discord
@@ -28,7 +29,11 @@ from stoat_discord_bridge.services.discord_service.formatting import (
     _sanitize_username,
     _to_discord_emoji,
 )
-from stoat_discord_bridge.services.formatting import chunk_content, content_with_attachments
+from stoat_discord_bridge.services.formatting import (
+    chunk_content,
+    download_attachments,
+    inline_attachment_urls,
+)
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
     rewrite_emoji,
@@ -91,7 +96,12 @@ class DiscordReceiverService(ReceiverService):
                 message.sender_user_id,
             )
         username = _sanitize_username(sender_name)
-        content = content_with_attachments(message)
+        # Re-upload the message's attachments as native Discord files rather
+        # than pasting their (often short-lived, signed) CDN URLs into the
+        # text - see issue #39. Anything too large or unfetchable falls back
+        # to an inlined URL below so it's not lost.
+        files, undownloadable = await download_attachments(message.attachments)
+        content = message.content_markdown or ""
         if self._user_mappings is not None:
             content = await rewrite_mentions(
                 content,
@@ -124,14 +134,25 @@ class DiscordReceiverService(ReceiverService):
                 target_kind="discord",
                 emoji_mappings=self._emoji_mappings,
             )
+        if undownloadable:
+            content = inline_attachment_urls(content, undownloadable)
+        if content:
+            chunks = chunk_content(content, _discord_pkg._CONTENT_LIMIT)
+        else:
+            # A file-only message needs an empty content, not the zero-width
+            # sentinel; keep the sentinel only when there's nothing to send.
+            chunks = [""] if files else ["​"]
+        discord_files = [discord.File(BytesIO(data), filename=name) for name, data in files]
         ids: list[str] = []
-        for chunk in chunk_content(content, _discord_pkg._CONTENT_LIMIT):
+        for index, chunk in enumerate(chunks):
+            attach = discord_files if discord_files and index == len(chunks) - 1 else None
             logger.debug(
-                "[discord:%s] sending webhook message to channel %s as %r (avatar_url=%r): %r",
+                "[discord:%s] sending webhook message to channel %s as %r (avatar_url=%r, files=%d): %r",
                 self.connector_id,
                 target_channel_id,
                 username,
                 avatar_url,
+                len(attach) if attach else 0,
                 chunk,
             )
             try:
@@ -141,6 +162,7 @@ class DiscordReceiverService(ReceiverService):
                     avatar_url=avatar_url,
                     wait=True,
                     **({"thread": thread} if thread is not None else {}),
+                    **({"files": attach} if attach else {}),
                 )
             except Exception as exc:
                 raise PartialRelayError(ids, exc) from exc

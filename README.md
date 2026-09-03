@@ -113,6 +113,12 @@ Platform-specific particularities (stripping Markdown, inlining attachment
 URLs, splitting long messages for IRC, etc.) are handled inside each
 receiver's `receive()`, not in the shared message format.
 
+Attachments arrive as URLs. The Discord and Stoat receivers re-upload each
+one as a native file on the relayed message rather than pasting the (signed,
+expiring) CDN link into the text; anything over 8 MiB or that can't be
+fetched falls back to an inlined URL. IRC, which has no native attachment
+concept, always inlines the URL.
+
 ## Reaction & custom emoji sync
 
 Discord and Stoat reactions are mirrored onto every other connector's copy

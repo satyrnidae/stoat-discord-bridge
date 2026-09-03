@@ -139,10 +139,13 @@ class FakeChannel:
     async def end_typing(self) -> None:
         self.typing_events.append("end")
 
-    async def send(self, content: str, *, masquerade=None) -> FakeSentMessage:
+    async def send(self, content: str, *, masquerade=None, attachments=None) -> FakeSentMessage:
         if self._raises is not None:
             raise self._raises
-        self.sent.append({"content": content, "masquerade": masquerade})
+        record = {"content": content, "masquerade": masquerade}
+        if attachments:
+            record["attachments"] = list(attachments)
+        self.sent.append(record)
         message_id = str(self._next_message_id)
         self._next_message_id += 1
         return FakeSentMessage(id=message_id)
@@ -175,8 +178,11 @@ class FakePartialMessageable:
     async def end_typing(self) -> None:
         self.typing_events.append("end")
 
-    async def send(self, content: str, *, masquerade=None) -> FakeSentMessage:
-        self.sent.append({"content": content, "masquerade": masquerade})
+    async def send(self, content: str, *, masquerade=None, attachments=None) -> FakeSentMessage:
+        record = {"content": content, "masquerade": masquerade}
+        if attachments:
+            record["attachments"] = list(attachments)
+        self.sent.append(record)
         message_id = str(self._next_message_id)
         self._next_message_id += 1
         return FakeSentMessage(id=message_id)

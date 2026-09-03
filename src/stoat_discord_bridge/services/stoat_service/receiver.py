@@ -25,7 +25,11 @@ import stoat_discord_bridge.services.stoat_service as _stoat_pkg
 
 from stoat_discord_bridge.models import CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
-from stoat_discord_bridge.services.formatting import chunk_content, content_with_attachments
+from stoat_discord_bridge.services.formatting import (
+    chunk_content,
+    download_attachments,
+    inline_attachment_urls,
+)
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
     rewrite_emoji,
@@ -100,7 +104,12 @@ class StoatReceiverService(ReceiverService):
             name=sender_name[:32],
             avatar=avatar_url,
         )
-        content = content_with_attachments(message)
+        # Re-upload the message's attachments as native Stoat files rather
+        # than pasting their (often short-lived, signed) CDN URLs into the
+        # text - see issue #39. Anything too large or unfetchable falls back
+        # to an inlined URL below so it's not lost.
+        files, undownloadable = await download_attachments(message.attachments)
+        content = message.content_markdown or ""
         if self._user_mappings is not None:
             content = await rewrite_mentions(
                 content,
@@ -133,18 +142,32 @@ class StoatReceiverService(ReceiverService):
                 target_kind="stoat",
                 emoji_mappings=self._emoji_mappings,
             )
+        if undownloadable:
+            content = inline_attachment_urls(content, undownloadable)
+        if content:
+            chunks = chunk_content(content, _stoat_pkg._CONTENT_LIMIT)
+        else:
+            # A file-only message needs an empty content, not the zero-width
+            # sentinel; keep the sentinel only when there's nothing to send.
+            chunks = [""] if files else ["​"]
         ids: list[str] = []
-        for chunk in chunk_content(content, _stoat_pkg._CONTENT_LIMIT):
+        for index, chunk in enumerate(chunks):
+            attach = files if files and index == len(chunks) - 1 else None
             logger.debug(
-                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r): %r",
+                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r, files=%d): %r",
                 self.connector_id,
                 target_channel_id,
                 masquerade.name,
                 masquerade.avatar,
+                len(attach) if attach else 0,
                 chunk,
             )
             try:
-                sent = await channel.send(chunk, masquerade=masquerade)
+                sent = await channel.send(
+                    chunk,
+                    masquerade=masquerade,
+                    **({"attachments": list(attach)} if attach else {}),
+                )
             except Exception as exc:
                 raise PartialRelayError(ids, exc) from exc
             logger.debug("[stoat:%s] masqueraded message sent, id=%s", self.connector_id, sent.id)

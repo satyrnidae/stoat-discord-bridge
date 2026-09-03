@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Sequence
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
-from stoat_discord_bridge.models import StandardMessage
+import aiohttp
+
+from stoat_discord_bridge.models import Attachment
 
 # Discord/Stoat dynamic-timestamp markup: <t:UNIX_SECONDS> or <t:UNIX_SECONDS:STYLE>
 # where STYLE is one of t T d D f F R (absent == f). IRC has no equivalent, so
@@ -146,10 +151,72 @@ def strip_markdown(content: str) -> str:
     return content
 
 
-def content_with_attachments(message: StandardMessage) -> str:
-    lines = [message.content_markdown] if message.content_markdown else []
-    lines.extend(a.url for a in message.attachments)
+def inline_attachment_urls(content: str, attachments: Sequence[Attachment]) -> str:
+    """`content` with each attachment's URL appended on its own line, falling
+    back to the zero-width-space sentinel when that leaves nothing on the
+    wire at all.
+
+    IRC (no native attachments) relays every attachment this way; Discord and
+    Stoat re-upload attachments as native files (see `download_attachments`)
+    and only route the ones that couldn't be fetched through here.
+    """
+    lines = [content] if content else []
+    lines.extend(a.url for a in attachments if a.url)
     return "\n".join(lines) or "\u200b"
+
+
+# A relayed attachment larger than this is left as a CDN link rather than
+# re-uploaded as a native file: Discord's and Stoat's default per-file upload
+# caps both sit at or above 8 MiB, so this stays under the lower of the two
+# without needing a per-connector knob.
+_MAX_REUPLOAD_BYTES = 8 * 1024 * 1024
+
+
+def _attachment_filename(attachment: Attachment) -> str:
+    """Best filename for a re-uploaded attachment: the source's own, else the
+    last path segment of its URL, else a generic fallback."""
+    if attachment.filename:
+        return attachment.filename
+    tail = urlsplit(attachment.url).path.rsplit("/", 1)[-1]
+    return tail or "attachment"
+
+
+async def download_attachments(
+    attachments: Sequence[Attachment], *, max_bytes: int = _MAX_REUPLOAD_BYTES
+) -> tuple[list[tuple[str, bytes]], list[Attachment]]:
+    """Fetch each attachment's bytes so a receiver can re-upload it as a
+    native file instead of pasting its (often short-lived, signed) CDN URL
+    into the relayed message text - see issue #39.
+
+    Returns `(downloaded, undownloadable)`: `downloaded` is a list of
+    `(filename, data)` pairs ready to hand to the platform's file-upload API;
+    `undownloadable` is every attachment that was too large or couldn't be
+    fetched, which the caller falls back to inlining as a plain URL via
+    `inline_attachment_urls` so the content isn't lost. Never raises.
+    """
+    downloaded: list[tuple[str, bytes]] = []
+    undownloadable: list[Attachment] = []
+    if not attachments:
+        return downloaded, undownloadable
+    async with aiohttp.ClientSession() as session:
+        for attachment in attachments:
+            if not attachment.url:
+                continue
+            if attachment.size_bytes is not None and attachment.size_bytes > max_bytes:
+                undownloadable.append(attachment)
+                continue
+            try:
+                async with session.get(attachment.url) as resp:
+                    resp.raise_for_status()
+                    data = await resp.read()
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                undownloadable.append(attachment)
+                continue
+            if len(data) > max_bytes:
+                undownloadable.append(attachment)
+                continue
+            downloaded.append((_attachment_filename(attachment), data))
+    return downloaded, undownloadable
 
 
 def chunk_content(content: str, limit: int) -> list[str]:
