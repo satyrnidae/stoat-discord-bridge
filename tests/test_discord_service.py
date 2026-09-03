@@ -1147,12 +1147,32 @@ def test_entity_autocomplete_choices_lists_everything_for_an_empty_query():
 
 def test_entity_autocomplete_choices_filters_by_name_substring_case_insensitively():
     choices = _entity_autocomplete_choices("mod", _entities())
-    assert [c.value for c in choices] == ["222"]
+    # the typed text is offered back first (issue #80), then the matches
+    assert [c.value for c in choices] == ["mod", "222"]
 
 
 def test_entity_autocomplete_choices_filters_by_id_substring():
     choices = _entity_autocomplete_choices("33", _entities())
-    assert [c.value for c in choices] == ["333"]
+    assert [c.value for c in choices] == ["33", "333"]
+
+
+def test_entity_autocomplete_choices_offers_the_typed_text_when_nothing_matches():
+    choices = _entity_autocomplete_choices("Wardens", _entities())
+    assert [(c.name, c.value) for c in choices] == [('Use "Wardens"', "Wardens")]
+
+
+def test_entity_autocomplete_choices_offers_the_typed_text_with_no_entities_at_all():
+    choices = _entity_autocomplete_choices("123456789", [])
+    assert [(c.name, c.value) for c in choices] == [('Use "123456789"', "123456789")]
+
+
+def test_entity_autocomplete_choices_does_not_double_up_on_an_exact_id_match():
+    choices = _entity_autocomplete_choices("222", _entities())
+    assert [c.value for c in choices] == ["222"]
+
+
+def test_entity_autocomplete_choices_ignores_a_blank_query_for_the_passthrough():
+    assert _entity_autocomplete_choices("   ", []) == []
 
 
 def test_entity_autocomplete_choices_uses_the_bare_id_when_there_is_no_name():
@@ -1198,7 +1218,7 @@ async def test_link_role_external_id_autocomplete_filters_by_current():
 
     choices = await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "mod")
 
-    assert [c.value for c in choices] == ["s2"]
+    assert [c.value for c in choices] == ["mod", "s2"]
 
 
 async def test_link_role_external_id_autocomplete_is_empty_until_service_is_picked():
@@ -1246,6 +1266,22 @@ async def test_entity_autocomplete_is_empty_when_the_connector_has_no_list_hook(
     assert await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "") == []
 
 
+async def test_entity_autocomplete_still_offers_typed_text_when_a_hook_is_missing_or_raises():
+    # issue #80: a missing hook (IRC), a raising hook, or an un-picked service
+    # must not leave a typed id/name unselectable - it's offered back verbatim.
+    async def boom():
+        raise RuntimeError("gateway down")
+
+    no_hook = {"irc": ConnectorInfo(id="irc", label="IRC")}
+    raising = {"stoat-public": ConnectorInfo(id="stoat-public", label="Stoat", list_roles=boom)}
+
+    for connectors, service in ((no_hook, "irc"), (raising, "stoat-public"), (raising, None)):
+        sender = _make_sender(FakeLinker(), role_linker=FakeLinker(connectors))
+        callback = _autocomplete_callback(sender, "link role", "external_id")
+        choices = await callback(FakeInteraction(namespace=SimpleNamespace(service=service)), "Wardens")
+        assert [(c.name, c.value) for c in choices] == [('Use "Wardens"', "Wardens")]
+
+
 async def test_link_channel_external_id_autocomplete_reads_list_channels():
     async def stoat_channels():
         return [("c1", "general"), ("c2", "off-topic")]
@@ -1256,7 +1292,7 @@ async def test_link_channel_external_id_autocomplete_reads_list_channels():
 
     choices = await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "off")
 
-    assert [c.value for c in choices] == ["c2"]
+    assert [c.value for c in choices] == ["off", "c2"]
 
 
 async def test_link_user_external_id_autocomplete_reads_the_user_linkers_list_users():
@@ -1308,6 +1344,71 @@ async def test_list_hooks_return_empty_when_the_guild_is_uncached(monkeypatch):
     assert await sender.list_categories() == []
     assert await sender.list_users() == []
     assert await sender.list_emotes() == []
+
+
+# ---------------------------------------------------------------- _handle_ready member chunking (issue #80)
+
+
+class _ChunkGuild:
+    def __init__(self, chunked: bool, *, raises: bool = False) -> None:
+        self.chunked = chunked
+        self._raises = raises
+        self.chunk_calls = 0
+
+    async def chunk(self):
+        self.chunk_calls += 1
+        if self._raises:
+            raise RuntimeError("no members intent")
+        self.chunked = True
+
+
+async def test_handle_ready_chunks_the_member_roster(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = _ChunkGuild(chunked=False)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    async def _synced(*a, **k):
+        return []
+
+    monkeypatch.setattr(sender.tree, "sync", _synced)
+
+    await sender._handle_ready()
+
+    assert guild.chunk_calls == 1
+
+
+async def test_handle_ready_skips_chunk_when_already_chunked(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = _ChunkGuild(chunked=True)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    async def _synced(*a, **k):
+        return []
+
+    monkeypatch.setattr(sender.tree, "sync", _synced)
+
+    await sender._handle_ready()
+
+    assert guild.chunk_calls == 0
+
+
+async def test_handle_ready_swallows_a_failing_chunk(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = _ChunkGuild(chunked=False, raises=True)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    synced = []
+
+    async def _synced(*a, **k):
+        synced.append(True)
+        return []
+
+    monkeypatch.setattr(sender.tree, "sync", _synced)
+
+    await sender._handle_ready()  # must not raise
+
+    assert guild.chunk_calls == 1
+    assert synced == [True]  # ready handler carried on to the command sync
 
 
 # ---------------------------------------------------------------- describe_channel / ensure_channel (issue #32)
