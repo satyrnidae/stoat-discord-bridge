@@ -132,6 +132,32 @@ async def test_receive_uses_the_remote_name_when_the_sender_isnt_linked(fake_db)
     assert connection.privmsg_calls == [("#general", "<Alice> hello")]
 
 
+async def test_receive_strips_markdown_from_relayed_content():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+
+    await receiver.receive(
+        _message(content_markdown="**bold** and *italic* and `code` and [docs](https://example.com/d)"),
+        target_channel_id="#general",
+    )
+
+    assert connection.privmsg_calls == [
+        ("#general", "<Alice> bold and italic and code and docs (https://example.com/d)"),
+    ]
+
+
+async def test_receive_does_not_treat_underscores_in_an_attachment_url_as_markdown():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+
+    await receiver.receive(
+        _message(content_markdown="", attachments=[Attachment(url="https://cdn.example/a_b_c.png")]),
+        target_channel_id="#general",
+    )
+
+    assert connection.privmsg_calls == [("#general", "<Alice> https://cdn.example/a_b_c.png")]
+
+
 async def test_receive_raises_partial_relay_error_and_keeps_ids_already_sent():
     connection = FakeIrcConnection()
     receiver = _make_receiver(connection)
