@@ -443,9 +443,17 @@ async def test_unlink_user_without_a_configured_user_linker():
 
 @pytest.fixture
 def sample_connectors():
+    async def _resolve(_id):
+        return None
+
+    # Discord/Stoat wire the role/Category/emoji resolve hooks; IRC (which has
+    # none of those concepts) wires none - so ConnectorInfo.supports_roles /
+    # supports_categories / supports_emotes are True for the first two and
+    # False for IRC, matching bridge.run()'s real wiring.
+    _rce = dict(resolve_role_name=_resolve, resolve_category_name=_resolve, resolve_emoji_name=_resolve)
     return {
-        "discord": ConnectorInfo(id="discord", label="Discord"),
-        "stoat-public": ConnectorInfo(id="stoat-public", label="Stoat (public)"),
+        "discord": ConnectorInfo(id="discord", label="Discord", **_rce),
+        "stoat-public": ConnectorInfo(id="stoat-public", label="Stoat (public)", **_rce),
         "irc": ConnectorInfo(id="irc", label="IRC"),
     }
 
@@ -846,9 +854,60 @@ async def test_link_emote_source_autocomplete_reads_the_emote_linker(sample_conn
     sender = _make_sender(FakeLinker(), emote_linker=FakeLinker(sample_connectors))
     callback = _autocomplete_callback(sender, "link emote", "service")
 
-    choices = await callback(FakeInteraction(), "irc")
+    choices = await callback(FakeInteraction(), "stoat")
 
-    assert [c.value for c in choices] == ["irc"]
+    assert [c.value for c in choices] == ["stoat-public"]
+
+
+# ---------------------------------------------------------------- issue #26: role/Category/emote `service`
+# autocomplete must not offer IRC (no such concept there)
+
+
+async def test_link_role_service_autocomplete_hides_irc(sample_connectors):
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link role", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"discord", "stoat-public"}
+    assert await callback(FakeInteraction(), "irc") == []
+
+
+async def test_link_category_service_autocomplete_hides_irc(sample_connectors):
+    sender = _make_sender(FakeLinker(), category_linker=FakeCategoryLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link category", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"discord", "stoat-public"}
+
+
+async def test_link_emote_service_autocomplete_hides_irc(sample_connectors):
+    sender = _make_sender(FakeLinker(), emote_linker=FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link emote", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"discord", "stoat-public"}
+
+
+async def test_mirror_role_service_autocomplete_hides_irc_but_keeps_all(sample_connectors):
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "mirror role", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"all", "discord", "stoat-public"}
+
+
+async def test_link_channel_service_autocomplete_still_offers_irc(sample_connectors):
+    # channels exist on every connector kind - IRC must stay in the list here
+    sender = _make_sender(FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "link channel", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert "irc" in {c.value for c in choices}
 
 
 async def test_link_user_source_autocomplete_reads_the_user_linker(sample_connectors):

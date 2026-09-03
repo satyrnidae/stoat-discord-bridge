@@ -14,6 +14,7 @@ from the target connector's `ConnectorInfo.list_*` hooks).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import discord
 from discord import app_commands
@@ -26,18 +27,26 @@ _CHOICE_LIMIT = 25  # Discord's hard cap on autocomplete results
 
 
 def _connector_autocomplete_choices(
-    current: str, connectors: dict[str, ConnectorInfo], *, include_all: bool = False
+    current: str,
+    connectors: dict[str, ConnectorInfo],
+    *,
+    include_all: bool = False,
+    predicate: Callable[[ConnectorInfo], bool] | None = None,
 ) -> list[app_commands.Choice[str]]:
     """Shared filtering behind every `service` option's
     autocomplete: Discord expects results ranked/filtered by `current` (the
     option's in-progress text) and caps them at 25 - substring match against
     both the connector id and its display label, so typing either finds it.
-    `include_all` adds the literal "all" choice `/mirror channel` accepts."""
+    `include_all` adds the literal "all" choice `/mirror channel` accepts.
+    `predicate`, if given, drops connectors it returns falsy for - used by the
+    role/category/emote subcommands to hide connector kinds (IRC) that have no
+    such concept, so `service` never offers an invalid target."""
     current = current.lower()
     choices = [
         app_commands.Choice(name=f"{info.label} ({connector_id})", value=connector_id)
         for connector_id, info in connectors.items()
-        if current in connector_id.lower() or current in info.label.lower()
+        if (predicate is None or predicate(info))
+        and (current in connector_id.lower() or current in info.label.lower())
     ]
     if include_all and current in "all":
         choices.insert(0, app_commands.Choice(name="all", value="all"))
@@ -83,16 +92,21 @@ def build_command_tree(service) -> None:
     # Channels, roles, users, Categories and emotes all use the `/link
     # <noun>`, `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>`
     # subcommand form (app_commands groups).
-    def _linker_service_autocomplete(get_linker, *, include_all: bool):
+    def _linker_service_autocomplete(get_linker, *, include_all: bool, predicate=None):
         async def _ac(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
             linker = get_linker()
             connectors = linker.connectors if linker is not None else {}
-            return _connector_autocomplete_choices(current, connectors, include_all=include_all)
+            return _connector_autocomplete_choices(
+                current, connectors, include_all=include_all, predicate=predicate
+            )
 
         return _ac
 
     def role_service_autocomplete(*, include_all: bool):
-        return _linker_service_autocomplete(lambda: self._role_linker, include_all=include_all)
+        # IRC has no role concept - never offer it as a `/link role` target.
+        return _linker_service_autocomplete(
+            lambda: self._role_linker, include_all=include_all, predicate=lambda info: info.supports_roles
+        )
 
     def channel_service_autocomplete(*, include_all: bool):
         return _linker_service_autocomplete(lambda: self._linker, include_all=include_all)
@@ -101,10 +115,18 @@ def build_command_tree(service) -> None:
         return _linker_service_autocomplete(lambda: self._user_linker, include_all=include_all)
 
     def category_service_autocomplete(*, include_all: bool):
-        return _linker_service_autocomplete(lambda: self._category_linker, include_all=include_all)
+        # IRC has no Category concept - never offer it as a `/link category` target.
+        return _linker_service_autocomplete(
+            lambda: self._category_linker,
+            include_all=include_all,
+            predicate=lambda info: info.supports_categories,
+        )
 
     def emote_service_autocomplete(*, include_all: bool):
-        return _linker_service_autocomplete(lambda: self._emote_linker, include_all=include_all)
+        # IRC has no custom-emoji concept - never offer it as a `/link emote` target.
+        return _linker_service_autocomplete(
+            lambda: self._emote_linker, include_all=include_all, predicate=lambda info: info.supports_emotes
+        )
 
     # `external_id` / `local_id` option autocomplete: list the real
     # channels/roles/users/Categories/emoji on a connector (via its
