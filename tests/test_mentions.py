@@ -58,6 +58,57 @@ async def test_unmapped_role_mention_left_untouched(fake_db):
     assert result == "ping <@&111> and <@&222>"
 
 
+async def test_unlinked_role_mention_expanded_to_origin_name(fake_db):
+    # issue #4: a role with no link to the target is expanded to a readable
+    # `@Role Name` rather than relayed as the raw `<@&id>` / `<%id>` token.
+    repo = RoleMappingRepository(fake_db)
+    result = await rewrite_role_mentions(
+        "ping <@&633103974656114738>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", role_mappings=repo,
+        mentioned_roles={"633103974656114738": "for science"},
+    )
+    assert result == "ping @for science"
+
+
+async def test_unlinked_role_mention_expanded_on_irc_too(fake_db):
+    repo = RoleMappingRepository(fake_db)
+    result = await rewrite_role_mentions(
+        f"ping <%{_ULID}>", origin_connector_id="stoat", target_connector_id="irc",
+        target_kind="irc", role_mappings=repo, mentioned_roles={_ULID: "Mods"},
+    )
+    assert result == "ping @Mods"
+
+
+async def test_unlinked_role_mention_without_name_left_untouched(fake_db):
+    repo = RoleMappingRepository(fake_db)
+    result = await rewrite_role_mentions(
+        "ping <@&222>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", role_mappings=repo, mentioned_roles={"111": "Mods"},
+    )
+    assert result == "ping <@&222>"
+
+
+async def test_linked_role_mention_still_wins_over_origin_name(fake_db):
+    repo = await _linked_roles(fake_db, ("g1", "discord", "111", "Mods"), ("g1", "stoat", _ULID, "Moderators"))
+    result = await rewrite_role_mentions(
+        "ping <@&111>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", role_mappings=repo, mentioned_roles={"111": "Mods"},
+    )
+    assert result == f"ping <%{_ULID}>"
+
+
+async def test_expanded_role_name_cannot_mass_ping_or_inject_mentions(fake_db):
+    # a hostile role name must not turn into a live @everyone / <%id> ping
+    repo = RoleMappingRepository(fake_db)
+    result = await rewrite_role_mentions(
+        "ping <@&999>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", role_mappings=repo,
+        mentioned_roles={"999": f"everyone <%{_ULID}>"},
+    )
+    assert "@everyone" not in result
+    assert f"<%{_ULID}>" not in result
+
+
 async def _linked_emoji(fake_db, *refs):
     repo = EmojiMappingRepository(fake_db)
     group_id = await repo.try_reserve(EmojiRef(*refs[0]))

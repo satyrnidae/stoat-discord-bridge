@@ -46,6 +46,7 @@ from stoat_discord_bridge.services.base import (
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
 from stoat_discord_bridge.services.discord_service.formatting import (
+    _map_mentioned_roles,
     _map_mentioned_users,
     _member_colour,
     _to_standard_message,
@@ -299,6 +300,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 origin_message_id=str(payload.message_id),
                 new_content_markdown=data.get("content") or "",
                 mentioned_users=_map_mentioned_users(getattr(payload, "message", None)),
+                mentioned_roles=_map_mentioned_roles(getattr(payload, "message", None)),
             )
         )
 

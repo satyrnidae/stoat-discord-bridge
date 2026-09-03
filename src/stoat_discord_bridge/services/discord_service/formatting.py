@@ -73,6 +73,14 @@ def _map_mentioned_users(message: object) -> dict[str, str]:
     return {str(u.id): u.display_name for u in (getattr(message, "mentions", None) or [])}
 
 
+def _map_mentioned_roles(message: object) -> dict[str, str]:
+    """Native role id -> role name for every role `message` @-mentions, for
+    `StandardMessage.mentioned_roles` / `StandardEdit.mentioned_roles` (issue
+    #4). Best-effort, same as `_map_mentioned_users`: a `message` with no
+    `role_mentions` just yields an empty map."""
+    return {str(r.id): r.name for r in (getattr(message, "role_mentions", None) or [])}
+
+
 def _to_standard_message(
     message: discord.Message,
     connector_id: str,
@@ -98,6 +106,7 @@ def _to_standard_message(
             for a in message.attachments
         ],
         mentioned_users=_map_mentioned_users(message),
+        mentioned_roles=_map_mentioned_roles(message),
     )
 
 

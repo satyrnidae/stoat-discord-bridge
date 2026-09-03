@@ -84,10 +84,13 @@ def _make_sender(
     return sender
 
 
-def _stoat_message(*, channel, author, content="hi", id="m1", attachments=None):
-    return SimpleNamespace(
+def _stoat_message(*, channel, author, content="hi", id="m1", attachments=None, role_mentions=None):
+    ns = SimpleNamespace(
         channel=channel, author=author, content=content, id=id, attachments=attachments or []
     )
+    if role_mentions is not None:
+        ns.role_mentions = role_mentions
+    return ns
 
 
 # ---------------------------------------------------------------- _handle_message
@@ -217,6 +220,22 @@ async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar
     assert message.sender_user_id == "u1"
     assert message.content_markdown == "hello"
     assert message.message_id == "m1"
+
+
+async def test_handle_message_maps_role_mentions():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42", name="general")
+    author = FakeAuthor(id="u1", tag="alice#0000", display_name="Alice")
+
+    await sender._handle_message(
+        _stoat_message(
+            channel=channel, author=author, content="ping <%01ARZ3NDEKTSV4RRFFQ69G5FAV>",
+            role_mentions=[SimpleNamespace(id="01ARZ3NDEKTSV4RRFFQ69G5FAV", name="Mods")],
+        )
+    )
+
+    assert recorder.messages[0].mentioned_roles == {"01ARZ3NDEKTSV4RRFFQ69G5FAV": "Mods"}
 
 
 async def test_handle_message_falls_back_to_the_bare_username_when_no_display_name():

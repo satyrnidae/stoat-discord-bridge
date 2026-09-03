@@ -154,6 +154,26 @@ def _map_mentioned_users(message) -> dict[str, str]:
     return out
 
 
+def _map_mentioned_roles(message) -> dict[str, str]:
+    """Native role id -> role name for every role `message` @-mentions, for
+    `StandardMessage.mentioned_roles` (issue #4). Best-effort, same caveat as
+    `_map_mentioned_users`: stoat.py's `Message.role_mentions` is
+    cache-dependent and quietly returns fewer entries (or none) on a cache
+    miss - a role we can't name just isn't in the map and the receiver leaves
+    that `<%id>` token as-is."""
+    out: dict[str, str] = {}
+    try:
+        roles = message.role_mentions
+    except Exception:
+        roles = []
+    for role in roles or []:
+        try:
+            out[str(role.id)] = role.name
+        except Exception:
+            continue
+    return out
+
+
 async def _download(url: str) -> bytes:
     async with aiohttp.ClientSession() as session, session.get(url) as resp:
         resp.raise_for_status()

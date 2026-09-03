@@ -417,7 +417,13 @@ connector's `resolve_role_id_by_name` hook; `/mirror role` creates-or-matches
 a same-named role via the `ensure_role` hook (name only — color/permissions
 aren't copied). Linked-role `<@&id>` / `<%id>` mentions are rewritten into the
 target's linked role (`@Name` on IRC) alongside the user/channel mention
-rewrites.
+rewrites; an *unlinked* role mention is expanded to a plain `@Role Name`
+(the role's name on the origin, carried on `StandardMessage.mentioned_roles` /
+`StandardEdit.mentioned_roles` — populated best-effort by the Discord/Stoat
+senders off the message's `role_mentions`, absent on IRC) rather than relayed
+as the raw token (issue #4 — the role counterpart of the issue-#56 user fix),
+and left exactly as it appeared only when even that name can't be recovered.
+Like the user expansion it's run through `mentions._defang_mentions`.
 
 A user `<@id>` mention is rewritten to the target's native mention of the
 `/link-user`-linked identity where one exists; where it doesn't,
