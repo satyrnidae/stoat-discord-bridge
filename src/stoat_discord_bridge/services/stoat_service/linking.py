@@ -270,12 +270,24 @@ class StoatLinkingMixin:
         await self._reply(ctx, summary)
 
     async def _mirror_channel(
-        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+        self,
+        ctx,
+        local_id: str | None = None,
+        service: str | None = None,
+        new_name: str | None = None,
+        category: str | None = None,
     ) -> None:
-        """`/mirror channel [local_id|name] [<service>|all] [new_name]`: local_id
-        defaults to the invoking channel; service defaults to "all"."""
+        """`/mirror channel [local_id|name] [<service>|all] [new_name] [category:<id|name>]`:
+        local_id defaults to the invoking channel; service defaults to "all".
+        `category` (a Category id/name on the target service) overrides linked
+        Categories and needs a single service (issue #75)."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
+            return
+        if category and (service is None or service.lower() == "all"):
+            await self._reply(
+                ctx, "A destination Category can only be set when mirroring to a single service, not 'all'."
+            )
             return
         if local_id:
             channel_id = channel_name = local_id  # explicit id/name - no way to resolve its real display name
@@ -309,6 +321,7 @@ class StoatLinkingMixin:
                     local_channel_name=channel_name,
                     destination=service,
                     local_channel_category=channel_category,
+                    destination_category=category,
                     new_name=new_name,
                 )
         except LinkError as exc:
@@ -318,11 +331,13 @@ class StoatLinkingMixin:
         await self._reply(ctx, summary)
 
     async def _mirror_channel_from(
-        self, ctx, service: str, external_id: str, new_name: str | None = None
+        self, ctx, service: str, external_id: str, new_name: str | None = None, category: str | None = None
     ) -> None:
-        """`/mirror channel from <service> <external_id|name> [new_name]`: create
-        a local channel mirroring `service`'s and link them, landing it in the
-        local counterpart of the source channel's linked Category."""
+        """`/mirror channel from <service> <external_id|name> [new_name] [category:<id|name>]`:
+        create a local channel mirroring `service`'s and link them, landing it in
+        the local counterpart of the source channel's linked Category - or in
+        `category` (a local Category id/name), if given, which overrides that
+        (issue #75)."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -331,7 +346,11 @@ class StoatLinkingMixin:
             return
         try:
             summary = await self._linker.mirror_channel_from(
-                local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
+                local_connector=self.connector_id,
+                source=service,
+                source_id=external_id,
+                new_name=new_name,
+                local_category=category,
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror channel from rejected: %s", self.connector_id, exc)

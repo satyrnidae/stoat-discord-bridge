@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from stoat_discord_bridge.admin_commands import LinkError
+from stoat_discord_bridge.admin_commands import LinkError, pop_kv_option
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   LINKED USERS [local_id|name] - cross-connector user links, read-only
   LINK CHANNEL <local_id> <service> <external_id> - bridge a channel (IRC-operator)
   LINK USER <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (IRC-operator)
-  MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] - create+link a matching channel elsewhere (IRC-operator)
+  MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] - create+link a matching channel elsewhere; CATEGORY:<> (single service) overrides linked Categories (IRC-operator)
   MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>] - create+link a local channel mirroring a remote one (IRC-operator)
   UNLINK CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK USER [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
@@ -139,6 +139,13 @@ class IrcAdminCommandsMixin:
             # 2 args are service then id.
             direction = args[0].upper() if args else ""
             rest = args[1:]
+            # `CATEGORY:<id|name>` (issue #75) places the counterpart in a
+            # specific Category on the destination, overriding linked Categories.
+            # It's a `PARAM:value` pair (can't be positional - holds arbitrary
+            # ids/names) pulled out anywhere; only `TO <service>` (a single
+            # destination) honours it - not `all`, and not `FROM` (IRC, the
+            # local side there, has no Category concept).
+            rest, category = pop_kv_option(list(rest), "category")
             # An optional trailing `AS <new_name>` renames the counterpart on
             # the destination instead of carrying the source name over (issue
             # #44) - split it off before the positional parse below. Only the
@@ -150,6 +157,13 @@ class IrcAdminCommandsMixin:
                 rest = rest[:-2]
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")
+                return
+            single_to = direction == "TO" and len(rest) == 2 and rest[0].lower() != "all"
+            if category and not single_to:
+                self._notify(
+                    nick,
+                    "CATEGORY:<id|name> only applies to MIRROR CHANNEL TO <service> <local_id> (a single service).",
+                )
                 return
             try:
                 if direction == "TO" and len(rest) == 1:
@@ -166,6 +180,7 @@ class IrcAdminCommandsMixin:
                         local_channel_id=rest[1],
                         local_channel_name=rest[1],
                         destination=rest[0],
+                        destination_category=category,
                         new_name=new_name,
                     )
                 elif direction == "FROM" and len(rest) == 2:
@@ -175,7 +190,7 @@ class IrcAdminCommandsMixin:
                 else:
                     self._notify(
                         nick,
-                        "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] | "
+                        "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
                         "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
                     )
                     return

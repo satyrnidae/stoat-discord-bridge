@@ -528,9 +528,16 @@ class DiscordLinkingMixin:
         service: str | None,
         local_id: str | None,
         new_name: str | None = None,
+        category: str | None = None,
     ) -> None:
         if self._linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        if category and (service is None or service.lower() == "all"):
+            await interaction.response.send_message(
+                "A destination Category can only be set when mirroring to a single connector, not 'all'.",
+                ephemeral=True,
+            )
             return
         if local_id is not None:
             channel_id = _normalize_channel_id(local_id)
@@ -577,6 +584,7 @@ class DiscordLinkingMixin:
                     local_channel_name=channel_name,
                     destination=service,
                     local_channel_category=channel_category,
+                    destination_category=category,
                     new_name=new_name,
                 )
         except LinkError as exc:
@@ -586,11 +594,18 @@ class DiscordLinkingMixin:
         await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_channel_from(
-        self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
+        self,
+        interaction: discord.Interaction,
+        service: str,
+        external_id: str,
+        new_name: str | None = None,
+        category: str | None = None,
     ) -> None:
         """`/mirror channel from <service> <external_id>`: create a local
         channel mirroring `service`'s `external_id` and link them, placing it
-        in the local counterpart of the source channel's linked Category."""
+        in the local counterpart of the source channel's linked Category - or
+        in `category` (a local Category id/name), if given, which overrides
+        that (issue #75)."""
         if self._linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
             return
@@ -605,7 +620,11 @@ class DiscordLinkingMixin:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             summary = await self._linker.mirror_channel_from(
-                local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
+                local_connector=self.connector_id,
+                source=service,
+                source_id=external_id,
+                new_name=new_name,
+                local_category=category,
             )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror channel from rejected: %s", self.connector_id, exc)

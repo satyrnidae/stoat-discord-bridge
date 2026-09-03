@@ -301,6 +301,7 @@ async def test_mirror_channel_to_a_single_destination():
             "local_channel_id": "#general",
             "local_channel_name": "#general",
             "destination": "discord",
+            "destination_category": None,
             "new_name": None,
         }
     ]
@@ -319,6 +320,7 @@ async def test_mirror_channel_to_honours_a_trailing_as_new_name():
             "local_channel_id": "#general",
             "local_channel_name": "#general",
             "destination": "discord",
+            "destination_category": None,
             "new_name": "lobby",
         }
     ]
@@ -370,6 +372,35 @@ async def test_mirror_channel_from_honours_a_trailing_as_new_name():
     ]
 
 
+async def test_mirror_channel_to_honours_a_category_kv_token():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general CATEGORY:Announcements AS lobby")
+
+    assert linker.mirror_channel_calls == [
+        {
+            "local_connector": "irc",
+            "local_channel_id": "#general",
+            "local_channel_name": "#general",
+            "destination": "discord",
+            "destination_category": "Announcements",
+            "new_name": "lobby",
+        }
+    ]
+
+
+async def test_mirror_channel_category_kv_rejected_with_all():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO ALL #general CATEGORY:Announcements")
+
+    assert linker.mirror_channel_calls == []
+    assert linker.mirror_channel_all_calls == []
+    assert conn.notice_calls and "CATEGORY:" in conn.notice_calls[0][1]
+
+
 async def test_mirror_channel_wrong_arg_count_sends_usage():
     sender, conn = _make_sender(linker=FakeLinker())
 
@@ -378,7 +409,7 @@ async def test_mirror_channel_wrong_arg_count_sends_usage():
     assert conn.notice_calls == [
         (
             "alice",
-            "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] | "
+            "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
             "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
         )
     ]

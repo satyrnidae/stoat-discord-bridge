@@ -296,7 +296,13 @@ async def test_mirror_channel_from_strips_a_pasted_mention_and_routes_to_the_lin
     await sender._handle_mirror_channel_from(interaction, "stoat", "<#814279082606592020>")
 
     assert linker.mirror_channel_from_calls == [
-        {"local_connector": "discord", "source": "stoat", "source_id": "814279082606592020", "new_name": None}
+        {
+            "local_connector": "discord",
+            "source": "stoat",
+            "source_id": "814279082606592020",
+            "new_name": None,
+            "local_category": None,
+        }
     ]
     assert interaction.deferred is True
     assert interaction.sent == ["mirrored from ok"]
@@ -310,8 +316,51 @@ async def test_mirror_channel_from_forwards_a_new_name():
     await sender._handle_mirror_channel_from(interaction, "stoat", "s1", "lobby")
 
     assert linker.mirror_channel_from_calls == [
-        {"local_connector": "discord", "source": "stoat", "source_id": "s1", "new_name": "lobby"}
+        {
+            "local_connector": "discord",
+            "source": "stoat",
+            "source_id": "s1",
+            "new_name": "lobby",
+            "local_category": None,
+        }
     ]
+
+
+async def test_mirror_channel_forwards_the_destination_category(monkeypatch):
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+
+    async def fake_get_channel_name(_channel_id: str):
+        return "general"
+
+    monkeypatch.setattr(sender, "get_channel_name", fake_get_channel_name)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(interaction, "stoat", "c1", None, "Announcements")
+
+    assert linker.mirror_channel_calls[0]["destination_category"] == "Announcements"
+
+
+async def test_mirror_channel_rejects_a_category_when_mirroring_to_all():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(interaction, "all", "c1", None, "Announcements")
+
+    assert linker.mirror_channel_calls == []
+    assert linker.mirror_channel_all_calls == []
+    assert interaction.sent and "single connector" in interaction.sent[0]
+
+
+async def test_mirror_channel_from_forwards_the_local_category():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel_from(interaction, "stoat", "s1", None, "Team Beta")
+
+    assert linker.mirror_channel_from_calls[0]["local_category"] == "Team Beta"
 
 
 # ---------------------------------------------------------------- _handle_link_channel

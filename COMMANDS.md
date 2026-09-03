@@ -229,7 +229,19 @@ The fan-out `all` form doesn't take it (one name can't fit many destinations).
 `/mirror category`'s `new_name` titles only the Category — mirrored child
 channels still carry their own names.
 
-### `/mirror channel to [<service>|all] [<local_id>] [<new_name>]`
+`/mirror channel` (both directions) additionally takes an optional
+**`category`** — a Category id or name that the counterpart channel is placed
+under, *overriding* linked-Category resolution and same-name matching entirely
+(issue #75). On `to` it's a Category on the **destination** service, so it needs
+a single `<service>` (not `all`); on `from` it's a **local** Category on the
+connector the command is run on. An id is resolved to its title; a name that
+doesn't match any existing Category is get-or-created. On Discord it's the
+native `category` option (autocompleted from the relevant connector's
+Categories); on Stoat and IRC — the first `/mirror channel` parameter that
+can't be positional — it's a `category:<id|name>` (Stoat) / `CATEGORY:<id|name>`
+(IRC) key/value token, placed anywhere in the argument list.
+
+### `/mirror channel to [<service>|all] [<local_id>] [<new_name>] [category:<id|name>]`
 
 Ensures a linked counterpart of `<local_id>` (or the invoking channel, if
 omitted) exists on `service` — or every other configured connector, if
@@ -247,13 +259,16 @@ If `<local_id>`'s Category is already linked (via `/link category`) to a
 Category on the destination, the counterpart channel lands in *that* linked
 Category — matched by the link, not by an exact Category-name match — and only
 falls back to creating a same-named Category when it isn't linked (issue #50).
+Passing `category:<id|name>` overrides all of that: the counterpart lands in the
+named Category on `<service>` regardless of any Category link, and it's only
+accepted with a single `<service>`, not `all`.
 
 A channel the bridge bot can't actually see is refused rather than mirrored
 into a stub named after the platform's hidden-channel placeholder — grant the
 bot access to the channel first. (The check is best-effort: only a definite
 "the bot lacks view permission here" blocks it.)
 
-### `/mirror channel from <service> <external_id> [<new_name>]`
+### `/mirror channel from <service> <external_id> [<new_name>] [category:<id|name>]`
 
 The inbound direction: `<service>`'s `<external_id>` channel already exists,
 so a linked counterpart is created **on the connector the command is run on**
@@ -262,7 +277,9 @@ existing bridge group if `<external_id>` is already in one. "Respecting other
 linked entities": if the source channel sits in a Category that's already
 linked (via `/link category`) to a Category here, the new local channel is
 placed into *that* linked Category rather than a fresh same-named one (the
-same linked-Category resolution `to` does, issue #50).
+same linked-Category resolution `to` does, issue #50). Passing
+`category:<id|name>` — a **local** Category — overrides that and places the new
+channel there instead.
 `<external_id>` also accepts a bare channel name. There's no `all` form -
 `from` always names one source. As with `to`, a source channel the bridge bot
 can't see on `<service>` is refused rather than mirrored.
@@ -270,16 +287,18 @@ can't see on `<service>` is refused rather than mirrored.
 - **Discord**: `/mirror channel to` / `/mirror channel from` subcommands
   under the `/mirror channel` group (Manage Server; `to`'s `service`
   autocomplete includes the literal `all` choice, `from`'s doesn't), each
-  with an optional `new_name`
-- **Stoat**: `/mirror channel to [<service>|all] [<local_id|name>] [<new_name>]` /
-  `/mirror channel from <service> <external_id|name> [<new_name>]` message
-  commands (Manage Server)
-- **IRC**: `MIRROR CHANNEL TO [<service>|all] <local_id> [AS <new_name>]` /
+  with an optional `new_name` and an optional `category` option (autocompleted
+  — from the target `service`'s Categories on `to`, from this guild's on `from`)
+- **Stoat**: `/mirror channel to [<service>|all] [<local_id|name>] [<new_name>] [category:<id|name>]` /
+  `/mirror channel from <service> <external_id|name> [<new_name>] [category:<id|name>]`
+  message commands (Manage Server)
+- **IRC**: `MIRROR CHANNEL TO [<service>|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>]` /
   `MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]`, DM
   (IRC-operator; `TO`'s local id is always required - no "current channel" to
   default to - so a lone `TO` argument is the id and `service` defaults to
   `all`; `AS <new_name>` is honoured for a single-destination `TO` and for
-  `FROM`)
+  `FROM`; `CATEGORY:<id|name>` only for a single-destination `TO` — IRC, the
+  local side of `FROM`, has no Categories)
 
 ## Categories: `/link category`, `/mirror category`, `/linked categories`, `/unlink category`
 

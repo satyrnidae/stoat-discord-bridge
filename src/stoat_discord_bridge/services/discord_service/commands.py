@@ -315,17 +315,21 @@ def build_command_tree(service) -> None:
         local_id="Channel id or name on this connector (defaults to the current channel)",
         service="Connector id to mirror to, or 'all' (default: all)",
         new_name="Name for the counterpart channel on the target connector (default: same as this one)",
+        category="Category id or name on the target connector to place the counterpart in - overrides linked Categories; requires a single service, not 'all'",
     )
     @app_commands.autocomplete(
-        service=channel_service_autocomplete(include_all=True), local_id=channel_local_ac
+        service=channel_service_autocomplete(include_all=True),
+        local_id=channel_local_ac,
+        category=category_external_ac,
     )
     async def mirror_channel_to_command(
         interaction: discord.Interaction,
         service: str | None = None,
         local_id: str | None = None,
         new_name: str | None = None,
+        category: str | None = None,
     ) -> None:
-        await self._handle_mirror_channel(interaction, service, local_id, new_name)
+        await self._handle_mirror_channel(interaction, service, local_id, new_name, category)
 
     @mirror_channel_group.command(
         name="from", description="Create a local channel mirroring one from another connector, and link them"
@@ -334,14 +338,21 @@ def build_command_tree(service) -> None:
         service="Connector id to mirror from",
         external_id="Channel id or name on that connector",
         new_name="Name for the new local channel (default: same as the source)",
+        category="Local Category id or name to place the new channel in - overrides the source channel's linked Category",
     )
     @app_commands.autocomplete(
-        service=channel_service_autocomplete(include_all=False), external_id=channel_external_ac
+        service=channel_service_autocomplete(include_all=False),
+        external_id=channel_external_ac,
+        category=category_local_ac,
     )
     async def mirror_channel_from_command(
-        interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
+        interaction: discord.Interaction,
+        service: str,
+        external_id: str,
+        new_name: str | None = None,
+        category: str | None = None,
     ) -> None:
-        await self._handle_mirror_channel_from(interaction, service, external_id, new_name)
+        await self._handle_mirror_channel_from(interaction, service, external_id, new_name, category)
 
     @link_group.command(
         name="user",

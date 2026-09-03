@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import typing
 
+from stoat_discord_bridge.admin_commands import pop_kv_option
 from stoat_discord_bridge.services.stoat_service._compat import apply_stoat_command_patches
 
 # stoat.py 1.2.1's command framework raises `TypeError` on any `Optional[...]`
@@ -35,7 +36,7 @@ _HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
   {p}link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
   {p}link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
   {p}link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
-  {p}mirror channel to [service|all] [local_id|name] [new_name] | from <service> <external_id|name> [new_name] - create+link a matching channel (Manage Server)
+  {p}mirror channel to [service|all] [local_id|name] [new_name] [category:<id|name>] | from <service> <external_id|name> [new_name] [category:<id|name>] - create+link a matching channel; category:<> overrides linked Categories (Manage Server)
   {p}mirror role to [service|all] <local_id|name> [new_name] | from <service> <external_id|name> [new_name] - create+link a matching role (Manage Server)
   {p}mirror emote to [service|all] <local_id|name> [new_name] | from <service> <external_id|name> [new_name] - recreate+link a custom emoji (Manage Server)
   {p}mirror category to [service|all] [local_id|name] [new_name] | from <service> <external_id|name> [new_name] - create+link a Category and mirror its channels (Manage Server)
@@ -144,18 +145,45 @@ def build_command_tree(bot, owner, prefix: str) -> None:
     async def mirror_channel(ctx):
         await owner._reply(ctx, f"Usage: {p}mirror channel <to|from> …")
 
+    # `category:<id|name>` (issue #75) can't be positional - it holds arbitrary
+    # ids/names - so it's a `PARAM:value` pair pulled out of the token list
+    # anywhere, matching the IRC side. The remaining tokens parse positionally
+    # as before. The extra optional slot is just capacity for that kv token.
     @mirror_channel.command(name="to")
     async def mirror_channel_to(
         ctx,
         service: typing.Optional[str] = None,
         local_id: typing.Optional[str] = None,
         new_name: typing.Optional[str] = None,
+        category: typing.Optional[str] = None,
     ):
-        await owner._mirror_channel(ctx, local_id, service, new_name)
+        tokens, category_value = pop_kv_option(
+            [t for t in (service, local_id, new_name, category) if t is not None], "category"
+        )
+        service = tokens[0] if tokens else None
+        local_id = tokens[1] if len(tokens) > 1 else None
+        new_name = tokens[2] if len(tokens) > 2 else None
+        await owner._mirror_channel(ctx, local_id, service, new_name, category_value)
 
     @mirror_channel.command(name="from")
-    async def mirror_channel_from(ctx, service: str, external_id: str, new_name: typing.Optional[str] = None):
-        await owner._mirror_channel_from(ctx, service, external_id, new_name)
+    async def mirror_channel_from(
+        ctx,
+        service: typing.Optional[str] = None,
+        external_id: typing.Optional[str] = None,
+        new_name: typing.Optional[str] = None,
+        category: typing.Optional[str] = None,
+    ):
+        tokens, category_value = pop_kv_option(
+            [t for t in (service, external_id, new_name, category) if t is not None], "category"
+        )
+        if len(tokens) < 2:
+            await owner._reply(
+                ctx,
+                f"Usage: {p}mirror channel from <service> <external_id|name> [new_name] [category:<local_id|name>]",
+            )
+            return
+        new_name = tokens[2] if len(tokens) > 2 else None
+        await owner._mirror_channel_from(ctx, tokens[0], tokens[1], new_name, category_value)
 
     @mirror.group(name="role", invoke_without_command=True)
     async def mirror_role(ctx):

@@ -8,6 +8,7 @@ from stoat_discord_bridge.admin_commands import (
     EmoteLinker,
     LinkError,
     UserLinker,
+    pop_kv_option,
 )
 from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
 from stoat_discord_bridge.storage.category_mappings import CategoryMapping, CategoryMappingRepository
@@ -1249,6 +1250,124 @@ async def test_mirror_channel_to_falls_back_to_source_category_when_unlinked(fak
         local_channel_category="ignored",
     )
     assert calls == [("general", "Discord Team")]
+
+
+def test_pop_kv_option_pulls_the_first_matching_pair_out():
+    remaining, value = pop_kv_option(["stoat", "general", "category:01ABC", "extra"], "category")
+    assert remaining == ["stoat", "general", "extra"]
+    assert value == "01ABC"
+
+
+def test_pop_kv_option_is_case_insensitive_on_the_key_and_accepts_equals():
+    remaining, value = pop_kv_option(["a", "CATEGORY=Bot Stuff"], "category")
+    assert remaining == ["a"]
+    assert value == "Bot Stuff"
+
+
+def test_pop_kv_option_absent_returns_none_and_all_tokens():
+    remaining, value = pop_kv_option(["stoat", "general"], "category")
+    assert remaining == ["stoat", "general"]
+    assert value is None
+
+
+async def test_mirror_channel_destination_category_overrides_the_linked_category(fake_db):
+    # issue #75: an explicit Category on the destination wins over `/link
+    # category` resolution - and an id is resolved to its title so
+    # ensure_channel doesn't spawn a Category named after the id.
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    async def resolve_channel_category(cid):
+        return ("dcat", "Discord Team")
+
+    async def resolve_category_name(cid):
+        return "Announcements" if cid == "scat-2" else None
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_channel_category=resolve_channel_category),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", ensure_channel=ensure_channel, resolve_category_name=resolve_category_name
+        ),
+    }
+    category_mappings = CategoryMappingRepository(fake_db)
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="discord", category_id="dcat", category_name="Discord Team")
+    )
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="stoat", category_id="scat", category_name="Stoat Team")
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, category_mappings)
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        local_channel_category="Discord Team",
+        destination_category="scat-2",
+    )
+    assert calls == [("general", "Announcements")]
+
+
+async def test_mirror_channel_destination_category_passes_an_unresolvable_name_through(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, CategoryMappingRepository(fake_db))
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        destination_category="Brand New Category",
+    )
+    assert calls == [("general", "Brand New Category")]
+
+
+async def test_mirror_channel_from_local_category_overrides_the_linked_category(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    async def resolve_channel_name(channel_id):
+        return "remote-general" if channel_id == "d1" else None
+
+    async def resolve_channel_category(cid):
+        return ("dcat", "Discord Team")
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", resolve_channel_name=resolve_channel_name,
+            resolve_channel_category=resolve_channel_category,
+        ),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    category_mappings = CategoryMappingRepository(fake_db)
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="discord", category_id="dcat", category_name="Discord Team")
+    )
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="stoat", category_id="scat", category_name="Stoat Team")
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, category_mappings)
+
+    await linker.mirror_channel_from(
+        local_connector="stoat", source="discord", source_id="d1", local_category="Chosen Locally"
+    )
+    assert calls == [("remote-general", "Chosen Locally")]
 
 
 async def test_mirror_channel_all_uses_each_destinations_linked_category(fake_db):
