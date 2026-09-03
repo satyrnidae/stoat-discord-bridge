@@ -17,12 +17,13 @@ import pytest
 
 from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.discord_service import DiscordReceiverService
-from stoat_discord_bridge.services.base import PartialRelayError
+from stoat_discord_bridge.services.base import PartialRelayError, UnsupportedRelayTargetError
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 from tests.fakes.fake_discord import (
     FakeAsset,
     FakeChannel,
     FakeClient,
+    FakeForumChannel,
     FakeFullMessage,
     FakeGuild,
     FakeReaction,
@@ -495,6 +496,48 @@ async def test_threads_under_the_same_parent_share_one_cached_webhook():
 
     assert webhook_a is webhook_b
     assert len(parent.created_webhooks) == 1
+
+
+async def test_get_or_create_webhook_rejects_a_forum_channel():
+    client = FakeClient()
+    forum = client.add_channel(FakeForumChannel(id=42))
+    receiver = _make_receiver(client)
+
+    with pytest.raises(UnsupportedRelayTargetError):
+        await receiver._get_or_create_webhook("42")
+
+    assert forum.created_webhooks == []
+
+
+async def test_receive_rejects_a_forum_channel_target():
+    client = FakeClient()
+    client.add_channel(FakeForumChannel(id=42))
+    receiver = _make_receiver(client)
+
+    with pytest.raises(UnsupportedRelayTargetError):
+        await receiver.receive(_message(), target_channel_id="42")
+
+
+async def test_edit_message_rejects_a_forum_channel_target():
+    client = FakeClient()
+    client.add_channel(FakeForumChannel(id=42))
+    receiver = _make_receiver(client)
+
+    with pytest.raises(UnsupportedRelayTargetError):
+        await receiver.edit_message(target_channel_id="42", target_message_ids=["1000"], edit=_edit())
+
+
+async def test_receive_still_posts_into_a_forum_post_thread():
+    client = FakeClient()
+    forum = client.add_channel(FakeForumChannel(id=42))
+    thread = client.add_channel(FakeThread(id=777, parent=forum))
+    receiver = _make_receiver(client)
+
+    ids = await receiver.receive(_message(), target_channel_id="777")
+
+    webhook = forum.created_webhooks[0]
+    assert webhook.sent[0]["thread"] is thread
+    assert ids == ["1000"]
 
 
 async def test_receive_posts_into_a_thread_through_its_parents_webhook():

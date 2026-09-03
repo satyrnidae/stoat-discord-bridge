@@ -171,3 +171,12 @@ class PartialRelayError(Exception):
         super().__init__(f"partial relay: {len(partial_ids)} post(s) delivered before failure: {cause}")
         self.partial_ids = partial_ids
         self.cause = cause
+
+
+class UnsupportedRelayTargetError(Exception):
+    """Raised by a `ReceiverService` when the resolved target channel is a
+    kind this bridge simply can't post a relayed message into — e.g. a Discord
+    forum/media channel, where every top-level post has to open a new thread
+    (`thread_name`/`thread_id`), which the bridge has no sensible mapping for.
+    Unlike a transient failure this will never succeed on retry, so
+    `BridgeCoordinator` logs it once (no traceback) and drops the relay."""

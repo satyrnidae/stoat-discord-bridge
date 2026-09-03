@@ -22,7 +22,11 @@ import discord
 # by `receive()` at call time - the historical monkeypatch seam.
 import stoat_discord_bridge.services.discord_service as _discord_pkg
 from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
-from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
+from stoat_discord_bridge.services.base import (
+    PartialRelayError,
+    ReceiverService,
+    UnsupportedRelayTargetError,
+)
 from stoat_discord_bridge.services.discord_service.formatting import (
     _USERNAME_LIMIT,
     _discord_reaction_matches,
@@ -447,6 +451,16 @@ class DiscordReceiverService(ReceiverService):
         # under it shares one webhook instead of creating a new one each.
         channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         thread = channel if isinstance(channel, discord.Thread) else None
+        # A forum/media channel has no top-level message stream - every post has
+        # to open a new thread (thread_name/thread_id), which the webhook API
+        # enforces with a 400 (error 220001). The bridge has no mapping for
+        # "which thread", so relaying into one is unsupported outright (issue
+        # #69). A *post within* a forum (a discord.Thread whose parent is the
+        # ForumChannel) is fine - that's the `thread is not None` path below.
+        if thread is None and isinstance(channel, discord.ForumChannel):
+            raise UnsupportedRelayTargetError(
+                f"Discord channel {channel.id} is a forum/media channel - the bridge can't relay into one"
+            )
         webhook_channel = channel.parent if thread is not None else channel
         cache_key = str(webhook_channel.id)
         webhook = self._webhooks.get(cache_key)
