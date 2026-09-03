@@ -31,3 +31,6 @@ certs/
 # Local overrides
 *.override.*
 STOAT_BOT_POINTERS.md
+
+# vim swap files
+*.un~
