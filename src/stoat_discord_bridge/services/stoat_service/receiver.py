@@ -1,0 +1,296 @@
+"""`StoatReceiverService`: posts `StandardMessage`s into Stoat via masquerade.
+
+Masquerade is a `send()` kwarg (`MessageMasquerade(name=, avatar=)`), not a
+separate webhook-style API, so this reuses the already-connected sender
+client for the same server rather than needing its own identity to post
+through. The bot must have the `use_masquerade` permission in the target
+channel.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+
+import aiohttp
+
+import stoat
+
+# Imported as a module (not `from … import _CONTENT_LIMIT`) so a test patching
+# `stoat_discord_bridge.services.stoat_service._CONTENT_LIMIT` is picked up by
+# `receive()` at call time - the historical monkeypatch seam.
+import stoat_discord_bridge.services.stoat_service as _stoat_pkg
+
+from stoat_discord_bridge.models import CustomEmoji, StandardMessage
+from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
+from stoat_discord_bridge.services.formatting import chunk_content, content_with_attachments
+from stoat_discord_bridge.services.mentions import (
+    rewrite_channel_mentions,
+    rewrite_emoji,
+    rewrite_mentions,
+    rewrite_role_mentions,
+)
+from stoat_discord_bridge.services.stoat_service.formatting import _download, _to_stoat_emoji
+from stoat_discord_bridge.services.stoat_service.sender import StoatSenderService
+from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
+from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
+
+logger = logging.getLogger(__name__)
+
+
+class StoatReceiverService(ReceiverService):
+    """Posts into Stoat "as" a remote (Discord/IRC) user via masquerade.
+
+    Masquerade is a `send()` kwarg (`MessageMasquerade(name=, avatar=)`), not
+    a separate webhook-style API, so this reuses the already-connected
+    sender client for the same server rather than needing its own identity
+    to post through. The bot must have the `use_masquerade` permission in
+    the target channel.
+    """
+
+    supports_reactions = True
+    supports_emoji = True
+    supports_pins = True
+    supports_typing = True
+
+    # How long a single relayed typing indicator lingers before it's ended,
+    # unless `trigger_typing` is called again first. Stoat/Revolt keeps a
+    # BeginTyping alive until an explicit EndTyping, so - unlike Discord's
+    # self-lapsing indicator - the receiver has to run a small keep-alive
+    # loop and stop it once the origin user stops typing.
+    _TYPING_LINGER = 6.0
+    _TYPING_REFRESH = 2.5
+
+    def __init__(
+        self,
+        sender: StoatSenderService,
+        user_mappings: UserMappingRepository | None = None,
+        channel_mappings: ChannelMappingRepository | None = None,
+        role_mappings: RoleMappingRepository | None = None,
+        emoji_mappings: EmojiMappingRepository | None = None,
+    ) -> None:
+        self.connector_id = sender.connector_id
+        self._sender = sender
+        self._user_mappings = user_mappings
+        self._channel_mappings = channel_mappings
+        self._role_mappings = role_mappings
+        self._emoji_mappings = emoji_mappings
+        # target_channel_id -> monotonic deadline the keep-alive loop stops at,
+        # and the loop task itself (one per channel currently "typing").
+        self._typing_until: dict[str, float] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
+
+    async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        sender_name = message.sender_name
+        avatar_url = message.sender_avatar_url
+        if self._user_mappings is not None:
+            local_user_id = await self._user_mappings.find_linked_user_id(
+                message.origin_connector_id, message.sender_user_id, self.connector_id
+            )
+            if local_user_id is not None:
+                identity = await self._sender.get_masquerade_identity(local_user_id)
+                if identity is not None:
+                    sender_name, avatar_url = identity
+        masquerade = stoat.MessageMasquerade(
+            name=sender_name[:32],
+            avatar=avatar_url,
+        )
+        content = content_with_attachments(message)
+        if self._user_mappings is not None:
+            content = await rewrite_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                user_mappings=self._user_mappings,
+            )
+        if self._channel_mappings is not None:
+            content = await rewrite_channel_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                channel_mappings=self._channel_mappings,
+            )
+        if self._role_mappings is not None:
+            content = await rewrite_role_mentions(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                role_mappings=self._role_mappings,
+            )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=message.origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                emoji_mappings=self._emoji_mappings,
+            )
+        ids: list[str] = []
+        for chunk in chunk_content(content, _stoat_pkg._CONTENT_LIMIT):
+            logger.debug(
+                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r): %r",
+                self.connector_id,
+                target_channel_id,
+                masquerade.name,
+                masquerade.avatar,
+                chunk,
+            )
+            try:
+                sent = await channel.send(chunk, masquerade=masquerade)
+            except Exception as exc:
+                raise PartialRelayError(ids, exc) from exc
+            logger.debug("[stoat:%s] masqueraded message sent, id=%s", self.connector_id, sent.id)
+            ids.append(str(sent.id))
+        # Best-effort, never fatal to the relay: keep a thread Category's
+        # parent channel grouped at its top (see the sender method's docstring).
+        await self._sender.group_parent_channel_with_threads(target_channel_id)
+        return ids
+
+    async def add_reaction(self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji) -> None:
+        """Idempotent: skips the API call if the bridge bot has already
+        reacted with this emoji on the target message (a second origin user
+        reacting with the same emoji must not double-add)."""
+        native = _to_stoat_emoji(emoji)
+        if await self._bot_already_reacted(target_channel_id, target_message_id, native):
+            return
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
+        await message.react(native)
+
+    async def remove_reaction(
+        self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji
+    ) -> None:
+        """Idempotent: skips the API call if the bridge bot isn't currently
+        reacting with this emoji. `message.unreact(emoji)` with no `user=`
+        removes only the caller's (bot's) own reaction."""
+        native = _to_stoat_emoji(emoji)
+        already = await self._bot_already_reacted(target_channel_id, target_message_id, native)
+        if already is False:
+            return
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
+        await message.unreact(native)
+
+    async def _bot_already_reacted(
+        self, channel_id: str, message_id: str, native_emoji: str
+    ) -> bool | None:
+        """True/False if the bot's own reaction with `native_emoji` could be
+        determined from a fresh fetch of the message, None if it couldn't
+        (fetch failed / unknown self id) - callers treat None as "act anyway"."""
+        self_id = self._sender.self_id
+        if self_id is None:
+            return None
+        try:
+            message = await self._sender.get_channel(channel_id, partial=True).fetch_message(message_id)
+        except Exception:
+            return None
+        reactions = getattr(message, "reactions", None)
+        if not isinstance(reactions, dict):
+            return None
+        return self_id in {str(u) for u in reactions.get(native_emoji, ())}
+
+    async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        try:
+            message = await channel.fetch_message(target_message_id)
+        except Exception:
+            return  # message gone, or we can't see it - best-effort
+        if getattr(message, "pinned", None) == pinned:
+            return  # already in the desired state - avoids a needless API call and echo
+        try:
+            if pinned:
+                await message.pin()
+            else:
+                await message.unpin()
+        except stoat.HTTPException:
+            logger.warning(
+                "[stoat:%s] couldn't %s message %s in channel %s",
+                self.connector_id,
+                "pin" if pinned else "unpin",
+                target_message_id,
+                target_channel_id,
+            )
+
+    async def trigger_typing(self, *, target_channel_id: str) -> None:
+        """Show a typing indicator in the channel, attributed to the bridge
+        bot (Stoat masquerade doesn't extend to typing). Extends the linger
+        deadline and, if no keep-alive loop is running for this channel,
+        starts one that re-sends BeginTyping until the deadline, then ends
+        it. Best-effort: a bad channel / transient error just stops the loop."""
+        self._typing_until[target_channel_id] = time.monotonic() + self._TYPING_LINGER
+        task = self._typing_tasks.get(target_channel_id)
+        if task is not None and not task.done():
+            return
+        self._typing_tasks[target_channel_id] = asyncio.ensure_future(
+            self._keep_typing(target_channel_id)
+        )
+
+    async def stop_typing(self, *, target_channel_id: str) -> None:
+        """End the typing indicator now (the origin user stopped typing before
+        sending). Cancels the keep-alive loop and sends a final EndTyping.
+        Best-effort: a bad channel / transient error is swallowed."""
+        self._typing_until.pop(target_channel_id, None)
+        task = self._typing_tasks.pop(target_channel_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        try:
+            channel = self._sender.get_channel(target_channel_id, partial=True)
+            await channel.end_typing()
+        except Exception:
+            pass
+
+    async def _keep_typing(self, channel_id: str) -> None:
+        channel = self._sender.get_channel(channel_id, partial=True)
+        try:
+            while time.monotonic() < self._typing_until.get(channel_id, 0.0):
+                await channel.begin_typing()
+                await asyncio.sleep(self._TYPING_REFRESH)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("[stoat:%s] typing keep-alive for channel %s failed", self.connector_id, channel_id)
+        finally:
+            self._typing_until.pop(channel_id, None)
+            self._typing_tasks.pop(channel_id, None)
+            try:
+                await channel.end_typing()
+            except Exception:
+                pass
+
+    async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
+        # Stoat emoji names may only contain lowercase ASCII letters, digits
+        # and underscores (1-32 chars) - sanitise whatever the source platform
+        # allowed down to that.
+        name = re.sub(r"[^a-z0-9_]", "_", emoji.name.lower())[:32].strip("_") or "emoji"
+        try:
+            server = self._sender.get_server(self._sender.server_id, partial=True)
+            image_bytes = await _download(emoji.image_url)
+            upload = stoat.Upload.emoji(image_bytes, filename=f"{name}.png")
+            created = await server.create_server_emoji(name, image=upload)
+        except (stoat.HTTPException, aiohttp.ClientError) as exc:
+            logger.warning("[stoat:%s] couldn't create emoji %r: %s", self.connector_id, emoji.name, exc)
+            return None  # e.g. emoji slots full, name taken, image too large, network failure - skip this platform
+        return CustomEmoji(
+            native_id=str(created.id),
+            name=created.name,
+            image_url=created.image.url(),
+            animated=getattr(created, "animated", emoji.animated),
+        )
