@@ -494,6 +494,22 @@ class StoatSenderService(SenderService):
         self._command_message_ids: deque[str] = deque(maxlen=512)
 
     def get_channel(self, channel_id: str, *, partial: bool = False):
+        """Cache-only channel lookup (no network). Verified against stoat.py
+        1.2.1 (`Client.get_channel`, `MapCache.get_channel`), not yet against
+        a live server:
+
+        - `partial=False` returns the fully-populated cached channel object
+          (a `ServerChannel` - `.name` / `.category` / `.role_permissions` /
+          `.category_id` all present) or `None` on a cache miss. It never
+          raises for a missing channel and never does I/O.
+        - `partial=True` returns that same cached channel, or a bare
+          `PartialMessageable` stub (id + `Messageable` send/typing/
+          fetch_message only - no `.name` etc.) on a miss, never `None`.
+
+        So the `.name`/`.category`/`.role_permissions` readers below want
+        `partial=False` and a `None` guard; the send/typing/fetch_message
+        paths (receiver, reactions, pins) want `partial=True`.
+        """
         return self._client.get_channel(channel_id, partial=partial)
 
     def get_server(self, server_id: str, *, partial: bool = False):
@@ -605,9 +621,10 @@ class StoatSenderService(SenderService):
         """Best-effort channel-id -> name lookup, used as this connector's
         `ConnectorInfo.resolve_channel_name` for `/link channel`.
 
-        TODO: verify stoat.py's get_channel(partial=False) semantics - this
-        assumes it returns a fully-populated channel object synchronously,
-        like partial=True does elsewhere in this class.
+        `get_channel(partial=False)` returns a fully-populated cached channel
+        (`.name` present) or `None` on a cache miss - see `get_channel`'s
+        docstring. The `getattr(..., None)` covers the miss; the `try` guards
+        an unexpected raise only.
         """
         try:
             channel = self._client.get_channel(channel_id, partial=False)
@@ -638,12 +655,11 @@ class StoatSenderService(SenderService):
     async def get_channel_category_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> Category-title lookup, for `/mirror-
         channel` to carry a channel's Category across to the destination
-        connector. `.category` can raise NoData on a cache miss, same
-        best-effort pattern as get_channel_name/get_masquerade_identity
-        elsewhere in this class.
-
-        TODO: verify stoat.py's get_channel(partial=False) semantics - see
-        get_channel_name's TODO above.
+        connector. `get_channel(partial=False)` returns the cached channel or
+        `None` on a miss (see `get_channel`'s docstring); `None.category` and
+        a genuine cache-miss `NoData` from `.category` both land in the
+        `except` and yield `None`, same best-effort pattern as
+        get_channel_name/get_masquerade_identity elsewhere in this class.
         """
         try:
             channel = self._client.get_channel(channel_id, partial=False)
