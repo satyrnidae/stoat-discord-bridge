@@ -18,8 +18,10 @@ from dataclasses import dataclass
 
 # neutral name -> (discord.Permissions attr, stoat Permissions attr). Only
 # bits that mean the same thing on both platforms. Both sides' attr names
-# are verified against discord.py's `Permissions` and stoat.py's
-# `Permissions` flag class (stoatpy.readthedocs.io .../enums_and_flag_classes).
+# are verified against the installed discord.py (2.7.1) and stoat.py (1.2.1)
+# `Permissions` flag classes - every name here exists on both, and
+# `tests/test_stoat_permission_flag_names.py` pins that against the real
+# classes so a rename in either library fails the suite.
 NEUTRAL_PERMISSIONS: dict[str, tuple[str, str]] = {
     "view_channel": ("view_channel", "view_channel"),
     "read_message_history": ("read_message_history", "read_message_history"),
