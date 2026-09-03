@@ -303,7 +303,23 @@ re-resolving the id through the connector's name cache - that cache is
 populated at connect and blind to a brand-new Category, so re-resolving
 handed back the raw id, which then got stored as the Category name and
 passed on as a child-channel Category title, spawning a second Category
-literally named after the id (issue #64). Both directions of every
+literally named after the id (issue #64). Every `/mirror` command
+(`/mirror channel|category|role|emote`, all of `to`/`from`/`all`)
+first force-refreshes both the source and destination connector's cached
+server state via `ConnectorInfo.refresh` (`_refresh_connectors` in
+`admin_commands.py`), so an entity created since the gateway connected isn't
+missed by the cache-only `resolve_*`/`ensure_*`/`list_*` reads and then
+duplicated (issue #81). Only Stoat wires `refresh`
+(`StoatLookupsMixin.refresh` re-fetches the server + members + emoji and
+writes them back into stoat.py's cache the way its own `ServerCreateEvent`
+does, seeding the `_fresh_categories` cache off the same fetch) - stoat.py
+1.2.1's cached `Server` genuinely drifts (patched from only a few gateway
+events, Categories from none - issue #66); Discord's cache is kept live by
+gateway events and IRC's channel state is already live, so both leave it
+unset. Best-effort (a missing/raising hook is ignored) and throttled
+(`services/caching.RefreshThrottle`, 10s) so a `... all` / `/mirror
+category` fan-out that re-enters a per-destination mirror stays one network
+round-trip. Both directions of every
 `/mirror <noun>` take an optional trailing `new_name` (`admin_commands.py`'s
 `_clean_new_name`): the name the counterpart is created/matched under on the
 destination instead of carrying the source name over - routed through the

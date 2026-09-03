@@ -1,11 +1,13 @@
 """`services/caching.AsyncTTLCache` - the tiny async memo behind per-user
-pronoun lookups and (issue #66) the Stoat Category-list re-fetch."""
+pronoun lookups and (issue #66) the Stoat Category-list re-fetch - and
+`RefreshThrottle`, which collapses a `/mirror` full-refresh burst (issue
+#81)."""
 
 from __future__ import annotations
 
 import pytest
 
-from stoat_discord_bridge.services.caching import AsyncTTLCache
+from stoat_discord_bridge.services.caching import AsyncTTLCache, RefreshThrottle
 
 pytestmark = pytest.mark.asyncio
 
@@ -57,3 +59,54 @@ async def test_an_expired_entry_reloads():
     await cache.get("x", loader)
     await cache.get("x", loader)
     assert calls == ["x", "x"]  # ttl=0 -> every get is a miss
+
+
+async def test_put_seeds_the_cache_so_the_next_get_skips_the_loader():
+    calls: list[str] = []
+
+    async def loader(key: str) -> str:
+        calls.append(key)
+        return "loaded"
+
+    cache: AsyncTTLCache[str] = AsyncTTLCache(ttl_seconds=60)
+    cache.put("k", "seeded")
+
+    assert await cache.get("k", loader) == "seeded"
+    assert calls == []
+
+
+async def test_put_value_still_expires_on_ttl():
+    async def loader(_key: str) -> str:
+        return "loaded"
+
+    cache: AsyncTTLCache[str] = AsyncTTLCache(ttl_seconds=0)
+    cache.put("k", "seeded")
+
+    assert await cache.get("k", loader) == "loaded"  # seeded entry already expired
+
+
+# ---------------------------------------------------------------- RefreshThrottle
+
+
+async def test_refresh_throttle_allows_the_first_call_then_blocks_within_the_interval():
+    throttle = RefreshThrottle(min_interval=60)
+
+    assert throttle.due() is True
+    assert throttle.due() is False
+    assert throttle.due() is False
+
+
+async def test_refresh_throttle_with_a_zero_interval_always_allows():
+    throttle = RefreshThrottle(min_interval=0)
+
+    assert throttle.due() is True
+    assert throttle.due() is True
+
+
+async def test_refresh_throttle_reset_reopens_the_window():
+    throttle = RefreshThrottle(min_interval=60)
+
+    assert throttle.due() is True
+    assert throttle.due() is False
+    throttle.reset()
+    assert throttle.due() is True
