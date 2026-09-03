@@ -410,6 +410,12 @@ src/stoat_discord_bridge/
       #   sender.py / receiver.py - the composed *SenderService / *ReceiverService
       # linking/lookups/sync are mixins composed into *SenderService. irc_service/
       # is lighter (client / commands / formatting / sender / receiver only).
+      # stoat_service/_compat.py runtime-patches a stoat.py 1.2.1 command-framework
+      # bug (issue #40): its Command.transform/.signature call issubclass() on a
+      # parameter's raw annotation, which raises TypeError for any Optional[...] /
+      # Union[...] arg - i.e. most of the /link /unlink /linked /mirror tree.
+      # apply_stoat_command_patches() (called at import of stoat_service/commands.py)
+      # wraps that issubclass so a non-class first arg returns False, as discord.py does.
   storage/
     mongo.py                   # MongoDB connection (motor)
     channel_mappings.py        # which channels, across connectors, are bridged together
