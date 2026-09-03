@@ -169,7 +169,9 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             message.channel.id,
             message.author.id,
         )
-        await self._on_message(_to_standard_message(message, self.connector_id))
+        await self._on_message(
+            _to_standard_message(message, self.connector_id, source_label=self._config.label)
+        )
 
     async def _handle_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         """MESSAGE_UPDATE fires both when a message is pinned and when it's
@@ -302,7 +304,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             # next in-thread message normally now that the channel exists.
             self._thread_ready.add(thread.id)
         else:
-            msg = _to_standard_message(starter, self.connector_id)
+            msg = _to_standard_message(starter, self.connector_id, source_label=self._config.label)
             await self._on_message(replace(msg, origin_channel_id=str(thread.id), channel_name=thread.name))
 
         await self._relay_thread_created_notice(thread, starter_author)

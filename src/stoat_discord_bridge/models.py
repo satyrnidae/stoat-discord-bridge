@@ -46,6 +46,13 @@ class StandardMessage:
     content_markdown: str
     message_id: str  # native message ID on the origin platform, for sync tracking
     attachments: list[Attachment] = field(default_factory=list)
+    # The origin connector's display label (config.yaml's `label` - e.g.
+    # "Discord", "Stoat (public)", "IRC"), stamped by every sender. A receiver
+    # whose connector has `source_forwarding` on folds it into the displayed
+    # sender identity (Discord webhook username / Stoat masquerade name /
+    # IRC `<nick>` prefix) so a relayed message shows where it came from.
+    # None only for a message a sender built before this field existed.
+    source_label: str | None = None
 
 
 @dataclass(frozen=True)

@@ -61,6 +61,7 @@ def _make_sender(
     sender = object.__new__(StoatSenderService)
     sender.connector_id = "stoat"
     sender._client = client
+    sender._config = SimpleNamespace(label="Stoat")
     sender._health = HealthTracker({"stoat": "Stoat"})
     sender._linker = None
     sender._user_linker = None
@@ -202,6 +203,7 @@ async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar
     assert message.origin_connector_id == "stoat"
     assert message.origin_channel_id == "42"
     assert message.channel_name == "general"
+    assert message.source_label == "Stoat"
     assert message.sender_name == "Alice"
     assert message.sender_avatar_url == "https://cdn.example/a.png"
     assert message.sender_user_id == "u1"

@@ -6,6 +6,7 @@ import pytest
 from stoat_discord_bridge.models import Attachment
 from stoat_discord_bridge.services.formatting import (
     chunk_content,
+    decorate_sender_name,
     download_attachments,
     inline_attachment_urls,
     render_discord_timestamps,
@@ -108,6 +109,25 @@ async def test_download_attachments_falls_back_when_downloaded_body_exceeds_limi
 
 async def test_download_attachments_empty_list_is_a_noop():
     assert await download_attachments([]) == ([], [])
+
+
+def test_decorate_sender_name_no_extras_is_unchanged():
+    assert decorate_sender_name("saturniidae") == "saturniidae"
+
+
+def test_decorate_sender_name_source_only():
+    assert decorate_sender_name("saturniidae", source="Discord") == "saturniidae [Discord]"
+
+
+def test_decorate_sender_name_pronouns_only():
+    assert decorate_sender_name("saturniidae", pronouns="she/her") == "saturniidae [she/her]"
+
+
+def test_decorate_sender_name_source_and_pronouns():
+    assert (
+        decorate_sender_name("saturniidae", source="Stoat (public)", pronouns="she/her")
+        == "saturniidae [Stoat (public), she/her]"
+    )
 
 
 def test_chunk_content_under_limit_is_one_chunk():

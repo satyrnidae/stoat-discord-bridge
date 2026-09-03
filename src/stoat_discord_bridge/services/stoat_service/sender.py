@@ -174,6 +174,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 content_markdown=message.content,
                 message_id=str(message.id),
                 attachments=_map_attachments(message),
+                source_label=self._config.label,
             )
         )
 

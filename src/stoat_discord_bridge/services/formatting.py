@@ -151,6 +151,22 @@ def strip_markdown(content: str) -> str:
     return content
 
 
+def decorate_sender_name(name: str, *, source: str | None = None, pronouns: str | None = None) -> str:
+    """Fold an origin connector's source label and/or the sender's pronouns
+    into a displayed sender name as a bracketed suffix - e.g.
+    `decorate_sender_name("saturniidae", source="Stoat (public)", pronouns="she/her")`
+    -> `"saturniidae [Stoat (public), she/her]"`.
+
+    Either part may be None (each caller passes `source`/`pronouns` only when
+    its connector's `source_forwarding` / `pronoun_forwarding` is on and the
+    value is actually known); with neither, `name` is returned unchanged. Used
+    by the Discord (webhook username) and Stoat (masquerade name) receivers -
+    IRC builds its own `<nick, source, pronouns>` line prefix instead.
+    """
+    parts = [part for part in (source, pronouns) if part]
+    return f"{name} [{', '.join(parts)}]" if parts else name
+
+
 def inline_attachment_urls(content: str, attachments: Sequence[Attachment]) -> str:
     """`content` with each attachment's URL appended on its own line, falling
     back to the zero-width-space sentinel when that leaves nothing on the

@@ -628,6 +628,7 @@ async def run(config: BridgeConfig) -> None:
             channel_mappings=channel_mappings,
             role_mappings=role_mappings,
             emoji_mappings=emoji_mappings,
+            source_forwarding=dc.source_forwarding,
         )
         coordinator.register_receiver(receiver)
         connector_infos[dc.id] = ConnectorInfo(
@@ -693,6 +694,7 @@ async def run(config: BridgeConfig) -> None:
             channel_mappings=channel_mappings,
             role_mappings=role_mappings,
             emoji_mappings=emoji_mappings,
+            source_forwarding=sc.source_forwarding,
         )
         coordinator.register_receiver(receiver)
         connector_infos[sc.id] = ConnectorInfo(
@@ -750,6 +752,7 @@ async def run(config: BridgeConfig) -> None:
                 channel_mappings=channel_mappings,
                 role_mappings=role_mappings,
                 emoji_mappings=emoji_mappings,
+                source_forwarding=ic.source_forwarding,
             )
         )
         connector_infos[ic.id] = ConnectorInfo(

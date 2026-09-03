@@ -122,6 +122,24 @@ async def test_receive_prefixes_with_the_linked_local_nick_when_linked(fake_db):
     assert connection.privmsg_calls == [("#general", "<AliceIrc> hello")]
 
 
+async def test_receive_appends_the_source_label_to_the_line_tag():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+
+    await receiver.receive(_message(source_label="Discord"), target_channel_id="#general")
+
+    assert connection.privmsg_calls == [("#general", "<Alice, Discord> hello")]
+
+
+async def test_receive_omits_the_source_label_when_source_forwarding_is_off():
+    connection = FakeIrcConnection()
+    receiver = IrcReceiverService(_FakeSender(connection), source_forwarding=False)
+
+    await receiver.receive(_message(source_label="Discord"), target_channel_id="#general")
+
+    assert connection.privmsg_calls == [("#general", "<Alice> hello")]
+
+
 async def test_receive_uses_the_remote_name_when_the_sender_isnt_linked(fake_db):
     user_mappings = UserMappingRepository(fake_db)
     connection = FakeIrcConnection()

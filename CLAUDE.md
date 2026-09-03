@@ -196,6 +196,22 @@ end sends `end_typing`, clearing the indicator at once; Discord has no
 clear-typing API, so there the loop just stops re-arming and Discord's own
 ~10s timeout lapses it.
 
+### Source forwarding
+
+Every `StandardMessage` carries `source_label` — the origin connector's
+`config.yaml` `label` ("Discord", "Stoat (public)", "IRC"), stamped by each
+sender. A receiver whose connector has `source_forwarding` on (per-connector,
+default on — `DiscordConnectorConfig` / `StoatConnectorConfig` /
+`IrcConnectorConfig`, wired to each receiver in `bridge.py`) folds it into the
+displayed sender identity so a relayed message shows where it came from:
+Discord's webhook username and Stoat's masquerade name become
+`name [Source]` (`services/formatting.decorate_sender_name`), IRC's line tag
+becomes `<nick, Source>`. On Stoat the decorated name is still clipped to the
+32-char masquerade-name cap; on Discord a source label containing "discord"
+is masked by `_sanitize_username` (the webhook API rejects that substring).
+The decoration is applied *after* the `/link-user` local-identity swap, so a
+linked sender still shows their local name plus the true origin label.
+
 ### Admin & status commands
 
 Every admin/status command (`/status`, the channel commands `/link channel` /

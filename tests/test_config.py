@@ -99,6 +99,39 @@ def test_stoat_group_parent_channel_with_threads_defaults_on_and_is_overridable(
     assert config.stoat[1].group_parent_channel_with_threads is False  # env override
 
 
+def test_source_forwarding_defaults_on_and_is_overridable_per_connector_kind(
+    tmp_path, isolated_env, monkeypatch
+):
+    monkeypatch.setenv("DISCORD__0__SOURCE_FORWARDING", "false")
+    monkeypatch.setenv("IRC__0__SOURCE_FORWARDING", "0")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord_a
+            guild_id: 1
+            bot_token: t0
+          - id: discord_b
+            guild_id: 2
+            bot_token: t1
+        stoat:
+          - id: stoat_a
+            server_id: s1
+            api_url: https://a.example/api
+            bot_token: t2
+            source_forwarding: false
+        irc:
+          - id: irc_a
+            host: irc.example.net
+        """,
+    )
+    config = load_config(path)
+    assert config.discord[0].source_forwarding is False  # env override
+    assert config.discord[1].source_forwarding is True  # default
+    assert config.stoat[0].source_forwarding is False  # literal override
+    assert config.irc[0].source_forwarding is False  # env override
+
+
 def test_stoat_command_prefix_defaults_and_is_overridable(tmp_path, isolated_env, monkeypatch):
     monkeypatch.setenv("STOAT__2__COMMAND_PREFIX", "?")
     path = _write_config(

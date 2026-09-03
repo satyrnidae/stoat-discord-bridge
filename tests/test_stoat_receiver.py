@@ -102,6 +102,41 @@ async def test_receive_truncates_a_sender_name_over_32_chars():
     assert channel.sent[0]["masquerade"].name == "x" * 32
 
 
+async def test_receive_folds_the_source_label_into_the_masquerade_name():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(_message(source_label="Discord"), target_channel_id="42")
+
+    assert channel.sent[0]["masquerade"].name == "Alice [Discord]"
+
+
+async def test_receive_source_decorated_masquerade_name_is_still_capped_at_32_chars():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(sender_name="a-fairly-long-display-name", source_label="Stoat (public)"),
+        target_channel_id="42",
+    )
+
+    name = channel.sent[0]["masquerade"].name
+    assert name == "a-fairly-long-display-name [Stoa"
+    assert len(name) == 32
+
+
+async def test_receive_omits_the_source_label_when_source_forwarding_is_off():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = StoatReceiverService(_FakeSender(client), source_forwarding=False)
+
+    await receiver.receive(_message(source_label="Discord"), target_channel_id="42")
+
+    assert channel.sent[0]["masquerade"].name == "Alice"
+
+
 async def test_receive_splits_long_content_into_multiple_sends(monkeypatch):
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))
