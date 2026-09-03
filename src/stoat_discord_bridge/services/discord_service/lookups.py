@@ -114,7 +114,9 @@ class DiscordLookupsMixin:
         try:
             channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         except Exception:
-            logger.debug("[discord:%s] couldn't resolve thread parent for %s", self.connector_id, channel_id)
+            logger.debug(
+                "[discord:%s] couldn't resolve thread parent for %s", self.connector_id, channel_id, exc_info=True
+            )
             return None
         if not isinstance(channel, discord.Thread):
             return None

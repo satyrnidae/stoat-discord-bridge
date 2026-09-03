@@ -494,8 +494,8 @@ class ChannelLinker:
         # Category (issue #72). Detected here rather than in each caller so
         # both `/mirror channel to` (Discord side) and `/mirror channel from`
         # (the other side) pick it up.
+        src_info = self._connectors.get(local_connector)
         if not is_thread_category:
-            src_info = self._connectors.get(local_connector)
             if src_info is not None and src_info.resolve_thread_parent is not None:
                 try:
                     thread_parent = await src_info.resolve_thread_parent(local_channel_id)
@@ -547,7 +547,6 @@ class ChannelLinker:
         # keeps `ensure_channel` callers that don't take the keyword (older
         # test fakes) untouched, and lets each hook apply it on create only.
         metadata = None
-        src_info = self._connectors.get(local_connector)
         if src_info is not None and src_info.describe_channel is not None:
             try:
                 metadata = await src_info.describe_channel(local_channel_id)
