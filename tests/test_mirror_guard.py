@@ -178,6 +178,38 @@ async def test_mirror_channel_all_does_not_block_itself(fake_db):
     assert "Linked" in out  # Stoat leg succeeded
 
 
+async def test_mirror_role_all_skips_only_the_busy_leg(fake_db):
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def stoat_ensure_role(name):
+        started.set()
+        await gate.wait()
+        return "s1"
+
+    async def irc_ensure_role(name):
+        return "i1"
+
+    connectors = _connectors(
+        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=stoat_ensure_role),
+        irc=ConnectorInfo(id="irc", label="IRC", ensure_role=irc_ensure_role),
+    )
+    linker = RoleLinker(RoleMappingRepository(fake_db), connectors)
+
+    # hold Stoat busy with a separate in-flight mirror
+    busy = asyncio.create_task(
+        linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    )
+    await started.wait()
+
+    out = await linker.mirror_role_all(local_connector="discord", local_role="d2")
+    # the Stoat leg is a skip line; the IRC leg still went through
+    assert "Stoat: another /mirror into Stoat is still running" in out
+    assert "Linked Discord role 'd2' (d2) to IRC" in out
+
+    gate.set()
+    await busy
+
+
 async def test_one_shared_guard_makes_channel_and_role_mirror_exclude_each_other(fake_db):
     started, gate = asyncio.Event(), asyncio.Event()
 

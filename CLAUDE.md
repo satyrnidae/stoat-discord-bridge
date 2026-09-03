@@ -395,9 +395,9 @@ identically from each connector's own `services/*.py` module. Nothing is
 bridged (or mention-linked) automatically — every pair is linked explicitly
 via those commands.
 
-Every `mirror_*` entry point on those linkers is wrapped by
-`_guards_mirror`, which reserves the operation's **destination
-connector(s)** on a single shared `MirrorGuard` for the duration
+Each single-destination `mirror_*` entry point (`… to` / `… from`) on those
+linkers is wrapped by `_guards_mirror`, which reserves that operation's
+**destination connector** on a single shared `MirrorGuard` for the duration
 (`bridge.run()` hands the one instance to all four linkers). A second
 `/mirror` — of any entity kind — into a connector another `/mirror` is
 still writing to fails fast with a user-facing `MirrorInProgressError` (a
@@ -405,14 +405,17 @@ still writing to fails fast with a user-facing `MirrorInProgressError` (a
 handles it) rather than racing it into duplicate channels/Categories/roles/
 emoji (issue #79 — `/mirror channel` especially is slow). The reservation
 is keyed to the running asyncio task, so one operation that fans out
-through several linker methods in the same task (`... all`, or
-`/mirror category` mirroring each child channel) re-enters freely, while a
-genuinely concurrent command — always a separate task — is the one
-rejected. Mirrors into *different* destinations still run in parallel.
-`CategoryLinker.sync_new_channel`'s auto-sync catches the rejection and
-defers that channel (the manual mirror picks it up if it's a child of the
-mirrored Category); the Discord thread auto-mirror's existing
-`except Exception` already drops it.
+through several linker methods in the same task (`/mirror category`
+mirroring each child channel, or `… from` delegating to `… to`) re-enters
+freely, while a genuinely concurrent command — always a separate task — is
+the one rejected. Mirrors into *different* destinations still run in
+parallel. The `… all` fan-outs are **not** `_guards_mirror`-wrapped: they
+let each per-destination leg reserve its own connector (`_mirror_all_leg`),
+so one busy destination becomes a single skip line instead of aborting the
+whole fan-out. `CategoryLinker.sync_new_channel`'s auto-sync catches the
+rejection and defers that channel (the manual mirror picks it up if it's a
+child of the mirrored Category); the Discord thread auto-mirror goes
+through `mirror_channel_all`, so a busy destination skips just that leg.
 
 When `/mirror channel` (or `/mirror channel from`, thread auto-mirror, or
 linked-Category auto-sync) **creates** a counterpart channel, it carries the
