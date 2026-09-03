@@ -127,6 +127,16 @@ class ConnectorInfo:
     # source channel's linked Category (rather than a fresh same-named one).
     # IRC leaves this unset - it has no Category concept.
     resolve_channel_category: Callable[[str], Awaitable[tuple[str, str] | None]] | None = None
+    # Best-effort "is this native channel id a thread, and if so what's its
+    # parent channel?" lookup -> (parent_channel_id, parent_channel_name), or
+    # None if the channel isn't a thread / can't be resolved. Only Discord
+    # wires this (threads are a Discord-only concept). `mirror_channel` uses
+    # it so a manual `/mirror channel to`/`from` on a Discord thread groups
+    # the counterpart under a Category named after the thread's parent
+    # channel - and moves that parent channel into it - exactly like the
+    # automatic thread-create mirror does, rather than dropping the thread
+    # into the parent's own linked Category (issue #72).
+    resolve_thread_parent: Callable[[str], Awaitable[tuple[str, str] | None]] | None = None
     # Best-effort "can the bridge bot actually see this channel?" check, keyed
     # by native channel id. Returns True (visible), False (the channel
     # resolves but the bot lacks the view permission on it), or None ("can't
@@ -166,14 +176,16 @@ class ConnectorInfo:
     # connector as unsupported rather than calling this - only IRC leaves it
     # unset now that Discord and Stoat both implement it).
     # The third argument, is_thread_category, marks the matched/created
-    # Category (if any) as one Discord's thread/forum-post auto-mirroring
-    # created (see DiscordSenderService._handle_thread_create), via
+    # Category (if any) as one that groups a Discord thread/forum-post with
+    # its siblings (see DiscordSenderService._handle_thread_create), via
     # CategoryLinker.bind_thread_category - so `/link-category` later
-    # refuses to link it. False for every other caller (regular
-    # /mirror channel, and CategoryLinker.sync_new_channel's own auto-sync).
+    # refuses to link it. Passed True by the thread auto-mirror and also
+    # inferred by ChannelLinker.mirror_channel whenever the source channel
+    # is a Discord thread (issue #72); False for a plain channel mirror and
+    # CategoryLinker.sync_new_channel's own auto-sync.
     # The fourth argument, category_parent_channel_id, is this connector's
-    # own channel id for the thread's parent channel (only set from the
-    # thread auto-mirror). It keys the persistent parent->thread-Category
+    # own channel id for the thread's parent channel (set alongside
+    # is_thread_category). It keys the persistent parent->thread-Category
     # binding (ThreadCategoryRepository), so the Category is resolved by id
     # rather than by title on later threads - surviving a Category rename.
     # None for every other caller.
@@ -433,10 +445,13 @@ class ChannelLinker:
         mirrored channel lands in *that* linked Category rather than a fresh
         same-named one (issue #50) - so `/mirror channel` (both directions and
         `all`) respects linked Categories the same way `/mirror channel from`
-        already did. `is_thread_category` is only ever
-        True from DiscordSenderService._handle_thread_create's auto-mirror -
-        it marks that destination Category as thread-only, so
-        `/link-category` later refuses to link it.
+        already did. `is_thread_category` marks that destination Category as
+        thread-only, so `/link-category` later refuses to link it. It's
+        passed True by DiscordSenderService._handle_thread_create's
+        auto-mirror, and also inferred here whenever `local_channel_id`
+        resolves (via the source connector's `resolve_thread_parent` hook) to
+        a Discord thread - so a manual `/mirror channel to`/`from` on a thread
+        groups it the same way (issue #72).
 
         Raises LinkError (aborting the whole operation, `all` included) when
         the connector's can_view_channel hook says for certain the bridge bot
@@ -471,6 +486,28 @@ class ChannelLinker:
                 f"the bridge bot can't see channel '{local_channel_id}' on "
                 f"{self._connectors[local_connector].label} - give it access to that channel first."
             )
+
+        # A manual `/mirror channel` on a Discord thread should behave like the
+        # automatic thread-create mirror: land the counterpart under a Category
+        # named after the thread's *parent channel* (and let the destination
+        # move that parent channel in), not under the parent's own linked
+        # Category (issue #72). Detected here rather than in each caller so
+        # both `/mirror channel to` (Discord side) and `/mirror channel from`
+        # (the other side) pick it up.
+        src_info = self._connectors.get(local_connector)
+        if not is_thread_category:
+            if src_info is not None and src_info.resolve_thread_parent is not None:
+                try:
+                    thread_parent = await src_info.resolve_thread_parent(local_channel_id)
+                except Exception:
+                    logger.debug(
+                        "resolve_thread_parent(%s) failed on %s", local_channel_id, local_connector, exc_info=True
+                    )
+                    thread_parent = None
+                if thread_parent is not None:
+                    is_thread_category = True
+                    category_from_channel_id = thread_parent[0]
+                    local_channel_category = thread_parent[1]
 
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is not None:
@@ -510,7 +547,6 @@ class ChannelLinker:
         # keeps `ensure_channel` callers that don't take the keyword (older
         # test fakes) untouched, and lets each hook apply it on create only.
         metadata = None
-        src_info = self._connectors.get(local_connector)
         if src_info is not None and src_info.describe_channel is not None:
             try:
                 metadata = await src_info.describe_channel(local_channel_id)

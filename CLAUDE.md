@@ -517,6 +517,17 @@ channels are left where they are). Pre-binding rows (no `parent_channel_id`)
 still register as thread categories and are rewritten to the bound shape on the
 next thread for that parent.
 
+Running `/mirror channel to <service>` (or `/mirror channel from discord <id>`
+on the other connector) **on a Discord thread** now takes the same path: the
+thread grouping isn't special-cased in the auto-mirror handler but in
+`ChannelLinker.mirror_channel`, which calls the source connector's
+`ConnectorInfo.resolve_thread_parent` hook (Discord-only —
+`DiscordSenderService.get_thread_parent`) and, when the channel resolves to a
+thread, flips `is_thread_category` on and points `category_from_channel_id` at
+the parent channel itself — so a manually-mirrored thread lands under (and
+binds) a Category named after its parent, and the parent channel gets pulled
+in, instead of dropping into the parent's own linked Category (issue #72).
+
 A Discord **forum/media channel** itself (a `discord.ForumChannel`, not a
 `Thread` under one) can't be a relay target — it has no top-level message
 stream, so a webhook post into one needs a `thread_name`/`thread_id` the bridge

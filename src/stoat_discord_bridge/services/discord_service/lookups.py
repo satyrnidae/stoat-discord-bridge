@@ -103,6 +103,35 @@ class DiscordLookupsMixin:
             return None
         return str(category.id), category.name
 
+    async def get_thread_parent(self, channel_id: str) -> tuple[str, str] | None:
+        """If `channel_id` is a Discord thread (or forum post - also a
+        `discord.Thread`), return its parent channel's `(id, name)`;
+        otherwise None. This connector's `ConnectorInfo.resolve_thread_parent`
+        - `ChannelLinker.mirror_channel` uses it so a manual `/mirror channel`
+        on a thread groups the counterpart under a Category named after the
+        thread's parent channel, like the automatic thread-create mirror
+        (issue #72)."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except Exception:
+            logger.debug(
+                "[discord:%s] couldn't resolve thread parent for %s", self.connector_id, channel_id, exc_info=True
+            )
+            return None
+        if not isinstance(channel, discord.Thread):
+            return None
+        parent = channel.parent
+        if parent is None and channel.parent_id is not None:
+            try:
+                parent = self._client.get_channel(channel.parent_id) or await self._client.fetch_channel(
+                    channel.parent_id
+                )
+            except Exception:
+                parent = None
+        if parent is None:
+            return None
+        return str(parent.id), getattr(parent, "name", str(parent.id))
+
     async def get_channel_category_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> Category-name lookup, used by
         `/mirror channel` to carry a channel's Category across to the

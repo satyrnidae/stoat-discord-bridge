@@ -522,6 +522,33 @@ async def test_get_user_name_returns_none_on_a_non_numeric_id():
     assert await sender.get_user_name("not-a-number") is None
 
 
+# ---------------------------------------------------------------- get_thread_parent
+
+
+async def test_get_thread_parent_returns_the_parent_id_and_name_for_a_thread():
+    client = FakeClient()
+    parent = FakeChannel(id=42, name="bot-config")
+    client.add_channel(FakeThread(id=777, parent=parent, name="cool thread", guild=FakeGuild(id=123)))
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_thread_parent("777") == ("42", "bot-config")
+
+
+async def test_get_thread_parent_returns_none_for_a_plain_channel():
+    client = FakeClient()
+    client.add_channel(FakeChannel(id=42, name="general"))
+    sender = _make_sender(_Recorder(), client)
+
+    assert await sender.get_thread_parent("42") is None
+
+
+async def test_get_thread_parent_returns_none_for_an_unresolvable_id():
+    sender = _make_sender(_Recorder(), FakeClient())
+
+    assert await sender.get_thread_parent("999") is None
+    assert await sender.get_thread_parent("not-a-number") is None
+
+
 # ---------------------------------------------------------------- _handle_thread_create
 
 
