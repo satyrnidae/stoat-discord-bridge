@@ -1270,6 +1270,43 @@ def test_pop_kv_option_absent_returns_none_and_all_tokens():
     assert value is None
 
 
+def test_pop_kv_option_reassembles_a_quoted_multi_word_value():
+    remaining, value = pop_kv_option(["stoat", 'category:"Off', "Topic", 'Zone"', "lobby"], "category")
+    assert remaining == ["stoat", "lobby"]
+    assert value == "Off Topic Zone"
+
+
+def test_pop_kv_option_single_token_quoted_value_is_unwrapped():
+    remaining, value = pop_kv_option(["a", "category:'Ideas'"], "category")
+    assert remaining == ["a"]
+    assert value == "Ideas"
+
+
+async def test_mirror_channel_destination_category_rejects_an_unresolvable_bare_id(fake_db):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"stoat_{name}"
+
+    async def resolve_category_name(_cid):
+        return None  # a stale/typo'd id that matches nothing
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", ensure_channel=ensure_channel, resolve_category_name=resolve_category_name
+        ),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, CategoryMappingRepository(fake_db))
+
+    with pytest.raises(LinkError, match="couldn't find a Category"):
+        await linker.mirror_channel(
+            local_connector="discord",
+            local_channel_id="d1",
+            local_channel_name="general",
+            destination="stoat",
+            destination_category="01J9ZXCV01J9ZXCV01J9ZXCV01",
+        )
+
+
 async def test_mirror_channel_destination_category_overrides_the_linked_category(fake_db):
     # issue #75: an explicit Category on the destination wins over `/link
     # category` resolution - and an id is resolved to its title so

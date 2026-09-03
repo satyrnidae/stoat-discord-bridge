@@ -61,6 +61,13 @@ def _strip_discord_mention(raw: str) -> str:
 _CUSTOM_EMOJI_RE = re.compile(r"^<a?:(\w+):(\w+)>$")
 _EMOJI_SHORTCODE_RE = re.compile(r"^:([\w~+-]+):$")
 
+# A token shaped like a native entity id rather than a human-chosen name: an
+# all-digit Discord snowflake, or a 26-char Crockford-base32 ULID (Stoat). Used
+# to decide whether an unresolvable `/mirror channel category:` value is a typo'd
+# id (reject) or a name for a Category to create (pass through) - see
+# ChannelLinker._resolve_destination_category_name.
+_BARE_ID_RE = re.compile(r"\A(?:\d{15,}|[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})\Z")
+
 
 def _strip_emote_token(raw: str) -> str:
     token = raw.strip()
@@ -81,17 +88,33 @@ def pop_kv_option(tokens: list[str], key: str) -> tuple[list[str], str | None]:
     natively, but Stoat's `stoat.ext.commands` and IRC's bare DM commands parse
     positionally - a `category` that can hold arbitrary ids/names can't be
     positional there, so both take it as this `PARAM:value` pair anywhere in the
-    argument list (issue #75)."""
+    argument list (issue #75).
+
+    A quoted value (``key:"two words"`` / ``key:'two words'``) reassembles the
+    tokens the caller's whitespace split broke it into, up to the closing quote,
+    and the surrounding quotes are stripped - the only way a multi-word value
+    survives, since both callers hand this a pre-split token list."""
     prefix_colon = f"{key.lower()}:"
     prefix_eq = f"{key.lower()}="
     value: str | None = None
     remaining: list[str] = []
-    for token in tokens:
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
         lowered = token.lower()
         if value is None and (lowered.startswith(prefix_colon) or lowered.startswith(prefix_eq)):
-            value = token[len(key) + 1 :]
+            raw = token[len(key) + 1 :]
+            quote = raw[:1]
+            if quote in ('"', "'"):
+                raw = raw[1:]
+                while not raw.endswith(quote) and i + 1 < len(tokens):
+                    i += 1
+                    raw = f"{raw} {tokens[i]}"
+                raw = raw[:-1] if raw.endswith(quote) else raw
+            value = raw
         else:
             remaining.append(token)
+        i += 1
     return remaining, value
 
 
@@ -656,10 +679,11 @@ class ChannelLinker:
         """Resolve a Category id-or-name `token` on `connector` to the Category
         *title* `ensure_channel` places a channel under. A name is resolved to
         its id then back to the canonical title; a bare id is turned into its
-        title directly. A `token` that resolves to nothing (a Category that
-        doesn't exist yet) is returned unchanged for `ensure_channel` to
-        get-or-create - which is why callers should hand a *name*, not an id,
-        for a not-yet-created Category."""
+        title directly. A `token` that resolves to nothing is passed straight
+        through as a title for `ensure_channel` to get-or-create - *unless* it's
+        shaped like a platform id (all-digit Discord snowflake, 26-char ULID),
+        which then raises rather than spawning a Category literally named after
+        an id nothing matched (the issue #64 failure mode)."""
         info = self._connectors.get(connector)
         if info is None:
             return token
@@ -680,6 +704,11 @@ class ChannelLinker:
                 name = None
             if name:
                 return name
+        if _BARE_ID_RE.match(token):
+            raise LinkError(
+                f"couldn't find a Category matching '{token}' on {info.label} - "
+                "pass an existing Category's id/name, or a name to create."
+            )
         return token
 
     async def _local_category_for_source_channel(

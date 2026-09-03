@@ -239,7 +239,10 @@ doesn't match any existing Category is get-or-created. On Discord it's the
 native `category` option (autocompleted from the relevant connector's
 Categories); on Stoat and IRC — the first `/mirror channel` parameter that
 can't be positional — it's a `category:<id|name>` (Stoat) / `CATEGORY:<id|name>`
-(IRC) key/value token, placed anywhere in the argument list.
+(IRC) key/value token, placed anywhere in the argument list. A multi-word name
+must be quoted there (`category:"Off Topic"`); an unresolvable value shaped like
+an id (all digits, or a 26-char ULID) is rejected rather than used as a new
+Category's name.
 
 ### `/mirror channel to [<service>|all] [<local_id>] [<new_name>] [category:<id|name>]`
 
