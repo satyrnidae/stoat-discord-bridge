@@ -5,8 +5,8 @@ A *sender* service listens to one endpoint (a configured Discord/Stoat/IRC
 connector) and turns native events into a `StandardMessage`. A *receiver*
 service takes a `StandardMessage` and posts it into one endpoint, handling
 whatever platform-specific quirks that requires (splitting long messages,
-stripping markdown, turning attachments into inline URLs, etc.) — see the
-TODOs in `services/`.
+stripping markdown, re-uploading attachments as native files on Discord/Stoat
+or inlining their URLs on IRC, etc.).
 """
 
 from __future__ import annotations

@@ -86,6 +86,18 @@ be split across multiple platform posts) and raises `PartialRelayError`
 rather than silently losing IDs if a later post in a split fails after
 earlier ones succeeded.
 
+Attachments arrive on a `StandardMessage` as URLs (a Discord/Stoat CDN link).
+The Discord and Stoat receivers **re-upload** each one as a native file on the
+relayed message (`services/formatting.download_attachments` fetches the bytes;
+`webhook.send(files=…)` / `channel.send(attachments=…)`) rather than pasting
+the link into the text — those signed CDN URLs expire, and a native file
+renders inline — attaching them to the last post of a split message (issue
+#39). Anything over `formatting._MAX_REUPLOAD_BYTES` (8 MiB) or that can't be
+fetched falls back to an inlined URL via `formatting.inline_attachment_urls`
+so it's never lost. IRC has no native attachments, so
+`IrcReceiverService.receive` still inlines every attachment URL as its own
+line.
+
 `config.py` loads `config.yaml` and layers env vars over it per-field: an
 `{SECTION}__{index}__{FIELD}` env var (Azure App Configuration/ASP.NET
 Core-style hierarchical binding — `index` is the connector's 0-based

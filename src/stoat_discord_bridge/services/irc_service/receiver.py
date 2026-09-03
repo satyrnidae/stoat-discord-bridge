@@ -55,9 +55,10 @@ class IrcReceiverService(ReceiverService):
         content = strip_markdown(message.content_markdown)
         # IRC has no native attachments - inline each attachment URL (a
         # Discord/Stoat CDN link) as its own line so an image-only message
-        # isn't relayed blank. Kept inline rather than using
-        # content_with_attachments(), whose empty-message sentinel would put
-        # a zero-width space on the wire.
+        # isn't relayed blank. Done inline rather than via
+        # formatting.inline_attachment_urls(), whose empty-message sentinel
+        # would put a zero-width space on the wire. (Discord/Stoat re-upload
+        # these as native files instead - see formatting.download_attachments.)
         if message.attachments:
             extra = "\n".join(a.url for a in message.attachments if a.url)
             if extra:

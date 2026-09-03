@@ -134,10 +134,14 @@ class FakeWebhook:
         avatar_url: str | None,
         wait: bool = True,
         thread: Any = None,
+        files: Any = None,
     ) -> FakeSentMessage:
         if self._raises is not None:
             raise self._raises
-        self.sent.append({"content": content, "username": username, "avatar_url": avatar_url, "thread": thread})
+        record = {"content": content, "username": username, "avatar_url": avatar_url, "thread": thread}
+        if files:
+            record["files"] = [(f.filename, f.fp.read()) for f in files]
+        self.sent.append(record)
         message_id = self._next_message_id
         self._next_message_id += 1
         return FakeSentMessage(id=message_id)
