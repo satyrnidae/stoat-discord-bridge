@@ -30,8 +30,9 @@ _DESCRIPTION_LIMIT = 1024
 # How long a freshly-fetched Category list is reused before another
 # `fetch_server` - see `_fresh_categories`. Short: a human creating a Category
 # on Stoat then linking it via `/link category` (issue #66) shouldn't have to
-# wait, but the Discord slash-command autocomplete calls the `list_*` hooks on
-# every keystroke and mustn't hit the API each time.
+# wait, but the Discord slash-command autocomplete calls the `list_*` hooks
+# repeatedly while someone types, and once one load has landed the rest of
+# that burst is served from here rather than re-fetching.
 _CATEGORY_CACHE_TTL = 15.0
 
 
@@ -272,10 +273,10 @@ class StoatLookupsMixin:
         `_fresh_categories`, issue #66)."""
         try:
             categories = await self._fresh_categories()
+            category = next((c for c in categories if str(c.id) == category_id), None)
+            return category.title if category is not None else None
         except Exception:
             return None
-        category = next((c for c in categories if str(c.id) == category_id), None)
-        return category.title if category is not None else None
 
     async def ensure_channel(
         self,
@@ -786,8 +787,10 @@ class StoatLookupsMixin:
         `channels_in_category`) miss any Category created or renamed since
         startup - `/link category` then can't map a typed name to a real id
         and stores the raw token instead, and autocomplete omits it (issue
-        #66). Re-fetching fixes that; the TTL keeps per-keystroke autocomplete
-        off the API. Falls back to the cached server's list if the fetch fails.
+        #66). Re-fetching fixes that; the TTL keeps a typing burst's follow-up
+        autocomplete calls off the API once one load has landed (it doesn't
+        de-dupe calls made concurrently before that). Falls back to the cached
+        server's list if the fetch fails.
         """
 
         async def _load(_key: str) -> list:
@@ -827,14 +830,14 @@ class StoatLookupsMixin:
         (issue #66)."""
         try:
             categories = await self._fresh_categories()
+            if any(str(c.id) == token for c in categories):
+                return token
+            lowered = token.casefold()
+            for c in categories:
+                if str(getattr(c, "title", "")).casefold() == lowered:
+                    return str(c.id)
         except Exception:
             return None
-        if any(str(c.id) == token for c in categories):
-            return token
-        lowered = token.casefold()
-        for c in categories:
-            if str(getattr(c, "title", "")).casefold() == lowered:
-                return str(c.id)
         return None
 
     async def ensure_category(self, name: str) -> str:
@@ -872,9 +875,9 @@ class StoatLookupsMixin:
         freshly-fetched Category list (issue #66)."""
         try:
             categories = await self._fresh_categories()
+            category = next((c for c in categories if str(c.id) == category_id), None)
         except Exception:
             return []
-        category = next((c for c in categories if str(c.id) == category_id), None)
         if category is None:
             return []
         out: list[tuple[str, str]] = []
@@ -984,9 +987,9 @@ class StoatLookupsMixin:
         # show a Category created since startup (issue #66).
         try:
             categories = await self._fresh_categories()
+            return [(str(c.id), getattr(c, "title", "") or str(c.id)) for c in categories]
         except Exception:
             return []
-        return [(str(c.id), getattr(c, "title", "") or str(c.id)) for c in categories]
 
     async def list_roles(self) -> list[tuple[str, str]]:
         try:
