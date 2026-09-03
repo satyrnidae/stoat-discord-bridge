@@ -25,9 +25,10 @@ from stoat_discord_bridge.admin_commands import (
     UserLinker,
 )
 from stoat_discord_bridge.config import StoatConnectorConfig
-from stoat_discord_bridge.models import StandardMessage, StandardPin
+from stoat_discord_bridge.models import StandardEdit, StandardMessage, StandardPin
 from stoat_discord_bridge.services.base import (
     OnChannelRolePermissionChanged,
+    OnEdit,
     OnEmojiCreated,
     OnEmojiDeleted,
     OnMemberRolesChanged,
@@ -72,6 +73,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
+        on_edit: OnEdit | None = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -87,7 +89,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         # None is accepted (e.g. for tests) but those commands will then
         # report themselves unconfigured.
         SenderService.__init__(
-            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing
+            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing, on_edit
         )
         self._config = config
         self.server_id = config.server_id
@@ -192,6 +194,52 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 source_label=self._config.label,
                 sender_pronouns=await self._resolve_sender_pronouns(message),
                 mentioned_users=_map_mentioned_users(message),
+            )
+        )
+
+    async def _handle_message_update(self, event) -> None:
+        """`on_message_update` (stoat.events.MessageUpdateEvent): a message
+        changed. Emit a `StandardEdit` only when the *content* changed, so
+        `BridgeCoordinator` can sync every relayed copy.
+
+        `event.message` (PartialMessage) carries just the changed fields, so
+        `message.content is UNDEFINED` is the precise "content untouched"
+        signal (an embed unfurl, a pin, a reaction update all leave it
+        UNDEFINED - the same role `edited_timestamp` plays on the Discord
+        side). `event.after` (full Message, cache-dependent) is only used for
+        the author check and mention map.
+
+        A bot-authored edit is skipped - a masqueraded message the bridge
+        posted into this Stoat server is authored by the bot, so this is how
+        our own `edit_message()` write is kept from echoing back out (the
+        `BridgeCoordinator._recent_edits` guard is the backstop for when
+        `after` is uncached and the author can't be checked)."""
+        if self._on_edit is None:
+            return
+        partial = getattr(event, "message", None)
+        after = getattr(event, "after", None)
+        new_content = getattr(partial, "content", stoat.UNDEFINED)
+        if new_content is stoat.UNDEFINED and partial is None:
+            new_content = getattr(after, "content", stoat.UNDEFINED)
+        if new_content is stoat.UNDEFINED or new_content is None:
+            return  # this update didn't change the content
+        author = getattr(after, "author", None)
+        if getattr(author, "bot", False):
+            return  # a masqueraded/bot message we posted - echo
+        source = partial if partial is not None else after
+        channel_id = getattr(source, "channel_id", None) or getattr(
+            getattr(source, "channel", None), "id", None
+        )
+        message_id = getattr(source, "id", None)
+        if channel_id is None or message_id is None:
+            return
+        await self._on_edit(
+            StandardEdit(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(channel_id),
+                origin_message_id=str(message_id),
+                new_content_markdown=new_content or "",
+                mentioned_users=_map_mentioned_users(after) if after is not None else {},
             )
         )
 

@@ -31,12 +31,16 @@ class _Recorder:
         self.emoji_deleted: list = []
         self.pins: list = []
         self.typing: list = []
+        self.edits: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
 
     async def on_pin(self, pin) -> None:
         self.pins.append(pin)
+
+    async def on_edit(self, edit) -> None:
+        self.edits.append(edit)
 
     async def on_typing(self, typing) -> None:
         self.typing.append(typing)
@@ -76,6 +80,7 @@ def _make_sender(
     sender._on_emoji_deleted = recorder.on_emoji_deleted if with_emoji else None
     sender._on_pin = recorder.on_pin
     sender._on_typing = recorder.on_typing
+    sender._on_edit = recorder.on_edit
     return sender
 
 
@@ -449,6 +454,54 @@ async def test_handle_emoji_delete_is_a_noop_when_emoji_sync_isnt_wired_up():
     await sender._handle_emoji_delete("e1")  # must not raise
 
     assert recorder.emoji_deleted == []
+
+
+# ---------------------------------------------------------------- _handle_message_update
+
+
+def _update_event(*, after=None, message=None):
+    return SimpleNamespace(after=after, message=message)
+
+
+def _partial(*, content=stoat.UNDEFINED, channel_id="chan-1", id="m1"):
+    ns = SimpleNamespace(channel_id=channel_id, id=id)
+    if content is not stoat.UNDEFINED:
+        ns.content = content
+    return ns
+
+
+async def test_handle_message_update_emits_an_edit_when_the_content_changed():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    after = SimpleNamespace(author=FakeAuthor(id="u1", bot=False), mentions=[])
+
+    await sender._handle_message_update(
+        _update_event(message=_partial(content="fixed typo"), after=after)
+    )
+
+    assert [(e.origin_channel_id, e.origin_message_id, e.new_content_markdown) for e in recorder.edits] == [
+        ("chan-1", "m1", "fixed typo")
+    ]
+
+
+async def test_handle_message_update_drops_a_bot_authored_edit_echo():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    after = SimpleNamespace(author=FakeAuthor(id="bot", bot=True), mentions=[])
+
+    await sender._handle_message_update(_update_event(message=_partial(content="x"), after=after))
+
+    assert recorder.edits == []
+
+
+async def test_handle_message_update_ignores_an_update_that_didnt_change_content():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    # a pin / reaction / embed update: the partial carries no `content` field
+    await sender._handle_message_update(_update_event(message=_partial()))
+
+    assert recorder.edits == []
 
 
 # ---------------------------------------------------------------- get_user_name

@@ -71,6 +71,14 @@ def test_channel_update_event_shape():
     assert hasattr(override, "allow") and hasattr(override, "deny")
 
 
+def test_message_update_event_shape():
+    ev = stoat_events.MessageUpdateEvent
+    assert ev.event_name == "message_update"
+    # the edit handler prefers `after` (full Message) and falls back to the
+    # partial `message`; `before` is unused but part of the documented shape
+    assert {"message", "before", "after"} <= _fields(ev)
+
+
 def test_handler_names_match_the_event_name_dispatch_convention():
     # stoat.Client._dispatch: `getattr(self, 'on_' + type.event_name)`
     for ev in (
@@ -78,6 +86,7 @@ def test_handler_names_match_the_event_name_dispatch_convention():
         stoat_events.RawServerRoleUpdateEvent,
         stoat_events.ServerRoleDeleteEvent,
         stoat_events.ChannelUpdateEvent,
+        stoat_events.MessageUpdateEvent,
     ):
         assert hasattr(_StoatClient, "on_" + ev.event_name)
 

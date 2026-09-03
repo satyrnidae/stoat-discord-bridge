@@ -168,6 +168,37 @@ Stoat's `message_pinned` / `message_unpinned` system events (detected via
 As a catch-all, `IrcReceiverService.receive` drops any synced message with no
 textual content — which is how IRC ignores pin notifications from both sides.
 
+### Message edit sync
+
+Editing a message's *content* in a bridged channel is mirrored onto every
+other connector's copy of that message (`BridgeCoordinator.handle_edit` →
+`ReceiverService.edit_message`, gated by `supports_edits` and keyed off the
+same `MessageSyncRepository` group reaction/pin sync use). Discord ⇄ Stoat
+only — **IRC has no edit-in-place** (`supports_edits` stays `False`), so an
+edit never routes to it (issue #62). Each sender emits a `StandardEdit`:
+Discord from `on_raw_message_edit` when the payload carries a fresh `content`
+*and* an `edited_timestamp` (the latter distinguishes a real user edit from
+an auto-embed unfurl — and from a pin toggle, which carries `pinned`
+instead); Stoat from `on_message_update` (`stoat.events.MessageUpdateEvent`,
+preferring `event.after` over the partial `event.message`). The original
+relay may have been split across several native posts in one channel —
+`edit_message` gets the whole ordered list and re-renders the new text
+through the same `_rewrite_content` helper `receive()` uses (user/channel/
+role/emoji mention rewrites; attachments are *not* re-synced), matching one
+chunk per post; a shortened edit blanks the leftover posts (zero-width
+space), a grown one drops the overflow rather than posting new messages
+out of order. Discord edits via `webhook.edit_message`, Stoat via
+`Message.edit` (the bot owns its masqueraded messages). The platform's own
+"(edited)" tag then appears on the relayed copies automatically.
+
+Best-effort and silent (an untracked message, an unsupported target, a
+since-deleted post, or a raising hook are all skipped). Loop-safe two ways,
+like pin/role sync: each sender's edit handler drops a **bot-authored** edit
+(our own webhook/masquerade message being re-edited), and `BridgeCoordinator`
+keeps a ~10s record of the edits it issued so an echo that still slips
+through — e.g. Stoat's `event.after` uncached so the author can't be checked
+— is dropped before it fans back out.
+
 ### Typing sync
 
 A "someone is typing" event in a bridged channel is relayed onto every other

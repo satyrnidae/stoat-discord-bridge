@@ -17,6 +17,7 @@ import pytest
 from stoat_discord_bridge.bridge import BridgeCoordinator
 from stoat_discord_bridge.models import (
     CustomEmoji,
+    StandardEdit,
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
@@ -40,6 +41,7 @@ class FakeReceiver(ReceiverService):
         supports_emoji: bool = False,
         supports_pins: bool = False,
         supports_typing: bool = False,
+        supports_edits: bool = False,
         native_ids: list[str] | None = None,
         raises: BaseException | None = None,
         created_emoji: CustomEmoji | None = None,
@@ -49,6 +51,7 @@ class FakeReceiver(ReceiverService):
         self.supports_emoji = supports_emoji
         self.supports_pins = supports_pins
         self.supports_typing = supports_typing
+        self.supports_edits = supports_edits
         self._native_ids = native_ids if native_ids is not None else ["native-1"]
         self._raises = raises
         self._created_emoji = created_emoji
@@ -58,6 +61,7 @@ class FakeReceiver(ReceiverService):
         self.pins: list[tuple] = []
         self.typing: list[str] = []
         self.typing_stopped: list[str] = []
+        self.edits: list[tuple] = []
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         self.received.append((message, target_channel_id))
@@ -85,6 +89,11 @@ class FakeReceiver(ReceiverService):
         if self._raises is not None:
             raise self._raises
         self.pins.append((target_channel_id, target_message_id, pinned))
+
+    async def edit_message(self, *, target_channel_id, target_message_ids, edit) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.edits.append((target_channel_id, tuple(target_message_ids), edit.new_content_markdown))
 
     async def trigger_typing(self, *, target_channel_id) -> None:
         if self._raises is not None:
@@ -511,6 +520,105 @@ async def test_pin_relay_that_raises_is_swallowed(coordinator_parts):
     )  # must not raise
 
     assert working.pins == [("300", "i1", False)]
+
+
+# ---------------------------------------------------------------- handle_edit
+
+
+async def test_edit_forwards_only_to_connectors_that_support_it(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    stoat_receiver = FakeReceiver("stoat", supports_edits=True)
+    irc_receiver = FakeReceiver("irc", supports_edits=False)
+    coordinator.register_receiver(stoat_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    await coordinator.handle_edit(
+        StandardEdit(
+            origin_connector_id="discord",
+            origin_channel_id="100",
+            origin_message_id="m1",
+            new_content_markdown="fixed typo",
+        )
+    )
+
+    assert stoat_receiver.edits == [("200", ("s1",), "fixed typo")]
+    assert irc_receiver.edits == []
+
+
+async def test_edit_passes_every_split_post_for_a_channel(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("stoat", "200", "s2")]
+    )
+    stoat_receiver = FakeReceiver("stoat", supports_edits=True)
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_edit(
+        StandardEdit(
+            origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1", new_content_markdown="x"
+        )
+    )
+
+    assert stoat_receiver.edits == [("200", ("s1", "s2"), "x")]
+
+
+async def test_edit_is_a_noop_for_an_untracked_message(coordinator_parts):
+    coordinator, _channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    receiver = FakeReceiver("stoat", supports_edits=True)
+    coordinator.register_receiver(receiver)
+
+    await coordinator.handle_edit(
+        StandardEdit(
+            origin_connector_id="discord", origin_channel_id="100", origin_message_id="nope", new_content_markdown="x"
+        )
+    )
+
+    assert receiver.edits == []
+
+
+async def test_edit_echo_from_our_own_write_is_dropped(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record("general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1")])
+    discord_receiver = FakeReceiver("discord", supports_edits=True)
+    stoat_receiver = FakeReceiver("stoat", supports_edits=True)
+    coordinator.register_receiver(discord_receiver)
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_edit(
+        StandardEdit(
+            origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1", new_content_markdown="v2"
+        )
+    )
+    assert stoat_receiver.edits == [("200", ("s1",), "v2")]
+    # the stoat side's resulting message-update event echoes back but is suppressed
+    await coordinator.handle_edit(
+        StandardEdit(
+            origin_connector_id="stoat", origin_channel_id="200", origin_message_id="s1", new_content_markdown="v2"
+        )
+    )
+    assert discord_receiver.edits == []
+
+
+async def test_edit_relay_that_raises_is_swallowed(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    failing = FakeReceiver("stoat", supports_edits=True, raises=RuntimeError("boom"))
+    working = FakeReceiver("irc", supports_edits=True)
+    coordinator.register_receiver(failing)
+    coordinator.register_receiver(working)
+
+    await coordinator.handle_edit(
+        StandardEdit(
+            origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1", new_content_markdown="x"
+        )
+    )  # must not raise
+
+    assert working.edits == [("300", ("i1",), "x")]
 
 
 # ---------------------------------------------------------------- handle_typing
