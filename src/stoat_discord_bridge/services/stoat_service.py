@@ -1921,14 +1921,20 @@ class StoatSenderService(SenderService):
     def _role_by_id(self, role_id: str):
         return next((r for r in self._all_roles() if str(getattr(r, "id", "")) == role_id), None)
 
-    def _all_members(self):
-        # TODO: the cached `.members` collection's shape (dict keyed by id vs.
-        # list) is assumed from stoat.py's Server and unverified against a
-        # live server - same caveat as _all_roles / the rest of the Stoat
-        # integration.
-        server = self._client.get_server(self.server_id, partial=True)
+    @staticmethod
+    def _members_of(server):
+        # `BaseServer.members` is a `Mapping[str, Member]` keyed by user id - a
+        # plain `dict` off the cache, or `{}` when the server isn't cached
+        # (`get_server(partial=True)` then hands back a bare `BaseServer`, which
+        # still carries the property). Verified against stoat.py 1.2.1, not yet
+        # against a live server. The `list(members)` branch is a defensive
+        # fallback, mirroring `_roles_of`.
         members = getattr(server, "members", None) or []
         return list(members.values()) if isinstance(members, dict) else list(members)
+
+    def _all_members(self):
+        server = self._client.get_server(self.server_id, partial=True)
+        return self._members_of(server)
 
     async def resolve_user_id_by_name(self, token: str) -> str | None:
         """Resolve a bare display name / nickname / username to a member id
