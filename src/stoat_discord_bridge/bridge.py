@@ -587,7 +587,7 @@ async def run(config: BridgeConfig) -> None:
     # ChannelLinker only reads this once a command fires (well after `run()`
     # finishes wiring), so construction order doesn't matter.
     connector_infos: dict[str, ConnectorInfo] = {}
-    linker = ChannelLinker(channel_mappings, connector_infos)
+    linker = ChannelLinker(channel_mappings, connector_infos, category_mappings)
     emote_linker = EmoteLinker(emoji_mappings, connector_infos)
     user_linker = UserLinker(user_mappings, connector_infos)
     category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
@@ -638,6 +638,7 @@ async def run(config: BridgeConfig) -> None:
             label=dc.label,
             resolve_channel_name=sender.get_channel_name,
             resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
+            resolve_channel_category=sender.get_channel_category,
             resolve_user_name=sender.get_user_name,
             resolve_user_id_by_name=sender.resolve_user_id_by_name,
             resolve_category_name=sender.get_category_name,
@@ -699,6 +700,7 @@ async def run(config: BridgeConfig) -> None:
             label=sc.label,
             resolve_channel_name=sender.get_channel_name,
             resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
+            resolve_channel_category=sender.get_channel_category,
             ensure_channel=sender.ensure_channel,
             resolve_user_name=sender.get_user_name,
             resolve_user_id_by_name=sender.resolve_user_id_by_name,

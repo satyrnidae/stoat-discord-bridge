@@ -31,6 +31,7 @@ class FakeLinker:
         self.link_channel_calls: list[dict] = []
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
+        self.mirror_channel_from_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
         self.unlink_channel_calls: list[dict] = []
 
@@ -56,6 +57,12 @@ class FakeLinker:
             raise self._raises
         return "mirrored to all ok"
 
+    async def mirror_channel_from(self, **kwargs):
+        self.mirror_channel_from_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "mirrored from ok"
+
     async def unlink_channel(self, **kwargs):
         self.unlink_channel_calls.append(kwargs)
         if self._raises is not None:
@@ -71,6 +78,7 @@ class FakeEmoteLinker:
         self.list_linked_emotes_calls: list[dict] = []
         self.mirror_emote_calls: list[dict] = []
         self.mirror_emote_all_calls: list[dict] = []
+        self.mirror_emote_from_calls: list[dict] = []
 
     async def link_emote(self, **kwargs):
         self.calls.append(kwargs)
@@ -99,6 +107,12 @@ class FakeEmoteLinker:
         if self._raises is not None:
             raise self._raises
         return "emote mirrored to all ok"
+
+    async def mirror_emote_from(self, **kwargs):
+        self.mirror_emote_from_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "emote mirrored from ok"
 
 
 class FakeUserLinker:
@@ -134,6 +148,7 @@ class FakeCategoryLinker:
         self.sync_new_channel_calls: list[dict] = []
         self.mirror_category_calls: list[dict] = []
         self.mirror_category_all_calls: list[dict] = []
+        self.mirror_category_from_calls: list[dict] = []
 
     async def link_category(self, **kwargs):
         self.link_category_calls.append(kwargs)
@@ -152,6 +167,12 @@ class FakeCategoryLinker:
         if self._raises is not None:
             raise self._raises
         return "mirrored all ok"
+
+    async def mirror_category_from(self, **kwargs):
+        self.mirror_category_from_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "mirrored from ok"
 
     async def list_linked_categories(self, **kwargs):
         self.list_linked_categories_calls.append(kwargs)
@@ -175,6 +196,7 @@ class FakeRoleLinker:
         self.list_linked_roles_calls: list[dict] = []
         self.mirror_role_calls: list[dict] = []
         self.mirror_role_all_calls: list[dict] = []
+        self.mirror_role_from_calls: list[dict] = []
 
     async def link_role(self, **kwargs):
         self.link_role_calls.append(kwargs)
@@ -199,6 +221,10 @@ class FakeRoleLinker:
     async def mirror_role_all(self, **kwargs):
         self.mirror_role_all_calls.append(kwargs)
         return "role mirrored to all ok"
+
+    async def mirror_role_from(self, **kwargs):
+        self.mirror_role_from_calls.append(kwargs)
+        return "role mirrored from ok"
 
 
 def _make_sender(
@@ -551,6 +577,55 @@ async def test_mirror_channel_without_a_configured_linker():
     await sender._mirror_channel(ctx, "discord")
 
     assert ctx.channel.sent[0]["content"] == "Linking isn't configured."
+
+
+async def test_mirror_channel_from_routes_to_the_linker():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_channel_from(ctx, "discord", "d1")
+
+    assert linker.mirror_channel_from_calls == [
+        {"local_connector": "stoat", "source": "discord", "source_id": "d1"}
+    ]
+    assert ctx.channel.sent[0]["content"] == "mirrored from ok"
+
+
+async def test_mirror_role_from_routes_to_the_role_linker():
+    role_linker = FakeRoleLinker()
+    sender = _make_sender(role_linker=role_linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_role_from(ctx, "discord", "Mods")
+
+    assert role_linker.mirror_role_from_calls == [
+        {"local_connector": "stoat", "source": "discord", "source_role": "Mods"}
+    ]
+
+
+async def test_mirror_emote_from_routes_to_the_emote_linker():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_emote_from(ctx, "discord", "blob")
+
+    assert emote_linker.mirror_emote_from_calls == [
+        {"local_connector": "stoat", "source": "discord", "source_emote": "blob"}
+    ]
+
+
+async def test_mirror_category_from_routes_to_the_category_linker():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(category_linker=category_linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_category_from(ctx, "discord", "d-cat")
+
+    assert category_linker.mirror_category_from_calls == [
+        {"local_connector": "stoat", "source": "discord", "source_id": "d-cat"}
+    ]
 
 
 # ---------------------------------------------------------------- ensure_channel / Category placement

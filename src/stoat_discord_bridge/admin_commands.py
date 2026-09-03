@@ -94,6 +94,13 @@ class ConnectorInfo:
     # resolve_role_id_by_name. IRC leaves this unset: a channel id there is
     # already `#name`.
     resolve_channel_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Best-effort native-channel-id -> (category_id, category_name) lookup for
+    # the Category a channel sits in, or None if it's uncategorised / can't be
+    # resolved. Used by `/mirror channel from <service> <external_id>` to place
+    # the freshly-created local channel into the local counterpart of the
+    # source channel's linked Category (rather than a fresh same-named one).
+    # IRC leaves this unset - it has no Category concept.
+    resolve_channel_category: Callable[[str], Awaitable[tuple[str, str] | None]] | None = None
     # Called with a freshly-linked channel id on this connector. Only IRC
     # connectors set this, to JOIN the channel immediately instead of
     # waiting for a restart to pick up the new mapping.
@@ -265,12 +272,21 @@ class ConnectorInfo:
 
 
 class ChannelLinker:
-    def __init__(self, channel_mappings: ChannelMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+    def __init__(
+        self,
+        channel_mappings: ChannelMappingRepository,
+        connectors: dict[str, ConnectorInfo],
+        category_mappings: CategoryMappingRepository | None = None,
+    ) -> None:
         # `connectors` is populated in place by bridge.run() as each sender/
         # receiver is constructed - read lazily here, only once a command
         # actually fires, so construction order doesn't matter.
         self._channel_mappings = channel_mappings
         self._connectors = connectors
+        # Only `mirror_channel_from` reads this - to resolve the source
+        # channel's Category to its already-linked local counterpart. None in
+        # tests that don't exercise that path.
+        self._category_mappings = category_mappings
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -450,6 +466,63 @@ class ChannelLinker:
             if destination != local_connector
         ]
         return "\n".join(results) if results else "no other connectors configured."
+
+    async def mirror_channel_from(self, *, local_connector: str, source: str, source_id: str) -> str:
+        """`/mirror channel from <source> <source_id>` - the inbound
+        direction: `source`'s `source_id` channel already exists, so create a
+        linked counterpart *here* on `local_connector` and link the two.
+
+        Mechanically this is `mirror_channel` with the connectors swapped
+        (push `source`'s channel to `local_connector`), which gets bridge-
+        group reuse for free via `link_channel`. On top of that it "respects
+        other linked entities": if the source channel sits in a Category
+        that's already linked (via `/link category`) to a Category here, the
+        new local channel is placed into *that* linked Category rather than a
+        fresh same-named one."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+        if source == local_connector:
+            raise LinkError("can't mirror a channel from a connector to itself.")
+
+        source_id = await self._resolve_to_id(source, source_id)
+        source_name = await self._resolve_name(source, source_id)
+
+        category_name = await self._local_category_for_source_channel(local_connector, source, source_id)
+
+        return await self.mirror_channel(
+            local_connector=source,
+            local_channel_id=source_id,
+            local_channel_name=source_name,
+            destination=local_connector,
+            local_channel_category=category_name,
+        )
+
+    async def _local_category_for_source_channel(
+        self, local_connector: str, source: str, source_channel_id: str
+    ) -> str | None:
+        """The name of the Category `source_channel_id`'s Category is linked
+        to on `local_connector` (so `mirror_channel_from` lands the new
+        channel there), or the source Category's own name if it isn't linked,
+        or None if the source channel is uncategorised / unresolvable."""
+        info = self._connectors.get(source)
+        if info is None or info.resolve_channel_category is None:
+            return None
+        try:
+            resolved = await info.resolve_channel_category(source_channel_id)
+        except Exception:
+            logger.debug("couldn't resolve category for channel %s on %s", source_channel_id, source, exc_info=True)
+            return None
+        if not resolved:
+            return None
+        source_category_id, source_category_name = resolved
+        if self._category_mappings is not None:
+            group = await self._category_mappings.get_bridge_group(source, source_category_id)
+            if group is not None:
+                mapped = await self._category_mappings.get_mapped_categories(group)
+                local = next((m for m in mapped if m.connector_id == local_connector), None)
+                if local is not None and local.category_name:
+                    return local.category_name
+        return source_category_name or None
 
     async def list_linked_channels(self, *, local_connector: str, local_channel_id: str) -> str:
         """Human-readable listing of every channel bridged to
@@ -869,6 +942,20 @@ class CategoryLinker:
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
+    async def mirror_category_from(self, *, local_connector: str, source: str, source_id: str) -> str:
+        """`/mirror category from <source> <source_id>` - `source`'s Category
+        already exists; create a linked counterpart *here* on
+        `local_connector`, link them, and relocate/mirror the source
+        Category's channels into it. `mirror_category` with the connectors
+        swapped."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+        if source == local_connector:
+            raise LinkError("can't mirror a Category from a connector to itself.")
+        return await self.mirror_category(
+            local_connector=source, local_category=source_id, destination=local_connector
+        )
+
     async def sync_new_channel(
         self, *, local_connector: str, local_category_id: str, channel_id: str, channel_name: str
     ) -> None:
@@ -1109,6 +1196,18 @@ class EmoteLinker:
             if destination != local_connector
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
+
+    async def mirror_emote_from(self, *, local_connector: str, source: str, source_emote: str) -> str:
+        """`/mirror emote from <source> <source_emote>` - read `source`'s
+        emoji and recreate-or-match it *here* on `local_connector`, then link
+        the two. `mirror_emote` with the connectors swapped."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+        if source == local_connector:
+            raise LinkError("can't mirror an emote from a connector to itself.")
+        return await self.mirror_emote(
+            local_connector=source, local_emote=source_emote, destination=local_connector
+        )
 
     async def list_linked_emotes(
         self, *, local_connector: str, local_emote: str | None = None, service: str | None = None
@@ -1448,6 +1547,19 @@ class RoleLinker:
             if destination != local_connector
         ]
         return "\n".join(results) if results else "no other connectors configured."
+
+    async def mirror_role_from(self, *, local_connector: str, source: str, source_role: str) -> str:
+        """`/mirror role from <source> <source_role>` - `source`'s role
+        already exists; create-or-match a linked counterpart *here* on
+        `local_connector` and link them. `mirror_role` with the connectors
+        swapped, so bridge-group reuse (via `link_role`) comes for free."""
+        if source not in self._connectors:
+            raise LinkError(f"'{source}' isn't a known connector.")
+        if source == local_connector:
+            raise LinkError("can't mirror a role from a connector to itself.")
+        return await self.mirror_role(
+            local_connector=source, local_role=source_role, destination=local_connector
+        )
 
     async def list_linked_roles(
         self, *, local_connector: str, local_role: str | None = None, service: str | None = None

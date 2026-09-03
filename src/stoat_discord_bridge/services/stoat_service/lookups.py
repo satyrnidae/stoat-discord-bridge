@@ -184,21 +184,31 @@ class StoatLookupsMixin:
                 return str(channel.id)
         return None
 
-    async def get_channel_category_name(self, channel_id: str) -> str | None:
-        """Best-effort channel-id -> Category-title lookup, for `/mirror-
-        channel` to carry a channel's Category across to the destination
-        connector. `get_channel(partial=False)` returns the cached channel or
-        `None` on a miss (see `get_channel`'s docstring); `None.category` and
-        a genuine cache-miss `NoData` from `.category` both land in the
-        `except` and yield `None`, same best-effort pattern as
-        get_channel_name/get_masquerade_identity elsewhere in this class.
-        """
+    async def get_channel_category(self, channel_id: str) -> tuple[str, str] | None:
+        """Best-effort channel-id -> (Category-id, Category-title), or None if
+        uncategorised / unresolvable. This connector's
+        `ConnectorInfo.resolve_channel_category`, used by `/mirror channel
+        from` to land the new local channel in the linked local Category.
+        `get_channel(partial=False)` returns the cached channel or `None` on a
+        miss (see `get_channel`'s docstring); `None.category` and a genuine
+        cache-miss `NoData` from `.category` both land in the `except` and
+        yield `None`, same best-effort pattern as get_channel_name elsewhere
+        in this class."""
         try:
             channel = self._client.get_channel(channel_id, partial=False)
             category = channel.category
         except Exception:
             return None
-        return category.title if category is not None else None
+        if category is None:
+            return None
+        return str(category.id), category.title
+
+    async def get_channel_category_name(self, channel_id: str) -> str | None:
+        """Best-effort channel-id -> Category-title lookup, for `/mirror
+        channel` to carry a channel's Category across to the destination
+        connector."""
+        resolved = await self.get_channel_category(channel_id)
+        return resolved[1] if resolved is not None else None
 
     async def get_category_name(self, category_id: str) -> str | None:
         """Best-effort Category-id -> title lookup, used as this connector's

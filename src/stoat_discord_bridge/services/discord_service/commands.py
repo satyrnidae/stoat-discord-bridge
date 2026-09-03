@@ -224,16 +224,39 @@ def build_command_tree(service) -> None:
     ) -> None:
         await self._handle_linked_roles(interaction, local_id, None)
 
-    @mirror_group.command(name="role", description="Ensure a linked counterpart of a role exists elsewhere")
+    # `/mirror <noun>` is a two-way group: `to` pushes a local entity onto
+    # another connector (the historical `/mirror <noun>` behaviour), `from`
+    # pulls a remote entity in and creates the local copy. Every `/mirror`
+    # child is a subgroup - no plain subcommands mixed in.
+    mirror_role_group = app_commands.Group(
+        name="role", description="Mirror a role across connectors and link the two", parent=mirror_group
+    )
+
+    @mirror_role_group.command(
+        name="to", description="Ensure a linked counterpart of a local role exists on another connector"
+    )
     @app_commands.describe(
-        local_id="Role id or name on this connector",
         service="Connector id to mirror to, or 'all' (default: all)",
+        local_id="Role id or name on this connector",
     )
     @app_commands.autocomplete(service=role_service_autocomplete(include_all=True), local_id=role_local_ac)
-    async def mirror_role_command(
-        interaction: discord.Interaction, local_id: str, service: str | None = None
+    async def mirror_role_to_command(
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_role(interaction, local_id, service)
+
+    @mirror_role_group.command(
+        name="from", description="Create a local role mirroring one from another connector, and link them"
+    )
+    @app_commands.describe(
+        service="Connector id to mirror from",
+        external_id="Role id or name on that connector",
+    )
+    @app_commands.autocomplete(service=role_service_autocomplete(include_all=False), external_id=role_external_ac)
+    async def mirror_role_from_command(
+        interaction: discord.Interaction, service: str, external_id: str
+    ) -> None:
+        await self._handle_mirror_role_from(interaction, service, external_id)
 
     @link_group.command(name="channel", description="Link a channel from another connector to a local channel")
     @app_commands.describe(
@@ -276,7 +299,13 @@ def build_command_tree(service) -> None:
     ) -> None:
         await self._handle_linked_channels(interaction, local_id)
 
-    @mirror_group.command(name="channel", description="Ensure a linked counterpart of a channel exists elsewhere")
+    mirror_channel_group = app_commands.Group(
+        name="channel", description="Mirror a channel across connectors and link the two", parent=mirror_group
+    )
+
+    @mirror_channel_group.command(
+        name="to", description="Ensure a linked counterpart of a local channel exists on another connector"
+    )
     @app_commands.describe(
         local_id="Channel id or name on this connector (defaults to the current channel)",
         service="Connector id to mirror to, or 'all' (default: all)",
@@ -284,10 +313,25 @@ def build_command_tree(service) -> None:
     @app_commands.autocomplete(
         service=channel_service_autocomplete(include_all=True), local_id=channel_local_ac
     )
-    async def mirror_channel_command(
-        interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+    async def mirror_channel_to_command(
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_channel(interaction, service, local_id)
+
+    @mirror_channel_group.command(
+        name="from", description="Create a local channel mirroring one from another connector, and link them"
+    )
+    @app_commands.describe(
+        service="Connector id to mirror from",
+        external_id="Channel id or name on that connector",
+    )
+    @app_commands.autocomplete(
+        service=channel_service_autocomplete(include_all=False), external_id=channel_external_ac
+    )
+    async def mirror_channel_from_command(
+        interaction: discord.Interaction, service: str, external_id: str
+    ) -> None:
+        await self._handle_mirror_channel_from(interaction, service, external_id)
 
     @link_group.command(
         name="user",
@@ -373,8 +417,14 @@ def build_command_tree(service) -> None:
     ) -> None:
         await self._handle_linked_categories(interaction, local_id)
 
-    @mirror_group.command(
-        name="category", description="Ensure a linked counterpart Category exists elsewhere and mirror its channels"
+    mirror_category_group = app_commands.Group(
+        name="category",
+        description="Mirror a Category across connectors, link the two, and mirror its channels",
+        parent=mirror_group,
+    )
+
+    @mirror_category_group.command(
+        name="to", description="Ensure a linked counterpart of a local Category exists on another connector"
     )
     @app_commands.describe(
         local_id="Category id or name on this connector (defaults to the current channel's Category)",
@@ -383,10 +433,25 @@ def build_command_tree(service) -> None:
     @app_commands.autocomplete(
         service=category_service_autocomplete(include_all=True), local_id=category_local_ac
     )
-    async def mirror_category_command(
-        interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+    async def mirror_category_to_command(
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_category(interaction, local_id, service)
+
+    @mirror_category_group.command(
+        name="from", description="Create a local Category mirroring one from another connector, and link them"
+    )
+    @app_commands.describe(
+        service="Connector id to mirror from",
+        external_id="Category id or name on that connector",
+    )
+    @app_commands.autocomplete(
+        service=category_service_autocomplete(include_all=False), external_id=category_external_ac
+    )
+    async def mirror_category_from_command(
+        interaction: discord.Interaction, service: str, external_id: str
+    ) -> None:
+        await self._handle_mirror_category_from(interaction, service, external_id)
 
     @link_group.command(name="emote", description="Link a custom emoji from another connector to a local one")
     @app_commands.describe(
@@ -427,15 +492,32 @@ def build_command_tree(service) -> None:
     ) -> None:
         await self._handle_linked_emotes(interaction, local_id)
 
-    @mirror_group.command(
-        name="emote", description="Recreate a custom emoji on another connector and link the two"
+    mirror_emote_group = app_commands.Group(
+        name="emote", description="Mirror a custom emoji across connectors and link the two", parent=mirror_group
+    )
+
+    @mirror_emote_group.command(
+        name="to", description="Recreate a local custom emoji on another connector and link the two"
     )
     @app_commands.describe(
-        local_id="Emoji id or name on this connector",
         service="Connector id to mirror to, or 'all' (default: all)",
+        local_id="Emoji id or name on this connector",
     )
     @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True), local_id=emote_local_ac)
-    async def mirror_emote_command(
-        interaction: discord.Interaction, local_id: str, service: str | None = None
+    async def mirror_emote_to_command(
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_emote(interaction, local_id, service)
+
+    @mirror_emote_group.command(
+        name="from", description="Recreate a custom emoji from another connector locally and link the two"
+    )
+    @app_commands.describe(
+        service="Connector id to mirror from",
+        external_id="Emoji id or name on that connector",
+    )
+    @app_commands.autocomplete(service=emote_service_autocomplete(include_all=False), external_id=emote_external_ac)
+    async def mirror_emote_from_command(
+        interaction: discord.Interaction, service: str, external_id: str
+    ) -> None:
+        await self._handle_mirror_emote_from(interaction, service, external_id)

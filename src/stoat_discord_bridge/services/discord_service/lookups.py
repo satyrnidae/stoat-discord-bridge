@@ -55,22 +55,32 @@ class DiscordLookupsMixin:
                 return str(channel.id)
         return None
 
-    async def get_channel_category_name(self, channel_id: str) -> str | None:
-        """Best-effort channel-id -> Category-name lookup, used by
-        `/mirror channel` to carry a channel's Category across to the
-        destination connector. Catches broadly (not just discord.py's own
-        HTTPException/NotFound) since an id that isn't a real channel this
-        client can see - e.g. a bare Stoat/IRC-style name typed into
-        /mirror channel's local_id option - can fail in ways short
-        of a clean discord.py exception (fetch_channel(), unlike
-        get_channel_name's other call sites, isn't otherwise guarded here)."""
+    async def get_channel_category(self, channel_id: str) -> tuple[str, str] | None:
+        """Best-effort channel-id -> (Category-id, Category-name), or None if
+        the channel is uncategorised / unresolvable. This connector's
+        `ConnectorInfo.resolve_channel_category`, used by `/mirror channel
+        from` to land the new local channel in the linked local Category.
+        Catches broadly (not just discord.py's own HTTPException/NotFound)
+        since an id that isn't a real channel this client can see - e.g. a
+        bare Stoat/IRC-style name typed into an id option - can fail in ways
+        short of a clean discord.py exception (fetch_channel() isn't
+        otherwise guarded here)."""
         try:
             channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
             category = getattr(channel, "category", None)
         except Exception:
             logger.debug("[discord:%s] couldn't resolve channel category for %s", self.connector_id, channel_id)
             return None
-        return category.name if category is not None else None
+        if category is None:
+            return None
+        return str(category.id), category.name
+
+    async def get_channel_category_name(self, channel_id: str) -> str | None:
+        """Best-effort channel-id -> Category-name lookup, used by
+        `/mirror channel` to carry a channel's Category across to the
+        destination connector."""
+        resolved = await self.get_channel_category(channel_id)
+        return resolved[1] if resolved is not None else None
 
     async def get_category_name(self, category_id: str) -> str | None:
         """Best-effort Category-id -> name lookup, used as this connector's
