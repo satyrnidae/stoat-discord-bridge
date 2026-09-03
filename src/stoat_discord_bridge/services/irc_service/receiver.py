@@ -39,6 +39,7 @@ class IrcReceiverService(ReceiverService):
         role_mappings: RoleMappingRepository | None = None,
         emoji_mappings: EmojiMappingRepository | None = None,
         source_forwarding: bool = True,
+        pronoun_forwarding: bool = True,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
@@ -48,6 +49,7 @@ class IrcReceiverService(ReceiverService):
         self._role_mappings = role_mappings
         self._emoji_mappings = emoji_mappings
         self._source_forwarding = source_forwarding
+        self._pronoun_forwarding = pronoun_forwarding
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
         # IRC has no markup - reduce Discord/Stoat Markdown to plain text
@@ -135,11 +137,14 @@ class IrcReceiverService(ReceiverService):
             )
             return []
         # IRC has no per-message identity override, so the remote user's
-        # details ride in the `<...>` line tag: `<nick>` normally, `<nick,
-        # Discord>` with source_forwarding on (issue #54).
+        # details ride in the `<...>` line tag: `<nick>` normally, and with
+        # source_forwarding / pronoun_forwarding on (issue #54),
+        # `<nick, Discord, she/her>`.
         tag_parts = [sender_name]
         if self._source_forwarding and message.source_label:
             tag_parts.append(message.source_label)
+        if self._pronoun_forwarding and message.sender_pronouns:
+            tag_parts.append(message.sender_pronouns)
         prefix = f"<{', '.join(tag_parts)}> "
         limit = max(1, _LINE_LIMIT - len(prefix))
         ids: list[str] = []

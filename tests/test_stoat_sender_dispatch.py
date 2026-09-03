@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import stoat
 
 from stoat_discord_bridge.models import CustomEmoji
+from stoat_discord_bridge.services.caching import AsyncTTLCache
 from stoat_discord_bridge.services.stoat_service import StoatSenderService
 from stoat_discord_bridge.status import HealthTracker
 from tests.fakes.fake_stoat import FakeAsset, FakeAuthor, FakeChannel, FakeClient, FakeServer
@@ -60,8 +61,10 @@ def _make_sender(
 ) -> StoatSenderService:
     sender = object.__new__(StoatSenderService)
     sender.connector_id = "stoat"
+    sender.server_id = "srv-1"
     sender._client = client
-    sender._config = SimpleNamespace(label="Stoat")
+    sender._config = SimpleNamespace(label="Stoat", pronoun_forwarding=False)
+    sender._pronoun_cache = AsyncTTLCache(600.0)
     sender._health = HealthTracker({"stoat": "Stoat"})
     sender._linker = None
     sender._user_linker = None

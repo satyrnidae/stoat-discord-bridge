@@ -190,6 +190,32 @@ async def test_receive_omits_the_source_label_when_source_forwarding_is_off():
     assert channel.created_webhooks[0].sent[0]["username"] == "Alice"
 
 
+async def test_receive_folds_source_and_pronouns_into_the_webhook_username():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(source_label="Stoat (public)", sender_pronouns="she/her"), target_channel_id="42"
+    )
+
+    assert channel.created_webhooks[0].sent[0]["username"] == "Alice [Stoat (public), she/her]"
+
+
+async def test_receive_omits_pronouns_when_pronoun_forwarding_is_off():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = DiscordReceiverService(
+        client, guild_id=123, connector_id="discord", pronoun_forwarding=False
+    )
+
+    await receiver.receive(
+        _message(source_label="IRC", sender_pronouns="she/her"), target_channel_id="42"
+    )
+
+    assert channel.created_webhooks[0].sent[0]["username"] == "Alice [IRC]"
+
+
 async def test_receive_source_label_containing_discord_is_masked_by_the_username_sanitizer():
     # A second Discord connector's label is literally "Discord"; the webhook
     # API rejects any username containing "discord", so _sanitize_username

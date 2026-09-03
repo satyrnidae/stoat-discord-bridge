@@ -137,6 +137,30 @@ async def test_receive_omits_the_source_label_when_source_forwarding_is_off():
     assert channel.sent[0]["masquerade"].name == "Alice"
 
 
+async def test_receive_folds_source_and_pronouns_into_the_masquerade_name():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(source_label="Discord", sender_pronouns="she/her"), target_channel_id="42"
+    )
+
+    assert channel.sent[0]["masquerade"].name == "Alice [Discord, she/her]"
+
+
+async def test_receive_omits_pronouns_when_pronoun_forwarding_is_off():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = StoatReceiverService(_FakeSender(client), pronoun_forwarding=False)
+
+    await receiver.receive(
+        _message(source_label="Discord", sender_pronouns="she/her"), target_channel_id="42"
+    )
+
+    assert channel.sent[0]["masquerade"].name == "Alice [Discord]"
+
+
 async def test_receive_splits_long_content_into_multiple_sends(monkeypatch):
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))

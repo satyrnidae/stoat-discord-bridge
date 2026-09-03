@@ -71,6 +71,11 @@ class DiscordConnectorConfig:
     # came from - the origin's `label` folded into the webhook username as
     # "name [Discord]". Defaults on; set false to relay under the bare name.
     source_forwarding: bool = True
+    # Whether this connector resolves its own users' pronouns (from Discord's
+    # profile endpoint) and shows a relayed sender's pronouns as
+    # "name [Discord, she/her]". Defaults on; set false to skip the profile
+    # lookup and relay without pronouns.
+    pronoun_forwarding: bool = True
 
 
 @dataclass(frozen=True)
@@ -90,6 +95,11 @@ class StoatConnectorConfig:
     # came from - the origin's `label` folded into the masquerade name as
     # "name [Discord]". Defaults on; set false to relay under the bare name.
     source_forwarding: bool = True
+    # Whether this connector resolves its own users' pronouns (from Stoat's
+    # per-server-then-account profile) and shows a relayed sender's pronouns
+    # as "name [Discord, she/her]". Defaults on; set false to skip the
+    # profile lookup and relay without pronouns.
+    pronoun_forwarding: bool = True
     # When a Discord thread is mirrored here as a channel under a Category
     # named after its parent channel (see
     # DiscordSenderService._handle_thread_create), also move the parent
@@ -136,6 +146,10 @@ class IrcConnectorConfig:
     # came from - the origin's `label` folded into the `<nick>` line prefix as
     # "<nick, Discord>". Defaults on; set false to relay under the bare nick.
     source_forwarding: bool = True
+    # IRC has no pronoun field of its own, so this only governs whether a
+    # relayed *inbound* message shows the origin sender's pronouns in the
+    # `<nick, Discord, she/her>` line tag. Defaults on.
+    pronoun_forwarding: bool = True
 
 
 @dataclass(frozen=True)
@@ -312,6 +326,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                     _resolve(entry, section="discord", index=index, field="source_forwarding"),
                     default=True,
                 ),
+                pronoun_forwarding=_as_bool(
+                    _resolve(entry, section="discord", index=index, field="pronoun_forwarding"),
+                    default=True,
+                ),
             )
         )
 
@@ -352,6 +370,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 ),
                 source_forwarding=_as_bool(
                     _resolve(entry, section="stoat", index=index, field="source_forwarding"),
+                    default=True,
+                ),
+                pronoun_forwarding=_as_bool(
+                    _resolve(entry, section="stoat", index=index, field="pronoun_forwarding"),
                     default=True,
                 ),
                 group_parent_channel_with_threads=_as_bool(
@@ -400,6 +422,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 ),
                 source_forwarding=_as_bool(
                     _resolve(entry, section="irc", index=index, field="source_forwarding"),
+                    default=True,
+                ),
+                pronoun_forwarding=_as_bool(
+                    _resolve(entry, section="irc", index=index, field="pronoun_forwarding"),
                     default=True,
                 ),
             )

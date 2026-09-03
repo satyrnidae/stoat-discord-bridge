@@ -39,14 +39,24 @@ from stoat_discord_bridge.services.base import (
     OnTyping,
     SenderService,
 )
+from stoat_discord_bridge.services.caching import AsyncTTLCache
 from stoat_discord_bridge.services.stoat_service.client import _StoatClient
-from stoat_discord_bridge.services.stoat_service.formatting import _avatar_url, _display_name, _map_attachments
+from stoat_discord_bridge.services.stoat_service.formatting import (
+    _avatar_url,
+    _display_name,
+    _extract_pronouns,
+    _map_attachments,
+)
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
 from stoat_discord_bridge.services.stoat_service.sync import StoatSyncMixin
 from stoat_discord_bridge.status import HealthTracker
 
 logger = logging.getLogger(__name__)
+
+# How long a resolved (or absent) pronoun value is cached per user before the
+# profile is fetched again - see `_resolve_sender_pronouns`.
+_PRONOUN_CACHE_TTL = 600.0
 
 
 class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, SenderService):
@@ -96,6 +106,9 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         # command (`/link channel …`, `/status`, …) plus the bot's own command
         # replies - `_handle_message` drops these instead of relaying them.
         self._command_message_ids: deque[str] = deque(maxlen=512)
+        # user id -> pronouns (or None); keeps the profile fetch off the hot
+        # relay path - see `_resolve_sender_pronouns`.
+        self._pronoun_cache: AsyncTTLCache[str | None] = AsyncTTLCache(_PRONOUN_CACHE_TTL)
 
     async def _handle_ready(self, event) -> None:
         self._health.mark_connected(self.connector_id)
@@ -175,6 +188,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 message_id=str(message.id),
                 attachments=_map_attachments(message),
                 source_label=self._config.label,
+                sender_pronouns=await self._resolve_sender_pronouns(message),
             )
         )
 
@@ -234,6 +248,39 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         except Exception:
             return _avatar_url(author)
         return _avatar_url(fresh)
+
+    async def _resolve_sender_pronouns(self, message) -> str | None:
+        """Best-effort pronouns for `message.author`, cached per user
+        (`_pronoun_cache`). stoat.py 1.2.1 models no pronoun field, so this
+        reads the raw JSON directly (the parsed `User`/`Member` objects drop
+        unknown keys): the per-server member record is preferred over the
+        account-level user and its profile. Any failure - the connector's
+        `pronoun_forwarding` being off, a raising request, a payload with no
+        pronoun key - just yields None."""
+        if not self._config.pronoun_forwarding:
+            return None
+        author = message.author
+        server_id = getattr(message.channel, "server_id", None) or self.server_id
+        return await self._pronoun_cache.get(
+            str(author.id), lambda uid: self._fetch_pronouns(uid, server_id)
+        )
+
+    async def _fetch_pronouns(self, user_id: str, server_id: str | None) -> str | None:
+        http = self._client.http
+        routes: list = []
+        if server_id:
+            routes.append(stoat.routes.SERVERS_MEMBER_FETCH.compile(server_id=server_id, member_id=user_id))
+        routes.append(stoat.routes.USERS_FETCH_USER.compile(user_id=user_id))
+        routes.append(stoat.routes.USERS_FETCH_PROFILE.compile(user_id=user_id))
+        for route in routes:
+            try:
+                data = await http.request(route)
+            except Exception:  # noqa: BLE001 - best-effort; try the next source
+                continue
+            pronouns = _extract_pronouns(data)
+            if pronouns:
+                return pronouns
+        return None
 
     @property
     def self_id(self) -> str | None:

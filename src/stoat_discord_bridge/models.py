@@ -53,6 +53,13 @@ class StandardMessage:
     # IRC `<nick>` prefix) so a relayed message shows where it came from.
     # None only for a message a sender built before this field existed.
     source_label: str | None = None
+    # The sender's pronouns as free text ("she/her"), resolved best-effort by
+    # the origin sender from the platform's profile - Discord's profile
+    # endpoint, Stoat's per-server-then-account profile - when that connector
+    # has `pronoun_forwarding` on. None where unknown, unavailable, or the
+    # platform has no such concept (IRC always). A receiver whose connector
+    # has `pronoun_forwarding` on shows it alongside `source_label`.
+    sender_pronouns: str | None = None
 
 
 @dataclass(frozen=True)

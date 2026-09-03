@@ -48,6 +48,12 @@ discord:
     # name. (A source label that contains "discord" is masked by Discord's
     # own webhook-username rules.)
     source_forwarding: true
+    # Whether this connector resolves its own users' pronouns (via Discord's
+    # profile endpoint - this guild's per-server value preferred over the
+    # account-wide one) and shows a relayed sender's pronouns as
+    # "name [Stoat (public), she/her]". Defaults to true; set false (or
+    # DISCORD__0__PRONOUN_FORWARDING=false) to skip the lookup.
+    pronoun_forwarding: true
 
 stoat:
   - id: stoat_public
@@ -69,6 +75,13 @@ stoat:
     # masquerade-name limit if needed). Defaults to true; set false (or
     # STOAT__1__SOURCE_FORWARDING=false) to relay under the bare name.
     source_forwarding: true
+    # Whether this connector resolves its own users' pronouns (from Stoat's
+    # profile - this server's per-member value preferred over the account
+    # one) and shows a relayed sender's pronouns as "name [Discord, she/her]".
+    # Defaults to true; set false (or STOAT__1__PRONOUN_FORWARDING=false) to
+    # skip the lookup. (stoat.py doesn't model a pronoun field, so this reads
+    # the raw profile JSON - a no-op on a deployment that has no such field.)
+    pronoun_forwarding: true
     # When a Discord thread is mirrored here (a channel under a Category
     # named after the thread's parent channel), also move that parent
     # channel into the Category, at the top - so the parent channel and all
@@ -121,3 +134,8 @@ irc:
     # tag as "<nick, Discord>". Defaults to true; set false (or
     # IRC__0__SOURCE_FORWARDING=false) to relay under the bare nick.
     source_forwarding: true
+    #
+    # IRC has no pronoun field of its own, so this only governs whether a
+    # relayed inbound message shows the origin sender's pronouns in the
+    # "<nick, Discord, she/her>" line tag. Defaults to true.
+    pronoun_forwarding: true

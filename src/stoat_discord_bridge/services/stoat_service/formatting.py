@@ -66,6 +66,23 @@ def _avatar_url(author) -> str | None:
     return getattr(author, "default_avatar_url", None)
 
 
+def _extract_pronouns(data) -> str | None:
+    """Pull a pronoun string out of a raw Stoat user / member / profile JSON
+    payload. stoat.py 1.2.1 models no such field, so a deployment that has one
+    can put it either at the top level (`pronouns`) or inside a nested
+    `profile` object - check both. Anything unexpected -> None."""
+    if not isinstance(data, dict):
+        return None
+    profile = data.get("profile")
+    candidates = [data.get("pronouns")]
+    if isinstance(profile, dict):
+        candidates.append(profile.get("pronouns"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
 def _map_attachments(message) -> list[Attachment]:
     """Map stoat.py's `Message.attachments` (a list of `stoat.cdn.Asset` -
     each with a `.url()` *method*, plus `.filename` / `.content_type` /

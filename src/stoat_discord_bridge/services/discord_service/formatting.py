@@ -54,7 +54,11 @@ def _normalize_channel_id(raw: str) -> str:
 
 
 def _to_standard_message(
-    message: discord.Message, connector_id: str, *, source_label: str | None = None
+    message: discord.Message,
+    connector_id: str,
+    *,
+    source_label: str | None = None,
+    sender_pronouns: str | None = None,
 ) -> StandardMessage:
     return StandardMessage(
         origin_connector_id=connector_id,
@@ -66,6 +70,7 @@ def _to_standard_message(
         content_markdown=message.content,
         message_id=str(message.id),
         source_label=source_label,
+        sender_pronouns=sender_pronouns,
         attachments=[
             Attachment(url=a.url, filename=a.filename, content_type=a.content_type, size_bytes=a.size)
             for a in message.attachments

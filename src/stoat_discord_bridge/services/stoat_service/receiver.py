@@ -78,6 +78,7 @@ class StoatReceiverService(ReceiverService):
         role_mappings: RoleMappingRepository | None = None,
         emoji_mappings: EmojiMappingRepository | None = None,
         source_forwarding: bool = True,
+        pronoun_forwarding: bool = True,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
@@ -86,6 +87,7 @@ class StoatReceiverService(ReceiverService):
         self._role_mappings = role_mappings
         self._emoji_mappings = emoji_mappings
         self._source_forwarding = source_forwarding
+        self._pronoun_forwarding = pronoun_forwarding
         # target_channel_id -> monotonic deadline the keep-alive loop stops at,
         # and the loop task itself (one per channel currently "typing").
         self._typing_until: dict[str, float] = {}
@@ -103,8 +105,11 @@ class StoatReceiverService(ReceiverService):
                 identity = await self._sender.get_masquerade_identity(local_user_id)
                 if identity is not None:
                     sender_name, avatar_url = identity
-        if self._source_forwarding and message.source_label:
-            sender_name = decorate_sender_name(sender_name, source=message.source_label)
+        sender_name = decorate_sender_name(
+            sender_name,
+            source=message.source_label if self._source_forwarding else None,
+            pronouns=message.sender_pronouns if self._pronoun_forwarding else None,
+        )
         masquerade = stoat.MessageMasquerade(
             # Stoat caps a masquerade name at 32 chars - a long name plus the
             # "[Source]" suffix can overflow it; truncation is acceptable
