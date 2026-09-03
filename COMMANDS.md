@@ -243,6 +243,11 @@ is reported per-connector rather than aborting the rest when `all` is used.
 `<service>`, so pass `all` explicitly to name just a channel
 (`/mirror channel to all my-channel`).
 
+If `<local_id>`'s Category is already linked (via `/link category`) to a
+Category on the destination, the counterpart channel lands in *that* linked
+Category — matched by the link, not by an exact Category-name match — and only
+falls back to creating a same-named Category when it isn't linked (issue #50).
+
 A channel the bridge bot can't actually see is refused rather than mirrored
 into a stub named after the platform's hidden-channel placeholder — grant the
 bot access to the channel first. (The check is best-effort: only a definite
@@ -256,7 +261,8 @@ so a linked counterpart is created **on the connector the command is run on**
 existing bridge group if `<external_id>` is already in one. "Respecting other
 linked entities": if the source channel sits in a Category that's already
 linked (via `/link category`) to a Category here, the new local channel is
-placed into *that* linked Category rather than a fresh same-named one.
+placed into *that* linked Category rather than a fresh same-named one (the
+same linked-Category resolution `to` does, issue #50).
 `<external_id>` also accepts a bare channel name. There's no `all` form -
 `from` always names one source. As with `to`, a source channel the bridge bot
 can't see on `<service>` is refused rather than mirrored.
