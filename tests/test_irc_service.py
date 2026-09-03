@@ -579,6 +579,23 @@ async def test_handle_pubmsg_suppresses_replayed_history_but_relays_live_message
     assert received == ["a live message"]
 
 
+async def test_handle_pubmsg_stamps_the_connector_label_as_source():
+    received = []
+
+    async def record(message):
+        received.append(message)
+
+    sender = IrcSenderService(
+        _irc_config(label="IRC (satyrn)"), [], on_message=record, health=HealthTracker({"irc": "IRC"})
+    )
+    sender._loop = asyncio.get_running_loop()
+
+    sender._handle_pubmsg(_pubmsg_event("#general", text="hi", nick="someone"))
+    await asyncio.sleep(0.05)
+
+    assert [m.source_label for m in received] == ["IRC (satyrn)"]
+
+
 # ---------------------------------------------------------------- join-blocked-on-+r retry
 #
 # Regression coverage for a real production bug: this bridge's target

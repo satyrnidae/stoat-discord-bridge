@@ -196,6 +196,45 @@ end sends `end_typing`, clearing the indicator at once; Discord has no
 clear-typing API, so there the loop just stops re-arming and Discord's own
 ~10s timeout lapses it.
 
+### Source & pronoun forwarding
+
+Every `StandardMessage` carries `source_label` — the origin connector's
+`config.yaml` `label` ("Discord", "Stoat (public)", "IRC"), stamped by each
+sender — and `sender_pronouns`, resolved best-effort by the origin sender.
+Two per-connector options, both default on
+(`DiscordConnectorConfig` / `StoatConnectorConfig` / `IrcConnectorConfig`,
+wired to each receiver in `bridge.py`): `source_forwarding` and
+`pronoun_forwarding`. A receiver whose connector has them on folds the
+values into the displayed sender identity — Discord's webhook username and
+Stoat's masquerade name become `name [Source, pronouns]`
+(`services/formatting.decorate_sender_name`), IRC's line tag becomes
+`<nick, Source, pronouns>`. Decoration runs *after* the `/link-user`
+local-identity swap, so a linked sender shows their local name plus the true
+origin label. On Stoat the decorated name is still clipped to the 32-char
+masquerade cap; on Discord a source label containing "discord" is masked by
+`_sanitize_username` (the webhook API rejects that substring).
+
+**Pronoun resolution** is best-effort and network-fed, since neither
+discord.py 2.7.1 nor stoat.py 1.2.1 models a pronoun field. Each sender
+resolves per-user (cached ~10 min, `services/caching.AsyncTTLCache` on
+`_pronoun_cache`), skips entirely when its own `pronoun_forwarding` is off,
+and swallows every failure to `None`:
+
+- **Discord** (`DiscordSenderService._fetch_pronouns_from_profile`): the
+  undocumented `GET /users/{id}/profile?guild_id=…` REST endpoint, hit by
+  hand via `client.http`. `guild_member_profile.pronouns` (this guild's
+  per-server value) preferred over `user_profile.pronouns` (account-wide).
+- **Stoat** (`StoatSenderService._fetch_pronouns`): a raw
+  `http.request` for the server member (`SERVERS_MEMBER_FETCH`), then the
+  account user, then the user profile — first `pronouns` key wins
+  (`stoat_service.formatting._extract_pronouns`, checks top-level and a
+  nested `profile`). stoat.py drops unknown payload keys, so the parsed
+  `User`/`Member` objects are bypassed; a deployment without a pronoun field
+  just yields `None`.
+- **IRC** has no pronoun concept — `sender_pronouns` is always `None` there;
+  its `pronoun_forwarding` only governs whether an *inbound* message's
+  pronouns show in the line tag.
+
 ### Admin & status commands
 
 Every admin/status command (`/status`, the channel commands `/link channel` /

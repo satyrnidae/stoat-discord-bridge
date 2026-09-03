@@ -227,6 +227,7 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
                     content_markdown=content,
                     message_id=_synthetic_message_id(channel, event.source.nick, content),
                     attachments=[],
+                    source_label=self._config.label,
                 )
             )
         )
