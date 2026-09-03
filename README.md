@@ -161,7 +161,7 @@ webhook nor a Stoat masquerade can attribute typing to the origin user.
 
 Every admin/status command (`/status`, `/link channel`, `/linked channels`,
 `/mirror channel`, `/unlink channel`, `/link role`, `/link user`,
-`/linked users`, `/link emote`, `/mirror-channels`) and how to reach it on
+`/linked users`, `/link emote`) and how to reach it on
 each connector is documented in [`COMMANDS.md`](COMMANDS.md).
 
 ## Layout
@@ -171,8 +171,8 @@ config.yaml                 # every configured connector (Discord/Stoat/IRC) - n
 src/stoat_discord_bridge/
   config.py                 # loads config.yaml + resolves secrets named by it from .env
   models.py                  # StandardMessage — the platform-neutral message format
-  channel_structure.py        # GuildStructure snapshot used by the /mirror-channels command
-  admin_commands.py            # ChannelLinker / StructureMirrorer - shared /link channel & /mirror-channels logic
+  channel_structure.py        # clip_name helper for fitting names into Stoat's 32-char channel-name limit
+  admin_commands.py            # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
   bridge.py                     # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
   status.py                      # HealthTracker: per-connector sync target health, read by the /status commands
   services/

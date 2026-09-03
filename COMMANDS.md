@@ -3,7 +3,7 @@
 Every admin/status command the bridge exposes, and how to reach it on each
 connector. Shared logic lives in `src/stoat_discord_bridge/admin_commands.py`
 (`ChannelLinker` / `CategoryLinker` / `EmoteLinker` / `UserLinker` /
-`RoleLinker` / `StructureMirrorer`); each
+`RoleLinker`); each
 connector's own `services/*.py` module just wires its native command syntax
 to that shared logic, so behavior is identical everywhere except where noted.
 
@@ -242,7 +242,7 @@ stay outside the bridge.
 Links the invoking channel's Category (or `<local_id|name>`'s Category on this
 connector, if given) to `<external_id|name>`'s Category on `<service>`. Once
 two Categories are linked, any **new channel** created inside either one is
-automatically mirrored (created + linked, same logic as `/mirror-channel`)
+automatically mirrored (created + linked, same logic as `/mirror channel`)
 into every other connector's own linked Category. Manage Server.
 
 ### `/mirror category [<local_id|name>] [<service>|all]`
@@ -273,30 +273,6 @@ only future auto-sync stops. Manage Server.
   `/linked categories`).
 - **Stoat**: the same tokens as message commands.
 - **IRC**: not available - IRC has no Category concept.
-
-## `/mirror-channels <service>`
-
-TODO: Remove this command
-
-**Stoat-only**, and distinct from `/mirror channel` (singular) above: recreates
-`<service>`'s (a configured Discord connector's) *entire current
-category/channel layout* on the Stoat server this is run on
-(`channel_structure.py`) — additive/idempotent, existing categories/channels
-matched by name are left alone, nothing deleted or renamed. Every channel it
-creates **or matches by name** is also linked back to its Discord
-counterpart (same underlying logic as `/link channel`), so this command
-alone both creates and bridges a Stoat server's structure from Discord. A
-channel already linked to a *different* group is skipped (reported in the
-summary), not overwritten.
-
-Discord forum channels have no Stoat equivalent, so each forum mirrors as
-its own group named after the forum, with one channel per currently active
-(non-archived) post.
-
-- **Stoat**: `/mirror-channels <service>` message command (Manage Server) —
-  not available on Discord or IRC (Discord doesn't need to mirror structure
-  onto itself; IRC networks don't offer bot-driven channel creation the way
-  this command needs).
 
 ## Roles: `/link role`, `/mirror role`, `/linked roles`, `/unlink role`
 

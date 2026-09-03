@@ -7,7 +7,6 @@ from stoat_discord_bridge.admin_commands import (
     ConnectorInfo,
     EmoteLinker,
     LinkError,
-    StructureMirrorer,
     UserLinker,
 )
 from stoat_discord_bridge.models import CustomEmoji
@@ -1065,18 +1064,3 @@ async def test_mirror_channel_all_with_no_other_connectors(fake_db):
         local_connector="discord", local_channel_id="d1", local_channel_name="general"
     )
     assert summary == "no other connectors configured."
-
-
-# ---------------------------------------------------------------- StructureMirrorer
-
-
-def test_structure_mirrorer_unknown_source_raises():
-    mirrorer = StructureMirrorer({})
-    with pytest.raises(LinkError, match="structure source"):
-        mirrorer.get_structure("nope")
-
-
-def test_structure_mirrorer_returns_provider_result():
-    sentinel = object()
-    mirrorer = StructureMirrorer({"discord": lambda: sentinel})
-    assert mirrorer.get_structure("discord") is sentinel

@@ -21,7 +21,6 @@ from types import SimpleNamespace
 import stoat
 
 from stoat_discord_bridge.admin_commands import LinkError
-from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure
 from stoat_discord_bridge.services.stoat_service import StoatSenderService
 from tests.fakes.fake_stoat import FakeCategory, FakeChannel, FakeClient, FakeServer
 
@@ -168,19 +167,6 @@ class FakeCategoryLinker:
         self.sync_new_channel_calls.append(kwargs)
 
 
-class FakeMirrorer:
-    def __init__(self, *, structure: GuildStructure | None = None, raises: Exception | None = None) -> None:
-        self._structure = structure
-        self._raises = raises
-        self.get_structure_calls: list[str] = []
-
-    def get_structure(self, source: str) -> GuildStructure:
-        self.get_structure_calls.append(source)
-        if self._raises is not None:
-            raise self._raises
-        return self._structure
-
-
 class FakeRoleLinker:
     def __init__(self, *, raises: LinkError | None = None) -> None:
         self._raises = raises
@@ -218,7 +204,6 @@ class FakeRoleLinker:
 def _make_sender(
     *,
     linker: FakeLinker | None = None,
-    mirrorer: FakeMirrorer | None = None,
     emote_linker: FakeEmoteLinker | None = None,
     user_linker: FakeUserLinker | None = None,
     category_linker: FakeCategoryLinker | None = None,
@@ -229,7 +214,6 @@ def _make_sender(
     sender = object.__new__(StoatSenderService)
     sender.connector_id = "stoat"
     sender._linker = linker
-    sender._mirrorer = mirrorer
     sender._emote_linker = emote_linker
     sender._user_linker = user_linker
     sender._category_linker = category_linker
@@ -322,13 +306,11 @@ async def test_each_admin_command_rejects_a_non_admin():
         linker=FakeLinker(),
         emote_linker=FakeEmoteLinker(),
         user_linker=FakeUserLinker(),
-        mirrorer=FakeMirrorer(),
         category_linker=FakeCategoryLinker(),
         role_linker=FakeRoleLinker(),
     )
     ctx = _make_ctx(manage_server=False)
 
-    await sender._mirror_channels(ctx, "discord")
     await sender._link_channel(ctx, "discord", "s1")
     await sender._link_emote(ctx, "discord", "s1", "l1")
     await sender._link_user(ctx, "discord", "u1", "l1")
@@ -341,7 +323,7 @@ async def test_each_admin_command_rejects_a_non_admin():
 
     assert ctx.channel.sent == [
         {"content": "You need the Manage Server permission to do that.", "masquerade": None}
-    ] * 10
+    ] * 9
 
 
 # ---------------------------------------------------------------- _link_channel
@@ -778,59 +760,6 @@ async def test_ensure_channel_self_heals_when_the_bound_category_is_gone():
     assert category.title == "Bot Config"  # fresh Category created by the linked parent name
     assert linker.bound["p1"] == category.id  # and rebound to the new id
     assert linker.binds == [("p1", category.id)]
-
-
-# ---------------------------------------------------------------- _mirror_channels
-
-
-async def test_mirror_channels_success_creates_and_links():
-    structure = GuildStructure(
-        groups=[GroupSpec(name="Text", channels=[ChannelSpec(name="general", source_channel_id="d1")])],
-        ungrouped_channels=[],
-    )
-    mirrorer = FakeMirrorer(structure=structure)
-    linker = FakeLinker()
-    sender = _make_sender(mirrorer=mirrorer, linker=linker)
-    server = FakeServer(id="s1")
-    channel = FakeChannel(id="c1")
-    channel.server = server
-    ctx = _make_ctx(channel=channel)
-
-    await sender._mirror_channels(ctx, "discord")
-
-    assert mirrorer.get_structure_calls == ["discord"]
-    assert server.created_channels == ["general"]
-    assert linker.link_channel_calls
-    assert "Mirrored 'discord' structure" in channel.sent[-1]["content"]
-
-
-async def test_mirror_channels_without_a_configured_mirrorer():
-    sender = _make_sender(mirrorer=None)
-    ctx = _make_ctx()
-
-    await sender._mirror_channels(ctx, "discord")
-
-    assert ctx.channel.sent[0]["content"] == "Mirroring isn't configured."
-
-
-async def test_mirror_channels_reports_a_link_error_from_get_structure():
-    mirrorer = FakeMirrorer(raises=LinkError("'discord' isn't a known structure source"))
-    sender = _make_sender(mirrorer=mirrorer)
-    ctx = _make_ctx()
-
-    await sender._mirror_channels(ctx, "discord")
-
-    assert ctx.channel.sent[0]["content"] == "'discord' isn't a known structure source"
-
-
-async def test_mirror_channels_reports_an_unexpected_error_from_get_structure():
-    mirrorer = FakeMirrorer(raises=RuntimeError("boom"))
-    sender = _make_sender(mirrorer=mirrorer)
-    ctx = _make_ctx()
-
-    await sender._mirror_channels(ctx, "discord")
-
-    assert "Couldn't read the 'discord' channel structure: boom" in ctx.channel.sent[0]["content"]
 
 
 # ---------------------------------------------------------------- _linked_channels

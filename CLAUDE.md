@@ -192,7 +192,7 @@ Every admin/status command (`/status`, the channel commands `/link channel` /
 `/linked users`, the category commands `/link category` / `/unlink category` /
 `/mirror category` / `/linked categories` (Discord/Stoat only), the emote
 commands `/link emote` / `/mirror emote` / `/linked emotes` / `/unlink emote`
-(Discord/Stoat only - IRC has no custom emoji), `/mirror-channels`) and how to
+(Discord/Stoat only - IRC has no custom emoji)) and how to
 reach it on each connector is documented in
 `COMMANDS.md`, not duplicated here. On Discord the channel, role, user,
 category and emote commands are real `app_commands` subcommand groups
@@ -210,7 +210,7 @@ accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /
 `resolve_role_id_by_name` / `resolve_user_id_by_name` /
 `resolve_category_id_by_name`). Shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
-`EmoteLinker` / `UserLinker` / `RoleLinker` / `StructureMirrorer`), called
+`EmoteLinker` / `UserLinker` / `RoleLinker`), called
 identically from each connector's own `services/*.py` module. Nothing is
 bridged (or mention-linked) automatically — every pair is linked explicitly
 via those commands.
@@ -339,8 +339,8 @@ tests/                          # pytest suite - see README's Tests section
 src/stoat_discord_bridge/
   config.py                    # loads config.yaml, layering env vars over it per-field (see its docstring)
   models.py                    # StandardMessage - the platform-neutral message format
-  channel_structure.py         # GuildStructure snapshot used by the /mirror-channels command
-  admin_commands.py            # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker / StructureMirrorer - shared linking & /mirror-channels logic
+  channel_structure.py         # clip_name helper for fitting names into Stoat's 32-char channel-name limit
+  admin_commands.py            # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
   bridge.py                    # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
   status.py                    # HealthTracker: per-connector sync target health, read by the /status commands
   services/

@@ -31,10 +31,8 @@ from stoat_discord_bridge.admin_commands import (
     EmoteLinker,
     LinkError,
     RoleLinker,
-    StructureMirrorer,
     UserLinker,
 )
-from stoat_discord_bridge.channel_structure import ChannelSpec, GuildStructure
 from stoat_discord_bridge.config import StoatConnectorConfig
 from stoat_discord_bridge.models import (
     Attachment,
@@ -108,7 +106,6 @@ _HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
   {p}mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
   {p}mirror emote <local_id|name> [service|all] - recreate a custom emoji on another connector and link the two (Manage Server)
   {p}mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
-  {p}mirror-channels <service> - recreate a Discord guild's structure here (Manage Server)
   {p}unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   {p}unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   {p}unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
@@ -330,8 +327,8 @@ class _StoatClient(stoat_commands.Bot):
 
     def _register_commands(self) -> None:
         """Declares the `/link`, `/unlink`, `/linked`, `/mirror` groups (+ their
-        subcommands) and the flat `/status`, `/bridge-help`, `/mirror-channels`
-        commands, mirroring the Discord `app_commands` tree
+        subcommands) and the flat `/status`, `/bridge-help` commands,
+        mirroring the Discord `app_commands` tree
         (`discord_service._DiscordClient`). Every callback just forwards to the
         matching `StoatSenderService._<verb>_<noun>` method, which holds the
         shared linking logic and the Manage-Server gate."""
@@ -438,10 +435,6 @@ class _StoatClient(stoat_commands.Bot):
         async def bridge_help(ctx):
             await owner._reply(ctx, _help_text(p))
 
-        @self.command(name="mirror-channels")
-        async def mirror_channels(ctx, service: str):
-            await owner._mirror_channels(ctx, service)
-
 
 class StoatSenderService(SenderService):
     def __init__(
@@ -455,7 +448,6 @@ class StoatSenderService(SenderService):
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
         linker: ChannelLinker | None = None,
-        mirrorer: StructureMirrorer | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
         category_linker: "CategoryLinker | None" = None,
@@ -465,10 +457,10 @@ class StoatSenderService(SenderService):
         on_role_deleted: "OnRoleDeleted | None" = None,
         on_channel_role_permission_changed: "OnChannelRolePermissionChanged | None" = None,
     ) -> None:
-        # linker/mirrorer/emote_linker/user_linker/category_linker/role_linker
-        # are only needed to serve the corresponding `/link-*` / `/link ...`
-        # commands; None is accepted (e.g. for tests) but those commands will
-        # then report themselves unconfigured.
+        # linker/emote_linker/user_linker/category_linker/role_linker are only
+        # needed to serve the corresponding `/link-*` / `/link ...` commands;
+        # None is accepted (e.g. for tests) but those commands will then
+        # report themselves unconfigured.
         SenderService.__init__(
             self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing
         )
@@ -477,7 +469,6 @@ class StoatSenderService(SenderService):
         self.connector_id = config.id
         self._health = health
         self._linker = linker
-        self._mirrorer = mirrorer
         self._emote_linker = emote_linker
         self._user_linker = user_linker
         self._category_linker = category_linker
@@ -673,9 +664,8 @@ class StoatSenderService(SenderService):
         category_parent_channel_id: str | None = None,
     ) -> str:
         """Idempotent get-or-create by name, for `/mirror channel`'s
-        `ConnectorInfo.ensure_channel` hook - same "match existing by name,
-        else create" logic `_mirror_guild_structure` already uses in bulk,
-        just for a single channel outside that flow. If `category` is given,
+        `ConnectorInfo.ensure_channel` hook - matches an existing channel by
+        name, else creates one. If `category` is given,
         the matched-or-created channel is placed into a same-named Category
         (creating it if needed) - best-effort, never raises, since the
         channel itself has already been secured by this point.
@@ -1248,40 +1238,6 @@ class StoatSenderService(SenderService):
             )
         else:
             summary = await self._user_linker.list_linked_users()
-        await self._reply(ctx, summary)
-
-    async def _mirror_channels(self, ctx, service: str) -> None:
-        """`/mirror-channels <service>`: recreate `<service>`'s (a configured
-        Discord connector's) category/channel layout on this Stoat server,
-        linking each channel it creates or matches by name back to its
-        Discord counterpart. Requires Manage Server so only admins can
-        trigger a (potentially large) batch of channel creations.
-        """
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
-            return
-        if self._mirrorer is None:
-            await self._reply(ctx, "Mirroring isn't configured.")
-            return
-        logger.info("[stoat:%s] %s ran /mirror-channels service=%s", self.connector_id, ctx.author_id, service)
-        try:
-            structure = self._mirrorer.get_structure(service)
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror-channels rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        except Exception as exc:
-            logger.exception("[stoat:%s] /mirror-channels couldn't read '%s' structure", self.connector_id, service)
-            await self._reply(ctx, f"Couldn't read the '{service}' channel structure: {exc}")
-            return
-
-        summary = await _mirror_guild_structure(
-            ctx.channel.server,
-            structure,
-            source=service,
-            local_connector=self.connector_id,
-            linker=self._linker,
-        )
         await self._reply(ctx, summary)
 
     async def _link_channel(self, ctx, service: str, external_id: str, local_id: str | None = None) -> None:
@@ -2491,98 +2447,3 @@ def _parse_stoat_emoji(emoji_id: str) -> str | CustomEmoji | None:
 
 def _to_stoat_emoji(emoji: str | CustomEmoji) -> str:
     return emoji if isinstance(emoji, str) else emoji.native_id
-
-
-async def _mirror_guild_structure(
-    server: stoat.Server,
-    structure: GuildStructure,
-    *,
-    source: str,
-    local_connector: str,
-    linker: ChannelLinker | None,
-) -> str:
-    """Create whatever's missing from `structure` on `server`, then link
-    every channel (newly created or already matching by name) back to its
-    `source` counterpart.
-
-    Creation is idempotent by name: an existing category/channel is left
-    alone rather than duplicated, so a category that already exists never
-    has newly added Discord channels folded into it — Stoat has no "add
-    channel to category" call, only "create category with these channel
-    IDs". Linking, unlike creation, still runs for channels inside an
-    already-existing category, so a rerun can link channels an earlier
-    run (or manual setup) left unlinked.
-    """
-    existing_channels: dict[str, str] = {channel.name: channel.id for channel in server.channels}
-    existing_group_titles = {category.title for category in server.categories or []}
-
-    created_channels = 0
-    skipped_channels = 0
-    created_groups = 0
-    skipped_groups = 0
-    linked_channels = 0
-    link_errors: list[str] = []
-
-    async def link(spec: ChannelSpec, local_id: str) -> None:
-        nonlocal linked_channels
-        if linker is None:
-            return
-        try:
-            await linker.link_channel(
-                local_connector=local_connector,
-                local_channel_id=str(local_id),
-                local_channel_name=spec.name,
-                source=source,
-                source_id=spec.source_channel_id,
-                destination_id=None,
-            )
-            linked_channels += 1
-        except LinkError as exc:
-            link_errors.append(f"{spec.name}: {exc}")
-
-    async def process_channels(channels: list[ChannelSpec], *, create_if_missing: bool) -> list[str]:
-        nonlocal created_channels, skipped_channels
-        ids = []
-        for spec in channels:
-            existing_id = existing_channels.get(spec.name)
-            if existing_id is not None:
-                skipped_channels += 1
-                await link(spec, existing_id)
-                continue
-            if not create_if_missing:
-                continue  # category already exists - Stoat has no "add channel to category" call
-            channel = await server.create_channel(name=spec.name)
-            existing_channels[spec.name] = channel.id
-            ids.append(channel.id)
-            created_channels += 1
-            await link(spec, channel.id)
-        return ids
-
-    for group in structure.groups:
-        if not group.channels:
-            skipped_groups += 1
-            continue
-        category_exists = group.name in existing_group_titles
-        channel_ids = await process_channels(group.channels, create_if_missing=not category_exists)
-        if category_exists:
-            skipped_groups += 1
-            continue
-        if not channel_ids:
-            continue  # every channel in this group already existed elsewhere on the server
-        await server.create_category(group.name, channels=channel_ids)
-        existing_group_titles.add(group.name)
-        created_groups += 1
-
-    await process_channels(structure.ungrouped_channels, create_if_missing=True)
-
-    summary = (
-        f"Mirrored '{source}' structure: {created_groups} group(s) and {created_channels} channel(s) created "
-        f"({skipped_groups} group(s) and {skipped_channels} channel(s) already existed); "
-        f"linked {linked_channels} channel(s)."
-    )
-    if link_errors:
-        shown = link_errors[:5]
-        summary += f" {len(link_errors)} link conflict(s): " + "; ".join(shown)
-        if len(link_errors) > len(shown):
-            summary += f" (+{len(link_errors) - len(shown)} more)"
-    return summary
