@@ -61,10 +61,7 @@ def _member_colour(author: object) -> str | None:
     when the member has none) - so a zero value means "no colour". A plain
     `discord.User` with no guild context has no `.colour` and yields None.
     Forwarded to a Stoat masquerade's `color` (issue #74)."""
-    try:
-        value = getattr(getattr(author, "colour", None), "value", 0) or 0
-    except Exception:
-        return None
+    value = getattr(getattr(author, "colour", None), "value", 0) or 0
     return f"#{value:06x}" if value else None
 
 

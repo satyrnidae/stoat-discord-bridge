@@ -162,22 +162,24 @@ class StoatReceiverService(ReceiverService):
             except Exception as exc:
                 if masquerade.color is None:
                     raise PartialRelayError(ids, exc) from exc
-                # A masquerade colour needs `manage_roles` in the channel; if
-                # that's what the server rejected, drop the colour and keep
-                # relaying (this chunk and the rest of the split) rather than
-                # losing the message.
-                logger.warning(
-                    "[stoat:%s] masqueraded send into %s rejected with colour %r (%s); retrying uncoloured",
-                    self.connector_id,
-                    target_channel_id,
-                    masquerade.color,
-                    exc,
-                )
+                # The colour is the only part of the masquerade that needs an
+                # elevated permission (`manage_roles`); if a send failed with
+                # one set, retry without it before giving up so a bot lacking
+                # that permission still relays (uncoloured, this chunk and the
+                # rest of the split) instead of dropping every message. A
+                # failure that wasn't about the colour just resurfaces from
+                # the retry, carrying the original error.
                 masquerade = stoat.MessageMasquerade(name=masquerade.name, avatar=masquerade.avatar)
                 try:
                     sent = await channel.send(chunk, masquerade=masquerade, **attach_kw)
-                except Exception as exc2:
-                    raise PartialRelayError(ids, exc2) from exc2
+                except Exception:
+                    raise PartialRelayError(ids, exc) from exc
+                logger.warning(
+                    "[stoat:%s] masqueraded send into %s succeeded only after dropping the name "
+                    "colour - the bot likely lacks manage_roles there",
+                    self.connector_id,
+                    target_channel_id,
+                )
             logger.debug("[stoat:%s] masqueraded message sent, id=%s", self.connector_id, sent.id)
             ids.append(str(sent.id))
         # Best-effort, never fatal to the relay: keep a thread Category's
