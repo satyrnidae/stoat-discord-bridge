@@ -32,7 +32,8 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   LINKED USERS [local_id|name] - cross-connector user links, read-only
   LINK CHANNEL <local_id> <service> <external_id> - bridge a channel (IRC-operator)
   LINK USER <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (IRC-operator)
-  MIRROR CHANNEL <local_id> [service|all] - create+link a matching channel (IRC-operator)
+  MIRROR CHANNEL TO <local_id> [service|all] - create+link a matching channel elsewhere (IRC-operator)
+  MIRROR CHANNEL FROM <service> <external_id> - create+link a local channel mirroring a remote one (IRC-operator)
   UNLINK CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK USER [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
   HELP - this message"""
@@ -129,35 +130,43 @@ class IrcAdminCommandsMixin:
                 return
             self._notify(nick, summary)
         elif command == "MIRROR CHANNEL":
-            # Unlike Discord/Stoat, IRC admin commands arrive as a DM with no
-            # "current channel" context to default to, so local_id is
-            # always required here - hoisted to the first arg, same
-            # convention as LINK CHANNEL / UNLINK CHANNEL. service is
-            # optional and defaults to "all".
-            if len(args) == 1:
-                local_id, service = args[0], None
-            elif len(args) == 2:
-                local_id, service = args
-            else:
-                self._notify(nick, "Usage: MIRROR CHANNEL <local_id> [service|all]")
-                return
+            # `MIRROR CHANNEL TO <local_id> [service|all]` pushes a local
+            # channel onto another connector (the historical behaviour);
+            # `MIRROR CHANNEL FROM <service> <external_id>` pulls a remote
+            # channel in and creates the local copy. Unlike Discord/Stoat, an
+            # IRC DM has no "current channel", so `TO`'s local_id is always
+            # required and hoisted first, same as LINK/UNLINK CHANNEL.
+            direction = args[0].upper() if args else ""
+            rest = args[1:]
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")
                 return
             try:
-                if service is None or service.lower() == "all":
+                if direction == "TO" and len(rest) == 1:
                     summary = await self._linker.mirror_channel_all(
-                        local_connector=self.connector_id,
-                        local_channel_id=local_id,
-                        local_channel_name=local_id,
+                        local_connector=self.connector_id, local_channel_id=rest[0], local_channel_name=rest[0]
                     )
-                else:
+                elif direction == "TO" and len(rest) == 2 and rest[1].lower() == "all":
+                    summary = await self._linker.mirror_channel_all(
+                        local_connector=self.connector_id, local_channel_id=rest[0], local_channel_name=rest[0]
+                    )
+                elif direction == "TO" and len(rest) == 2:
                     summary = await self._linker.mirror_channel(
                         local_connector=self.connector_id,
-                        local_channel_id=local_id,
-                        local_channel_name=local_id,
-                        destination=service,
+                        local_channel_id=rest[0],
+                        local_channel_name=rest[0],
+                        destination=rest[1],
                     )
+                elif direction == "FROM" and len(rest) == 2:
+                    summary = await self._linker.mirror_channel_from(
+                        local_connector=self.connector_id, source=rest[0], source_id=rest[1]
+                    )
+                else:
+                    self._notify(
+                        nick,
+                        "Usage: MIRROR CHANNEL TO <local_id> [service|all] | MIRROR CHANNEL FROM <service> <external_id>",
+                    )
+                    return
             except LinkError as exc:
                 logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
                 self._notify(nick, str(exc))

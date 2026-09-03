@@ -187,25 +187,35 @@ clear-typing API, so there the loop just stops re-arming and Discord's own
 ### Admin & status commands
 
 Every admin/status command (`/status`, the channel commands `/link channel` /
-`/unlink channel` / `/mirror channel` / `/linked channels`, the role commands
-`/link role` / `/mirror role` / `/linked roles` / `/unlink role`
+`/unlink channel` / `/mirror channel to` / `/mirror channel from` /
+`/linked channels`, the role commands
+`/link role` / `/mirror role to` / `/mirror role from` / `/linked roles` /
+`/unlink role`
 (Discord/Stoat only), the user commands `/link user` / `/unlink user` /
 `/linked users`, the category commands `/link category` / `/unlink category` /
-`/mirror category` / `/linked categories` (Discord/Stoat only), the emote
-commands `/link emote` / `/mirror emote` / `/linked emotes` / `/unlink emote`
+`/mirror category to` / `/mirror category from` / `/linked categories`
+(Discord/Stoat only), the emote
+commands `/link emote` / `/mirror emote to` / `/mirror emote from` /
+`/linked emotes` / `/unlink emote`
 (Discord/Stoat only - IRC has no custom emoji)) and how to
 reach it on each connector is documented in
-`COMMANDS.md`, not duplicated here. On Discord the channel, role, user,
-category and emote commands are real `app_commands` subcommand groups
-(`/link`, `/unlink`, `/mirror`, `/linked`); on Stoat they're the equivalent
+`COMMANDS.md`, not duplicated here. `/mirror <noun>` is a two-way group:
+`to` pushes a local entity onto another connector (the historical
+`/mirror <noun>` behaviour), `from <service> <external_id>` pulls a remote
+entity in and creates the local copy - respecting already-linked entities
+(a `from` channel lands in the local counterpart of the source channel's
+linked Category; bridge/mapping groups are reused). On Discord the channel,
+role, user, category and emote commands are real `app_commands` subcommand
+groups (`/link`, `/unlink`, `/mirror`, `/linked`) - and each `/mirror <noun>`
+is itself a `to`/`from` subgroup; on Stoat they're the equivalent
 `stoat.ext.commands` groups, triggered on a per-connector `command_prefix`
 (`StoatConnectorConfig`, `/` by default) (`_StoatClient` subclasses `commands.Bot`; the
 `_<verb>_<noun>` methods on `StoatSenderService` are what the subcommands
 forward to, and `_handle_message` skips relaying anything the command
 processor already claimed - tracked by message id in `_command_message_ids`,
 which also covers the bot's own `_reply` output); on IRC they're
-space-separated (`LINK CHANNEL …` / `LINK USER …`). No flat admin
-commands remain.
+space-separated (`LINK CHANNEL …` / `LINK USER …` / `MIRROR CHANNEL TO …` /
+`MIRROR CHANNEL FROM …`). No flat admin commands remain.
 Every id argument to a channel, role, user, category or emote command also
 accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /
 `resolve_role_id_by_name` / `resolve_user_id_by_name` /

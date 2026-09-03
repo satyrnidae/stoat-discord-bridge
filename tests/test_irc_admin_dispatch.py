@@ -42,6 +42,7 @@ class FakeLinker:
         self.link_channel_calls: list[dict] = []
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
+        self.mirror_channel_from_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
         self.unlink_channel_calls: list[dict] = []
 
@@ -66,6 +67,12 @@ class FakeLinker:
         if self._raises is not None:
             raise self._raises
         return "mirrored to all ok"
+
+    async def mirror_channel_from(self, **kwargs):
+        self.mirror_channel_from_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "mirrored from ok"
 
     async def unlink_channel(self, **kwargs):
         self.unlink_channel_calls.append(kwargs)
@@ -286,7 +293,7 @@ async def test_mirror_channel_to_a_single_destination():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL #general discord")
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO #general discord")
 
     assert linker.mirror_channel_calls == [
         {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general", "destination": "discord"}
@@ -298,7 +305,7 @@ async def test_mirror_channel_to_all_is_case_insensitive():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL #general ALL")
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO #general ALL")
 
     assert linker.mirror_channel_all_calls == [
         {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general"}
@@ -306,12 +313,40 @@ async def test_mirror_channel_to_all_is_case_insensitive():
     assert conn.notice_calls == [("alice", "mirrored to all ok")]
 
 
+async def test_mirror_channel_to_defaults_to_all_when_no_service_given():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO #general")
+
+    assert linker.mirror_channel_all_calls == [
+        {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general"}
+    ]
+
+
+async def test_mirror_channel_from_a_remote_channel():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL FROM discord 123")
+
+    assert linker.mirror_channel_from_calls == [
+        {"local_connector": "irc", "source": "discord", "source_id": "123"}
+    ]
+    assert conn.notice_calls == [("alice", "mirrored from ok")]
+
+
 async def test_mirror_channel_wrong_arg_count_sends_usage():
     sender, conn = _make_sender(linker=FakeLinker())
 
     await sender._handle_dm_command("alice", "MIRROR CHANNEL a b c")
 
-    assert conn.notice_calls == [("alice", "Usage: MIRROR CHANNEL <local_id> [service|all]")]
+    assert conn.notice_calls == [
+        (
+            "alice",
+            "Usage: MIRROR CHANNEL TO <local_id> [service|all] | MIRROR CHANNEL FROM <service> <external_id>",
+        )
+    ]
 
 
 # ---------------------------------------------------------------- unrecognized command

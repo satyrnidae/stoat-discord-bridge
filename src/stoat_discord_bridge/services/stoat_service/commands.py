@@ -29,10 +29,10 @@ _HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
   {p}link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
   {p}link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
   {p}link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
-  {p}mirror channel [local_id|name] [service|all] - create+link a matching channel (Manage Server)
-  {p}mirror role <local_id|name> [service|all] - create+link a matching role on another connector (Manage Server)
-  {p}mirror emote <local_id|name> [service|all] - recreate a custom emoji on another connector and link the two (Manage Server)
-  {p}mirror category [local_id|name] [service|all] - create+link a matching Category elsewhere and mirror its channels (Manage Server)
+  {p}mirror channel to [local_id|name] [service|all] | from <service> <external_id|name> - create+link a matching channel (Manage Server)
+  {p}mirror role to <local_id|name> [service|all] | from <service> <external_id|name> - create+link a matching role (Manage Server)
+  {p}mirror emote to <local_id|name> [service|all] | from <service> <external_id|name> - recreate+link a custom emoji (Manage Server)
+  {p}mirror category to [local_id|name] [service|all] | from <service> <external_id|name> - create+link a Category and mirror its channels (Manage Server)
   {p}unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   {p}unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   {p}unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
@@ -130,21 +130,56 @@ def build_command_tree(bot, owner, prefix: str) -> None:
     async def linked_emotes(ctx, local_id: typing.Optional[str] = None):
         await owner._linked_emotes(ctx, local_id)
 
-    @mirror.command(name="channel")
-    async def mirror_channel(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+    # `/mirror <noun>` is a two-way group: `to` pushes a local entity onto
+    # another connector (the historical `/mirror <noun>` behaviour, arg order
+    # unchanged), `from` pulls a remote entity in and creates the local copy.
+    @mirror.group(name="channel", invoke_without_command=True)
+    async def mirror_channel(ctx):
+        await owner._reply(ctx, f"Usage: {p}mirror channel <to|from> …")
+
+    @mirror_channel.command(name="to")
+    async def mirror_channel_to(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
         await owner._mirror_channel(ctx, local_id, service)
 
-    @mirror.command(name="role")
-    async def mirror_role(ctx, local_id: str, service: typing.Optional[str] = None):
+    @mirror_channel.command(name="from")
+    async def mirror_channel_from(ctx, service: str, external_id: str):
+        await owner._mirror_channel_from(ctx, service, external_id)
+
+    @mirror.group(name="role", invoke_without_command=True)
+    async def mirror_role(ctx):
+        await owner._reply(ctx, f"Usage: {p}mirror role <to|from> …")
+
+    @mirror_role.command(name="to")
+    async def mirror_role_to(ctx, local_id: str, service: typing.Optional[str] = None):
         await owner._mirror_role(ctx, local_id, service)
 
-    @mirror.command(name="category")
-    async def mirror_category(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+    @mirror_role.command(name="from")
+    async def mirror_role_from(ctx, service: str, external_id: str):
+        await owner._mirror_role_from(ctx, service, external_id)
+
+    @mirror.group(name="category", invoke_without_command=True)
+    async def mirror_category(ctx):
+        await owner._reply(ctx, f"Usage: {p}mirror category <to|from> …")
+
+    @mirror_category.command(name="to")
+    async def mirror_category_to(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
         await owner._mirror_category(ctx, local_id, service)
 
-    @mirror.command(name="emote")
-    async def mirror_emote(ctx, local_id: str, service: typing.Optional[str] = None):
+    @mirror_category.command(name="from")
+    async def mirror_category_from(ctx, service: str, external_id: str):
+        await owner._mirror_category_from(ctx, service, external_id)
+
+    @mirror.group(name="emote", invoke_without_command=True)
+    async def mirror_emote(ctx):
+        await owner._reply(ctx, f"Usage: {p}mirror emote <to|from> …")
+
+    @mirror_emote.command(name="to")
+    async def mirror_emote_to(ctx, local_id: str, service: typing.Optional[str] = None):
         await owner._mirror_emote(ctx, local_id, service)
+
+    @mirror_emote.command(name="from")
+    async def mirror_emote_from(ctx, service: str, external_id: str):
+        await owner._mirror_emote_from(ctx, service, external_id)
 
     @bot.command(name="status")
     async def status(ctx):

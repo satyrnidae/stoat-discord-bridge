@@ -420,3 +420,38 @@ async def test_mirror_category_reports_a_destination_that_cant_create_categories
     )
 
     assert "doesn't support Category creation" in summary
+
+
+# ---------------------------------------------------------------- CategoryLinker.mirror_category_from
+
+
+async def test_mirror_category_from_creates_the_local_category_and_links(fake_db):
+    ensure_category, created = _ensure_category_fake()
+
+    async def d_cat_name(cid):
+        return {"d-cat": "Team"}.get(cid)
+
+    async def channels_in_category(cid):
+        assert cid == "d-cat"
+        return []
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", resolve_category_name=d_cat_name, channels_in_category=channels_in_category
+        ),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_category=ensure_category),
+    }
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+
+    # run "on stoat", pulling discord's d-cat in
+    summary = await linker.mirror_category_from(local_connector="stoat", source="discord", source_id="d-cat")
+
+    assert created == ["Team"]
+    assert "Linked" in summary
+    assert await category_mappings.get_bridge_group("stoat", "dest-Team") is not None
+
+
+async def test_mirror_category_from_own_connector_raises(fake_db, connectors):
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+    with pytest.raises(LinkError, match="from a connector to itself"):
+        await linker.mirror_category_from(local_connector="discord", source="discord", source_id="d-cat")

@@ -173,15 +173,17 @@ Links a custom emoji from connector `<service>` to a local custom emoji, so a
 reaction using either can be recreated as the other (see the reaction/emoji
 sync section of `README.md`/`CLAUDE.md`). Manage Server.
 
-### `/mirror emote <local_id|name> [<service>|all]`
+### `/mirror emote to <local_id|name> [<service>|all]` / `/mirror emote from <service> <external_id|name>`
 
-Ensures a linked counterpart of the emoji exists on `<service>` (or every
-other connector, if `all` - the default): reuses the existing link if the
-pair is already linked; failing that, links to a same-named emoji that
+`to` ensures a linked counterpart of the local emoji exists on `<service>`
+(or every other connector, if `all` - the default): reuses the existing link
+if the pair is already linked; failing that, links to a same-named emoji that
 already exists on the destination (name match only - images aren't compared)
 rather than creating a duplicate; only if neither is found does it read the
 source emoji's image, recreate it on the destination, and link the two.
-Unlike `/mirror role`, an emoji
+`from` is the same operation run the other way - `<service>`'s emoji is read
+and recreated-or-matched **here**, then linked (reusing an existing mapping
+group). Unlike `/mirror role`, an emoji
 can't be created name-only - a connector that can't read the source emoji or
 can't create it (slots full, name rejected, image too large) is reported
 per-connector. Manage Server.
@@ -198,13 +200,22 @@ just that one, `all` (the default) dissolves the whole group. A kick that
 would stand a lone survivor dissolves the group instead. The emoji
 themselves are never deleted.
 
-- **Discord**: the `/link emote` / `/mirror emote` / `/linked emotes` /
-  `/unlink emote` slash subcommands (Manage Server on all but
-  `/linked emotes`).
+- **Discord**: the `/link emote` / `/mirror emote to` / `/mirror emote from` /
+  `/linked emotes` / `/unlink emote` slash subcommands (Manage Server on all
+  but `/linked emotes`).
 - **Stoat**: the same tokens as message commands.
 - **IRC**: not available - IRC has no custom emoji.
 
-## `/mirror channel [<local_id>] [<service>|all]`
+## `/mirror channel to` / `/mirror channel from`
+
+`/mirror <noun>` is a two-way group on every connector kind: `to` pushes a
+**local** entity onto another connector; `from` pulls a **remote** entity in
+and creates the local copy. On Discord `channel` / `role` / `category` /
+`emote` are each an `app_commands` subcommand group with `to` and `from`
+under them; on Stoat they're the same tokens as a chat message; on IRC only
+`MIRROR CHANNEL` exists, taking `TO` / `FROM` as its first token.
+
+### `/mirror channel to [<local_id>] [<service>|all]`
 
 Ensures a linked counterpart of `<local_id>` (or the invoking channel, if
 omitted) exists on `service` — or every other configured connector, if
@@ -215,14 +226,28 @@ has no channel-creation capability in this codebase) or hits a link conflict
 is reported per-connector rather than aborting the rest when `all` is used.
 `<local_id>` also accepts a bare channel name.
 
-- **Discord**: `/mirror channel` slash subcommand under the `/mirror` group
-  (Manage Server; `service`'s autocomplete includes the literal `all` choice)
-- **Stoat**: `/mirror channel [<local_id|name>] [<service>|all]` message
-  command (Manage Server)
-- **IRC**: `MIRROR CHANNEL <local_id> [<service>|all]`, DM
-  (IRC-operator; channel always required - no "current channel" to default
-  to - and hoisted to the first arg since it's the one id IRC can't leave
-  out; `service` optional and defaults to `all`)
+### `/mirror channel from <service> <external_id>`
+
+The inbound direction: `<service>`'s `<external_id>` channel already exists,
+so a linked counterpart is created **on the connector the command is run on**
+(via its own `ensure_channel` hook) and the two are linked — reusing an
+existing bridge group if `<external_id>` is already in one. "Respecting other
+linked entities": if the source channel sits in a Category that's already
+linked (via `/link category`) to a Category here, the new local channel is
+placed into *that* linked Category rather than a fresh same-named one.
+`<external_id>` also accepts a bare channel name. There's no `all` form -
+`from` always names one source.
+
+- **Discord**: `/mirror channel to` / `/mirror channel from` subcommands
+  under the `/mirror channel` group (Manage Server; `to`'s `service`
+  autocomplete includes the literal `all` choice, `from`'s doesn't)
+- **Stoat**: `/mirror channel to [<local_id|name>] [<service>|all]` /
+  `/mirror channel from <service> <external_id|name>` message commands
+  (Manage Server)
+- **IRC**: `MIRROR CHANNEL TO <local_id> [<service>|all]` /
+  `MIRROR CHANNEL FROM <service> <external_id>`, DM (IRC-operator; `TO`'s
+  local id always required and hoisted first - no "current channel" to
+  default to; `service` optional on `TO` and defaults to `all`)
 
 ## Categories: `/link category`, `/mirror category`, `/linked categories`, `/unlink category`
 
@@ -251,16 +276,18 @@ two Categories are linked, any **new channel** created inside either one is
 automatically mirrored (created + linked, same logic as `/mirror channel`)
 into every other connector's own linked Category. Manage Server.
 
-### `/mirror category [<local_id|name>] [<service>|all]`
+### `/mirror category to [<local_id|name>] [<service>|all]` / `/mirror category from <service> <external_id|name>`
 
-Ensures a linked counterpart of the Category exists on `<service>` (or every
-other connector, if `all` - the default): reuses the existing linked Category
-if the pair is already linked, otherwise creates a same-named one (name only)
-and links it. Then relocates the source Category's channels onto that
-destination Category - a child already linked to a `<service>` channel is
-*moved* into it, an unlinked child is mirrored (created + linked) there. A
-connector that can't create Categories is reported per-connector. Manage
-Server.
+`to` ensures a linked counterpart of the local Category exists on `<service>`
+(or every other connector, if `all` - the default): reuses the existing
+linked Category if the pair is already linked, otherwise creates a same-named
+one (name only) and links it. Then relocates the source Category's channels
+onto that destination Category - a child already linked to a `<service>`
+channel is *moved* into it, an unlinked child is mirrored (created + linked)
+there. `from` is the same operation run the other way - a local counterpart
+of `<service>`'s Category is created **here**, linked, and `<service>`'s
+channels relocated/mirrored into it. A connector that can't create Categories
+is reported per-connector. Manage Server.
 
 ### `/linked categories [<local_id|name>]`
 
@@ -274,9 +301,9 @@ just that one member out; `all` (the default) dissolves the whole group.
 Existing channels already synced into the Category are left alone either way -
 only future auto-sync stops. Manage Server.
 
-- **Discord**: the `/link category` / `/mirror category` / `/linked categories`
-  / `/unlink category` slash subcommands (Manage Server on all but
-  `/linked categories`).
+- **Discord**: the `/link category` / `/mirror category to` /
+  `/mirror category from` / `/linked categories` / `/unlink category` slash
+  subcommands (Manage Server on all but `/linked categories`).
 - **Stoat**: the same tokens as message commands.
 - **IRC**: not available - IRC has no Category concept.
 
@@ -300,12 +327,15 @@ share the same `/link` / `/unlink` / `/mirror` / `/linked` groups.
 Links `service`'s role to a local role. Manage Server (Discord) / Manage
 Server (Stoat).
 
-### `/mirror role <local_id|name> [<service>|all]`
+### `/mirror role to <local_id|name> [<service>|all]` / `/mirror role from <service> <external_id|name>`
 
-Ensures a linked counterpart of the role exists on `service` (or every other
-connector, if `all` - the default): reuses a same-named role there or creates
-a bare one (name only - color/permissions are not copied), then links it. A
-connector that can't create roles is reported per-connector. Manage Server.
+`to` ensures a linked counterpart of the local role exists on `service` (or
+every other connector, if `all` - the default): reuses a same-named role
+there or creates a bare one (name only - color/permissions are not copied),
+then links it. `from` is the same operation run the other way - a local
+counterpart of `<service>`'s role is created-or-matched **here** and linked
+(reusing an existing bridge group). A connector that can't create roles is
+reported per-connector. Manage Server.
 
 ### `/linked roles [<local_id|name>]`
 
@@ -319,8 +349,9 @@ just that one, `all` (the default) dissolves the whole group. A kick that
 would stand a lone survivor dissolves the group instead. The roles
 themselves are never deleted. Manage Server.
 
-- **Discord**: `/link role` / `/mirror role` / `/linked roles` /
-  `/unlink role` slash subcommands (Manage Server on all but `/linked roles`).
+- **Discord**: `/link role` / `/mirror role to` / `/mirror role from` /
+  `/linked roles` / `/unlink role` slash subcommands (Manage Server on all
+  but `/linked roles`).
 - **Stoat**: the same `/link role …` etc. as message commands.
 - **IRC**: not available - IRC has no role concept.
 
@@ -363,7 +394,7 @@ channels in place (they're real, human-created channels there).
 
 - **Discord**: `/unlink channel` slash subcommand under the `/unlink` group
   (Manage Server); `service`'s autocomplete includes the literal `all`
-  choice, same as `/mirror channel`. `local_id` defaults to the current
+  choice, same as `/mirror channel to`. `local_id` defaults to the current
   channel.
 - **Stoat**: `/unlink channel [<local_id|name>] [<service>|all]` message
   command (Manage Server). `local_id` defaults to the current

@@ -132,6 +132,45 @@ async def test_mirror_role_all_one_line_per_connector(fake_db):
     assert any("IRC: doesn't support role creation" in line for line in lines)
 
 
+# ---- mirror_role_from
+
+
+async def test_mirror_role_from_creates_or_matches_the_local_role(fake_db):
+    created = {}
+
+    async def ensure_role(name):
+        created.setdefault(name, f"stoat_{name}")
+        return created[name]
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    async def s_name(role_id):
+        return {v: k for k, v in created.items()}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=ensure_role, resolve_role_name=s_name),
+    )
+    linker = _linker(fake_db, connectors)
+
+    # run "on stoat", pulling discord's role d1 in
+    summary = await linker.mirror_role_from(local_connector="stoat", source="discord", source_role="d1")
+
+    assert "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods)." == summary
+    assert created == {"Mods": "stoat_Mods"}
+
+
+async def test_mirror_role_from_own_connector_raises(fake_db):
+    with pytest.raises(LinkError, match="from a connector to itself"):
+        await _linker(fake_db).mirror_role_from(local_connector="discord", source="discord", source_role="d1")
+
+
+async def test_mirror_role_from_unknown_source_raises(fake_db):
+    with pytest.raises(LinkError, match="isn't a known connector"):
+        await _linker(fake_db).mirror_role_from(local_connector="discord", source="nope", source_role="x")
+
+
 # ---- list_linked_roles / unlink_role
 
 

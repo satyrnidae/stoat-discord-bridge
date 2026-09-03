@@ -46,6 +46,7 @@ class FakeLinker:
     def __init__(self, connectors: dict | None = None):
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
+        self.mirror_channel_from_calls: list[dict] = []
         self.link_channel_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
         self.link_user_calls: list[dict] = []
@@ -69,6 +70,10 @@ class FakeLinker:
     async def mirror_channel_all(self, **kwargs):
         self.mirror_channel_all_calls.append(kwargs)
         return "ok"
+
+    async def mirror_channel_from(self, **kwargs):
+        self.mirror_channel_from_calls.append(kwargs)
+        return "mirrored from ok"
 
     async def link_channel(self, **kwargs):
         self.link_channel_calls.append(kwargs)
@@ -95,6 +100,7 @@ class FakeCategoryLinker:
         self.sync_new_channel_calls: list[dict] = []
         self.mirror_category_calls: list[dict] = []
         self.mirror_category_all_calls: list[dict] = []
+        self.mirror_category_from_calls: list[dict] = []
         self.connectors = connectors or {}
 
     async def link_category(self, **kwargs):
@@ -119,6 +125,10 @@ class FakeCategoryLinker:
     async def mirror_category_all(self, **kwargs):
         self.mirror_category_all_calls.append(kwargs)
         return "mirrored all ok"
+
+    async def mirror_category_from(self, **kwargs):
+        self.mirror_category_from_calls.append(kwargs)
+        return "mirrored from ok"
 
 
 class FakeInteraction:
@@ -229,6 +239,20 @@ async def test_mirror_channel_uses_invoking_channel_when_no_explicit_id_given():
     call = linker.mirror_channel_calls[0]
     assert call["local_channel_id"] == "555"
     assert call["local_channel_name"] == "the-current-one"
+
+
+async def test_mirror_channel_from_strips_a_pasted_mention_and_routes_to_the_linker():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel_from(interaction, "stoat", "<#814279082606592020>")
+
+    assert linker.mirror_channel_from_calls == [
+        {"local_connector": "discord", "source": "stoat", "source_id": "814279082606592020"}
+    ]
+    assert interaction.deferred is True
+    assert interaction.sent == ["mirrored from ok"]
 
 
 # ---------------------------------------------------------------- _handle_link_channel
@@ -760,6 +784,20 @@ async def test_mirror_category_without_a_category_or_token_errors():
     assert category_linker.mirror_category_all_calls == []
 
 
+async def test_mirror_category_from_routes_to_the_category_linker():
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_category_from(interaction, "stoat", "s-cat")
+
+    assert category_linker.mirror_category_from_calls == [
+        {"local_connector": "discord", "source": "stoat", "source_id": "s-cat"}
+    ]
+    assert interaction.deferred is True
+    assert interaction.sent == ["mirrored from ok"]
+
+
 # ---------------------------------------------------------------- category-name hooks
 
 
@@ -893,11 +931,20 @@ async def test_link_emote_service_autocomplete_hides_irc(sample_connectors):
 
 async def test_mirror_role_service_autocomplete_hides_irc_but_keeps_all(sample_connectors):
     sender = _make_sender(FakeLinker(), role_linker=FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "mirror role", "service")
+    callback = _autocomplete_callback(sender, "mirror role to", "service")
 
     choices = await callback(FakeInteraction(), "")
 
     assert {c.value for c in choices} == {"all", "discord", "stoat-public"}
+
+
+async def test_mirror_role_from_service_autocomplete_hides_irc_and_all(sample_connectors):
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "mirror role from", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"discord", "stoat-public"}
 
 
 async def test_link_channel_service_autocomplete_still_offers_irc(sample_connectors):
@@ -921,11 +968,20 @@ async def test_link_user_source_autocomplete_reads_the_user_linker(sample_connec
 
 async def test_mirror_channel_destination_autocomplete_includes_all(sample_connectors):
     sender = _make_sender(FakeLinker(sample_connectors))
-    callback = _autocomplete_callback(sender, "mirror channel", "service")
+    callback = _autocomplete_callback(sender, "mirror channel to", "service")
 
     choices = await callback(FakeInteraction(), "")
 
     assert {c.value for c in choices} == {"all", "discord", "stoat-public", "irc"}
+
+
+async def test_mirror_channel_from_source_autocomplete_excludes_all(sample_connectors):
+    sender = _make_sender(FakeLinker(sample_connectors))
+    callback = _autocomplete_callback(sender, "mirror channel from", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"discord", "stoat-public", "irc"}
 
 
 # ------------------------------------------------ _entity_autocomplete_choices (external_id / local_id options)

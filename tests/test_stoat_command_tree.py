@@ -35,6 +35,9 @@ def test_registers_the_four_groups_with_discord_matching_subcommands():
         "users",
     ]
     assert sorted(bot.all_commands["mirror"].all_commands) == ["category", "channel", "emote", "role"]
+    # every `/mirror <noun>` is itself a to/from group
+    for noun in ("category", "channel", "emote", "role"):
+        assert sorted(bot.all_commands["mirror"].all_commands[noun].all_commands) == ["from", "to"]
     assert {"status", "bridge-help"} <= set(bot.all_commands)
 
 
