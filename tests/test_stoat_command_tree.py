@@ -49,11 +49,11 @@ class _MirrorOwner:
     async def _reply(self, ctx, text):
         pass
 
-    async def _mirror_role(self, ctx, local_id=None, service=None):
-        self.mirror_role_calls.append((local_id, service))
+    async def _mirror_role(self, ctx, local_id=None, service=None, new_name=None):
+        self.mirror_role_calls.append((local_id, service, new_name))
 
-    async def _mirror_emote(self, ctx, local_id=None, service=None):
-        self.mirror_emote_calls.append((local_id, service))
+    async def _mirror_emote(self, ctx, local_id=None, service=None, new_name=None):
+        self.mirror_emote_calls.append((local_id, service, new_name))
 
 
 async def test_mirror_role_to_lone_arg_is_the_role_not_the_service():
@@ -63,8 +63,13 @@ async def test_mirror_role_to_lone_arg_is_the_role_not_the_service():
 
     await to.callback(SimpleNamespace(), "Mods")
     await to.callback(SimpleNamespace(), "stoat", "Mods")
+    await to.callback(SimpleNamespace(), "stoat", "Mods", "Moderators")
 
-    assert owner.mirror_role_calls == [("Mods", None), ("Mods", "stoat")]
+    assert owner.mirror_role_calls == [
+        ("Mods", None, None),
+        ("Mods", "stoat", None),
+        ("Mods", "stoat", "Moderators"),
+    ]
 
 
 async def test_mirror_emote_to_lone_arg_is_the_emote_not_the_service():
@@ -74,8 +79,13 @@ async def test_mirror_emote_to_lone_arg_is_the_emote_not_the_service():
 
     await to.callback(SimpleNamespace(), "blob")
     await to.callback(SimpleNamespace(), "all", "blob")
+    await to.callback(SimpleNamespace(), "stoat", "blob", "blobcat")
 
-    assert owner.mirror_emote_calls == [("blob", None), ("blob", "all")]
+    assert owner.mirror_emote_calls == [
+        ("blob", None, None),
+        ("blob", "all", None),
+        ("blob", "stoat", "blobcat"),
+    ]
 
 
 class _FakeShard:

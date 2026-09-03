@@ -113,6 +113,53 @@ async def test_mirror_role_creates_or_matches_then_links(fake_db):
     assert again == "Stoat: already synced - skipped."
 
 
+async def test_mirror_role_new_name_is_what_ensure_role_creates(fake_db):
+    # issue #44: `new_name` replaces the source role name for the counterpart.
+    seen = []
+
+    async def ensure_role(name):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    async def s_name(role_id):
+        return {"stoat_Moderators": "Moderators"}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=ensure_role, resolve_role_name=s_name),
+    )
+    linker = _linker(fake_db, connectors)
+    summary = await linker.mirror_role(
+        local_connector="discord", local_role="d1", destination="stoat", new_name="Moderators"
+    )
+    assert seen == ["Moderators"]
+    assert "Stoat role 'Moderators' (stoat_Moderators)" in summary
+
+
+async def test_mirror_role_from_new_name_names_the_new_local_role(fake_db):
+    seen = []
+
+    async def ensure_role(name):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=ensure_role),
+    )
+    linker = _linker(fake_db, connectors)
+    await linker.mirror_role_from(
+        local_connector="stoat", source="discord", source_role="d1", new_name="Moderators"
+    )
+    assert seen == ["Moderators"]
+
+
 async def test_mirror_role_unsupported_destination(fake_db):
     linker = _linker(fake_db)
     out = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")

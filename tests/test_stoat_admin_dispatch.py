@@ -474,7 +474,19 @@ async def test_mirror_emote_to_a_single_destination():
     await sender._mirror_emote(ctx, "blob", "discord")
 
     assert emote_linker.mirror_emote_calls == [
-        {"local_connector": "stoat", "local_emote": "blob", "destination": "discord"}
+        {"local_connector": "stoat", "local_emote": "blob", "destination": "discord", "new_name": None}
+    ]
+
+
+async def test_mirror_emote_to_forwards_a_new_name():
+    emote_linker = FakeEmoteLinker()
+    sender = _make_sender(emote_linker=emote_linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_emote(ctx, "blob", "discord", "blobcat")
+
+    assert emote_linker.mirror_emote_calls == [
+        {"local_connector": "stoat", "local_emote": "blob", "destination": "discord", "new_name": "blobcat"}
     ]
 
 
@@ -520,9 +532,20 @@ async def test_mirror_channel_to_a_single_destination():
             "local_channel_name": "general",
             "destination": "discord",
             "local_channel_category": None,
+            "new_name": None,
         }
     ]
     assert ctx.channel.sent[0]["content"] == "mirrored ok"
+
+
+async def test_mirror_channel_to_forwards_a_new_name():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._mirror_channel(ctx, "general", "discord", "lobby")
+
+    assert linker.mirror_channel_calls[0]["new_name"] == "lobby"
 
 
 async def test_mirror_channel_resolves_and_forwards_the_channels_category():
@@ -588,9 +611,21 @@ async def test_mirror_channel_from_routes_to_the_linker():
     await sender._mirror_channel_from(ctx, "discord", "d1")
 
     assert linker.mirror_channel_from_calls == [
-        {"local_connector": "stoat", "source": "discord", "source_id": "d1"}
+        {"local_connector": "stoat", "source": "discord", "source_id": "d1", "new_name": None}
     ]
     assert ctx.channel.sent[0]["content"] == "mirrored from ok"
+
+
+async def test_mirror_channel_from_forwards_a_new_name():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_channel_from(ctx, "discord", "d1", "lobby")
+
+    assert linker.mirror_channel_from_calls == [
+        {"local_connector": "stoat", "source": "discord", "source_id": "d1", "new_name": "lobby"}
+    ]
 
 
 async def test_mirror_role_from_routes_to_the_role_linker():
@@ -601,7 +636,7 @@ async def test_mirror_role_from_routes_to_the_role_linker():
     await sender._mirror_role_from(ctx, "discord", "Mods")
 
     assert role_linker.mirror_role_from_calls == [
-        {"local_connector": "stoat", "source": "discord", "source_role": "Mods"}
+        {"local_connector": "stoat", "source": "discord", "source_role": "Mods", "new_name": None}
     ]
 
 
@@ -613,7 +648,7 @@ async def test_mirror_emote_from_routes_to_the_emote_linker():
     await sender._mirror_emote_from(ctx, "discord", "blob")
 
     assert emote_linker.mirror_emote_from_calls == [
-        {"local_connector": "stoat", "source": "discord", "source_emote": "blob"}
+        {"local_connector": "stoat", "source": "discord", "source_emote": "blob", "new_name": None}
     ]
 
 
@@ -625,7 +660,7 @@ async def test_mirror_category_from_routes_to_the_category_linker():
     await sender._mirror_category_from(ctx, "discord", "d-cat")
 
     assert category_linker.mirror_category_from_calls == [
-        {"local_connector": "stoat", "source": "discord", "source_id": "d-cat"}
+        {"local_connector": "stoat", "source": "discord", "source_id": "d-cat", "new_name": None}
     ]
 
 
@@ -1496,7 +1531,7 @@ async def test_mirror_and_linked_and_unlink_role_route():
 
     assert role_linker.mirror_role_all_calls == [{"local_connector": "stoat", "local_role": "Mods"}]
     assert role_linker.mirror_role_calls == [
-        {"local_connector": "stoat", "local_role": "Mods", "destination": "stoat"}
+        {"local_connector": "stoat", "local_role": "Mods", "destination": "stoat", "new_name": None}
     ]
     assert role_linker.list_linked_roles_calls == [
         {"local_connector": "stoat", "local_role": None, "service": None}

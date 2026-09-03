@@ -296,10 +296,22 @@ async def test_mirror_channel_from_strips_a_pasted_mention_and_routes_to_the_lin
     await sender._handle_mirror_channel_from(interaction, "stoat", "<#814279082606592020>")
 
     assert linker.mirror_channel_from_calls == [
-        {"local_connector": "discord", "source": "stoat", "source_id": "814279082606592020"}
+        {"local_connector": "discord", "source": "stoat", "source_id": "814279082606592020", "new_name": None}
     ]
     assert interaction.deferred is True
     assert interaction.sent == ["mirrored from ok"]
+
+
+async def test_mirror_channel_from_forwards_a_new_name():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel_from(interaction, "stoat", "s1", "lobby")
+
+    assert linker.mirror_channel_from_calls == [
+        {"local_connector": "discord", "source": "stoat", "source_id": "s1", "new_name": "lobby"}
+    ]
 
 
 # ---------------------------------------------------------------- _handle_link_channel
@@ -815,7 +827,13 @@ async def test_mirror_category_to_a_named_local_category_and_one_destination():
     await sender._handle_mirror_category(interaction, "Team Chat", "stoat")
 
     assert category_linker.mirror_category_calls == [
-        {"local_connector": "discord", "local_category_id": None, "local_category": "Team Chat", "destination": "stoat"}
+        {
+            "local_connector": "discord",
+            "local_category_id": None,
+            "local_category": "Team Chat",
+            "destination": "stoat",
+            "new_name": None,
+        }
     ]
     assert interaction.sent == ["mirrored ok"]
 
@@ -839,7 +857,7 @@ async def test_mirror_category_from_routes_to_the_category_linker():
     await sender._handle_mirror_category_from(interaction, "stoat", "s-cat")
 
     assert category_linker.mirror_category_from_calls == [
-        {"local_connector": "discord", "source": "stoat", "source_id": "s-cat"}
+        {"local_connector": "discord", "source": "stoat", "source_id": "s-cat", "new_name": None}
     ]
     assert interaction.deferred is True
     assert interaction.sent == ["mirrored from ok"]

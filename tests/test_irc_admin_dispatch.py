@@ -296,9 +296,32 @@ async def test_mirror_channel_to_a_single_destination():
     await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general")
 
     assert linker.mirror_channel_calls == [
-        {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general", "destination": "discord"}
+        {
+            "local_connector": "irc",
+            "local_channel_id": "#general",
+            "local_channel_name": "#general",
+            "destination": "discord",
+            "new_name": None,
+        }
     ]
     assert conn.notice_calls == [("alice", "mirrored ok")]
+
+
+async def test_mirror_channel_to_honours_a_trailing_as_new_name():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general AS lobby")
+
+    assert linker.mirror_channel_calls == [
+        {
+            "local_connector": "irc",
+            "local_channel_id": "#general",
+            "local_channel_name": "#general",
+            "destination": "discord",
+            "new_name": "lobby",
+        }
+    ]
 
 
 async def test_mirror_channel_to_all_is_case_insensitive():
@@ -331,9 +354,20 @@ async def test_mirror_channel_from_a_remote_channel():
     await sender._handle_dm_command("alice", "MIRROR CHANNEL FROM discord 123")
 
     assert linker.mirror_channel_from_calls == [
-        {"local_connector": "irc", "source": "discord", "source_id": "123"}
+        {"local_connector": "irc", "source": "discord", "source_id": "123", "new_name": None}
     ]
     assert conn.notice_calls == [("alice", "mirrored from ok")]
+
+
+async def test_mirror_channel_from_honours_a_trailing_as_new_name():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL FROM discord 123 AS lobby")
+
+    assert linker.mirror_channel_from_calls == [
+        {"local_connector": "irc", "source": "discord", "source_id": "123", "new_name": "lobby"}
+    ]
 
 
 async def test_mirror_channel_wrong_arg_count_sends_usage():
@@ -344,7 +378,8 @@ async def test_mirror_channel_wrong_arg_count_sends_usage():
     assert conn.notice_calls == [
         (
             "alice",
-            "Usage: MIRROR CHANNEL TO [service|all] <local_id> | MIRROR CHANNEL FROM <service> <external_id>",
+            "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] | "
+            "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
         )
     ]
 

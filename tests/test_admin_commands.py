@@ -525,6 +525,48 @@ async def test_mirror_emote_recreates_and_links(fake_db, emote_connectors):
     assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "snew"
 
 
+async def test_mirror_emote_new_name_renames_the_recreated_copy(fake_db, emote_connectors):
+    # issue #44: the recreated emoji takes `new_name`, not the source name.
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    created: list[CustomEmoji] = []
+
+    async def _ensure(emoji: CustomEmoji):
+        new = CustomEmoji(native_id="snew", name=emoji.name, image_url=emoji.image_url, animated=emoji.animated)
+        created.append(new)
+        return new
+
+    emote_connectors["stoat"] = dataclasses.replace(emote_connectors["stoat"], ensure_emoji=_ensure)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    await linker.mirror_emote(
+        local_connector="discord", local_emote="dsrc", destination="stoat", new_name="blobcat"
+    )
+
+    assert [e.name for e in created] == ["blobcat"]
+
+
+async def test_mirror_emote_new_name_drives_the_same_named_match_lookup(fake_db, emote_connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    looked_up: list[str] = []
+
+    async def s_by_name(token):
+        looked_up.append(token)
+        return "s-existing" if token == "blobcat" else None
+
+    emote_connectors["stoat"] = dataclasses.replace(
+        emote_connectors["stoat"], resolve_emoji_id_by_name=s_by_name
+    )
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    summary = await linker.mirror_emote(
+        local_connector="discord", local_emote="dsrc", destination="stoat", new_name="blobcat"
+    )
+
+    assert looked_up[0] == "blobcat"  # the destination match is keyed off new_name, not "blob"
+    assert "Linked" in summary
+    assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "s-existing"
+
+
 async def test_mirror_emote_links_to_an_existing_same_named_emote_instead_of_duplicating(fake_db, emote_connectors):
     emoji_mappings = EmojiMappingRepository(fake_db)
 
@@ -913,6 +955,83 @@ async def test_mirror_channel_creates_and_links(fake_db):
     )
     assert "Linked Discord channel 'd1'" in summary
     assert await channel_mappings.get_bridge_group("stoat", "stoat_general") is not None
+
+
+async def test_mirror_channel_new_name_is_what_ensure_channel_and_the_link_use(fake_db):
+    # issue #44: `new_name` replaces the carried-over source name for the
+    # counterpart, both for ensure_channel's get-or-create and the stored link.
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        new_name="lobby",
+    )
+
+    assert seen == ["lobby"]
+    assert "Stoat channel 'lobby'" in summary
+    group = await channel_mappings.get_bridge_group("stoat", "stoat_lobby")
+    assert group is not None
+    mapped = {m.connector_id: m.channel_name for m in await channel_mappings.get_mapped_channels(group)}
+    assert mapped["stoat"] == "lobby"
+
+
+async def test_mirror_channel_blank_new_name_falls_back_to_the_source_name(fake_db):
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        new_name="   ",
+    )
+    assert seen == ["general"]
+
+
+async def test_mirror_channel_from_new_name_names_the_new_local_channel(fake_db):
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"discord_{name}"
+
+    async def resolve_channel_name(channel_id):
+        return "remote-general" if channel_id == "s1" else None
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", resolve_channel_name=resolve_channel_name),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel_from(
+        local_connector="discord", source="stoat", source_id="s1", new_name="lobby"
+    )
+    assert seen == ["lobby"]
 
 
 async def test_mirror_channel_skips_if_already_synced(fake_db):

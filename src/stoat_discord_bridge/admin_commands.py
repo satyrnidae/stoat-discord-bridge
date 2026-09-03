@@ -19,7 +19,7 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.storage.category_mappings import (
@@ -71,6 +71,21 @@ def _strip_emote_token(raw: str) -> str:
     if match:
         return match.group(1)
     return token
+
+
+def _clean_new_name(raw: str | None) -> str | None:
+    """A `new_name` override off a `/mirror <noun> to|from` command, trimmed -
+    or None if it was blank/absent, meaning "carry the source name over" (the
+    historical behaviour). Never normalised here: each connector's `ensure_*`
+    hook destination-normalises whatever name it's handed (IRC's `#channel`
+    sterilising, Stoat's 32-char clip, an emoji-name reject, ...), so routing
+    the override through that hook is what makes it "destination-normalised",
+    and the same call still get-or-creates so a same-named existing entity is
+    matched rather than duplicated (issue #44)."""
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped or None
 
 
 class LinkError(Exception):
@@ -392,6 +407,7 @@ class ChannelLinker:
         local_channel_category: str | None = None,
         is_thread_category: bool = False,
         category_from_channel_id: str | None = None,
+        new_name: str | None = None,
     ) -> str:
         """Ensure `local_channel_id` (on `local_connector`) has a linked
         counterpart on `destination`: reuses an existing same-name channel
@@ -421,11 +437,18 @@ class ChannelLinker:
         the destination's own copy of the parent channel (a Discord
         `bot-config` thread lands under Stoat's "Bot Config"), not the
         Discord name. Falls back to `local_channel_category` when the parent
-        has no linked channel on `destination`."""
+        has no linked channel on `destination`.
+
+        `new_name`, if given, is the name to create/find the counterpart under
+        on `destination` instead of carrying `local_channel_name` over -
+        destination-normalised by `ensure_channel` and matched the same way
+        (issue #44)."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
+
+        target_name = _clean_new_name(new_name) or local_channel_name
 
         local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
 
@@ -475,17 +498,17 @@ class ChannelLinker:
 
         try:
             destination_channel_id = await dest_info.ensure_channel(
-                local_channel_name, category, is_thread_category, category_parent_channel_id, **extra
+                target_name, category, is_thread_category, category_parent_channel_id, **extra
             )
         except Exception as exc:
-            logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)
+            logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
             return f"{dest_info.label}: failed to create/find a channel: {exc}"
 
         try:
             return await self.link_channel(
                 local_connector=destination,
                 local_channel_id=destination_channel_id,
-                local_channel_name=local_channel_name,
+                local_channel_name=target_name,
                 source=local_connector,
                 source_id=local_channel_id,
                 destination_id=None,
@@ -521,7 +544,9 @@ class ChannelLinker:
         ]
         return "\n".join(results) if results else "no other connectors configured."
 
-    async def mirror_channel_from(self, *, local_connector: str, source: str, source_id: str) -> str:
+    async def mirror_channel_from(
+        self, *, local_connector: str, source: str, source_id: str, new_name: str | None = None
+    ) -> str:
         """`/mirror channel from <source> <source_id>` - the inbound
         direction: `source`'s `source_id` channel already exists, so create a
         linked counterpart *here* on `local_connector` and link the two.
@@ -532,7 +557,10 @@ class ChannelLinker:
         other linked entities": if the source channel sits in a Category
         that's already linked (via `/link category`) to a Category here, the
         new local channel is placed into *that* linked Category rather than a
-        fresh same-named one."""
+        fresh same-named one.
+
+        `new_name`, if given, names the freshly-created local channel instead
+        of carrying the source channel's name over (issue #44)."""
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
         if source == local_connector:
@@ -549,6 +577,7 @@ class ChannelLinker:
             local_channel_name=source_name,
             destination=local_connector,
             local_channel_category=category_name,
+            new_name=new_name,
         )
 
     async def _local_category_for_source_channel(
@@ -902,6 +931,7 @@ class CategoryLinker:
         local_category: str | None = None,
         local_category_name: str | None = None,
         destination: str,
+        new_name: str | None = None,
     ) -> str:
         """Ensure `local_category` (id or bare name, on `local_connector`) has
         a linked counterpart Category on `destination`: reuses the existing
@@ -912,7 +942,11 @@ class CategoryLinker:
         channel is *moved* into it (move_channel_to_category hook), an
         unlinked child is mirrored (created + linked) there via
         ChannelLinker.mirror_channel. Reports rather than raises per problem so
-        `mirror_category_all` can carry on past one bad destination."""
+        `mirror_category_all` can carry on past one bad destination.
+
+        `new_name`, if given, is the title to create/find the counterpart
+        Category under on `destination` instead of the source Category's title
+        (issue #44); it doesn't rename any mirrored child channels."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
@@ -923,6 +957,7 @@ class CategoryLinker:
         if local_category_id is None:
             raise LinkError("this channel isn't inside a Category.")
         source_name = local_category_name or await self._resolve_name(local_connector, local_category_id)
+        target_name = _clean_new_name(new_name) or source_name
 
         dest_info = self._connectors[destination]
         dest_label = dest_info.label
@@ -940,9 +975,9 @@ class CategoryLinker:
             if dest_info.ensure_category is None:
                 return f"{dest_label}: doesn't support Category creation - link it manually with /link category."
             try:
-                dest_category_id = await dest_info.ensure_category(source_name)
+                dest_category_id = await dest_info.ensure_category(target_name)
             except Exception as exc:
-                logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, source_name, exc)
+                logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, target_name, exc)
                 return f"{dest_label}: failed to create/find a Category: {exc}"
             try:
                 lines.append(
@@ -1012,18 +1047,23 @@ class CategoryLinker:
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
-    async def mirror_category_from(self, *, local_connector: str, source: str, source_id: str) -> str:
+    async def mirror_category_from(
+        self, *, local_connector: str, source: str, source_id: str, new_name: str | None = None
+    ) -> str:
         """`/mirror category from <source> <source_id>` - `source`'s Category
         already exists; create a linked counterpart *here* on
         `local_connector`, link them, and relocate/mirror the source
         Category's channels into it. `mirror_category` with the connectors
-        swapped."""
+        swapped.
+
+        `new_name`, if given, titles the local counterpart Category instead of
+        carrying the source Category's title over (issue #44)."""
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
         if source == local_connector:
             raise LinkError("can't mirror a Category from a connector to itself.")
         return await self.mirror_category(
-            local_connector=source, local_category=source_id, destination=local_connector
+            local_connector=source, local_category=source_id, destination=local_connector, new_name=new_name
         )
 
     async def sync_new_channel(
@@ -1188,14 +1228,20 @@ class EmoteLinker:
         local_label = local_info.label if local_info else local_connector
         return f"Linked {source_label} emote '{source_name}' to {local_label} emote '{local_name}'."
 
-    async def mirror_emote(self, *, local_connector: str, local_emote: str, destination: str) -> str:
+    async def mirror_emote(
+        self, *, local_connector: str, local_emote: str, destination: str, new_name: str | None = None
+    ) -> str:
         """Ensure `local_emote` (id or bare name, on `local_connector`) has a
         linked counterpart on `destination`: reuses the existing link if the
         pair is already linked, otherwise reads the source emoji's image via
         `local_connector`'s resolve_emoji hook, recreates it on `destination`
         via its ensure_emoji hook, and links the two. Reports rather than
         raises per problem so `mirror_emote_all` can carry on past one bad
-        destination."""
+        destination.
+
+        `new_name`, if given, is the name the counterpart emoji is
+        created/matched under on `destination` instead of the source emoji's
+        name (issue #44)."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
@@ -1203,6 +1249,7 @@ class EmoteLinker:
 
         source_id = await self._resolve_to_id(local_connector, local_emote)
         source_name = await self._resolve_name(local_connector, source_id)
+        target_name = _clean_new_name(new_name) or source_name
         dest_info = self._connectors[destination]
 
         group_id = await self._emoji_mappings.get_group_id(local_connector, source_id)
@@ -1214,11 +1261,11 @@ class EmoteLinker:
         # Prefer linking to a same-named emote that already exists on the
         # destination over creating a duplicate (mirrors /mirror role's
         # create-or-match). Name only - we can't compare images.
-        if dest_info.resolve_emoji_id_by_name is not None and source_name:
+        if dest_info.resolve_emoji_id_by_name is not None and target_name:
             try:
-                existing_id = await dest_info.resolve_emoji_id_by_name(source_name)
+                existing_id = await dest_info.resolve_emoji_id_by_name(target_name)
             except Exception:
-                logger.debug("mirror-emote: %s.resolve_emoji_id_by_name(%r) failed", destination, source_name, exc_info=True)
+                logger.debug("mirror-emote: %s.resolve_emoji_id_by_name(%r) failed", destination, target_name, exc_info=True)
                 existing_id = None
             if existing_id:
                 try:
@@ -1241,11 +1288,16 @@ class EmoteLinker:
             return f"{dest_info.label}: couldn't read the source emoji: {exc}"
         if custom_emoji is None:
             return f"{dest_info.label}: source emoji '{source_name}' not found."
+        if target_name != custom_emoji.name:
+            # An emoji can't be created name-only (unlike a role) - hand
+            # ensure_emoji the same CustomEmoji with just the name swapped so
+            # the recreated copy takes `new_name` (issue #44).
+            custom_emoji = replace(custom_emoji, name=target_name)
 
         try:
             created = await dest_info.ensure_emoji(custom_emoji)
         except Exception as exc:
-            logger.warning("mirror-emote: %s.ensure_emoji(%r) failed: %s", destination, source_name, exc)
+            logger.warning("mirror-emote: %s.ensure_emoji(%r) failed: %s", destination, target_name, exc)
             return f"{dest_info.label}: failed to create the emoji: {exc}"
         if created is None:
             return f"{dest_info.label}: couldn't create the emoji (slots full, name rejected, image too large?)."
@@ -1267,16 +1319,21 @@ class EmoteLinker:
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
-    async def mirror_emote_from(self, *, local_connector: str, source: str, source_emote: str) -> str:
+    async def mirror_emote_from(
+        self, *, local_connector: str, source: str, source_emote: str, new_name: str | None = None
+    ) -> str:
         """`/mirror emote from <source> <source_emote>` - read `source`'s
         emoji and recreate-or-match it *here* on `local_connector`, then link
-        the two. `mirror_emote` with the connectors swapped."""
+        the two. `mirror_emote` with the connectors swapped.
+
+        `new_name`, if given, names the local counterpart emoji instead of
+        carrying the source emoji's name over (issue #44)."""
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
         if source == local_connector:
             raise LinkError("can't mirror an emote from a connector to itself.")
         return await self.mirror_emote(
-            local_connector=source, local_emote=source_emote, destination=local_connector
+            local_connector=source, local_emote=source_emote, destination=local_connector, new_name=new_name
         )
 
     async def list_linked_emotes(
@@ -1567,13 +1624,18 @@ class RoleLinker:
             f"{local_label} role '{local_name}' ({local_id})."
         )
 
-    async def mirror_role(self, *, local_connector: str, local_role: str, destination: str) -> str:
+    async def mirror_role(
+        self, *, local_connector: str, local_role: str, destination: str, new_name: str | None = None
+    ) -> str:
         """Ensure `local_role` (on `local_connector`) has a linked
         counterpart on `destination`: reuses/creates a same-named role there
         via `destination`'s ensure_role() hook, then links it. Reports rather
         than raises for an already-synced pair, a destination that can't
         create roles, or a link conflict - the bulk `mirror_role_all` caller
-        shouldn't have one bad destination abort the rest."""
+        shouldn't have one bad destination abort the rest.
+
+        `new_name`, if given, is the name to create/find the counterpart role
+        under on `destination` instead of the source role's name (issue #44)."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
@@ -1581,6 +1643,7 @@ class RoleLinker:
 
         local_id = await self._resolve_to_id(local_connector, local_role)
         local_name = await self._resolve_name(local_connector, local_id)
+        target_name = _clean_new_name(new_name) or local_name
 
         bridge_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
         if bridge_group is not None:
@@ -1593,9 +1656,9 @@ class RoleLinker:
             return f"{dest_info.label}: doesn't support role creation - link it manually with /link role."
 
         try:
-            destination_role_id = await dest_info.ensure_role(local_name)
+            destination_role_id = await dest_info.ensure_role(target_name)
         except Exception as exc:
-            logger.warning("mirror-role: %s.ensure_role(%r) failed: %s", destination, local_name, exc)
+            logger.warning("mirror-role: %s.ensure_role(%r) failed: %s", destination, target_name, exc)
             return f"{dest_info.label}: failed to create/find a role: {exc}"
 
         try:
@@ -1618,17 +1681,22 @@ class RoleLinker:
         ]
         return "\n".join(results) if results else "no other connectors configured."
 
-    async def mirror_role_from(self, *, local_connector: str, source: str, source_role: str) -> str:
+    async def mirror_role_from(
+        self, *, local_connector: str, source: str, source_role: str, new_name: str | None = None
+    ) -> str:
         """`/mirror role from <source> <source_role>` - `source`'s role
         already exists; create-or-match a linked counterpart *here* on
         `local_connector` and link them. `mirror_role` with the connectors
-        swapped, so bridge-group reuse (via `link_role`) comes for free."""
+        swapped, so bridge-group reuse (via `link_role`) comes for free.
+
+        `new_name`, if given, names the local counterpart role instead of
+        carrying the source role's name over (issue #44)."""
         if source not in self._connectors:
             raise LinkError(f"'{source}' isn't a known connector.")
         if source == local_connector:
             raise LinkError("can't mirror a role from a connector to itself.")
         return await self.mirror_role(
-            local_connector=source, local_role=source_role, destination=local_connector
+            local_connector=source, local_role=source_role, destination=local_connector, new_name=new_name
         )
 
     async def list_linked_roles(
