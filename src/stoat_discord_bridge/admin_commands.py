@@ -208,9 +208,10 @@ def _guards_mirror(
     reserve. All decorated methods take only keyword args after `self`, but
     the wrapper stays fully transparent (`*args, **kwargs`); nested calls
     within one asyncio task re-enter the reservation freely (see MirrorGuard).
-    The `... all` fan-outs are deliberately *not* decorated - they let each
-    per-destination leg reserve its own connector so one busy destination
-    doesn't abort the rest (see `_mirror_all_leg`)."""
+    The `... all` fan-outs reserve *every* destination up front
+    (`_mirror_all_other_connectors`), so if any one is busy the whole
+    operation is rejected before it starts rather than silently dropping that
+    connector - the error names which one."""
 
     def deco(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
         @functools.wraps(fn)
@@ -237,15 +238,11 @@ def _mirror_from_local(self: object, kw: dict[str, object]) -> Iterable[str]:
     return (kw["local_connector"],)  # type: ignore[return-value]
 
 
-async def _mirror_all_leg(label: str, leg: Awaitable[str]) -> str:
-    """One leg of a `/mirror <x> all` fan-out: await it, but turn a
-    'destination busy with another /mirror' rejection into a skip line rather
-    than letting it abort the whole fan-out (issue #79). The inner `mirror_*`
-    call still reserves that one destination for its own duration."""
-    try:
-        return await leg
-    except MirrorInProgressError as exc:
-        return f"{label}: {exc}"
+def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/mirror <x> all` - reserve every connector the fan-out will write to,
+    so a single busy destination rejects the whole operation up front (with
+    that connector named) rather than being quietly skipped."""
+    return [d for d in self._connectors if d != kw["local_connector"]]  # type: ignore[attr-defined]
 
 
 @dataclass(frozen=True)
@@ -753,6 +750,7 @@ class ChannelLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_channel_all(
         self,
         *,
@@ -765,22 +763,18 @@ class ChannelLinker:
     ) -> str:
         """`/mirror channel all` - mirror_channel() against every other
         configured connector, one line of summary/skip/error per connector
-        rather than stopping at the first problem. Not `_guards_mirror`-wrapped
-        itself: each `mirror_channel` leg reserves its own destination, and a
-        leg whose destination is busy is turned into a skip line (issue #79)
-        so one in-flight `/mirror` elsewhere doesn't sink the whole fan-out."""
+        rather than stopping at the first problem. Reserves every destination
+        up front, so if any one is mid-`/mirror` the whole fan-out is rejected
+        with that connector named, rather than quietly skipping it (issue #79)."""
         results = [
-            await _mirror_all_leg(
-                self._connectors[destination].label,
-                self.mirror_channel(
-                    local_connector=local_connector,
-                    local_channel_id=local_channel_id,
-                    local_channel_name=local_channel_name,
-                    destination=destination,
-                    local_channel_category=local_channel_category,
-                    is_thread_category=is_thread_category,
-                    category_from_channel_id=category_from_channel_id,
-                ),
+            await self.mirror_channel(
+                local_connector=local_connector,
+                local_channel_id=local_channel_id,
+                local_channel_name=local_channel_name,
+                destination=destination,
+                local_channel_category=local_channel_category,
+                is_thread_category=is_thread_category,
+                category_from_channel_id=category_from_channel_id,
             )
             for destination in self._connectors
             if destination != local_connector
@@ -1354,6 +1348,7 @@ class CategoryLinker:
                     lines.append(f"{dest_label}: '{cname}' failed: {exc}")
         return "\n".join(lines)
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_category_all(
         self,
         *,
@@ -1363,19 +1358,16 @@ class CategoryLinker:
         local_category_name: str | None = None,
     ) -> str:
         """`/mirror category <local> all` - mirror_category() against every
-        other configured connector. Each leg reserves its own destination; a
-        leg whose destination is busy is a skip line, not a whole-fan-out
-        abort (issue #79)."""
+        other configured connector. Reserves every destination up front, so a
+        single busy one rejects the whole fan-out with that connector named
+        (issue #79)."""
         results = [
-            await _mirror_all_leg(
-                self._connectors[destination].label,
-                self.mirror_category(
-                    local_connector=local_connector,
-                    local_category_id=local_category_id,
-                    local_category=local_category,
-                    local_category_name=local_category_name,
-                    destination=destination,
-                ),
+            await self.mirror_category(
+                local_connector=local_connector,
+                local_category_id=local_category_id,
+                local_category=local_category,
+                local_category_name=local_category_name,
+                destination=destination,
             )
             for destination in self._connectors
             if destination != local_connector
@@ -1663,17 +1655,15 @@ class EmoteLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_emote_all(self, *, local_connector: str, local_emote: str) -> str:
         """`/mirror emote <local> all` - mirror_emote() against every other
         configured connector, one line of summary/skip/error per connector.
-        Each leg reserves its own destination; a busy one is a skip line, not
-        a whole-fan-out abort (issue #79)."""
+        Reserves every destination up front, so a single busy one rejects the
+        whole fan-out with that connector named (issue #79)."""
         results = [
-            await _mirror_all_leg(
-                self._connectors[destination].label,
-                self.mirror_emote(
-                    local_connector=local_connector, local_emote=local_emote, destination=destination
-                ),
+            await self.mirror_emote(
+                local_connector=local_connector, local_emote=local_emote, destination=destination
             )
             for destination in self._connectors
             if destination != local_connector
@@ -2040,17 +2030,15 @@ class RoleLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_role_all(self, *, local_connector: str, local_role: str) -> str:
         """`/mirror role <local> all` - mirror_role() against every other
         configured connector, one line of summary/skip/error per connector.
-        Each leg reserves its own destination; a busy one is a skip line, not
-        a whole-fan-out abort (issue #79)."""
+        Reserves every destination up front, so a single busy one rejects the
+        whole fan-out with that connector named (issue #79)."""
         results = [
-            await _mirror_all_leg(
-                self._connectors[destination].label,
-                self.mirror_role(
-                    local_connector=local_connector, local_role=local_role, destination=destination
-                ),
+            await self.mirror_role(
+                local_connector=local_connector, local_role=local_role, destination=destination
             )
             for destination in self._connectors
             if destination != local_connector

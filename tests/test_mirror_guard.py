@@ -178,8 +178,9 @@ async def test_mirror_channel_all_does_not_block_itself(fake_db):
     assert "Linked" in out  # Stoat leg succeeded
 
 
-async def test_mirror_role_all_skips_only_the_busy_leg(fake_db):
+async def test_mirror_role_all_is_rejected_wholesale_when_one_destination_is_busy(fake_db):
     started, gate = asyncio.Event(), asyncio.Event()
+    irc_calls = []
 
     async def stoat_ensure_role(name):
         started.set()
@@ -187,6 +188,7 @@ async def test_mirror_role_all_skips_only_the_busy_leg(fake_db):
         return "s1"
 
     async def irc_ensure_role(name):
+        irc_calls.append(name)
         return "i1"
 
     connectors = _connectors(
@@ -201,10 +203,11 @@ async def test_mirror_role_all_skips_only_the_busy_leg(fake_db):
     )
     await started.wait()
 
-    out = await linker.mirror_role_all(local_connector="discord", local_role="d2")
-    # the Stoat leg is a skip line; the IRC leg still went through
-    assert "Stoat: another /mirror into Stoat is still running" in out
-    assert "Linked Discord role 'd2' (d2) to IRC" in out
+    # the whole `all` is rejected up front, naming the busy connector -
+    # nothing is mirrored, not even the free IRC leg
+    with pytest.raises(MirrorInProgressError, match="Stoat"):
+        await linker.mirror_role_all(local_connector="discord", local_role="d2")
+    assert irc_calls == []
 
     gate.set()
     await busy
