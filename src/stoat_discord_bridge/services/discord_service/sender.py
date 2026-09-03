@@ -45,7 +45,10 @@ from stoat_discord_bridge.services.base import (
 # from stoat_discord_bridge.services.caching import AsyncTTLCache  # noqa: ERA001 - re-enable with _resolve_sender_pronouns (issue #58)
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
-from stoat_discord_bridge.services.discord_service.formatting import _to_standard_message
+from stoat_discord_bridge.services.discord_service.formatting import (
+    _map_mentioned_users,
+    _to_standard_message,
+)
 from stoat_discord_bridge.services.discord_service.linking import DiscordLinkingMixin
 from stoat_discord_bridge.services.discord_service.lookups import DiscordLookupsMixin
 from stoat_discord_bridge.services.discord_service.sync import DiscordSyncMixin
@@ -254,9 +257,11 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
           `embeds` but no `edited_timestamp`; ignored, so a bare link paste
           doesn't tag every destination "(edited)".
 
-        A bot-authored edit (our own webhook message being synced) is dropped
-        here - the relay path only ever forwards a real user's edit, and
-        `BridgeCoordinator` suppresses the resulting echo as a backstop.
+        A webhook-authored edit (our own relayed copy being synced) is dropped
+        here - detected cache-free via the payload's `webhook_id`, so it holds
+        even for an uncached message where `payload.message.author` isn't
+        populated; `BridgeCoordinator` suppresses the echo as a further
+        backstop.
         """
         if payload.guild_id != self._config.guild_id:
             return
@@ -274,20 +279,15 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             return
         if self._on_edit is None or not data.get("edited_timestamp") or "content" not in data:
             return
-        edited = getattr(payload, "message", None)
-        author = getattr(edited, "author", None)
-        if author is not None and getattr(author, "bot", False):
-            return  # our own webhook edit echoing back
-        mentioned_users = {
-            str(u.id): u.display_name for u in (getattr(edited, "mentions", None) or [])
-        }
+        if data.get("webhook_id") or (data.get("author") or {}).get("bot"):
+            return  # our own relayed webhook copy being edited - echo
         await self._on_edit(
             StandardEdit(
                 origin_connector_id=self.connector_id,
                 origin_channel_id=str(payload.channel_id),
                 origin_message_id=str(payload.message_id),
                 new_content_markdown=data.get("content") or "",
-                mentioned_users=mentioned_users,
+                mentioned_users=_map_mentioned_users(getattr(payload, "message", None)),
             )
         )
 
