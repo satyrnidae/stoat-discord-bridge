@@ -376,22 +376,65 @@ class StoatLookupsMixin:
             )
             return await self._place_via_server_edit(server, channel_id, category, category_id)
 
+    async def _full_category_list(self, fallback=None):
+        """`(server, raw_categories)` for a whole-server category PATCH.
+
+        The category list is rebuilt from a *freshly fetched* Server, never the
+        cached one: the cache's `.categories` is populated once at gateway
+        connect and doesn't track the raw-HTTP category edits this module
+        itself makes (nor any a human makes on Stoat directly), so PATCHing
+        that stale snapshot straight back reverts the server's whole category
+        layout to how it looked at startup and can delete-and-recreate a
+        linked Category that was added or renamed since (issue #27). Falls back
+        to `fallback` (or the cache) only if the re-fetch fails or yields
+        something without a category list.
+
+        Each entry keeps every field Stoat sent - `default_permissions` /
+        `role_permissions` included, via `Category.to_dict()` - not just
+        `id`/`title`/`channels`, so a category's permission overrides aren't
+        wiped by an unrelated `/mirror channel` / `/mirror category`.
+        `to_dict()` raising (older stoat.py chokes on `default_permissions`
+        parsed from an older server's payload) drops that one entry back to
+        the minimal shape."""
+        server = None
+        try:
+            fetched = await self._client.fetch_server(self.server_id, populate_channels=True)
+            if getattr(fetched, "categories", None) is not None:
+                server = fetched
+        except Exception:
+            logger.exception(
+                "[stoat:%s] couldn't re-fetch server %s before a category edit; using cached state",
+                self.connector_id,
+                self.server_id,
+            )
+        if server is None:
+            server = fallback if fallback is not None else self._client.get_server(self.server_id, partial=False)
+        raw_categories = []
+        for c in getattr(server, "categories", None) or []:
+            try:
+                raw = dict(c.to_dict())
+            except Exception:
+                raw = {}
+            raw.setdefault("id", getattr(c, "id", None))
+            raw.setdefault("title", getattr(c, "title", None))
+            raw["channels"] = list(raw.get("channels") or getattr(c, "channels", None) or [])
+            raw_categories.append(raw)
+        return server, raw_categories
+
     async def _place_via_server_edit(
         self, server, channel_id: str, category: str, category_id: str | None = None
     ):
         """Category placement for Stoat servers without the dedicated categories
-        endpoint: PATCH the server with the full category list. The payload is
-        built by hand (`{id, title, channels}` only) and sent straight through
-        the HTTP layer - the installed stoat.py's `Category.to_dict()` trips
-        over `default_permissions` on categories it parsed from an older
-        server's payload, so `server.edit(categories=...)` can't be used.
+        endpoint: PATCH the server with the full category list, built by hand
+        and sent straight through the HTTP layer (the installed stoat.py's
+        `server.edit(categories=...)` can't round-trip categories it parsed
+        from an older server's payload). The list comes from
+        `_full_category_list` - a fresh fetch, not the cached server - so the
+        PATCH can't revert the layout (issue #27).
 
         `category_id`, if given, matches the existing Category by id rather
         than title (see _place_in_category)."""
-        raw_categories = [
-            {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
-            for c in (getattr(server, "categories", None) or [])
-        ]
+        server, raw_categories = await self._full_category_list(server)
         if category_id is not None:
             resolved = next((c for c in raw_categories if str(c["id"]) == category_id), None)
         else:
@@ -419,9 +462,11 @@ class StoatLookupsMixin:
 
         Re-checked on every relay (StoatReceiverService.receive calls this)
         so enabling the option mid-deployment takes effect without a restart.
-        Best-effort: never raises, and only uses the already-cached full
-        Server - no network fetch on the hot path - so it no-ops silently
-        until the cache holds one with its Category list populated."""
+        Best-effort: never raises. The decision of whether a regroup is needed
+        is made off the already-cached full Server (no I/O on the common
+        no-op path - it stays quiet until the cache holds one with its
+        Category list populated); only when a move is actually due does
+        `_move_channel_to_category_top` re-fetch to PATCH from fresh state."""
         if not getattr(self._config, "group_parent_channel_with_threads", True):
             return
         if self._category_linker is None:
@@ -469,14 +514,11 @@ class StoatLookupsMixin:
     async def _move_channel_to_category_top(self, server, channel_id: str, category_id: str) -> None:
         """PATCH the server's whole Category list with `channel_id` removed
         from every Category and re-inserted at the front of `category_id`.
-        Same hand-built payload / raw HTTP path as _place_via_server_edit
-        (see its docstring for why `server.edit(categories=...)` can't be
-        used)."""
-        raw_categories = [
-            {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
-            for c in (getattr(server, "categories", None) or [])
-        ]
-        target = next((c for c in raw_categories if c["id"] == category_id), None)
+        Same fresh-fetch / full-fidelity / raw HTTP path as
+        `_place_via_server_edit` (see `_full_category_list` for why the cached
+        server can't be PATCHed straight back - issue #27)."""
+        server, raw_categories = await self._full_category_list(server)
+        target = next((c for c in raw_categories if str(c["id"]) == category_id), None)
         if target is None:
             return
         for c in raw_categories:
@@ -619,23 +661,21 @@ class StoatLookupsMixin:
         """Get-or-create a Category titled `name`, returning its id - this
         connector's `ConnectorInfo.ensure_category` for `/mirror category`.
         Same dedicated-endpoint-then-raw-PATCH fallback as _place_in_category
-        (see its docstring)."""
-        server = await self._full_server()
+        (see its docstring); the raw-PATCH list comes from `_full_category_list`
+        - a fresh fetch, not the cache - so it can't revert the layout
+        (issue #27)."""
+        server, raw_categories = await self._full_category_list()
         lowered = name.casefold()
         existing = next(
-            (c for c in (getattr(server, "categories", None) or []) if str(getattr(c, "title", "")).casefold() == lowered),
+            (c for c in raw_categories if str(c.get("title") or "").casefold() == lowered),
             None,
         )
         if existing is not None:
-            return str(existing.id)
+            return str(existing["id"])
         try:
-            category = await server.create_category(name)
+            category = await server.create_category(name, channels=[])
             return str(category.id)
         except stoat.HTTPException:
-            raw_categories = [
-                {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
-                for c in (getattr(server, "categories", None) or [])
-            ]
             new_id = ulid_new()
             raw_categories.append({"id": new_id, "title": name, "channels": []})
             await server.state.http.request(
@@ -669,12 +709,9 @@ class StoatLookupsMixin:
         """Move channel `channel_id` into Category `category_id` (removing it
         from any other Category first) - this connector's
         `ConnectorInfo.move_channel_to_category`. Raw-PATCH path, same as
-        _move_channel_to_category_top but appended rather than hoisted."""
-        server = await self._full_server()
-        raw_categories = [
-            {"id": c.id, "title": c.title, "channels": list(getattr(c, "channels", None) or [])}
-            for c in (getattr(server, "categories", None) or [])
-        ]
+        _move_channel_to_category_top (fresh-fetched list, see
+        `_full_category_list` - issue #27) but appended rather than hoisted."""
+        server, raw_categories = await self._full_category_list()
         target = next((c for c in raw_categories if str(c["id"]) == category_id), None)
         if target is None:
             return
