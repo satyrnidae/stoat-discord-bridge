@@ -41,6 +41,43 @@ def test_registers_the_four_groups_with_discord_matching_subcommands():
     assert {"status", "bridge-help"} <= set(bot.all_commands)
 
 
+class _MirrorOwner:
+    def __init__(self):
+        self.mirror_role_calls = []
+        self.mirror_emote_calls = []
+
+    async def _reply(self, ctx, text):
+        pass
+
+    async def _mirror_role(self, ctx, local_id=None, service=None):
+        self.mirror_role_calls.append((local_id, service))
+
+    async def _mirror_emote(self, ctx, local_id=None, service=None):
+        self.mirror_emote_calls.append((local_id, service))
+
+
+async def test_mirror_role_to_lone_arg_is_the_role_not_the_service():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands["role"].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "Mods")
+    await to.callback(SimpleNamespace(), "stoat", "Mods")
+
+    assert owner.mirror_role_calls == [("Mods", None), ("Mods", "stoat")]
+
+
+async def test_mirror_emote_to_lone_arg_is_the_emote_not_the_service():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands["emote"].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "blob")
+    await to.callback(SimpleNamespace(), "all", "blob")
+
+    assert owner.mirror_emote_calls == [("blob", None), ("blob", "all")]
+
+
 class _FakeShard:
     pass
 

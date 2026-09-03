@@ -192,13 +192,16 @@ class StoatLinkingMixin:
         )
         await self._reply(ctx, summary)
 
-    async def _mirror_emote(self, ctx, local_id: str, service: str | None = None) -> None:
-        """`/mirror emote <local_id|name> [<service>|all]`."""
+    async def _mirror_emote(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
+        """`/mirror emote to <local_id|name> [<service>|all]`."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
         if self._emote_linker is None:
             await self._reply(ctx, "Linking isn't configured.")
+            return
+        if not local_id:
+            await self._reply(ctx, "Which emote? Pass an emoji id or name.")
             return
         try:
             if service is None or service.lower() == "all":
@@ -525,13 +528,16 @@ class StoatLinkingMixin:
         )
         await self._reply(ctx, summary)
 
-    async def _mirror_role(self, ctx, local_id: str, service: str | None = None) -> None:
-        """`/mirror role <local_id|name> [<service>|all]`."""
+    async def _mirror_role(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
+        """`/mirror role to <local_id|name> [<service>|all]`."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
         if self._role_linker is None:
             await self._reply(ctx, "Role linking isn't configured.")
+            return
+        if not local_id:
+            await self._reply(ctx, "Which role? Pass a role id or name.")
             return
         try:
             if service is None or service.lower() == "all":

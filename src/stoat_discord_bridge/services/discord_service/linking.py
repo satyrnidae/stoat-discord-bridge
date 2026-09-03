@@ -294,10 +294,13 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_mirror_role(
-        self, interaction: discord.Interaction, local_id: str, service: str | None
+        self, interaction: discord.Interaction, local_id: str | None, service: str | None
     ) -> None:
         if self._role_linker is None:
             await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+            return
+        if not local_id:
+            await interaction.response.send_message("Which role? Pass a role id or name.", ephemeral=True)
             return
         local_id = _normalize_role_id(local_id)
         logger.info(
@@ -410,10 +413,13 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_mirror_emote(
-        self, interaction: discord.Interaction, local_id: str, service: str | None
+        self, interaction: discord.Interaction, local_id: str | None, service: str | None
     ) -> None:
         if self._emote_linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+            return
+        if not local_id:
+            await interaction.response.send_message("Which emote? Pass an emoji id or name.", ephemeral=True)
             return
         logger.info(
             "[discord:%s] %s ran /mirror emote local_id=%s service=%s",

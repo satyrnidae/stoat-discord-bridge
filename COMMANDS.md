@@ -173,7 +173,7 @@ Links a custom emoji from connector `<service>` to a local custom emoji, so a
 reaction using either can be recreated as the other (see the reaction/emoji
 sync section of `README.md`/`CLAUDE.md`). Manage Server.
 
-### `/mirror emote to <local_id|name> [<service>|all]` / `/mirror emote from <service> <external_id|name>`
+### `/mirror emote to [<service>|all] <local_id|name>` / `/mirror emote from <service> <external_id|name>`
 
 `to` ensures a linked counterpart of the local emoji exists on `<service>`
 (or every other connector, if `all` - the default): reuses the existing link
@@ -332,7 +332,7 @@ share the same `/link` / `/unlink` / `/mirror` / `/linked` groups.
 Links `service`'s role to a local role. Manage Server (Discord) / Manage
 Server (Stoat).
 
-### `/mirror role to <local_id|name> [<service>|all]` / `/mirror role from <service> <external_id|name>`
+### `/mirror role to [<service>|all] <local_id|name>` / `/mirror role from <service> <external_id|name>`
 
 `to` ensures a linked counterpart of the local role exists on `service` (or
 every other connector, if `all` - the default): reuses a same-named role

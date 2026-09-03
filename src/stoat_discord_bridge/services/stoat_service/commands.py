@@ -30,8 +30,8 @@ _HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
   {p}link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
   {p}link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
   {p}mirror channel to [service|all] [local_id|name] | from <service> <external_id|name> - create+link a matching channel (Manage Server)
-  {p}mirror role to <local_id|name> [service|all] | from <service> <external_id|name> - create+link a matching role (Manage Server)
-  {p}mirror emote to <local_id|name> [service|all] | from <service> <external_id|name> - recreate+link a custom emoji (Manage Server)
+  {p}mirror role to [service|all] <local_id|name> | from <service> <external_id|name> - create+link a matching role (Manage Server)
+  {p}mirror emote to [service|all] <local_id|name> | from <service> <external_id|name> - recreate+link a custom emoji (Manage Server)
   {p}mirror category to [service|all] [local_id|name] | from <service> <external_id|name> - create+link a Category and mirror its channels (Manage Server)
   {p}unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   {p}unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
@@ -132,8 +132,8 @@ def build_command_tree(bot, owner, prefix: str) -> None:
 
     # `/mirror <noun>` is a two-way group: `to` pushes a local entity onto
     # another connector, `from` pulls a remote entity in and creates the local
-    # copy. Both lead with `<service>` where the local id is also optional
-    # (channel, category); role/emote keep the required `<local_id>` first.
+    # copy. Both lead with `<service>` (defaulting to `all` on `to`); a `to`
+    # with no local id is a friendly error for role/emote (no "current" one).
     @mirror.group(name="channel", invoke_without_command=True)
     async def mirror_channel(ctx):
         await owner._reply(ctx, f"Usage: {p}mirror channel <to|from> …")
@@ -151,7 +151,10 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         await owner._reply(ctx, f"Usage: {p}mirror role <to|from> …")
 
     @mirror_role.command(name="to")
-    async def mirror_role_to(ctx, local_id: str, service: typing.Optional[str] = None):
+    async def mirror_role_to(ctx, first: typing.Optional[str] = None, second: typing.Optional[str] = None):
+        # `to <local_id>` or `to <service|all> <local_id>` - role has no
+        # "current" id to default, so a lone arg is the role, not the service.
+        local_id, service = (second, first) if second is not None else (first, None)
         await owner._mirror_role(ctx, local_id, service)
 
     @mirror_role.command(name="from")
@@ -175,7 +178,9 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         await owner._reply(ctx, f"Usage: {p}mirror emote <to|from> …")
 
     @mirror_emote.command(name="to")
-    async def mirror_emote_to(ctx, local_id: str, service: typing.Optional[str] = None):
+    async def mirror_emote_to(ctx, first: typing.Optional[str] = None, second: typing.Optional[str] = None):
+        # `to <local_id>` or `to <service|all> <local_id>` - see mirror_role_to.
+        local_id, service = (second, first) if second is not None else (first, None)
         await owner._mirror_emote(ctx, local_id, service)
 
     @mirror_emote.command(name="from")

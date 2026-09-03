@@ -236,12 +236,12 @@ def build_command_tree(service) -> None:
         name="to", description="Ensure a linked counterpart of a local role exists on another connector"
     )
     @app_commands.describe(
-        local_id="Role id or name on this connector",
         service="Connector id to mirror to, or 'all' (default: all)",
+        local_id="Role id or name on this connector",
     )
     @app_commands.autocomplete(service=role_service_autocomplete(include_all=True), local_id=role_local_ac)
     async def mirror_role_to_command(
-        interaction: discord.Interaction, local_id: str, service: str | None = None
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_role(interaction, local_id, service)
 
@@ -500,12 +500,12 @@ def build_command_tree(service) -> None:
         name="to", description="Recreate a local custom emoji on another connector and link the two"
     )
     @app_commands.describe(
-        local_id="Emoji id or name on this connector",
         service="Connector id to mirror to, or 'all' (default: all)",
+        local_id="Emoji id or name on this connector",
     )
     @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True), local_id=emote_local_ac)
     async def mirror_emote_to_command(
-        interaction: discord.Interaction, local_id: str, service: str | None = None
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_emote(interaction, local_id, service)
 
