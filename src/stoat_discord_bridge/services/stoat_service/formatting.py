@@ -30,6 +30,14 @@ def _channel_category(channel):
         return None
 
 
+def _channel_server_id(channel) -> str | None:
+    """The id of the server a message's channel belongs to, or None for a DM /
+    a partial channel that hasn't got it populated. Central enough to the
+    sender's fetch-a-fresh-member fallbacks (name / avatar / pronouns) to
+    share rather than re-spell `getattr(..., "server_id", None)` at each."""
+    return getattr(channel, "server_id", None)
+
+
 def _display_name(author) -> str:
     """Best-effort display name for a Stoat message author/member.
 
@@ -64,6 +72,23 @@ def _avatar_url(author) -> str | None:
     if asset is not None:
         return asset.url()
     return getattr(author, "default_avatar_url", None)
+
+
+def _extract_pronouns(data) -> str | None:
+    """Pull a pronoun string out of a raw Stoat user / member / profile JSON
+    payload. stoat.py 1.2.1 models no such field, so a deployment that has one
+    can put it either at the top level (`pronouns`) or inside a nested
+    `profile` object - check both. Anything unexpected -> None."""
+    if not isinstance(data, dict):
+        return None
+    profile = data.get("profile")
+    candidates = [data.get("pronouns")]
+    if isinstance(profile, dict):
+        candidates.append(profile.get("pronouns"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
 
 
 def _map_attachments(message) -> list[Attachment]:

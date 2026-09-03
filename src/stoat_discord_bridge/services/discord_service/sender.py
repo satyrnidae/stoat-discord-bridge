@@ -41,6 +41,7 @@ from stoat_discord_bridge.services.base import (
     OnTyping,
     SenderService,
 )
+from stoat_discord_bridge.services.caching import AsyncTTLCache
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
 from stoat_discord_bridge.services.discord_service.formatting import _to_standard_message
@@ -50,6 +51,11 @@ from stoat_discord_bridge.services.discord_service.sync import DiscordSyncMixin
 from stoat_discord_bridge.status import HealthTracker
 
 logger = logging.getLogger(__name__)
+
+# How long a resolved (or absent) pronoun value is cached per user before the
+# profile endpoint is consulted again - long enough to keep a busy channel
+# from hammering it, short enough that a pronoun set later shows up soon.
+_PRONOUN_CACHE_TTL = 600.0
 
 
 class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSyncMixin, SenderService):
@@ -101,6 +107,9 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         # message relays normally instead of being buffered.
         self._pending_thread_starter: dict[int, "discord.Message | None"] = {}
         self._thread_ready: set[int] = set()
+        # user id -> pronouns (or None), so the profile endpoint isn't hit on
+        # every relayed message - see `_resolve_sender_pronouns`.
+        self._pronoun_cache: AsyncTTLCache[str | None] = AsyncTTLCache(_PRONOUN_CACHE_TTL)
         self._guild = discord.Object(id=config.guild_id)
         self._client = _DiscordClient(self)
         self.tree = discord.app_commands.CommandTree(self._client)
@@ -169,7 +178,42 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             message.channel.id,
             message.author.id,
         )
-        await self._on_message(_to_standard_message(message, self.connector_id))
+        await self._on_message(
+            _to_standard_message(
+                message,
+                self.connector_id,
+                source_label=self._config.label,
+                sender_pronouns=await self._resolve_sender_pronouns(message.author.id),
+            )
+        )
+
+    async def _resolve_sender_pronouns(self, user_id: int | str) -> str | None:
+        """Best-effort pronouns for `user_id`, cached per user
+        (`_pronoun_cache`). discord.py 2.7.1 has no pronoun API, so this hits
+        the (undocumented) `GET /users/{id}/profile` REST endpoint by hand -
+        `guild_member_profile.pronouns` (this guild's per-server value) is
+        preferred over `user_profile.pronouns` (the account-wide one). Any
+        failure - the endpoint 404ing, rate-limiting, changing shape, the
+        connector's `pronoun_forwarding` being off - just yields None and the
+        message relays without pronouns."""
+        if not self._config.pronoun_forwarding:
+            return None
+        return await self._pronoun_cache.get(str(user_id), self._fetch_pronouns_from_profile)
+
+    async def _fetch_pronouns_from_profile(self, user_id: str) -> str | None:
+        try:
+            data = await self._client.http.request(
+                discord.http.Route("GET", "/users/{user_id}/profile", user_id=user_id),
+                params={"guild_id": str(self._config.guild_id), "with_mutual_guilds": "false"},
+            )
+        except Exception:  # noqa: BLE001 - best-effort; any failure just means "no pronouns"
+            logger.debug("[discord:%s] couldn't fetch profile for %s", self.connector_id, user_id, exc_info=True)
+            return None
+        for section in ("guild_member_profile", "user_profile"):
+            pronouns = (data.get(section) or {}).get("pronouns") if isinstance(data, dict) else None
+            if pronouns:
+                return str(pronouns).strip() or None
+        return None
 
     async def _handle_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         """MESSAGE_UPDATE fires both when a message is pinned and when it's
@@ -302,7 +346,12 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             # next in-thread message normally now that the channel exists.
             self._thread_ready.add(thread.id)
         else:
-            msg = _to_standard_message(starter, self.connector_id)
+            msg = _to_standard_message(
+                starter,
+                self.connector_id,
+                source_label=self._config.label,
+                sender_pronouns=await self._resolve_sender_pronouns(starter.author.id),
+            )
             await self._on_message(replace(msg, origin_channel_id=str(thread.id), channel_name=thread.name))
 
         await self._relay_thread_created_notice(thread, starter_author)

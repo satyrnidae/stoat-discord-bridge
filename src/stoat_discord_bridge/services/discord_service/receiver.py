@@ -24,6 +24,7 @@ import stoat_discord_bridge.services.discord_service as _discord_pkg
 from stoat_discord_bridge.models import CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.discord_service.formatting import (
+    _USERNAME_LIMIT,
     _discord_reaction_matches,
     _sanitize_emoji_name,
     _sanitize_username,
@@ -31,6 +32,7 @@ from stoat_discord_bridge.services.discord_service.formatting import (
 )
 from stoat_discord_bridge.services.formatting import (
     chunk_content,
+    decorate_sender_name,
     download_attachments,
     inline_attachment_urls,
 )
@@ -64,6 +66,8 @@ class DiscordReceiverService(ReceiverService):
         channel_mappings: ChannelMappingRepository | None = None,
         role_mappings: RoleMappingRepository | None = None,
         emoji_mappings: EmojiMappingRepository | None = None,
+        source_forwarding: bool = True,
+        pronoun_forwarding: bool = True,
     ) -> None:
         self._client = client
         self._guild_id = guild_id
@@ -73,6 +77,8 @@ class DiscordReceiverService(ReceiverService):
         self._role_mappings = role_mappings
         self._emoji_mappings = emoji_mappings
         self._enable_local_user_masquerade = enable_local_user_masquerade
+        self._source_forwarding = source_forwarding
+        self._pronoun_forwarding = pronoun_forwarding
         self._session: aiohttp.ClientSession | None = None
         self._webhooks: dict[str, discord.Webhook] = {}
         # target_channel_id -> monotonic deadline the keep-alive loop stops at,
@@ -95,6 +101,15 @@ class DiscordReceiverService(ReceiverService):
                 self.connector_id,
                 message.sender_user_id,
             )
+        # Cap to the webhook-username limit here (dropping the "[Source,
+        # pronouns]" suffix whole rather than mid-token) so _sanitize_username's
+        # own hard slice never bisects the bracket.
+        sender_name = decorate_sender_name(
+            sender_name,
+            source=message.source_label if self._source_forwarding else None,
+            pronouns=message.sender_pronouns if self._pronoun_forwarding else None,
+            max_len=_USERNAME_LIMIT,
+        )
         username = _sanitize_username(sender_name)
         # Re-upload the message's attachments as native Discord files rather
         # than pasting their (often short-lived, signed) CDN URLs into the
