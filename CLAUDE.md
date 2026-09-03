@@ -42,8 +42,9 @@ storage repositories (against an in-memory fake Mongo, `tests/conftest.py`),
 network-free pieces of the service modules (IRC's WHOIS-based oper check,
 Stoat's websocket-gateway discovery). Does not cover the actual
 Discord/Stoat/IRC network integration - no live-server or full-client-mock
-tests exist yet, so those still need manual verification. No linter or CI
-config in this repo yet.
+tests exist yet, so those still need manual verification. No linter config
+in this repo yet; CI (`.github/workflows/ci.yml`) runs `pytest` on Python
+3.11-3.13 plus an sdist/wheel build on every push to `main` and every PR.
 
 Docker: `docker compose up --build` runs the bridge plus a MongoDB
 instance (data persisted in a named volume) - see the README's Docker

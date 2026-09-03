@@ -20,7 +20,7 @@ summary.
 
 - Env: Windows (Git Bash); `python -m venv` + activate; no separate conda needed.
 - Test: `pip install -e ".[test]"` then `pytest` (installed `pytest`+`pytest-asyncio`; `pip install -e .` alone skips the test extras).
-- Don't invoke linters/type-checkers/JS tooling: this repo (Python) has no lint/typecheck/formatter/CI config, so don't run tools that don't exist here.
+- Don't invoke linters/type-checkers/JS tooling: this repo (Python) has no lint/typecheck/formatter config, so don't run tools that don't exist here. CI is just `pytest` + a build (`.github/workflows/ci.yml`).
 - `.env` and `config.yaml` are real runtime inputs — don't invent values; use fixtures / env vars / the `config.yaml.example`.
 
 ## Configuration & Connector Add-How
