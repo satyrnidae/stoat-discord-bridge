@@ -232,24 +232,29 @@ async def test_handle_raw_message_edit_emits_an_edit_on_a_real_content_edit():
 
     await sender._handle_raw_message_edit(
         _edit_payload(
-            data={"content": "fixed typo", "edited_timestamp": "2026-09-03T00:00:00+00:00"},
-            message=SimpleNamespace(author=SimpleNamespace(bot=False), mentions=[]),
+            data={
+                "content": "fixed typo",
+                "edited_timestamp": "2026-09-03T00:00:00+00:00",
+                "author": {"id": "5", "bot": False},
+            },
+            message=SimpleNamespace(mentions=[SimpleNamespace(id=9, display_name="Bob")]),
         )
     )
 
-    assert [(e.origin_channel_id, e.origin_message_id, e.new_content_markdown) for e in recorder.edits] == [
-        ("42", "7", "fixed typo")
-    ]
+    assert [
+        (e.origin_channel_id, e.origin_message_id, e.new_content_markdown, e.mentioned_users)
+        for e in recorder.edits
+    ] == [("42", "7", "fixed typo", {"9": "Bob"})]
 
 
-async def test_handle_raw_message_edit_drops_a_bot_authored_edit_echo():
+async def test_handle_raw_message_edit_drops_our_own_webhook_copy_being_edited():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
 
+    # cache-free detection: webhook_id in the raw payload, message uncached
     await sender._handle_raw_message_edit(
         _edit_payload(
-            data={"content": "x", "edited_timestamp": "2026-09-03T00:00:00+00:00"},
-            message=SimpleNamespace(author=SimpleNamespace(bot=True), mentions=[]),
+            data={"content": "x", "edited_timestamp": "2026-09-03T00:00:00+00:00", "webhook_id": "123"}
         )
     )
 

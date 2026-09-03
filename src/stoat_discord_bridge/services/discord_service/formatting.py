@@ -53,6 +53,14 @@ def _normalize_channel_id(raw: str) -> str:
     return match.group(1) if match else raw
 
 
+def _map_mentioned_users(message: object) -> dict[str, str]:
+    """Native user id -> display name for every user `message` @-mentions, for
+    `StandardMessage.mentioned_users` / `StandardEdit.mentioned_users` (issue
+    #56). Best-effort: a `message` with no `mentions` (a raw edit payload whose
+    message couldn't be built) just yields an empty map."""
+    return {str(u.id): u.display_name for u in (getattr(message, "mentions", None) or [])}
+
+
 def _to_standard_message(
     message: discord.Message,
     connector_id: str,
@@ -75,7 +83,7 @@ def _to_standard_message(
             Attachment(url=a.url, filename=a.filename, content_type=a.content_type, size_bytes=a.size)
             for a in message.attachments
         ],
-        mentioned_users={str(u.id): u.display_name for u in (getattr(message, "mentions", None) or [])},
+        mentioned_users=_map_mentioned_users(message),
     )
 
 
