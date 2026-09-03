@@ -233,21 +233,26 @@ class StoatLookupsMixin:
         `/link-category` later refuses to link it and later threads for the
         same parent resolve the Category by id rather than title (surviving a
         rename). See DiscordSenderService._handle_thread_create."""
-        # _ensure_channel_in_category needs a full Server (`.categories` /
-        # `.channels`) - a BaseServer (what get_server(partial=True) yields
-        # when the server isn't in cache) has neither, which silently
-        # defeated category placement. Fetch the real thing if the cache
-        # doesn't already hold it.
-        server = self._client.get_server(self.server_id, partial=False)
-        if not isinstance(server, stoat.Server):
-            try:
-                server = await self._client.fetch_server(self.server_id, populate_channels=True)
-            except Exception:
-                logger.exception(
-                    "[stoat:%s] couldn't fetch full server %s; channel/category placement may be incomplete",
-                    self.connector_id,
-                    self.server_id,
-                )
+        # Fetch the server fresh rather than trust the cache. Beyond needing a
+        # full Server (`.categories` / `.channels`) instead of a BaseServer,
+        # the channel-name dedupe below and `_ensure_channel_in_category`'s
+        # bound-thread-Category check both read the whole channel/category
+        # list - and the cache is populated once at gateway-connect, blind to
+        # the raw-HTTP category edits this module makes, so a stale snapshot
+        # spawns duplicate channels and duplicate thread Categories (issue
+        # #27). ensure_channel isn't a hot path (admin commands + Discord
+        # thread mirroring), so always re-fetch; fall back to the cache only
+        # if that fails.
+        try:
+            server = await self._client.fetch_server(self.server_id, populate_channels=True)
+        except Exception:
+            logger.exception(
+                "[stoat:%s] couldn't fetch full server %s; channel/category placement may be incomplete",
+                self.connector_id,
+                self.server_id,
+            )
+            server = self._client.get_server(self.server_id, partial=False)
+            if not isinstance(server, stoat.Server):
                 server = self._client.get_server(self.server_id, partial=True)
         for channel in getattr(server, "channels", []):
             if channel.name == name:
@@ -303,10 +308,11 @@ class StoatLookupsMixin:
         try:
             resolved = await self._place_in_category(server, channel_id, category, bound_category_id)
         except Exception:
-            # A stale cached Server (categories/channels out of date - e.g. a
-            # category created on an earlier run that isn't in this snapshot,
-            # so create_category hits a duplicate) is the likeliest cause.
-            # Re-fetch the real server once and retry against fresh state.
+            # `server` is already a fresh fetch from ensure_channel, but a
+            # concurrent edit (or a fetch that fell back to the cache) can
+            # still leave it out of date - e.g. a category that isn't in this
+            # snapshot, so create_category hits a duplicate. Re-fetch once
+            # more and retry against the newest state.
             logger.exception(
                 "[stoat:%s] category placement for %r failed; re-fetching server and retrying",
                 self.connector_id,
