@@ -258,7 +258,9 @@ the Discord→other direction of auto-grant never fires.
 The `services/role_sync.py` permission-name translation is a deliberately
 conservative subset — only bits that mean the same on both platforms — but
 the discord.py/stoat.py flag names on both sides of that subset are verified
-against each library's `Permissions` flag class. The Stoat command-execution
+against each library's `Permissions` flag class (discord.py 2.7.1 /
+stoat.py 1.2.1) and pinned there by
+`tests/test_stoat_permission_flag_names.py`. The Stoat command-execution
 gate (`StoatSenderService._is_admin`) likewise checks the real
 `Permissions.manage_server` flag (server owners always pass). stoat.py's
 member/role/channel gateway *event shapes* are still assumed from
