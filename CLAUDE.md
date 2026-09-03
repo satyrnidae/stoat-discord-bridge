@@ -388,7 +388,14 @@ already knows — config plus anything linked — and leaves the rest unset).
 counterpart of `_connector_autocomplete_choices`; every lookup is
 best-effort (an un-picked `service`, an unset or raising hook, or a
 disconnected client all just yield an empty menu and the option still takes
-a hand-typed id/name). Shared logic
+a hand-typed id/name). Whatever the operator has already typed is *always*
+offered back as its own `Use "<text>"` choice at the top of that menu
+(unless it exactly matches a listed id), so a name/id the `list_*` hook
+doesn't know about is still selectable rather than only enterable as blind
+free text (issue #80); to keep that menu complete for members,
+`DiscordSenderService._handle_ready` chunks the guild's full member roster
+into cache on connect (privileged members intent) instead of relying on
+whoever spoke while the bot was up. Shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
 `EmoteLinker` / `UserLinker` / `RoleLinker`), called
 identically from each connector's own `services/*.py` module. Nothing is

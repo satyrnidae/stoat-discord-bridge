@@ -61,19 +61,33 @@ def _entity_autocomplete_choices(
     `ConnectorInfo.list_*` hook returned, keeps those whose id or name
     contains `current` (case-insensitive), renders each as `"name (id)"`
     (clipped to Discord's 100-char label limit), and caps the list at 25.
-    The `value` is always the bare native id - what the linker wants."""
-    current = current.lower()
+    The `value` is always the bare native id - what the linker wants.
+
+    Whatever the operator has typed is *always* offered back as its own
+    choice (`Use "<current>"`), first in the list, unless it already names a
+    listed entity exactly (by id or by name) - so a name/id the `list_*` hook
+    doesn't know about (an unchunked member, a stale cache, a connector with
+    no hook at all) can still be picked from the menu instead of only by
+    blind free text (issue #80). Every id/name option downstream accepts a
+    bare name or id, so the raw token is a valid value on its own."""
+    raw = current.strip()
+    current = raw.lower()
     choices: list[app_commands.Choice[str]] = []
+    exact_match = False
     for entity_id, name in entities:
         entity_id = str(entity_id)
         name = name or ""
         if current and current not in entity_id.lower() and current not in name.lower():
             continue
+        if current and current in (entity_id.lower(), name.lower()):
+            exact_match = True
         label = f"{name} ({entity_id})" if name else entity_id
         choices.append(app_commands.Choice(name=label[:100], value=entity_id[:100]))
         if len(choices) >= _CHOICE_LIMIT:
             break
-    return choices
+    if raw and not exact_match:
+        choices.insert(0, app_commands.Choice(name=f'Use "{raw}"'[:100], value=raw[:100]))
+    return choices[:_CHOICE_LIMIT]
 
 
 def build_command_tree(service) -> None:
@@ -134,23 +148,22 @@ def build_command_tree(service) -> None:
     # instead of pasting an id. `external_id` reads the connector chosen in
     # the `service` option (`interaction.namespace.service`); `local_id`
     # always reads this Discord connector. Best-effort - a missing linker,
-    # an un-picked `service`, an unset hook, or a raising hook all yield an
-    # empty menu, and the option still takes a hand-typed id or name.
+    # an un-picked `service`, an unset hook (IRC roles/users/etc.), or a
+    # raising hook all fall back to an entity-less menu, which still offers
+    # whatever the operator has typed as a `Use "<text>"` choice (issue #80)
+    # so the option is never a dead end.
     async def _entity_choices(get_linker, connector_id, hook_name: str, current: str):
+        entities: list[tuple[str, str]] = []
         linker = get_linker()
-        if linker is None or not connector_id:
-            return []
-        info = linker.connectors.get(connector_id)
+        info = linker.connectors.get(connector_id) if (linker is not None and connector_id) else None
         hook = getattr(info, hook_name, None) if info is not None else None
-        if hook is None:
-            return []
-        try:
-            entities = await hook()
-        except Exception:
-            logger.debug(
-                "[discord:%s] %s autocomplete lookup failed", self.connector_id, hook_name, exc_info=True
-            )
-            return []
+        if hook is not None:
+            try:
+                entities = await hook()
+            except Exception:
+                logger.debug(
+                    "[discord:%s] %s autocomplete lookup failed", self.connector_id, hook_name, exc_info=True
+                )
         return _entity_autocomplete_choices(current, entities)
 
     def entity_autocomplete(get_linker, hook_name: str):

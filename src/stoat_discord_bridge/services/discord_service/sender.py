@@ -148,6 +148,25 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                     len(synced),
                     ", ".join(sorted(c.name for c in synced)) or "(none)",
                 )
+        # Pull the full member roster into cache (after the command sync, which
+        # matters more for availability) so the `/link` etc. slash commands'
+        # user autocomplete (DiscordLookupsMixin.list_users, which must not do
+        # I/O per keystroke) sees every member, not just the ones who happened
+        # to speak while the bot was running (issue #80). Needs the privileged
+        # members intent - already enabled. Best-effort and one-shot: the
+        # `chunked` guard skips it on every later reconnect, and a failure just
+        # leaves the roster as sparse as it was.
+        guild = self._guild_or_none()
+        if guild is not None and not guild.chunked:
+            try:
+                await guild.chunk()
+            except Exception:
+                logger.warning(
+                    "[discord:%s] member chunk failed; user autocomplete will only "
+                    "list members already cached from activity",
+                    self.connector_id,
+                    exc_info=True,
+                )
         logger.info(
             "[discord:%s] logged in as %s (guild %s)", self.connector_id, self._client.user, self._config.guild_id
         )
