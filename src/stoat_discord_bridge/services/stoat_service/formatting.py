@@ -135,6 +135,16 @@ def _map_attachments(message) -> list[Attachment]:
     return out
 
 
+_CHANNEL_MENTION_IDS = re.compile(r"<#([0-9A-Za-z]{26}|\d+)>")
+
+
+def _mentioned_channel_ids(content: str) -> list[str]:
+    """Every distinct `<#id>` channel id referenced in `content`, in order.
+    stoat.py models no structured channel-mention list, so the sender resolves
+    each id's name itself for `StandardMessage.mentioned_channels` (issue #84)."""
+    return list(dict.fromkeys(_CHANNEL_MENTION_IDS.findall(content or "")))
+
+
 def _map_mentioned_users(message) -> dict[str, str]:
     """Native user id -> display name for every user `message` @-mentions, for
     `StandardMessage.mentioned_users` (issue #56). Best-effort: stoat.py's

@@ -426,7 +426,15 @@ user's name on the origin, carried on `StandardMessage.mentioned_users` —
 populated best-effort by the Discord/Stoat senders off the message's
 `mentions`, absent on IRC which has no structured mentions) rather than
 relaying the raw `<@id>` token (issue #56). A mention the map can't name is
-still left exactly as it appeared. That expansion is the one place relayed
+still left exactly as it appeared. A `<#id>` **channel** mention of a channel
+that isn't `/link channel`-linked on the target is likewise expanded by
+`rewrite_channel_mentions` to a plain `#channel-name` — the origin's name for
+the channel, carried on `StandardMessage.mentioned_channels` /
+`StandardEdit.mentioned_channels` (Discord off `Message.channel_mentions`,
+Stoat by scanning the text and resolving each id via `get_channel_name`,
+absent on IRC) — rather than relaying the raw `<#id>`, which renders as a dead
+id on the target (issue #84); an unresolvable one is left as it appeared, and
+the `#name` is run through `_defang_mentions` too. That expansion is the one place relayed
 text picks up an `@`-prefixed token from an attacker-controlled string, so
 it's run through `mentions._defang_mentions` (a zero-width space wedged in
 after the sigil of any `@everyone` / `@here` / `<@…>` / `<#…>` / `<%…>` it
@@ -529,7 +537,8 @@ only *after* the mirror+link finishes, so the `<#thread>` mention resolves. Each
 receiver rewrites that mention (`services/mentions.py`'s
 `rewrite_channel_mentions`, run alongside the user-mention rewrite) into its own
 linked copy of the mirrored channel — `<#id>` on Discord/Stoat, `#channel` on
-IRC — falling back to `#<thread name>` if it still can't resolve. A thread with
+IRC — falling back to `#<thread name>` (carried on the notice's
+`mentioned_channels`) if it still can't resolve. A thread with
 no real starter message (standalone thread / forum-post system row) skips the
 starter relay but keeps that row's author for the notice. Only
 fires when the thread's parent channel is itself already bridged; one-way

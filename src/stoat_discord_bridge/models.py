@@ -78,6 +78,14 @@ class StandardMessage:
     # can't resolve a name (cache miss) or a connector with no structured
     # mentions (IRC) just leaves the entry / whole map absent.
     mentioned_users: dict[str, str] = field(default_factory=dict)
+    # Native channel id -> channel name on the origin, for every channel the
+    # message `<#id>`-mentions. Lets a receiver expand a mention of a channel
+    # that ISN'T /link-channel-linked on the target into a readable
+    # `#channel-name` instead of relaying the raw `<#id>` token, which renders
+    # as a dead id there (issue #84 - the channel-level counterpart of #56).
+    # Best-effort: a name a sender can't resolve, or a connector with no
+    # structured channel mentions (IRC), just leaves the entry / map absent.
+    mentioned_channels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -153,15 +161,17 @@ class StandardEdit:
     for connectors that advertise `ReceiverService.supports_edits` — Discord ⇄
     Stoat only, IRC has no edit-in-place. See BridgeCoordinator.handle_edit.
 
-    `mentioned_users` mirrors `StandardMessage.mentioned_users` — the origin's
-    name for every user the *edited* text @-mentions — so a receiver can
-    re-expand an unlinked `<@id>` the same way the original relay did."""
+    `mentioned_users` / `mentioned_channels` mirror the same-named
+    `StandardMessage` fields — the origin's name for every user / channel the
+    *edited* text mentions — so a receiver can re-expand an unlinked `<@id>` /
+    `<#id>` the same way the original relay did."""
 
     origin_connector_id: ConnectorId
     origin_channel_id: str
     origin_message_id: str  # the message being edited, native id on the origin platform
     new_content_markdown: str
     mentioned_users: dict[str, str] = field(default_factory=dict)
+    mentioned_channels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

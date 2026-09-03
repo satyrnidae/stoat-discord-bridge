@@ -90,11 +90,11 @@ def _make_sender(
 
 def _discord_message(
     *, channel, guild, author, content="hi", id=1, attachments=None, type=discord.MessageType.default, thread=None,
-    mentions=None,
+    mentions=None, channel_mentions=None,
 ):
     return SimpleNamespace(
         channel=channel, guild=guild, author=author, content=content, id=id, attachments=attachments or [],
-        type=type, thread=thread, mentions=mentions or [],
+        type=type, thread=thread, mentions=mentions or [], channel_mentions=channel_mentions or [],
     )
 
 
@@ -151,6 +151,25 @@ async def test_handle_message_dispatches_a_standard_message():
     assert message.message_id == "99"
     assert message.source_label == "Discord"
     assert [a.url for a in message.attachments] == ["https://cdn.example/f.png"]
+
+
+async def test_handle_message_maps_channel_mentions_by_id_to_name():
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client)
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice", display_avatar=FakeAsset("https://cdn.example/alice.png"))
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author, content="see <#77>",
+            channel_mentions=[SimpleNamespace(id=77, name="off-topic")],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.mentioned_channels == {"77": "off-topic"}
 
 
 async def test_handle_message_uses_none_avatar_when_the_author_has_no_avatar():
