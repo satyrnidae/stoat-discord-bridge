@@ -228,7 +228,7 @@ end sends `end_typing`, clearing the indicator at once; Discord has no
 clear-typing API, so there the loop just stops re-arming and Discord's own
 ~10s timeout lapses it.
 
-### Source & pronoun forwarding
+### Source, pronoun & name-colour forwarding
 
 Every `StandardMessage` carries `source_label` — the origin connector's
 `config.yaml` `label` ("Discord", "Stoat (public)", "IRC"), stamped by each
@@ -271,6 +271,25 @@ off, and swallows every failure to `None`:
 - **IRC** has no pronoun concept — `sender_pronouns` is always `None` there;
   its `pronoun_forwarding` only governs whether an *inbound* message's
   pronouns show in the line tag.
+
+**Name colour forwarding** (issue #74): every `StandardMessage` also carries
+`sender_color` — the sender's displayed name colour as a CSS colour string,
+resolved network-free by the origin sender from their top coloured role
+(`_member_colour` in each service's `formatting.py`, gated by a per-connector
+`color_forwarding`, default on, on `DiscordConnectorConfig` /
+`StoatConnectorConfig`). Only **Stoat's receiver** consumes it — a
+`MessageMasquerade` takes a `color`, so a relayed name is tinted with the
+origin colour; `color_forwarding` on the Stoat connector also gates that
+inbound application. Discord (`Member.colour`, resolved to `#rrggbb`; `0`
+means no colour → `None`) and Stoat (`Role.color`, an as-is CSS string, so
+gradients forward too; lowest-`rank` coloured role wins) both resolve
+outbound; **IRC** has no user-colour concept so `sender_color` is always
+`None` there and it has no `color_forwarding` option. Discord webhooks and
+IRC can't tint a relayed name, so those receivers ignore `sender_color`.
+Setting a masquerade colour needs the bridge bot's `manage_roles` permission
+in the target channel — a Stoat send rejected with a colour set is retried
+once **uncoloured** (for that chunk and the rest of a split message) rather
+than lost.
 
 ### Admin & status commands
 

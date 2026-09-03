@@ -47,6 +47,7 @@ from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
 from stoat_discord_bridge.services.discord_service.formatting import (
     _map_mentioned_users,
+    _member_colour,
     _to_standard_message,
 )
 from stoat_discord_bridge.services.discord_service.linking import DiscordLinkingMixin
@@ -195,8 +196,18 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 # Discord pronoun resolution is disabled - see
                 # `_resolve_sender_pronouns` (issue #58).
                 sender_pronouns=await self._resolve_sender_pronouns(message.author.id),
+                sender_color=self._resolve_sender_color(message.author),
             )
         )
+
+    def _resolve_sender_color(self, author: object) -> str | None:
+        """The sender's displayed name colour, for a receiver that can tint a
+        relayed name (Stoat's masquerade, issue #74). Network-free - reads the
+        member's already-resolved top-role colour. None when this connector's
+        `color_forwarding` is off, or the sender has no colour."""
+        if not self._config.color_forwarding:
+            return None
+        return _member_colour(author)
 
     async def _resolve_sender_pronouns(self, user_id: int | str) -> str | None:
         """Always ``None`` on Discord: there is no bot-accessible pronoun
@@ -400,6 +411,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 self.connector_id,
                 source_label=self._config.label,
                 sender_pronouns=await self._resolve_sender_pronouns(starter.author.id),
+                sender_color=self._resolve_sender_color(starter.author),
             )
             await self._on_message(replace(msg, origin_channel_id=str(thread.id), channel_name=thread.name))
 

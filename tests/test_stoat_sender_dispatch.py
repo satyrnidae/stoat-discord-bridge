@@ -67,7 +67,7 @@ def _make_sender(
     sender.connector_id = "stoat"
     sender.server_id = "srv-1"
     sender._client = client
-    sender._config = SimpleNamespace(label="Stoat", pronoun_forwarding=False)
+    sender._config = SimpleNamespace(label="Stoat", pronoun_forwarding=False, color_forwarding=True)
     sender._pronoun_cache = AsyncTTLCache(600.0)
     sender._health = HealthTracker({"stoat": "Stoat"})
     sender._linker = None

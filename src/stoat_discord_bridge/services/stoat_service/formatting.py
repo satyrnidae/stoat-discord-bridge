@@ -74,6 +74,24 @@ def _avatar_url(author) -> str | None:
     return getattr(author, "default_avatar_url", None)
 
 
+def _member_colour(author) -> str | None:
+    """Best-effort CSS colour of a Stoat member's displayed name - the colour
+    of their highest-priority coloured role, matching how the client tints it.
+
+    `Member.roles` is cache-dependent (needs the server and its roles cached);
+    a miss, a member with no coloured role, or a non-member author all yield
+    None. Stoat role `rank` is ascending-priority (lower rank = higher), so
+    the lowest-rank coloured role wins. The role colour is already a CSS
+    string (Stoat allows gradients), passed straight through to a masquerade's
+    `color` (issue #74)."""
+    try:
+        coloured = [r for r in (getattr(author, "roles", None) or []) if getattr(r, "color", None)]
+        coloured.sort(key=lambda r: getattr(r, "rank", 0))
+    except Exception:
+        return None
+    return coloured[0].color if coloured else None
+
+
 def _extract_pronouns(data) -> str | None:
     """Pull a pronoun string out of a raw Stoat user / member / profile JSON
     payload. stoat.py 1.2.1 models no such field, so a deployment that has one

@@ -200,6 +200,53 @@ async def test_receive_omits_pronouns_when_pronoun_forwarding_is_off():
     assert channel.sent[0]["masquerade"].name == "Alice [Discord]"
 
 
+async def test_receive_forwards_the_sender_colour_onto_the_masquerade():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(_message(sender_color="#5865f2"), target_channel_id="42")
+
+    assert channel.sent[0]["masquerade"].color == "#5865f2"
+
+
+async def test_receive_omits_the_colour_when_color_forwarding_is_off():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = StoatReceiverService(_FakeSender(client), color_forwarding=False)
+
+    await receiver.receive(_message(sender_color="#5865f2"), target_channel_id="42")
+
+    assert channel.sent[0]["masquerade"].color is None
+
+
+async def test_receive_retries_uncoloured_when_a_coloured_send_is_rejected(monkeypatch):
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+    monkeypatch.setattr("stoat_discord_bridge.services.stoat_service._CONTENT_LIMIT", 5)
+
+    real_send = channel.send
+    seen: list = []
+
+    async def picky_send(content, *, masquerade=None, attachments=None):
+        seen.append(masquerade.color)
+        if masquerade.color is not None:
+            raise RuntimeError("Missing permission: ManageRole")
+        return await real_send(content, masquerade=masquerade)
+
+    channel.send = picky_send
+
+    ids = await receiver.receive(
+        _message(content_markdown="abcdefghij", sender_color="#5865f2"), target_channel_id="42"
+    )
+
+    # first chunk: coloured attempt rejected, uncoloured retry succeeds; the
+    # second chunk then goes straight out uncoloured (no wasted retry).
+    assert seen == ["#5865f2", None, None]
+    assert ids == ["1", "2"]
+
+
 async def test_receive_splits_long_content_into_multiple_sends(monkeypatch):
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))

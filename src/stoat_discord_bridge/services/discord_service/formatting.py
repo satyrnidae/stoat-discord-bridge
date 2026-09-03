@@ -53,6 +53,21 @@ def _normalize_channel_id(raw: str) -> str:
     return match.group(1) if match else raw
 
 
+def _member_colour(author: object) -> str | None:
+    """The CSS hex colour of a Discord member's displayed name, or None.
+
+    discord.py's `Member.colour` already resolves to the highest role that
+    has a non-default colour (falling back to `Colour.default()`, value 0,
+    when the member has none) - so a zero value means "no colour". A plain
+    `discord.User` with no guild context has no `.colour` and yields None.
+    Forwarded to a Stoat masquerade's `color` (issue #74)."""
+    try:
+        value = getattr(getattr(author, "colour", None), "value", 0) or 0
+    except Exception:
+        return None
+    return f"#{value:06x}" if value else None
+
+
 def _map_mentioned_users(message: object) -> dict[str, str]:
     """Native user id -> display name for every user `message` @-mentions, for
     `StandardMessage.mentioned_users` / `StandardEdit.mentioned_users` (issue
@@ -67,6 +82,7 @@ def _to_standard_message(
     *,
     source_label: str | None = None,
     sender_pronouns: str | None = None,
+    sender_color: str | None = None,
 ) -> StandardMessage:
     return StandardMessage(
         origin_connector_id=connector_id,
@@ -79,6 +95,7 @@ def _to_standard_message(
         message_id=str(message.id),
         source_label=source_label,
         sender_pronouns=sender_pronouns,
+        sender_color=sender_color,
         attachments=[
             Attachment(url=a.url, filename=a.filename, content_type=a.content_type, size_bytes=a.size)
             for a in message.attachments
