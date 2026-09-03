@@ -352,9 +352,19 @@ src/stoat_discord_bridge/
   services/
     base.py                    # SenderService / ReceiverService base classes
     formatting.py               # content formatting utilities shared across receivers
-    discord_service.py          # Discord sender (client) + receiver (per-channel webhook), one instance per config.yaml entry
-    stoat_service.py            # Stoat sender/receiver, one instance per config.yaml entry
-    irc_service.py              # IRC sender/receiver, one instance per config.yaml entry
+    discord_service/            # Discord sender (client) + receiver (per-channel webhook), one instance per config.yaml entry
+    stoat_service/              # Stoat sender/receiver, one instance per config.yaml entry
+    irc_service/                # IRC sender/receiver, one instance per config.yaml entry
+      # each *_service/ package splits its connector by area of concern:
+      #   client.py    - native event -> owner shim
+      #   commands.py  - command parsing (the /link etc. tree / DM dispatch)
+      #   linking.py   - Mongo-backed /link /unlink /linked /mirror handlers
+      #   lookups.py   - platform-resource lookups (id<->name, get-or-create)
+      #   sync.py      - reaction / role / emoji / pin / typing sync handlers
+      #   formatting.py- network-free conversion helpers
+      #   sender.py / receiver.py - the composed *SenderService / *ReceiverService
+      # linking/lookups/sync are mixins composed into *SenderService. irc_service/
+      # is lighter (client / commands / formatting / sender / receiver only).
   storage/
     mongo.py                   # MongoDB connection (motor)
     channel_mappings.py        # which channels, across connectors, are bridged together
