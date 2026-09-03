@@ -1,5 +1,7 @@
 # stoat-discord-bridge
 
+![CI](https://github.com/satyrnidae/stoat-discord-bridge/actions/workflows/ci.yml/badge.svg)
+
 Multi-way chat bridge across any number of **Discord**, **Stoat**, and **IRC**
 servers, configured entirely in `config.yaml` (no code changes needed to add
 another server).
