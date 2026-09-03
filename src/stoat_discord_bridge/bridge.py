@@ -34,7 +34,11 @@ from stoat_discord_bridge.models import (
     StandardReaction,
     StandardTyping,
 )
-from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
+from stoat_discord_bridge.services.base import (
+    PartialRelayError,
+    ReceiverService,
+    UnsupportedRelayTargetError,
+)
 from stoat_discord_bridge.services.discord_service import (
     DiscordReceiverService,
     DiscordSenderService,
@@ -145,6 +149,18 @@ class BridgeCoordinator:
             )
             self._health.record_error(target.connector_id)
             native_ids = exc.partial_ids
+        except UnsupportedRelayTargetError as exc:
+            # A misconfigured link (e.g. a Discord forum channel) - never going
+            # to succeed, so log a single concise line rather than a traceback
+            # per relayed message (issue #69).
+            logger.warning(
+                "relay from %s to %s dropped: %s",
+                message.origin_connector_id,
+                target.connector_id,
+                exc,
+            )
+            self._health.record_error(target.connector_id)
+            return []
         except Exception:
             logger.exception("relay from %s to %s failed", message.origin_connector_id, target.connector_id)
             self._health.record_error(target.connector_id)
@@ -310,6 +326,10 @@ class BridgeCoordinator:
             try:
                 await receiver.edit_message(
                     target_channel_id=channel_id, target_message_ids=message_ids, edit=edit
+                )
+            except UnsupportedRelayTargetError as exc:
+                logger.warning(
+                    "edit relay from %s to %s dropped: %s", edit.origin_connector_id, connector_id, exc
                 )
             except Exception:
                 logger.exception("edit relay from %s to %s failed", edit.origin_connector_id, connector_id)

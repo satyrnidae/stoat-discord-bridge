@@ -517,6 +517,15 @@ channels are left where they are). Pre-binding rows (no `parent_channel_id`)
 still register as thread categories and are rewritten to the bound shape on the
 next thread for that parent.
 
+A Discord **forum/media channel** itself (a `discord.ForumChannel`, not a
+`Thread` under one) can't be a relay target — it has no top-level message
+stream, so a webhook post into one needs a `thread_name`/`thread_id` the bridge
+has no mapping for (Discord 400, error 220001). `DiscordReceiverService`'s
+webhook resolver raises `UnsupportedRelayTargetError` for one (issue #69), which
+`BridgeCoordinator` logs once (no traceback) and drops rather than retrying per
+message. Relaying into a forum *post* (a `Thread` whose parent is the
+ForumChannel) still works normally.
+
 ## Layout
 
 ```

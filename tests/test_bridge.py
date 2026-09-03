@@ -25,7 +25,11 @@ from stoat_discord_bridge.models import (
     StandardReaction,
     StandardTyping,
 )
-from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
+from stoat_discord_bridge.services.base import (
+    PartialRelayError,
+    ReceiverService,
+    UnsupportedRelayTargetError,
+)
 from stoat_discord_bridge.status import HealthState, HealthTracker
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
@@ -205,6 +209,22 @@ async def test_partial_relay_error_records_only_the_ids_delivered_before_failure
 
     group = await message_sync.find_group("discord", "100", "m1")
     assert {(r.connector_id, r.message_id) for r in group} == {("discord", "m1"), ("stoat", "only-1")}
+    assert health.snapshot()["stoat"] == HealthState.DEGRADED
+
+
+async def test_unsupported_relay_target_is_dropped_and_records_nothing(coordinator_parts):
+    coordinator, channel_mappings, message_sync, _emoji_mappings, health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+
+    receiver = FakeReceiver(
+        "stoat", raises=UnsupportedRelayTargetError("channel 200 is a forum/media channel")
+    )
+    coordinator.register_receiver(receiver)
+
+    await coordinator.handle_incoming(_message())
+
+    assert await message_sync.find_group("discord", "100", "m1") is None
     assert health.snapshot()["stoat"] == HealthState.DEGRADED
 
 

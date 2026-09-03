@@ -227,6 +227,33 @@ class FakeThread(discord.Thread):
         return self._starter_message
 
 
+class FakeForumChannel(discord.ForumChannel):
+    """Stands in for discord.ForumChannel (a forum or media channel) - the
+    DiscordReceiverService rejects relaying into one outright (issue #69), an
+    isinstance(channel, discord.ForumChannel) check a duck-typed FakeChannel
+    can't satisfy. Subclasses the real class (same pattern as FakeThread),
+    skipping its real __init__. Still carries FakeChannel's webhook machinery
+    because a forum *post* (a FakeThread whose .parent is this) resolves its
+    webhook on the parent forum channel.
+    """
+
+    def __init__(self, id: int, *, name: str = "forum", webhooks: list[FakeWebhook] | None = None) -> None:
+        self.id = id
+        self.name = name
+        self._webhooks = webhooks or []
+        self.created_webhooks: list[FakeWebhook] = []
+
+    async def webhooks(self) -> list[FakeWebhook]:
+        return list(self._webhooks)
+
+    async def create_webhook(self, *, name: str, avatar: bytes | None = None) -> FakeWebhook:
+        webhook = FakeWebhook(id=len(self._webhooks) + len(self.created_webhooks) + 1)
+        webhook.created_with = {"name": name, "avatar": avatar}
+        self._webhooks.append(webhook)
+        self.created_webhooks.append(webhook)
+        return webhook
+
+
 class FakeGuildChannel(discord.TextChannel):
     """Stands in for discord.TextChannel - used to test
     DiscordSenderService._handle_channel_create, which does an
