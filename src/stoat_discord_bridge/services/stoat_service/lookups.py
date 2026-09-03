@@ -17,6 +17,7 @@ from stoat import routes as stoat_routes
 from stoat.core import ulid_new
 
 from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
+from stoat_discord_bridge.services.caching import AsyncTTLCache
 from stoat_discord_bridge.services.stoat_service.formatting import _avatar_url, _display_name, _download
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 # Server.create_channel); a longer source description is clipped rather than
 # rejected.
 _DESCRIPTION_LIMIT = 1024
+
+# How long a freshly-fetched Category list is reused before another
+# `fetch_server` - see `_fresh_categories`. Short: a human creating a Category
+# on Stoat then linking it via `/link category` (issue #66) shouldn't have to
+# wait, but the Discord slash-command autocomplete calls the `list_*` hooks on
+# every keystroke and mustn't hit the API each time.
+_CATEGORY_CACHE_TTL = 15.0
 
 
 def _create_channel_metadata_kwargs(metadata: ChannelMetadata | None) -> dict:
@@ -258,13 +266,15 @@ class StoatLookupsMixin:
         """Best-effort Category-id -> title lookup, used as this connector's
         `ConnectorInfo.resolve_category_name` for `/link-category`. Unlike
         get_channel_name/get_channel_category_name, there's no direct
-        "get Category by id" call on stoat.Server, so this scans
-        `server.categories` for a matching id instead."""
+        "get Category by id" call on stoat.Server, so this scans the Category
+        list for a matching id instead - the freshly-fetched one, since the
+        cache doesn't track Categories added since startup (see
+        `_fresh_categories`, issue #66)."""
         try:
-            server = self._client.get_server(self.server_id, partial=True)
-            category = next((c for c in (server.categories or []) if str(c.id) == category_id), None)
+            categories = await self._fresh_categories()
         except Exception:
             return None
+        category = next((c for c in categories if str(c.id) == category_id), None)
         return category.title if category is not None else None
 
     async def ensure_channel(
@@ -472,9 +482,12 @@ class StoatLookupsMixin:
             existing = next((c for c in categories if c.title == category), None)
         try:
             if existing is None:
-                return await server.create_category(category, channels=[channel_id])
+                created = await server.create_category(category, channels=[channel_id])
+                self._invalidate_category_cache()
+                return created
             if channel_id not in existing.channels:
                 await server.edit_category(existing, channels=[*existing.channels, channel_id])
+                self._invalidate_category_cache()
             return existing
         except stoat.HTTPException as exc:
             # Both of the user's servers (incl. "latest") 404 the dedicated
@@ -559,6 +572,7 @@ class StoatLookupsMixin:
             stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
             json={"categories": raw_categories},
         )
+        self._invalidate_category_cache()
         return SimpleNamespace(id=resolved["id"], title=resolved["title"], channels=resolved["channels"])
 
     async def group_parent_channel_with_threads(self, thread_channel_id: str) -> None:
@@ -640,6 +654,7 @@ class StoatLookupsMixin:
             stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
             json={"categories": raw_categories},
         )
+        self._invalidate_category_cache()
 
     async def get_role_name(self, role_id: str) -> str | None:
         """Best-effort role-id -> name lookup, this connector's
@@ -750,14 +765,68 @@ class StoatLookupsMixin:
             server = await self._client.fetch_server(self.server_id)
         return server
 
+    def _category_list_cache(self) -> "AsyncTTLCache[list]":
+        """The short-TTL cache backing `_fresh_categories`, created lazily so
+        the mixin works when a test builds the service with `object.__new__`
+        and doesn't run `__init__`."""
+        cache = getattr(self, "_category_cache", None)
+        if cache is None:
+            cache = AsyncTTLCache(_CATEGORY_CACHE_TTL)
+            self._category_cache = cache
+        return cache
+
+    async def _fresh_categories(self) -> list:
+        """This server's Category list from a *freshly fetched* Server, reused
+        for `_CATEGORY_CACHE_TTL`s.
+
+        stoat.py 1.2.1 populates the cached server's `.categories` once at
+        gateway connect and never updates it from gateway events, so the
+        cache-only readers below (`get_category_name`,
+        `resolve_category_id_by_name`, `list_categories`,
+        `channels_in_category`) miss any Category created or renamed since
+        startup - `/link category` then can't map a typed name to a real id
+        and stores the raw token instead, and autocomplete omits it (issue
+        #66). Re-fetching fixes that; the TTL keeps per-keystroke autocomplete
+        off the API. Falls back to the cached server's list if the fetch fails.
+        """
+
+        async def _load(_key: str) -> list:
+            try:
+                server = await self._client.fetch_server(self.server_id, populate_channels=True)
+                if getattr(server, "categories", None) is not None:
+                    return list(server.categories)
+            except Exception:
+                logger.debug(
+                    "[stoat:%s] couldn't fetch a fresh Category list; using cached state",
+                    self.connector_id,
+                    exc_info=True,
+                )
+            try:
+                server = self._client.get_server(self.server_id, partial=True)
+                return list(getattr(server, "categories", None) or [])
+            except Exception:
+                return []
+
+        return await self._category_list_cache().get(self.server_id, _load)
+
+    def _invalidate_category_cache(self) -> None:
+        """Drop the `_fresh_categories` cache after this module writes the
+        Category layout, so a follow-up read in the same admin-command flow
+        sees the change immediately rather than up to `_CATEGORY_CACHE_TTL`s
+        later."""
+        cache = getattr(self, "_category_cache", None)
+        if cache is not None:
+            cache.invalidate(self.server_id)
+
     async def resolve_category_id_by_name(self, token: str) -> str | None:
         """Resolve a bare Category title to its id (case-insensitive, first
         match); a token that's already a Category id is returned as-is, an
         unknown token yields None - this connector's
-        `ConnectorInfo.resolve_category_id_by_name`."""
+        `ConnectorInfo.resolve_category_id_by_name`. Reads the freshly-fetched
+        Category list so a Category created since startup still resolves
+        (issue #66)."""
         try:
-            server = self._client.get_server(self.server_id, partial=True)
-            categories = list(server.categories or [])
+            categories = await self._fresh_categories()
         except Exception:
             return None
         if any(str(c.id) == token for c in categories):
@@ -785,6 +854,7 @@ class StoatLookupsMixin:
             return str(existing["id"])
         try:
             category = await server.create_category(name, channels=[])
+            self._invalidate_category_cache()
             return str(category.id)
         except stoat.HTTPException:
             new_id = ulid_new()
@@ -793,16 +863,18 @@ class StoatLookupsMixin:
                 stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
                 json={"categories": raw_categories},
             )
+            self._invalidate_category_cache()
             return str(new_id)
 
     async def channels_in_category(self, category_id: str) -> list[tuple[str, str]]:
         """Every channel inside Category `category_id`, as (id, name) pairs -
-        this connector's `ConnectorInfo.channels_in_category`."""
+        this connector's `ConnectorInfo.channels_in_category`. Reads the
+        freshly-fetched Category list (issue #66)."""
         try:
-            server = self._client.get_server(self.server_id, partial=True)
-            category = next((c for c in (server.categories or []) if str(c.id) == category_id), None)
+            categories = await self._fresh_categories()
         except Exception:
             return []
+        category = next((c for c in categories if str(c.id) == category_id), None)
         if category is None:
             return []
         out: list[tuple[str, str]] = []
@@ -836,6 +908,7 @@ class StoatLookupsMixin:
             stoat_routes.SERVERS_SERVER_EDIT.compile(server_id=server.id),
             json={"categories": raw_categories},
         )
+        self._invalidate_category_cache()
 
     @staticmethod
     def _roles_of(server):
@@ -891,8 +964,10 @@ class StoatLookupsMixin:
     # off the cached server - Discord's `external_id` option autocomplete on
     # the /link etc. slash commands calls these on every keystroke, so they
     # stay on the same no-I/O `get_server(partial=True)` / `_all_*` paths the
-    # bare-name resolvers use. Each yields (id, name) pairs; an uncached
-    # server yields []. ---
+    # bare-name resolvers use. `list_categories` is the exception - it re-fetches
+    # (short-TTL-cached) because stoat.py never refreshes the cached Category
+    # list from gateway events (issue #66). Each yields (id, name) pairs; an
+    # uncached server yields []. ---
 
     async def list_channels(self) -> list[tuple[str, str]]:
         try:
@@ -903,9 +978,12 @@ class StoatLookupsMixin:
         return [(str(c.id), getattr(c, "name", "") or str(c.id)) for c in channels]
 
     async def list_categories(self) -> list[tuple[str, str]]:
+        # Unlike the other list_* hooks this re-fetches (short-TTL-cached, see
+        # `_fresh_categories`): stoat.py never refreshes the cached Category
+        # list from gateway events, so autocomplete would otherwise never
+        # show a Category created since startup (issue #66).
         try:
-            server = self._client.get_server(self.server_id, partial=True)
-            categories = list(getattr(server, "categories", None) or [])
+            categories = await self._fresh_categories()
         except Exception:
             return []
         return [(str(c.id), getattr(c, "title", "") or str(c.id)) for c in categories]
