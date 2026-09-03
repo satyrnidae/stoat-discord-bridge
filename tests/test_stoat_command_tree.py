@@ -82,15 +82,72 @@ class _FakeShard:
     pass
 
 
-def _fake_message(content: str, *, message_id: str = "m1"):
-    author = SimpleNamespace(bot=SimpleNamespace(), id="u1")  # a bot -> skip_check short-circuits before invoke
+def _fake_message(content: str, *, message_id: str = "m1", bot_author: bool = True):
+    # bot_author=True -> skip_check short-circuits before invoke; set False to
+    # exercise the real argument-parsing path.
+    author = SimpleNamespace(bot=SimpleNamespace() if bot_author else None, id="u1")
     return SimpleNamespace(
         content=content,
         id=message_id,
         author_id="u1",
         webhook=None,
+        attachments=[],
         channel=SimpleNamespace(id="c1"),
         get_author=lambda: author,
+    )
+
+
+class _OptionalArgOwner:
+    connector_id = "stoat"
+
+    def __init__(self):
+        self.calls = []
+
+    async def _reply(self, ctx, text):
+        self.calls.append(("_reply", text))
+
+    async def _linked_channels(self, ctx, local_id=None):
+        self.calls.append(("_linked_channels", local_id))
+
+    async def _link_channel(self, ctx, service, external_id, local_id=None):
+        self.calls.append(("_link_channel", service, external_id, local_id))
+
+    def _note_command_message(self, message_id):
+        pass
+
+
+async def test_command_with_optional_arg_omitted_parses_and_invokes():
+    # Regression for issue #40: stoat.py 1.2.1's command framework raises
+    # `TypeError: issubclass() arg 1 must be a class` on any `Optional[...]`
+    # parameter unless `_compat.apply_stoat_command_patches` has run.
+    owner = _OptionalArgOwner()
+    bot = _bare_bot(owner)
+
+    await bot.process_commands(_fake_message("/linked channels", bot_author=False), _FakeShard())
+
+    assert owner.calls == [("_linked_channels", None)]
+
+
+async def test_command_with_optional_arg_supplied_parses_and_invokes():
+    owner = _OptionalArgOwner()
+    bot = _bare_bot(owner)
+
+    await bot.process_commands(
+        _fake_message("/link channel discord 123 mychan", bot_author=False), _FakeShard()
+    )
+
+    assert owner.calls == [("_link_channel", "discord", "123", "mychan")]
+
+
+def test_signature_of_a_command_with_an_optional_arg_renders():
+    # `on_command_error` reads `Command.signature`; the same stoat.py bug hits
+    # `issubclass(annotation, stoat.Asset)` there for an `Optional[...]` param.
+    bot = _bare_bot()
+
+    assert bot.all_commands["linked"].all_commands["channels"].signature == "[local_id]"
+    assert (
+        bot.all_commands["link"].all_commands["channel"].signature
+        == "<service> <external_id> [local_id]"
     )
 
 

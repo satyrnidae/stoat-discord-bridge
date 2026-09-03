@@ -12,6 +12,12 @@ from __future__ import annotations
 
 import typing
 
+from stoat_discord_bridge.services.stoat_service._compat import apply_stoat_command_patches
+
+# stoat.py 1.2.1's command framework raises `TypeError` on any `Optional[...]`
+# parameter (issue #40); patch that before the tree below is declared/invoked.
+apply_stoat_command_patches()
+
 # Discord has native slash-command discoverability; Stoat's commands are
 # plain chat messages with no such affordance, hence /bridge-help. See
 # COMMANDS.md for full per-command detail - this is a compact pointer to it.
