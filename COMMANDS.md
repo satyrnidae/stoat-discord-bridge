@@ -229,6 +229,14 @@ The fan-out `all` form doesn't take it (one name can't fit many destinations).
 `/mirror category`'s `new_name` titles only the Category — mirrored child
 channels still carry their own names.
 
+Only one `/mirror` may be writing into a given destination service at a time.
+A `/mirror` (of any noun, from any connector) aimed at a service another
+`/mirror` is still mirroring into is rejected immediately with *"another
+/mirror into … is still running"* rather than run concurrently and risk
+creating duplicates — `/mirror channel` in particular can take a while.
+Mirrors into different services still run in parallel, and the `all` form
+holds every destination for its duration.
+
 `/mirror channel` (both directions) additionally takes an optional
 **`category`** — a Category id or name that the counterpart channel is placed
 under, *overriding* linked-Category resolution and same-name matching entirely
