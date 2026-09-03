@@ -6,17 +6,24 @@ etc.). `build_command_tree` declares `/status` plus the `/link`, `/unlink`,
 `DiscordSenderService`'s `discord.app_commands.CommandTree`; every callback
 forwards to the matching `DiscordSenderService._handle_*` method in
 `linking.py`. `_connector_autocomplete_choices` is the shared filter behind
-every `service` option's autocomplete.
+every `service` option's autocomplete; `_entity_autocomplete_choices` is the
+one behind every `external_id` / `local_id` option's autocomplete (populated
+from the target connector's `ConnectorInfo.list_*` hooks).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import discord
 from discord import app_commands
 
 from stoat_discord_bridge.admin_commands import ConnectorInfo
+
+logger = logging.getLogger(__name__)
+
+_CHOICE_LIMIT = 25  # Discord's hard cap on autocomplete results
 
 
 def _connector_autocomplete_choices(
@@ -43,7 +50,30 @@ def _connector_autocomplete_choices(
     ]
     if include_all and current in "all":
         choices.insert(0, app_commands.Choice(name="all", value="all"))
-    return choices[:25]
+    return choices[:_CHOICE_LIMIT]
+
+
+def _entity_autocomplete_choices(
+    current: str, entities: list[tuple[str, str]]
+) -> list[app_commands.Choice[str]]:
+    """Shared filtering behind every `external_id` / `local_id` option's
+    autocomplete: takes the `(native_id, name)` pairs a connector's
+    `ConnectorInfo.list_*` hook returned, keeps those whose id or name
+    contains `current` (case-insensitive), renders each as `"name (id)"`
+    (clipped to Discord's 100-char label limit), and caps the list at 25.
+    The `value` is always the bare native id - what the linker wants."""
+    current = current.lower()
+    choices: list[app_commands.Choice[str]] = []
+    for entity_id, name in entities:
+        entity_id = str(entity_id)
+        name = name or ""
+        if current and current not in entity_id.lower() and current not in name.lower():
+            continue
+        label = f"{name} ({entity_id})" if name else entity_id
+        choices.append(app_commands.Choice(name=label[:100], value=entity_id[:100]))
+        if len(choices) >= _CHOICE_LIMIT:
+            break
+    return choices
 
 
 def build_command_tree(service) -> None:
@@ -98,6 +128,53 @@ def build_command_tree(service) -> None:
             lambda: self._emote_linker, include_all=include_all, predicate=lambda info: info.supports_emotes
         )
 
+    # `external_id` / `local_id` option autocomplete: list the real
+    # channels/roles/users/Categories/emoji on a connector (via its
+    # `ConnectorInfo.list_*` hooks) so an operator picks one from the menu
+    # instead of pasting an id. `external_id` reads the connector chosen in
+    # the `service` option (`interaction.namespace.service`); `local_id`
+    # always reads this Discord connector. Best-effort - a missing linker,
+    # an un-picked `service`, an unset hook, or a raising hook all yield an
+    # empty menu, and the option still takes a hand-typed id or name.
+    async def _entity_choices(get_linker, connector_id, hook_name: str, current: str):
+        linker = get_linker()
+        if linker is None or not connector_id:
+            return []
+        info = linker.connectors.get(connector_id)
+        hook = getattr(info, hook_name, None) if info is not None else None
+        if hook is None:
+            return []
+        try:
+            entities = await hook()
+        except Exception:
+            logger.debug(
+                "[discord:%s] %s autocomplete lookup failed", self.connector_id, hook_name, exc_info=True
+            )
+            return []
+        return _entity_autocomplete_choices(current, entities)
+
+    def entity_autocomplete(get_linker, hook_name: str):
+        """(local_id_autocomplete, external_id_autocomplete) for one entity
+        kind - `local_id` off this connector, `external_id` off the one the
+        `service` option names."""
+
+        async def _local(interaction: discord.Interaction, current: str):
+            return await _entity_choices(get_linker, self.connector_id, hook_name, current)
+
+        async def _external(interaction: discord.Interaction, current: str):
+            service = getattr(interaction.namespace, "service", None)
+            return await _entity_choices(get_linker, service, hook_name, current)
+
+        return _local, _external
+
+    channel_local_ac, channel_external_ac = entity_autocomplete(lambda: self._linker, "list_channels")
+    role_local_ac, role_external_ac = entity_autocomplete(lambda: self._role_linker, "list_roles")
+    user_local_ac, user_external_ac = entity_autocomplete(lambda: self._user_linker, "list_users")
+    category_local_ac, category_external_ac = entity_autocomplete(
+        lambda: self._category_linker, "list_categories"
+    )
+    emote_local_ac, emote_external_ac = entity_autocomplete(lambda: self._emote_linker, "list_emotes")
+
     _manage = discord.Permissions(manage_guild=True)
     link_group = app_commands.Group(
         name="link", description="Link an entity across the bridge", default_permissions=_manage
@@ -118,7 +195,11 @@ def build_command_tree(service) -> None:
         service="Connector id to link from",
         external_id="Role id or name on that connector",
     )
-    @app_commands.autocomplete(service=role_service_autocomplete(include_all=False))
+    @app_commands.autocomplete(
+        service=role_service_autocomplete(include_all=False),
+        local_id=role_local_ac,
+        external_id=role_external_ac,
+    )
     async def link_role_command(
         interaction: discord.Interaction, local_id: str, service: str, external_id: str
     ) -> None:
@@ -129,7 +210,7 @@ def build_command_tree(service) -> None:
         local_id="Role id or name on this connector",
         service="Connector id to unlink, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=role_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(service=role_service_autocomplete(include_all=True), local_id=role_local_ac)
     async def unlink_role_command(
         interaction: discord.Interaction, local_id: str, service: str | None = None
     ) -> None:
@@ -137,6 +218,7 @@ def build_command_tree(service) -> None:
 
     @linked_group.command(name="roles", description="List roles linked across the bridge (omit the role to list all)")
     @app_commands.describe(local_id="Role id or name on this connector (omit to list every linked role)")
+    @app_commands.autocomplete(local_id=role_local_ac)
     async def linked_roles_command(
         interaction: discord.Interaction, local_id: str | None = None
     ) -> None:
@@ -147,7 +229,7 @@ def build_command_tree(service) -> None:
         local_id="Role id or name on this connector",
         service="Connector id to mirror to, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=role_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(service=role_service_autocomplete(include_all=True), local_id=role_local_ac)
     async def mirror_role_command(
         interaction: discord.Interaction, local_id: str, service: str | None = None
     ) -> None:
@@ -159,7 +241,11 @@ def build_command_tree(service) -> None:
         service="Connector id to link from (see /status for configured connectors)",
         external_id="Channel id or name on that connector",
     )
-    @app_commands.autocomplete(service=channel_service_autocomplete(include_all=False))
+    @app_commands.autocomplete(
+        service=channel_service_autocomplete(include_all=False),
+        local_id=channel_local_ac,
+        external_id=channel_external_ac,
+    )
     async def link_channel_command(
         interaction: discord.Interaction, service: str, external_id: str, local_id: str | None = None
     ) -> None:
@@ -172,7 +258,9 @@ def build_command_tree(service) -> None:
         local_id="Channel id or name on this connector (defaults to the current channel)",
         service="Connector id to unlink, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=channel_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(
+        service=channel_service_autocomplete(include_all=True), local_id=channel_local_ac
+    )
     async def unlink_channel_command(
         interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
     ) -> None:
@@ -182,6 +270,7 @@ def build_command_tree(service) -> None:
         name="channels", description="List channels linked to a given channel (omit it for the current channel)"
     )
     @app_commands.describe(local_id="Channel id or name on this connector (defaults to the current channel)")
+    @app_commands.autocomplete(local_id=channel_local_ac)
     async def linked_channels_command(
         interaction: discord.Interaction, local_id: str | None = None
     ) -> None:
@@ -192,7 +281,9 @@ def build_command_tree(service) -> None:
         local_id="Channel id or name on this connector (defaults to the current channel)",
         service="Connector id to mirror to, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=channel_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(
+        service=channel_service_autocomplete(include_all=True), local_id=channel_local_ac
+    )
     async def mirror_channel_command(
         interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
     ) -> None:
@@ -207,7 +298,9 @@ def build_command_tree(service) -> None:
         external_id="User id or display name on that connector",
         local_id="The Discord member this is the same person as",
     )
-    @app_commands.autocomplete(service=user_service_autocomplete(include_all=False))
+    @app_commands.autocomplete(
+        service=user_service_autocomplete(include_all=False), external_id=user_external_ac
+    )
     async def link_user_command(
         interaction: discord.Interaction, service: str, external_id: str, local_id: discord.Member
     ) -> None:
@@ -245,7 +338,11 @@ def build_command_tree(service) -> None:
         service="Connector id to link from",
         external_id="Category id or name on that connector",
     )
-    @app_commands.autocomplete(service=category_service_autocomplete(include_all=False))
+    @app_commands.autocomplete(
+        service=category_service_autocomplete(include_all=False),
+        local_id=category_local_ac,
+        external_id=category_external_ac,
+    )
     async def link_category_command(
         interaction: discord.Interaction, service: str, external_id: str, local_id: str | None = None
     ) -> None:
@@ -258,7 +355,9 @@ def build_command_tree(service) -> None:
         local_id="Category id or name on this connector (defaults to the current channel's Category)",
         service="Connector id to unlink, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=category_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(
+        service=category_service_autocomplete(include_all=True), local_id=category_local_ac
+    )
     async def unlink_category_command(
         interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
     ) -> None:
@@ -268,6 +367,7 @@ def build_command_tree(service) -> None:
         name="categories", description="List Categories linked across the bridge (omit to use this channel's)"
     )
     @app_commands.describe(local_id="Category id or name on this connector (defaults to the current channel's)")
+    @app_commands.autocomplete(local_id=category_local_ac)
     async def linked_categories_command(
         interaction: discord.Interaction, local_id: str | None = None
     ) -> None:
@@ -280,7 +380,9 @@ def build_command_tree(service) -> None:
         local_id="Category id or name on this connector (defaults to the current channel's Category)",
         service="Connector id to mirror to, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=category_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(
+        service=category_service_autocomplete(include_all=True), local_id=category_local_ac
+    )
     async def mirror_category_command(
         interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
     ) -> None:
@@ -292,7 +394,11 @@ def build_command_tree(service) -> None:
         external_id="Emoji id or name on that connector",
         local_id="Emoji id or name on this connector",
     )
-    @app_commands.autocomplete(service=emote_service_autocomplete(include_all=False))
+    @app_commands.autocomplete(
+        service=emote_service_autocomplete(include_all=False),
+        local_id=emote_local_ac,
+        external_id=emote_external_ac,
+    )
     async def link_emote_command(
         interaction: discord.Interaction, service: str, external_id: str, local_id: str
     ) -> None:
@@ -305,7 +411,7 @@ def build_command_tree(service) -> None:
         local_id="Emoji id or name on this connector",
         service="Connector id to unlink, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True), local_id=emote_local_ac)
     async def unlink_emote_command(
         interaction: discord.Interaction, local_id: str, service: str | None = None
     ) -> None:
@@ -315,6 +421,7 @@ def build_command_tree(service) -> None:
         name="emotes", description="List custom emoji linked across the bridge (omit the emote to list all)"
     )
     @app_commands.describe(local_id="Emoji id or name on this connector (omit to list every linked emote)")
+    @app_commands.autocomplete(local_id=emote_local_ac)
     async def linked_emotes_command(
         interaction: discord.Interaction, local_id: str | None = None
     ) -> None:
@@ -327,7 +434,7 @@ def build_command_tree(service) -> None:
         local_id="Emoji id or name on this connector",
         service="Connector id to mirror to, or 'all' (default: all)",
     )
-    @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True))
+    @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True), local_id=emote_local_ac)
     async def mirror_emote_command(
         interaction: discord.Interaction, local_id: str, service: str | None = None
     ) -> None:

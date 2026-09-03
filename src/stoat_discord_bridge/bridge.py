@@ -657,6 +657,11 @@ async def run(config: BridgeConfig) -> None:
             resolve_emoji_id_by_name=sender.resolve_emoji_id_by_name,
             resolve_emoji=sender.resolve_emoji,
             ensure_emoji=receiver.create_emoji,
+            list_channels=sender.list_channels,
+            list_categories=sender.list_categories,
+            list_roles=sender.list_roles,
+            list_users=sender.list_users,
+            list_emotes=sender.list_emotes,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -714,6 +719,11 @@ async def run(config: BridgeConfig) -> None:
             resolve_emoji_id_by_name=sender.resolve_emoji_id_by_name,
             resolve_emoji=sender.resolve_emoji,
             ensure_emoji=receiver.create_emoji,
+            list_channels=sender.list_channels,
+            list_categories=sender.list_categories,
+            list_roles=sender.list_roles,
+            list_users=sender.list_users,
+            list_emotes=sender.list_emotes,
         )
         senders.append(sender)
         closables.append(sender)

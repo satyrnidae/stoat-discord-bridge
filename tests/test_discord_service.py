@@ -25,6 +25,7 @@ from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.services.discord_service import (
     DiscordSenderService,
     _connector_autocomplete_choices,
+    _entity_autocomplete_choices,
     _normalize_channel_id,
 )
 from stoat_discord_bridge.status import HealthTracker
@@ -127,10 +128,15 @@ class FakeInteraction:
         channel_name: str = "current-channel",
         user_id: int = 1,
         category: SimpleNamespace | None = None,
+        namespace: SimpleNamespace | None = None,
     ):
         self.channel_id = channel_id
         self.channel = SimpleNamespace(name=channel_name, category=category)
         self.user = SimpleNamespace(id=user_id)
+        # discord.py exposes the other, already-filled option values on
+        # `interaction.namespace` during an autocomplete callback - the
+        # `external_id` autocomplete reads `.service` off it.
+        self.namespace = namespace if namespace is not None else SimpleNamespace()
         self.sent: list[str] = []
         self.response = SimpleNamespace(send_message=self._send_message, defer=self._defer)
         self.followup = SimpleNamespace(send=self._send_message)
@@ -920,3 +926,184 @@ async def test_mirror_channel_destination_autocomplete_includes_all(sample_conne
     choices = await callback(FakeInteraction(), "")
 
     assert {c.value for c in choices} == {"all", "discord", "stoat-public", "irc"}
+
+
+# ------------------------------------------------ _entity_autocomplete_choices (external_id / local_id options)
+
+
+def _entities():
+    return [("111", "Admins"), ("222", "Moderators"), ("333", "Members")]
+
+
+def test_entity_autocomplete_choices_lists_everything_for_an_empty_query():
+    choices = _entity_autocomplete_choices("", _entities())
+    assert [(c.name, c.value) for c in choices] == [
+        ("Admins (111)", "111"),
+        ("Moderators (222)", "222"),
+        ("Members (333)", "333"),
+    ]
+
+
+def test_entity_autocomplete_choices_filters_by_name_substring_case_insensitively():
+    choices = _entity_autocomplete_choices("mod", _entities())
+    assert [c.value for c in choices] == ["222"]
+
+
+def test_entity_autocomplete_choices_filters_by_id_substring():
+    choices = _entity_autocomplete_choices("33", _entities())
+    assert [c.value for c in choices] == ["333"]
+
+
+def test_entity_autocomplete_choices_uses_the_bare_id_when_there_is_no_name():
+    choices = _entity_autocomplete_choices("", [("111", "")])
+    assert [(c.name, c.value) for c in choices] == [("111", "111")]
+
+
+def test_entity_autocomplete_choices_caps_at_25():
+    many = [(str(i), f"Role {i}") for i in range(40)]
+    assert len(_entity_autocomplete_choices("Role", many)) == 25
+
+
+def test_entity_autocomplete_choices_clips_an_overlong_label_to_100_chars():
+    [choice] = _entity_autocomplete_choices("", [("1", "x" * 200)])
+    assert len(choice.name) == 100
+
+
+def _connectors_with_entity_lists():
+    async def discord_roles():
+        return [("d1", "Local Admins")]
+
+    async def stoat_roles():
+        return [("s1", "Remote Admins"), ("s2", "Remote Mods")]
+
+    return {
+        "discord": ConnectorInfo(id="discord", label="Discord", list_roles=discord_roles),
+        "stoat-public": ConnectorInfo(id="stoat-public", label="Stoat (public)", list_roles=stoat_roles),
+    }
+
+
+async def test_link_role_external_id_autocomplete_reads_the_connector_named_by_service():
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(_connectors_with_entity_lists()))
+    callback = _autocomplete_callback(sender, "link role", "external_id")
+
+    choices = await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "")
+
+    assert [c.value for c in choices] == ["s1", "s2"]
+
+
+async def test_link_role_external_id_autocomplete_filters_by_current():
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(_connectors_with_entity_lists()))
+    callback = _autocomplete_callback(sender, "link role", "external_id")
+
+    choices = await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "mod")
+
+    assert [c.value for c in choices] == ["s2"]
+
+
+async def test_link_role_external_id_autocomplete_is_empty_until_service_is_picked():
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(_connectors_with_entity_lists()))
+    callback = _autocomplete_callback(sender, "link role", "external_id")
+
+    assert await callback(FakeInteraction(), "") == []
+
+
+async def test_link_role_local_id_autocomplete_always_reads_this_discord_connector():
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(_connectors_with_entity_lists()))
+    callback = _autocomplete_callback(sender, "link role", "local_id")
+
+    # the `service` namespace value is irrelevant for a local id
+    choices = await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "")
+
+    assert [c.value for c in choices] == ["d1"]
+
+
+async def test_entity_autocomplete_handles_no_configured_linker():
+    sender = DiscordSenderService(
+        _discord_config(), on_message=_noop, health=HealthTracker({"discord": "Discord"}), role_linker=None
+    )
+    callback = _autocomplete_callback(sender, "link role", "external_id")
+
+    assert await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "") == []
+
+
+async def test_entity_autocomplete_swallows_a_raising_list_hook():
+    async def boom():
+        raise RuntimeError("gateway down")
+
+    connectors = {"stoat-public": ConnectorInfo(id="stoat-public", label="Stoat", list_roles=boom)}
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(connectors))
+    callback = _autocomplete_callback(sender, "link role", "external_id")
+
+    assert await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "") == []
+
+
+async def test_entity_autocomplete_is_empty_when_the_connector_has_no_list_hook():
+    connectors = {"stoat-public": ConnectorInfo(id="stoat-public", label="Stoat")}  # list_roles unset (e.g. IRC)
+    sender = _make_sender(FakeLinker(), role_linker=FakeLinker(connectors))
+    callback = _autocomplete_callback(sender, "link role", "external_id")
+
+    assert await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "") == []
+
+
+async def test_link_channel_external_id_autocomplete_reads_list_channels():
+    async def stoat_channels():
+        return [("c1", "general"), ("c2", "off-topic")]
+
+    connectors = {"stoat-public": ConnectorInfo(id="stoat-public", label="Stoat", list_channels=stoat_channels)}
+    sender = _make_sender(FakeLinker(connectors))
+    callback = _autocomplete_callback(sender, "link channel", "external_id")
+
+    choices = await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "off")
+
+    assert [c.value for c in choices] == ["c2"]
+
+
+async def test_link_user_external_id_autocomplete_reads_the_user_linkers_list_users():
+    async def stoat_users():
+        return [("u1", "corvid"), ("u2", "jay")]
+
+    connectors = {"stoat-public": ConnectorInfo(id="stoat-public", label="Stoat", list_users=stoat_users)}
+    sender = _make_sender(FakeLinker(), user_linker=FakeLinker(connectors))
+    callback = _autocomplete_callback(sender, "link user", "external_id")
+
+    choices = await callback(FakeInteraction(namespace=SimpleNamespace(service="stoat-public")), "")
+
+    assert [c.value for c in choices] == ["u1", "u2"]
+
+
+# ------------------------------------------------ DiscordLookupsMixin.list_* (autocomplete data source)
+
+
+async def test_list_roles_skips_the_default_everyone_role(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = SimpleNamespace(
+        roles=[
+            SimpleNamespace(id=1, name="@everyone", is_default=lambda: True),
+            SimpleNamespace(id=2, name="Admins", is_default=lambda: False),
+        ]
+    )
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    assert await sender.list_roles() == [("2", "Admins")]
+
+
+async def test_list_channels_covers_text_and_voice(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = SimpleNamespace(
+        text_channels=[SimpleNamespace(id=10, name="general")],
+        voice_channels=[SimpleNamespace(id=20, name="Lounge")],
+    )
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    assert await sender.list_channels() == [("10", "general"), ("20", "Lounge")]
+
+
+async def test_list_hooks_return_empty_when_the_guild_is_uncached(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: None)
+
+    assert await sender.list_roles() == []
+    assert await sender.list_channels() == []
+    assert await sender.list_categories() == []
+    assert await sender.list_users() == []
+    assert await sender.list_emotes() == []
