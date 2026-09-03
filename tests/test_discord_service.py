@@ -254,7 +254,38 @@ async def test_mirror_channel_refuses_the_invoking_channel_when_the_bot_cant_see
 
     assert linker.mirror_channel_calls == []
     assert linker.mirror_channel_all_calls == []
+    assert interaction.deferred is False  # refused before the up-front defer
     assert interaction.sent and "can't see this channel" in interaction.sent[0]
+
+
+async def test_mirror_channel_defers_before_the_slow_linker_call_and_replies_via_followup():
+    # Regression for #34: creating channels+webhooks on the target outruns
+    # Discord's 3s interaction deadline, so the handler must defer up front
+    # and answer via followup rather than interaction.response.send_message.
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(interaction, "stoat", None)
+
+    assert interaction.deferred is True
+    assert interaction.sent == ["ok"]
+
+
+async def test_mirror_channel_link_error_is_reported_via_followup_after_defer():
+    from stoat_discord_bridge.admin_commands import LinkError
+
+    class _Boom(FakeLinker):
+        async def mirror_channel(self, **kwargs):
+            raise LinkError("nope")
+
+    sender = _make_sender(_Boom())
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(interaction, "stoat", None)
+
+    assert interaction.deferred is True
+    assert interaction.sent == ["nope"]
 
 
 async def test_mirror_channel_from_strips_a_pasted_mention_and_routes_to_the_linker():
