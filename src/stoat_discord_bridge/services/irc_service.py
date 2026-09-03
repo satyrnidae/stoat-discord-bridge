@@ -153,8 +153,17 @@ class _IrcClient(irc.bot.SingleServerIRCBot):
         # through to ServerConnection.connect() the same way connect_factory
         # is, per SingleServerIRCBot's **connect_params passthrough - falls
         # back to its own default (the nickname) if we don't set it.
-        # TODO: unverified against the installed `irc` library version, same
-        # caveat as the rest of this module's irc.bot usage.
+        #
+        # Verified against irc 20.5.0: SingleServerIRCBot.__init__ collects
+        # every kwarg past (server_list, nickname, realname) into
+        # **connect_params, and _connect() splats those into
+        # self.connect(host, port, nickname, password, ircname=realname,
+        # **connect_params) - i.e. straight into ServerConnection.connect(),
+        # which takes `username` (and `connect_factory`) as real named
+        # parameters and sends `USER <username> 0 * :<ircname>`. `username`
+        # defaults to the nickname there when unset, so omitting the kwarg
+        # (no `ident` configured) is the documented no-op. `realname` is the
+        # bot's own named param and reaches the same USER line as `ircname`.
         username_kwarg = {"username": config.ident} if config.ident else {}
         super().__init__(
             server_list=[(config.host, config.port)],

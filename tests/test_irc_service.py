@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import irc.client
 import pytest
 
 from stoat_discord_bridge.config import IrcConnectorConfig
@@ -83,6 +84,48 @@ def _patch_connection(monkeypatch, sender, connection: FakeConnection) -> None:
     # property, so patch the real underlying (plain, settable) attribute
     # rather than the property itself.
     monkeypatch.setattr(sender._client, "connection", connection)
+
+
+# ---------------------------------------------------------------- ident / username kwarg passthrough
+#
+# _IrcClient hands `username` (and `connect_factory`) to
+# SingleServerIRCBot.__init__ as bare **connect_params, trusting the library
+# to splat them into ServerConnection.connect(). These pin that contract to
+# irc 20.5.0 by driving a real _IrcClient._connect() with
+# ServerConnection.connect patched to record its arguments.
+
+
+def _capture_connect(monkeypatch) -> dict:
+    captured: dict = {}
+
+    def _record(self, server, port, nickname, password=None, **kwargs):
+        captured.update(server=server, port=port, nickname=nickname, password=password, **kwargs)
+
+    monkeypatch.setattr(irc.client.ServerConnection, "connect", _record)
+    return captured
+
+
+async def test_ident_is_forwarded_as_the_connect_username(monkeypatch):
+    captured = _capture_connect(monkeypatch)
+    sender = _make_sender(nick="bot", ident="bridged")
+
+    sender._client._connect()
+
+    assert captured["username"] == "bridged"
+    assert captured["nickname"] == "bot"
+    assert captured["ircname"] == "bot"  # realname -> ircname on the USER line
+    assert "connect_factory" in captured  # rides the same passthrough
+
+
+async def test_no_ident_omits_username_and_defaults_to_the_nick(monkeypatch):
+    captured = _capture_connect(monkeypatch)
+    sender = _make_sender(nick="bot", ident=None)
+
+    sender._client._connect()
+
+    # ServerConnection.connect defaults `username` to the nickname when unset,
+    # so passing nothing is the intended no-op.
+    assert "username" not in captured
 
 
 # ---------------------------------------------------------------- _check_is_oper / _resolve_whois
