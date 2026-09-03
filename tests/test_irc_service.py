@@ -415,6 +415,50 @@ async def test_ensure_channel_lowercases_and_hyphenates_a_thread_style_name(monk
     assert conn.join_calls == ["#test-thread"]
 
 
+async def test_ensure_channel_strips_characters_irc_channel_names_cant_hold(monkeypatch):
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    result = await sender.ensure_channel("gen,er:al")
+
+    assert result == "#general"
+    assert conn.join_calls == ["#general"]
+
+
+# ---------------------------------------------------------- resolve_channel_id_by_name (issue #41)
+
+
+async def test_resolve_channel_id_by_name_adds_hash_prefix():
+    sender = _make_sender()
+
+    assert await sender.resolve_channel_id_by_name("general") == "#general"
+
+
+async def test_resolve_channel_id_by_name_leaves_existing_prefix_alone():
+    sender = _make_sender()
+
+    assert await sender.resolve_channel_id_by_name("#general") == "#general"
+    assert await sender.resolve_channel_id_by_name("&local") == "&local"
+
+
+async def test_resolve_channel_id_by_name_sterilizes_input():
+    sender = _make_sender()
+
+    # spaces -> hyphens, illegal `,`/`:` dropped, lowercased
+    assert await sender.resolve_channel_id_by_name("My Cool, Channel") == "#my-cool-channel"
+
+
+# ---------------------------------------------------------- list_channels (issue #41)
+
+
+async def test_list_channels_offers_known_channels():
+    sender = _make_sender()
+    sender._channels = ["#general", "#random"]
+
+    assert await sender.list_channels() == [("#general", "general"), ("#random", "random")]
+
+
 # ---------------------------------------------------------------- history-replay suppression
 
 

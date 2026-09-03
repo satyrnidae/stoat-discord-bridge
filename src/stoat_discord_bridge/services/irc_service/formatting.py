@@ -50,6 +50,32 @@ _HISTORY_REPLAY_NOTICE_RE = re.compile(r"Replaying up to (\d+) lines? of pre-joi
 _HISTORY_REPLAY_TIMEOUT = 5.0
 
 
+# Octets an IRC channel name can't contain (RFC 2812: NUL, BEL, CR, LF,
+# space, comma and `:`). Space is handled separately (collapsed to a hyphen
+# rather than dropped) so a Discord thread name like "Test Thread" becomes
+# "#test-thread", not "#testthread".
+_ILLEGAL_CHANNEL_CHARS = re.compile(r"[\x00\x07\r\n,:]")
+# Channel-type prefixes IRC itself uses; a name already carrying one keeps it
+# rather than getting a `#` stacked on top.
+_CHANNEL_PREFIXES = "#&+!"
+
+
+def normalize_channel_name(name: str) -> str:
+    """Fold an arbitrary channel token into the `#name` shape IRC servers
+    actually accept, so `/link channel irc general` works the same as
+    `/link channel irc #general` (issue #41). Local channel names on the
+    other connectors are plain kebab-case with no prefix, and a Discord
+    *thread* name can additionally carry spaces/capitals - so: lowercased,
+    runs of whitespace collapsed to a single hyphen, characters IRC channel
+    names can't contain stripped, and a single leading `#` guaranteed (an
+    existing `#`/`&`/`+`/`!` prefix is kept as-is)."""
+    collapsed = re.sub(r"\s+", "-", name.strip().lower())
+    prefix = "#"
+    if collapsed[:1] in _CHANNEL_PREFIXES:
+        prefix, collapsed = collapsed[0], collapsed[1:]
+    return f"{prefix}{_ILLEGAL_CHANNEL_CHARS.sub('', collapsed)}"
+
+
 def _split_permanent_mode(modes: str) -> tuple[str | None, bool]:
     """Split a MODE string like `+HtnPR` into (`+HtnR`, True) - the modes to
     apply to a channel immediately on creation, and whether `P` (handled
