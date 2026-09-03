@@ -342,6 +342,14 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         normalize_channel_name)."""
         return normalize_channel_name(token)
 
+    def normalize_channel_name(self, name: str) -> str:
+        """Wired into `ConnectorInfo.normalize_channel_name` so a channel name
+        carried over to this connector by `/mirror channel` is stored in the
+        same `#name` shape `ensure_channel` gives the id (issue #51) - otherwise
+        a channel mirrored as `danksquad` lands with id `#danksquad` but name
+        `danksquad`. Synchronous, unlike `resolve_channel_id_by_name`."""
+        return normalize_channel_name(name)
+
     async def list_channels(self) -> list[tuple[str, str]]:
         """Autocomplete source for Discord's `/link channel` `external_id`
         option when its `service` is this IRC connector (issue #41). IRC has
