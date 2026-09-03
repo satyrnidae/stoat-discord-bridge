@@ -18,7 +18,13 @@ any number of connectors of each kind. On Discord, every such argument has
 autocomplete listing the bridge's currently configured connectors.
 
 `<external_id>` is an id that lives on *another* connector; `<local_id>` is an
-id on the connector the command is run on.
+id on the connector the command is run on. On Discord both are also
+autocompleted: `<external_id>` offers the real channels / roles / users /
+Categories / emoji on the connector picked in `<service>` (so pick
+`<service>` first), and `<local_id>` offers this guild's own. Autocomplete
+covers Discord and Stoat connectors; an IRC `<service>` returns no
+suggestions (type the `#channel` / nick directly). Every id argument still
+accepts a value typed by hand — an id, or a bare name.
 
 ## Conventions by connector
 

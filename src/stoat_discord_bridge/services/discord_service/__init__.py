@@ -16,7 +16,10 @@ Submodules:
 """
 
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
-from stoat_discord_bridge.services.discord_service.commands import _connector_autocomplete_choices
+from stoat_discord_bridge.services.discord_service.commands import (
+    _connector_autocomplete_choices,
+    _entity_autocomplete_choices,
+)
 from stoat_discord_bridge.services.discord_service.formatting import _CONTENT_LIMIT, _normalize_channel_id
 from stoat_discord_bridge.services.discord_service.receiver import DiscordReceiverService
 from stoat_discord_bridge.services.discord_service.sender import DiscordSenderService
@@ -26,6 +29,7 @@ __all__ = [
     "DiscordReceiverService",
     "_DiscordClient",
     "_connector_autocomplete_choices",
+    "_entity_autocomplete_choices",
     "_normalize_channel_id",
     "_CONTENT_LIMIT",
 ]

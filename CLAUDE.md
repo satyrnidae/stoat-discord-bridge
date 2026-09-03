@@ -209,7 +209,18 @@ commands remain.
 Every id argument to a channel, role, user, category or emote command also
 accepts a bare name (`ConnectorInfo.resolve_channel_id_by_name` /
 `resolve_role_id_by_name` / `resolve_user_id_by_name` /
-`resolve_category_id_by_name`). Shared logic
+`resolve_category_id_by_name`). On Discord those id options are also
+**autocompleted**: the `external_id` option lists the real
+channels/roles/users/Categories/emoji on whatever connector the `service`
+option names, and `local_id` lists this guild's own — pulled live from the
+target `ConnectorInfo.list_channels` / `list_categories` / `list_roles` /
+`list_users` / `list_emotes` hooks (Discord + Stoat implement them off their
+cached guild/server; IRC leaves them unset). `_entity_autocomplete_choices`
+(`services/discord_service/commands.py`) is the shared filter, the entity-id
+counterpart of `_connector_autocomplete_choices`; every lookup is
+best-effort (an un-picked `service`, an unset or raising hook, or a
+disconnected client all just yield an empty menu and the option still takes
+a hand-typed id/name). Shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
 `EmoteLinker` / `UserLinker` / `RoleLinker`), called
 identically from each connector's own `services/*.py` module. Nothing is

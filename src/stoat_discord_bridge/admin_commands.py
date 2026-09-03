@@ -225,6 +225,23 @@ class ConnectorInfo:
     # then reports that connector as unsupported. Wired straight to the
     # receiver's existing create_emoji.
     ensure_emoji: Callable[["CustomEmoji"], Awaitable["CustomEmoji | None"]] | None = None
+    # --- Autocomplete listing hooks. Each returns every entity of that kind
+    # currently visible on this connector as [(native_id, display_name), ...]
+    # (unsorted; the caller filters and caps). Discord's slash commands call
+    # these to populate the `external_id` / `local_id` option autocomplete -
+    # `external_id` off the connector picked in the `service` option,
+    # `local_id` off the Discord connector itself - so an operator picks a
+    # real channel/role/user/Category/emoji from the menu instead of pasting
+    # a raw id. Best-effort: None (unset), an exception, or an empty list all
+    # just mean "no suggestions" - the option still accepts a hand-typed id
+    # or name. IRC leaves every one unset (its ids are already human-typable
+    # names). list_roles / list_categories / list_emotes are Discord/Stoat
+    # only, like the rest of their hook families. ---
+    list_channels: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
+    list_categories: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
+    list_roles: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
+    list_users: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
+    list_emotes: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
 
 
 class ChannelLinker:
