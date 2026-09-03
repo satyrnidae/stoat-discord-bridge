@@ -192,8 +192,10 @@ class StoatLinkingMixin:
         )
         await self._reply(ctx, summary)
 
-    async def _mirror_emote(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
-        """`/mirror emote to <local_id|name> [<service>|all]`."""
+    async def _mirror_emote(
+        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+    ) -> None:
+        """`/mirror emote to <local_id|name> [<service>|all] [new_name]`."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -210,7 +212,7 @@ class StoatLinkingMixin:
                 )
             else:
                 summary = await self._emote_linker.mirror_emote(
-                    local_connector=self.connector_id, local_emote=local_id, destination=service
+                    local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
                 )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror emote rejected: %s", self.connector_id, exc)
@@ -218,9 +220,11 @@ class StoatLinkingMixin:
             return
         await self._reply(ctx, summary)
 
-    async def _mirror_emote_from(self, ctx, service: str, external_id: str) -> None:
-        """`/mirror emote from <service> <external_id|name>`: recreate-or-match
-        `service`'s custom emoji locally and link them."""
+    async def _mirror_emote_from(
+        self, ctx, service: str, external_id: str, new_name: str | None = None
+    ) -> None:
+        """`/mirror emote from <service> <external_id|name> [new_name]`:
+        recreate-or-match `service`'s custom emoji locally and link them."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -229,7 +233,7 @@ class StoatLinkingMixin:
             return
         try:
             summary = await self._emote_linker.mirror_emote_from(
-                local_connector=self.connector_id, source=service, source_emote=external_id
+                local_connector=self.connector_id, source=service, source_emote=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror emote from rejected: %s", self.connector_id, exc)
@@ -265,8 +269,10 @@ class StoatLinkingMixin:
             return
         await self._reply(ctx, summary)
 
-    async def _mirror_channel(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
-        """`/mirror channel [local_id|name] [<service>|all]`: local_id
+    async def _mirror_channel(
+        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+    ) -> None:
+        """`/mirror channel [local_id|name] [<service>|all] [new_name]`: local_id
         defaults to the invoking channel; service defaults to "all"."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
@@ -303,6 +309,7 @@ class StoatLinkingMixin:
                     local_channel_name=channel_name,
                     destination=service,
                     local_channel_category=channel_category,
+                    new_name=new_name,
                 )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror channel rejected: %s", self.connector_id, exc)
@@ -310,10 +317,12 @@ class StoatLinkingMixin:
             return
         await self._reply(ctx, summary)
 
-    async def _mirror_channel_from(self, ctx, service: str, external_id: str) -> None:
-        """`/mirror channel from <service> <external_id|name>`: create a local
-        channel mirroring `service`'s and link them, landing it in the local
-        counterpart of the source channel's linked Category."""
+    async def _mirror_channel_from(
+        self, ctx, service: str, external_id: str, new_name: str | None = None
+    ) -> None:
+        """`/mirror channel from <service> <external_id|name> [new_name]`: create
+        a local channel mirroring `service`'s and link them, landing it in the
+        local counterpart of the source channel's linked Category."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -322,7 +331,7 @@ class StoatLinkingMixin:
             return
         try:
             summary = await self._linker.mirror_channel_from(
-                local_connector=self.connector_id, source=service, source_id=external_id
+                local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror channel from rejected: %s", self.connector_id, exc)
@@ -393,8 +402,10 @@ class StoatLinkingMixin:
             return
         await self._reply(ctx, summary)
 
-    async def _mirror_category(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
-        """`/mirror category [<local_id|name>] [<service>|all]`."""
+    async def _mirror_category(
+        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+    ) -> None:
+        """`/mirror category [<local_id|name>] [<service>|all] [new_name]`."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -415,17 +426,21 @@ class StoatLinkingMixin:
             if service is None or service.lower() == "all":
                 summary = await self._category_linker.mirror_category_all(**kwargs)
             else:
-                summary = await self._category_linker.mirror_category(destination=service, **kwargs)
+                summary = await self._category_linker.mirror_category(
+                    destination=service, new_name=new_name, **kwargs
+                )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror category rejected: %s", self.connector_id, exc)
             await self._reply(ctx, str(exc))
             return
         await self._reply(ctx, summary or "Nothing to mirror.")
 
-    async def _mirror_category_from(self, ctx, service: str, external_id: str) -> None:
-        """`/mirror category from <service> <external_id|name>`: create a local
-        Category mirroring `service`'s, link them, and relocate/mirror its
-        channels into the local Category."""
+    async def _mirror_category_from(
+        self, ctx, service: str, external_id: str, new_name: str | None = None
+    ) -> None:
+        """`/mirror category from <service> <external_id|name> [new_name]`: create
+        a local Category mirroring `service`'s, link them, and relocate/mirror
+        its channels into the local Category."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -434,7 +449,7 @@ class StoatLinkingMixin:
             return
         try:
             summary = await self._category_linker.mirror_category_from(
-                local_connector=self.connector_id, source=service, source_id=external_id
+                local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror category from rejected: %s", self.connector_id, exc)
@@ -528,8 +543,10 @@ class StoatLinkingMixin:
         )
         await self._reply(ctx, summary)
 
-    async def _mirror_role(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
-        """`/mirror role to <local_id|name> [<service>|all]`."""
+    async def _mirror_role(
+        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+    ) -> None:
+        """`/mirror role to <local_id|name> [<service>|all] [new_name]`."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -546,7 +563,7 @@ class StoatLinkingMixin:
                 )
             else:
                 summary = await self._role_linker.mirror_role(
-                    local_connector=self.connector_id, local_role=local_id, destination=service
+                    local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
                 )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror role rejected: %s", self.connector_id, exc)
@@ -554,9 +571,11 @@ class StoatLinkingMixin:
             return
         await self._reply(ctx, summary)
 
-    async def _mirror_role_from(self, ctx, service: str, external_id: str) -> None:
-        """`/mirror role from <service> <external_id|name>`: create-or-match a
-        local role mirroring `service`'s and link them."""
+    async def _mirror_role_from(
+        self, ctx, service: str, external_id: str, new_name: str | None = None
+    ) -> None:
+        """`/mirror role from <service> <external_id|name> [new_name]`:
+        create-or-match a local role mirroring `service`'s and link them."""
         if not self._is_admin(ctx.message):
             await self._reply(ctx, "You need the Manage Server permission to do that.")
             return
@@ -565,7 +584,7 @@ class StoatLinkingMixin:
             return
         try:
             summary = await self._role_linker.mirror_role_from(
-                local_connector=self.connector_id, source=service, source_role=external_id
+                local_connector=self.connector_id, source=service, source_role=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[stoat:%s] /mirror role from rejected: %s", self.connector_id, exc)

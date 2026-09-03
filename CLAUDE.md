@@ -204,7 +204,16 @@ reach it on each connector is documented in
 `/mirror <noun>` behaviour), `from <service> <external_id>` pulls a remote
 entity in and creates the local copy - respecting already-linked entities
 (a `from` channel lands in the local counterpart of the source channel's
-linked Category; bridge/mapping groups are reused). `/mirror channel` (both
+linked Category; bridge/mapping groups are reused). Both directions of every
+`/mirror <noun>` take an optional trailing `new_name` (`admin_commands.py`'s
+`_clean_new_name`): the name the counterpart is created/matched under on the
+destination instead of carrying the source name over - routed through the
+destination's `ensure_*` hook so it's destination-normalised and still
+get-or-creates (so a same-named existing entity is matched, not duplicated);
+the way to aim `/mirror channel` at an unlinked existing destination channel,
+IRC especially (issue #44). Not on the `all` fan-out; on IRC it's a trailing
+`AS <new_name>`; `/mirror category`'s renames only the Category, not its
+mirrored child channels. `/mirror channel` (both
 directions) refuses a source channel the bridge bot can't see - gated by
 `ConnectorInfo.can_view_channel` (Discord/Stoat check the bot member's
 `view_channel` on the channel; IRC leaves it unset), checked in

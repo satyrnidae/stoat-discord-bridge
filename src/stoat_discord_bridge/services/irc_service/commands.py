@@ -32,8 +32,8 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   LINKED USERS [local_id|name] - cross-connector user links, read-only
   LINK CHANNEL <local_id> <service> <external_id> - bridge a channel (IRC-operator)
   LINK USER <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (IRC-operator)
-  MIRROR CHANNEL TO [service|all] <local_id> - create+link a matching channel elsewhere (IRC-operator)
-  MIRROR CHANNEL FROM <service> <external_id> - create+link a local channel mirroring a remote one (IRC-operator)
+  MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] - create+link a matching channel elsewhere (IRC-operator)
+  MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>] - create+link a local channel mirroring a remote one (IRC-operator)
   UNLINK CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK USER [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
   HELP - this message"""
@@ -139,6 +139,15 @@ class IrcAdminCommandsMixin:
             # 2 args are service then id.
             direction = args[0].upper() if args else ""
             rest = args[1:]
+            # An optional trailing `AS <new_name>` renames the counterpart on
+            # the destination instead of carrying the source name over (issue
+            # #44) - split it off before the positional parse below. Only the
+            # single-destination TO and the FROM forms honour it (a fan-out
+            # `all` has many destinations, so one name can't apply).
+            new_name: str | None = None
+            if len(rest) >= 2 and rest[-2].upper() == "AS":
+                new_name = rest[-1]
+                rest = rest[:-2]
             if self._linker is None:
                 self._notify(nick, "Linking isn't configured.")
                 return
@@ -157,15 +166,17 @@ class IrcAdminCommandsMixin:
                         local_channel_id=rest[1],
                         local_channel_name=rest[1],
                         destination=rest[0],
+                        new_name=new_name,
                     )
                 elif direction == "FROM" and len(rest) == 2:
                     summary = await self._linker.mirror_channel_from(
-                        local_connector=self.connector_id, source=rest[0], source_id=rest[1]
+                        local_connector=self.connector_id, source=rest[0], source_id=rest[1], new_name=new_name
                     )
                 else:
                     self._notify(
                         nick,
-                        "Usage: MIRROR CHANNEL TO [service|all] <local_id> | MIRROR CHANNEL FROM <service> <external_id>",
+                        "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] | "
+                        "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
                     )
                     return
             except LinkError as exc:

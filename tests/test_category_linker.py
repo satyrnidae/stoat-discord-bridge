@@ -384,6 +384,65 @@ async def test_mirror_category_creates_links_and_mirrors_child_channels(fake_db)
     assert "Linked" in summary
 
 
+async def test_mirror_category_new_name_titles_the_counterpart_only(fake_db):
+    # issue #44: `new_name` titles the destination Category; child channels
+    # still carry their own names over.
+    ensure_category, created = _ensure_category_fake()
+    ensure_channel_calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        ensure_channel_calls.append((name, category))
+        return f"dest-chan-{name}"
+
+    async def channels_in_category(cid):
+        return [("s-chan-1", "general")]
+
+    connectors = {
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", channels_in_category=channels_in_category),
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", ensure_category=ensure_category, ensure_channel=ensure_channel
+        ),
+    }
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+
+    await linker.mirror_category(
+        local_connector="stoat",
+        local_category_id="s-cat",
+        local_category_name="Team",
+        destination="discord",
+        new_name="Team Chat",
+    )
+
+    assert created == ["Team Chat"]
+    assert ensure_channel_calls == [("general", "dest-Team Chat")]
+
+
+async def test_mirror_category_from_new_name_titles_the_new_local_category(fake_db):
+    ensure_category, created = _ensure_category_fake()
+
+    async def channels_in_category(cid):
+        return []
+
+    async def resolve_category_name(cid):
+        return "Remote Team" if cid == "s-cat" else None
+
+    connectors = {
+        "stoat": ConnectorInfo(
+            id="stoat",
+            label="Stoat",
+            channels_in_category=channels_in_category,
+            resolve_category_name=resolve_category_name,
+        ),
+        "discord": ConnectorInfo(id="discord", label="Discord", ensure_category=ensure_category),
+    }
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+
+    await linker.mirror_category_from(
+        local_connector="discord", source="stoat", source_id="s-cat", new_name="Team Chat"
+    )
+    assert created == ["Team Chat"]
+
+
 async def test_mirror_category_reuses_an_existing_linked_category(fake_db):
     ensure_category, created = _ensure_category_fake()
 

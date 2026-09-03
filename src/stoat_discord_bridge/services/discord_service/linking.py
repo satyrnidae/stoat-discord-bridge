@@ -167,7 +167,11 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_mirror_category(
-        self, interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        self,
+        interaction: discord.Interaction,
+        local_id: str | None = None,
+        service: str | None = None,
+        new_name: str | None = None,
     ) -> None:
         if self._category_linker is None:
             await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
@@ -193,7 +197,9 @@ class DiscordLinkingMixin:
             if service is None or service.lower() == "all":
                 summary = await self._category_linker.mirror_category_all(**kwargs)
             else:
-                summary = await self._category_linker.mirror_category(destination=service, **kwargs)
+                summary = await self._category_linker.mirror_category(
+                    destination=service, new_name=new_name, **kwargs
+                )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror category rejected: %s", self.connector_id, exc)
             await interaction.followup.send(str(exc), ephemeral=True)
@@ -201,7 +207,7 @@ class DiscordLinkingMixin:
         await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_category_from(
-        self, interaction: discord.Interaction, service: str, external_id: str
+        self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror category from <service> <external_id>`: create a local
         Category mirroring `service`'s, link them, and relocate/mirror its
@@ -219,7 +225,7 @@ class DiscordLinkingMixin:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             summary = await self._category_linker.mirror_category_from(
-                local_connector=self.connector_id, source=service, source_id=external_id
+                local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror category from rejected: %s", self.connector_id, exc)
@@ -294,7 +300,11 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_mirror_role(
-        self, interaction: discord.Interaction, local_id: str | None, service: str | None
+        self,
+        interaction: discord.Interaction,
+        local_id: str | None,
+        service: str | None,
+        new_name: str | None = None,
     ) -> None:
         if self._role_linker is None:
             await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
@@ -320,7 +330,7 @@ class DiscordLinkingMixin:
                 )
             else:
                 summary = await self._role_linker.mirror_role(
-                    local_connector=self.connector_id, local_role=local_id, destination=service
+                    local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror-role rejected: %s", self.connector_id, exc)
@@ -329,7 +339,7 @@ class DiscordLinkingMixin:
         await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_role_from(
-        self, interaction: discord.Interaction, service: str, external_id: str
+        self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror role from <service> <external_id>`: create-or-match a
         local role mirroring `service`'s role, and link them."""
@@ -347,7 +357,7 @@ class DiscordLinkingMixin:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             summary = await self._role_linker.mirror_role_from(
-                local_connector=self.connector_id, source=service, source_role=external_id
+                local_connector=self.connector_id, source=service, source_role=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror role from rejected: %s", self.connector_id, exc)
@@ -417,7 +427,11 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_mirror_emote(
-        self, interaction: discord.Interaction, local_id: str | None, service: str | None
+        self,
+        interaction: discord.Interaction,
+        local_id: str | None,
+        service: str | None,
+        new_name: str | None = None,
     ) -> None:
         if self._emote_linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
@@ -442,7 +456,7 @@ class DiscordLinkingMixin:
                 )
             else:
                 summary = await self._emote_linker.mirror_emote(
-                    local_connector=self.connector_id, local_emote=local_id, destination=service
+                    local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror emote rejected: %s", self.connector_id, exc)
@@ -451,7 +465,7 @@ class DiscordLinkingMixin:
         await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_emote_from(
-        self, interaction: discord.Interaction, service: str, external_id: str
+        self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror emote from <service> <external_id>`: recreate-or-match
         `service`'s custom emoji locally, and link them."""
@@ -468,7 +482,7 @@ class DiscordLinkingMixin:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             summary = await self._emote_linker.mirror_emote_from(
-                local_connector=self.connector_id, source=service, source_emote=external_id
+                local_connector=self.connector_id, source=service, source_emote=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror emote from rejected: %s", self.connector_id, exc)
@@ -509,7 +523,11 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_mirror_channel(
-        self, interaction: discord.Interaction, service: str | None, local_id: str | None
+        self,
+        interaction: discord.Interaction,
+        service: str | None,
+        local_id: str | None,
+        new_name: str | None = None,
     ) -> None:
         if self._linker is None:
             await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
@@ -559,6 +577,7 @@ class DiscordLinkingMixin:
                     local_channel_name=channel_name,
                     destination=service,
                     local_channel_category=channel_category,
+                    new_name=new_name,
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror channel rejected: %s", self.connector_id, exc)
@@ -567,7 +586,7 @@ class DiscordLinkingMixin:
         await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_channel_from(
-        self, interaction: discord.Interaction, service: str, external_id: str
+        self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror channel from <service> <external_id>`: create a local
         channel mirroring `service`'s `external_id` and link them, placing it
@@ -586,7 +605,7 @@ class DiscordLinkingMixin:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             summary = await self._linker.mirror_channel_from(
-                local_connector=self.connector_id, source=service, source_id=external_id
+                local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
             )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror channel from rejected: %s", self.connector_id, exc)
