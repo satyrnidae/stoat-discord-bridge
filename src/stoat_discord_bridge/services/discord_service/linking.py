@@ -520,6 +520,18 @@ class DiscordLinkingMixin:
         else:
             channel_id = str(interaction.channel_id)
             channel_name = getattr(interaction.channel, "name", channel_id)
+            # The bot can be handed an interaction from a channel it can't
+            # actually see; mirroring it then names the new channel after
+            # Discord's `__hidden__` placeholder (issue #33). app_permissions
+            # is the interaction channel's computed perms for this app - no
+            # cache needed - so it catches the current-channel case even when
+            # the channel never reached the guild cache.
+            if not interaction.app_permissions.view_channel:
+                await interaction.response.send_message(
+                    "I can't see this channel, so I can't mirror it - grant me access to it first.",
+                    ephemeral=True,
+                )
+                return
         channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
             "[discord:%s] %s ran /mirror channel service=%s local_id=%s",
