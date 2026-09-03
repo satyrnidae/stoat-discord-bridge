@@ -130,6 +130,23 @@ def test_decorate_sender_name_source_and_pronouns():
     )
 
 
+def test_decorate_sender_name_max_len_keeps_the_suffix_when_it_fits():
+    assert (
+        decorate_sender_name("sat", source="IRC", pronouns="she/her", max_len=32)
+        == "sat [IRC, she/her]"
+    )
+
+
+def test_decorate_sender_name_max_len_drops_the_suffix_whole_when_it_overflows():
+    out = decorate_sender_name("a-long-enough-display-name", source="Stoat (public)", max_len=32)
+    assert out == "a-long-enough-display-name"
+    assert "[" not in out
+
+
+def test_decorate_sender_name_max_len_clips_a_bare_name_with_no_suffix():
+    assert decorate_sender_name("x" * 40, max_len=32) == "x" * 32
+
+
 def test_chunk_content_under_limit_is_one_chunk():
     assert chunk_content("short", 100) == ["short"]
 

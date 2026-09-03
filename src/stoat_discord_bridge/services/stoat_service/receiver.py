@@ -105,16 +105,17 @@ class StoatReceiverService(ReceiverService):
                 identity = await self._sender.get_masquerade_identity(local_user_id)
                 if identity is not None:
                     sender_name, avatar_url = identity
+        # Stoat caps a masquerade name at 32 chars; decorate_sender_name drops
+        # the "[Source, pronouns]" suffix whole when the decorated name won't
+        # fit rather than slicing it mid-token.
         sender_name = decorate_sender_name(
             sender_name,
             source=message.source_label if self._source_forwarding else None,
             pronouns=message.sender_pronouns if self._pronoun_forwarding else None,
+            max_len=32,
         )
         masquerade = stoat.MessageMasquerade(
-            # Stoat caps a masquerade name at 32 chars - a long name plus the
-            # "[Source]" suffix can overflow it; truncation is acceptable
-            # degradation (there's no separate subtitle field to put it in).
-            name=sender_name[:32],
+            name=sender_name,
             avatar=avatar_url,
         )
         # Re-upload the message's attachments as native Stoat files rather

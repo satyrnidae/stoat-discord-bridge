@@ -151,7 +151,9 @@ def strip_markdown(content: str) -> str:
     return content
 
 
-def decorate_sender_name(name: str, *, source: str | None = None, pronouns: str | None = None) -> str:
+def decorate_sender_name(
+    name: str, *, source: str | None = None, pronouns: str | None = None, max_len: int | None = None
+) -> str:
     """Fold an origin connector's source label and/or the sender's pronouns
     into a displayed sender name as a bracketed suffix - e.g.
     `decorate_sender_name("saturniidae", source="Stoat (public)", pronouns="she/her")`
@@ -162,9 +164,20 @@ def decorate_sender_name(name: str, *, source: str | None = None, pronouns: str 
     value is actually known); with neither, `name` is returned unchanged. Used
     by the Discord (webhook username) and Stoat (masquerade name) receivers -
     IRC builds its own `<nick, source, pronouns>` line prefix instead.
+
+    `max_len` caps the result to the target platform's name limit (Stoat's
+    32-char masquerade name, Discord's 80-char webhook username). Rather than
+    hard-slicing - which can cut the `[...]` suffix mid-token and leave a
+    dangling `[` - the suffix is dropped whole when it won't fit, and only the
+    bare (still clipped) name is returned.
     """
     parts = [part for part in (source, pronouns) if part]
-    return f"{name} [{', '.join(parts)}]" if parts else name
+    if not parts:
+        return name[:max_len] if max_len is not None else name
+    decorated = f"{name} [{', '.join(parts)}]"
+    if max_len is None or len(decorated) <= max_len:
+        return decorated
+    return name[:max_len]
 
 
 def inline_attachment_urls(content: str, attachments: Sequence[Attachment]) -> str:

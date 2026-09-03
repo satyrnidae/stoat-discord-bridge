@@ -43,6 +43,7 @@ from stoat_discord_bridge.services.caching import AsyncTTLCache
 from stoat_discord_bridge.services.stoat_service.client import _StoatClient
 from stoat_discord_bridge.services.stoat_service.formatting import (
     _avatar_url,
+    _channel_server_id,
     _display_name,
     _extract_pronouns,
     _map_attachments,
@@ -213,7 +214,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         if name:
             return name
         try:
-            server_id = getattr(message.channel, "server_id", None)
+            server_id = _channel_server_id(message.channel)
             if server_id is not None:
                 fresh = await self._client.get_server(server_id, partial=True).fetch_member(author.id)
             else:
@@ -240,7 +241,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         if getattr(author, "server_avatar", None) or getattr(author, "avatar", None):
             return _avatar_url(author)
         try:
-            server_id = getattr(message.channel, "server_id", None)
+            server_id = _channel_server_id(message.channel)
             if server_id is not None:
                 fresh = await self._client.get_server(server_id, partial=True).fetch_member(author.id)
             else:
@@ -260,7 +261,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         if not self._config.pronoun_forwarding:
             return None
         author = message.author
-        server_id = getattr(message.channel, "server_id", None) or self.server_id
+        server_id = _channel_server_id(message.channel) or self.server_id
         return await self._pronoun_cache.get(
             str(author.id), lambda uid: self._fetch_pronouns(uid, server_id)
         )

@@ -24,6 +24,7 @@ import stoat_discord_bridge.services.discord_service as _discord_pkg
 from stoat_discord_bridge.models import CustomEmoji, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.discord_service.formatting import (
+    _USERNAME_LIMIT,
     _discord_reaction_matches,
     _sanitize_emoji_name,
     _sanitize_username,
@@ -100,10 +101,14 @@ class DiscordReceiverService(ReceiverService):
                 self.connector_id,
                 message.sender_user_id,
             )
+        # Cap to the webhook-username limit here (dropping the "[Source,
+        # pronouns]" suffix whole rather than mid-token) so _sanitize_username's
+        # own hard slice never bisects the bracket.
         sender_name = decorate_sender_name(
             sender_name,
             source=message.source_label if self._source_forwarding else None,
             pronouns=message.sender_pronouns if self._pronoun_forwarding else None,
+            max_len=_USERNAME_LIMIT,
         )
         username = _sanitize_username(sender_name)
         # Re-upload the message's attachments as native Discord files rather

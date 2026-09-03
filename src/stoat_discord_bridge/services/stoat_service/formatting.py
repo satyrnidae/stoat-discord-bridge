@@ -30,6 +30,14 @@ def _channel_category(channel):
         return None
 
 
+def _channel_server_id(channel) -> str | None:
+    """The id of the server a message's channel belongs to, or None for a DM /
+    a partial channel that hasn't got it populated. Central enough to the
+    sender's fetch-a-fresh-member fallbacks (name / avatar / pronouns) to
+    share rather than re-spell `getattr(..., "server_id", None)` at each."""
+    return getattr(channel, "server_id", None)
+
+
 def _display_name(author) -> str:
     """Best-effort display name for a Stoat message author/member.
 

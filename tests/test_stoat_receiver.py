@@ -112,7 +112,7 @@ async def test_receive_folds_the_source_label_into_the_masquerade_name():
     assert channel.sent[0]["masquerade"].name == "Alice [Discord]"
 
 
-async def test_receive_source_decorated_masquerade_name_is_still_capped_at_32_chars():
+async def test_receive_drops_the_source_suffix_when_it_would_overflow_the_32_char_cap():
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))
     receiver = _make_receiver(client)
@@ -122,9 +122,11 @@ async def test_receive_source_decorated_masquerade_name_is_still_capped_at_32_ch
         target_channel_id="42",
     )
 
+    # the "[Stoat (public)]" suffix won't fit, so it's dropped whole rather
+    # than sliced mid-token into a dangling "[".
     name = channel.sent[0]["masquerade"].name
-    assert name == "a-fairly-long-display-name [Stoa"
-    assert len(name) == 32
+    assert name == "a-fairly-long-display-name"
+    assert "[" not in name
 
 
 async def test_receive_omits_the_source_label_when_source_forwarding_is_off():
