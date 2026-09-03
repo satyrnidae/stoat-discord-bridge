@@ -180,6 +180,11 @@ class FakeServer:
         self.fetch_emojis_calls += 1
         return list(self._emojis.values())
 
+    @property
+    def members(self):
+        # `BaseServer.members` is a Mapping[id, Member] in stoat.py 1.2.1
+        return dict(self._members)
+
     def add_member(self, user_id: str, member) -> None:
         self._members[user_id] = member
 
