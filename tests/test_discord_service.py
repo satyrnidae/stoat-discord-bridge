@@ -1163,3 +1163,58 @@ async def test_list_hooks_return_empty_when_the_guild_is_uncached(monkeypatch):
     assert await sender.list_categories() == []
     assert await sender.list_users() == []
     assert await sender.list_emotes() == []
+
+
+# ---------------------------------------------------------------- describe_channel / ensure_channel (issue #32)
+
+
+async def test_describe_channel_reads_topic_and_nsfw(monkeypatch):
+    from tests.fakes.fake_discord import FakeClient as _FakeDiscordClient
+
+    sender = _make_sender(FakeLinker())
+    channel = FakeGuildChannel(id=888, name="general", guild=FakeGuild(id=123))
+    channel.topic = "the topic"
+    channel.nsfw = True
+    client = _FakeDiscordClient()
+    client.add_channel(channel)
+    monkeypatch.setattr(sender, "_client", client)
+
+    meta = await sender.describe_channel("888")
+
+    assert meta.description == "the topic"
+    assert meta.nsfw is True
+    assert meta.icon_url is None  # Discord guild text channels have no icon
+
+
+async def test_ensure_channel_creates_a_text_channel_with_the_source_metadata(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = FakeGuild(id=123)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    from stoat_discord_bridge.models import ChannelMetadata
+
+    new_id = await sender.ensure_channel(
+        "general", "Team", metadata=ChannelMetadata(description="carried over", nsfw=True)
+    )
+
+    [created] = guild.created_text_channels
+    assert created["name"] == "general"
+    assert created["topic"] == "carried over"
+    assert created["nsfw"] is True
+    assert guild.created_categories == ["Team"]
+    assert new_id == str(guild.text_channels[0].id)
+
+
+async def test_ensure_channel_matches_an_existing_channel_and_skips_metadata(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = FakeGuild(id=123)
+    existing = FakeGuildChannel(id=888, name="general", guild=guild)
+    guild.text_channels.append(existing)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    from stoat_discord_bridge.models import ChannelMetadata
+
+    new_id = await sender.ensure_channel("general", metadata=ChannelMetadata(description="ignored"))
+
+    assert new_id == "888"
+    assert guild.created_text_channels == []  # matched, nothing created

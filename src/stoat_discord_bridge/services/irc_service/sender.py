@@ -16,7 +16,7 @@ from collections.abc import Awaitable
 
 from stoat_discord_bridge.admin_commands import ChannelLinker, UserLinker
 from stoat_discord_bridge.config import IrcConnectorConfig
-from stoat_discord_bridge.models import StandardMessage
+from stoat_discord_bridge.models import ChannelMetadata, StandardMessage
 from stoat_discord_bridge.services.base import OnMessage, SenderService
 from stoat_discord_bridge.services.irc_service.client import _IrcClient
 from stoat_discord_bridge.services.irc_service.commands import (
@@ -231,19 +231,25 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
             )
         )
 
-    async def join_channel(self, channel: str, *, permanent: bool = True) -> None:
+    async def join_channel(self, channel: str, *, permanent: bool = True, topic: str | None = None) -> None:
         """Called by ChannelLinker right after a fresh mapping involving this
         connector is created, so a newly-linked channel is joined immediately
         instead of waiting for a restart to pick it up from Mongo. `permanent`
         is False for a Discord-thread channel (see ensure_channel), which
         must never get _PERMANENT_CHANNEL_MODE even when `P` is in
-        default_channel_modes."""
+        default_channel_modes. `topic`, if given, is set as the channel TOPIC
+        - but only when this JOIN just created the channel (issue #32), same
+        first-joiner-is-opped reasoning as the MODE line below; on an
+        already-existing channel the server bounces it with
+        ERR_CHANOPRIVSNEEDED and it's a silent no-op."""
         is_new = channel not in self._channels
         if is_new:
             self._channels.append(channel)
         if self._client.connection.is_connected():
             logger.info("[irc:%s] joining %s", self.connector_id, channel)
             self._client.connection.join(channel)
+            if is_new and topic:
+                self._client.connection.topic(channel, topic)
             if is_new and self._config.default_channel_modes:
                 # Only meaningful if this JOIN just created the channel (the
                 # server auto-ops the first joiner of a previously-empty
@@ -299,6 +305,8 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         category: str | None = None,
         is_thread_category: bool = False,
         category_parent_channel_id: str | None = None,
+        *,
+        metadata: ChannelMetadata | None = None,
     ) -> str:
         """IRC has no separate channel-creation call - JOINing a channel
         that doesn't exist yet creates it (see join_channel, which already
@@ -314,10 +322,14 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         ConnectorInfo.ensure_channel) and ignored - IRC has no Category
         concept. `is_thread_category` is honoured only to withhold
         _PERMANENT_CHANNEL_MODE from a thread channel (threads are ephemeral
-        - see join_channel's `permanent`)."""
+        - see join_channel's `permanent`). From `metadata` (issue #32) only
+        `description` is usable - it becomes the channel TOPIC, set only when
+        this JOIN just created the channel (see join_channel); NSFW / icon
+        have no IRC equivalent and are ignored."""
         normalized = re.sub(r"\s+", "-", name.strip().lower())
         channel = normalized if normalized.startswith("#") else f"#{normalized}"
-        await self.join_channel(channel, permanent=not is_thread_category)
+        topic = metadata.description if metadata is not None else None
+        await self.join_channel(channel, permanent=not is_thread_category, topic=topic)
         return channel
 
     def _schedule(self, coro: Awaitable[None]) -> None:

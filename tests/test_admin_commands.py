@@ -9,7 +9,7 @@ from stoat_discord_bridge.admin_commands import (
     LinkError,
     UserLinker,
 )
-from stoat_discord_bridge.models import CustomEmoji
+from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
 from stoat_discord_bridge.storage.category_mappings import CategoryMapping, CategoryMappingRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
@@ -971,6 +971,69 @@ async def test_mirror_channel_forwards_category_to_ensure_channel(fake_db):
         local_channel_category="Team Alpha",
     )
     assert calls == [("general", "Team Alpha")]
+
+
+async def test_mirror_channel_reads_source_metadata_and_forwards_it_to_ensure_channel(fake_db):
+    ensure_calls = []
+
+    async def describe_channel(channel_id):
+        assert channel_id == "d1"
+        return ChannelMetadata(description="the source topic", nsfw=True)
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, *, metadata=None):
+        ensure_calls.append(metadata)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", describe_channel=describe_channel),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert ensure_calls == [ChannelMetadata(description="the source topic", nsfw=True)]
+
+
+async def test_mirror_channel_omits_the_metadata_kwarg_when_the_source_has_no_describe_hook(fake_db):
+    # An ensure_channel fake that doesn't accept `metadata` must still work -
+    # mirror_channel only passes the kwarg when there's metadata to pass.
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),  # no describe_channel
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert seen == ["general"]
+
+
+async def test_mirror_channel_survives_a_raising_describe_channel(fake_db):
+    async def describe_channel(channel_id):
+        raise RuntimeError("boom")
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, *, metadata=None):
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", describe_channel=describe_channel),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    result = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert "Linked" in result
 
 
 async def test_mirror_channel_forwards_is_thread_category_to_ensure_channel(fake_db):

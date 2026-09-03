@@ -52,8 +52,12 @@ class FakeConnection:
         self.part_calls: list[str] = []
         self.privmsg_calls: list[tuple[str, str]] = []
         self.mode_calls: list[tuple[str, str]] = []
+        self.topic_calls: list[tuple[str, str]] = []
         self._connected = connected
         self._nickname = nickname
+
+    def topic(self, channel: str, new_topic: str | None = None) -> None:
+        self.topic_calls.append((channel, new_topic))
 
     def whois(self, targets) -> None:
         self.whois_calls.append(targets)
@@ -413,6 +417,32 @@ async def test_ensure_channel_lowercases_and_hyphenates_a_thread_style_name(monk
 
     assert result == "#test-thread"
     assert conn.join_calls == ["#test-thread"]
+
+
+async def test_ensure_channel_sets_the_topic_from_metadata_on_a_freshly_created_channel(monkeypatch):
+    from stoat_discord_bridge.models import ChannelMetadata
+
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    await sender.ensure_channel("general", metadata=ChannelMetadata(description="the source topic", nsfw=True))
+
+    assert conn.join_calls == ["#general"]
+    assert conn.topic_calls == [("#general", "the source topic")]  # NSFW has no IRC equivalent, ignored
+
+
+async def test_ensure_channel_does_not_set_topic_when_the_channel_already_existed(monkeypatch):
+    from stoat_discord_bridge.models import ChannelMetadata
+
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+    sender._channels.append("#general")  # already joined/known
+
+    await sender.ensure_channel("general", metadata=ChannelMetadata(description="topic"))
+
+    assert conn.topic_calls == []
 
 
 # ---------------------------------------------------------------- history-replay suppression
