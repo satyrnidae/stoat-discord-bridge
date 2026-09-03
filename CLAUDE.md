@@ -193,11 +193,12 @@ out of order. Discord edits via `webhook.edit_message`, Stoat via
 
 Best-effort and silent (an untracked message, an unsupported target, a
 since-deleted post, or a raising hook are all skipped). Loop-safe two ways,
-like pin/role sync: each sender's edit handler drops a **bot-authored** edit
-(our own webhook/masquerade message being re-edited), and `BridgeCoordinator`
-keeps a ~10s record of the edits it issued so an echo that still slips
-through — e.g. Stoat's `event.after` uncached so the author can't be checked
-— is dropped before it fans back out.
+like pin/role sync: each sender's edit handler drops the bridge's own relayed
+copy being re-edited — Discord cache-free via the payload's `webhook_id`,
+Stoat via the bot author on `event.after` — and `BridgeCoordinator` keeps a
+~10s record of the edits it issued so an echo that still slips through (e.g.
+Stoat's `event.after` uncached so the author can't be checked) is dropped
+before it fans back out.
 
 ### Typing sync
 
