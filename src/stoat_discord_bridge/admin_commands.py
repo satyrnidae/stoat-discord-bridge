@@ -15,10 +15,13 @@ auto-links without an explicit admin command.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import functools
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -135,6 +138,111 @@ def _clean_new_name(raw: str | None) -> str | None:
 
 class LinkError(Exception):
     """User-facing error - callers should relay str(exc) back to the admin who ran the command."""
+
+
+class MirrorInProgressError(LinkError):
+    """A `/mirror <x>` command whose destination connector is still being
+    written to by another `/mirror` run - rejected up front rather than
+    left to race the first one into duplicate channels/Categories/roles/
+    emoji (issue #79). A LinkError subclass, so every existing
+    `except LinkError` / "relay str(exc) to the admin" path handles it."""
+
+
+class MirrorGuard:
+    """Serializes `/mirror <x> to|from|all` runs by *destination connector*
+    so two of them can't write into the same service at once and duplicate
+    each other's work (issue #79 - `/mirror channel` especially is slow, and
+    a second one firing mid-run re-does the not-yet-linked channels). One
+    instance is shared by every linker (ChannelLinker / CategoryLinker /
+    EmoteLinker / RoleLinker), so `/mirror channel to stoat` and
+    `/mirror role to stoat` exclude each other too.
+
+    A reservation is keyed to the running asyncio task: one mirror operation
+    that fans out across several linker methods in the same task (e.g.
+    `/mirror category`, which also mirrors each child channel, or the
+    `... all` variants) re-enters its own reservation freely, while a
+    genuinely concurrent command - always a separate task - is rejected with
+    a user-facing MirrorInProgressError. `reserve` never awaits between
+    checking and claiming, so it's atomic on the single event loop."""
+
+    def __init__(self) -> None:
+        # destination connector id -> the asyncio task holding it
+        self._held: dict[str, object] = {}
+
+    @contextlib.contextmanager
+    def reserve(
+        self, destinations: Iterable[str], connectors: dict[str, ConnectorInfo]
+    ) -> Iterator[None]:
+        # The owner identity that makes a reservation reentrant: the running
+        # task, or - if there somehow isn't one - a fresh object, so the call
+        # fails *closed* (every held destination reads as a clash) rather than
+        # matching a stored None and silently skipping the guard.
+        owner: object = asyncio.current_task() or object()
+        wanted = [d for d in dict.fromkeys(destinations) if d]
+        clash = [d for d in wanted if d in self._held and self._held[d] is not owner]
+        if clash:
+            names = ", ".join(
+                sorted((connectors[d].label if d in connectors else d) for d in clash)
+            )
+            raise MirrorInProgressError(
+                f"another /mirror into {names} is still running - wait for it to finish "
+                "before starting another, or its results may be duplicated."
+            )
+        claimed = [d for d in wanted if d not in self._held]
+        for d in claimed:
+            self._held[d] = owner
+        try:
+            yield
+        finally:
+            for d in claimed:
+                self._held.pop(d, None)
+
+
+def _guards_mirror(
+    destinations: Callable[[object, dict[str, object]], Iterable[str]],
+) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+    """Decorator for the linker `mirror_*` entry points: hold a `self._guard`
+    reservation on the destination connector(s) for the whole call, so a
+    second concurrent `/mirror` into the same service is rejected up front
+    (issue #79). `destinations(self, kwargs)` returns the connector ids to
+    reserve. All decorated methods take only keyword args after `self`, but
+    the wrapper stays fully transparent (`*args, **kwargs`); nested calls
+    within one asyncio task re-enter the reservation freely (see MirrorGuard).
+    The `... all` fan-outs reserve *every* destination up front
+    (`_mirror_all_other_connectors`), so if any one is busy the whole
+    operation is rejected before it starts rather than silently dropping that
+    connector - the error names which one."""
+
+    def deco(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+        @functools.wraps(fn)
+        async def wrapper(*args: object, **kwargs: object) -> str:
+            self = args[0]
+            guard: MirrorGuard = self._guard  # type: ignore[attr-defined]
+            connectors = self._connectors  # type: ignore[attr-defined]
+            with guard.reserve(destinations(self, kwargs), connectors):
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
+    return deco
+
+
+def _mirror_to_destination(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/mirror <x> to <service>` - reserve just the named destination."""
+    return (kw["destination"],)  # type: ignore[return-value]
+
+
+def _mirror_from_local(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/mirror <x> from <service> <id>` - the counterpart is created on the
+    invoking connector, so that's the one to reserve."""
+    return (kw["local_connector"],)  # type: ignore[return-value]
+
+
+def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/mirror <x> all` - reserve every connector the fan-out will write to,
+    so a single busy destination rejects the whole operation up front (with
+    that connector named) rather than being quietly skipped."""
+    return [d for d in self._connectors if d != kw["local_connector"]]  # type: ignore[attr-defined]
 
 
 @dataclass(frozen=True)
@@ -411,6 +519,7 @@ class ChannelLinker:
         channel_mappings: ChannelMappingRepository,
         connectors: dict[str, ConnectorInfo],
         category_mappings: CategoryMappingRepository | None = None,
+        guard: MirrorGuard | None = None,
     ) -> None:
         # `connectors` is populated in place by bridge.run() as each sender/
         # receiver is constructed - read lazily here, only once a command
@@ -421,6 +530,9 @@ class ChannelLinker:
         # channel's Category to its already-linked local counterpart. None in
         # tests that don't exercise that path.
         self._category_mappings = category_mappings
+        # Shared across every linker by bridge.run(); a lone instance here
+        # keeps direct-construction (tests) working - see MirrorGuard.
+        self._guard = guard or MirrorGuard()
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -492,6 +604,7 @@ class ChannelLinker:
             f"{local_label} channel '{destination_name}' ({destination_channel_id})."
         )
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_channel(
         self,
         *,
@@ -666,6 +779,7 @@ class ChannelLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_channel_all(
         self,
         *,
@@ -678,7 +792,9 @@ class ChannelLinker:
     ) -> str:
         """`/mirror channel all` - mirror_channel() against every other
         configured connector, one line of summary/skip/error per connector
-        rather than stopping at the first problem."""
+        rather than stopping at the first problem. Reserves every destination
+        up front, so if any one is mid-`/mirror` the whole fan-out is rejected
+        with that connector named, rather than quietly skipping it (issue #79)."""
         results = [
             await self.mirror_channel(
                 local_connector=local_connector,
@@ -694,6 +810,7 @@ class ChannelLinker:
         ]
         return "\n".join(results) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_channel_from(
         self,
         *,
@@ -981,11 +1098,16 @@ class CategoryLinker:
         thread_categories: ThreadCategoryRepository,
         channel_linker: ChannelLinker,
         connectors: dict[str, ConnectorInfo],
+        guard: MirrorGuard | None = None,
     ) -> None:
         self._category_mappings = category_mappings
         self._thread_categories = thread_categories
         self._channel_linker = channel_linker
         self._connectors = connectors
+        # Falls back to the ChannelLinker's guard so a bare
+        # CategoryLinker(... channel_linker ...) in tests still shares one
+        # guard with the child-channel mirrors it delegates.
+        self._guard = guard or channel_linker._guard
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -1125,6 +1247,7 @@ class CategoryLinker:
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_category(
         self,
         *,
@@ -1241,6 +1364,7 @@ class CategoryLinker:
                     lines.append(f"{dest_label}: '{cname}' failed: {exc}")
         return "\n".join(lines)
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_category_all(
         self,
         *,
@@ -1250,7 +1374,9 @@ class CategoryLinker:
         local_category_name: str | None = None,
     ) -> str:
         """`/mirror category <local> all` - mirror_category() against every
-        other configured connector."""
+        other configured connector. Reserves every destination up front, so a
+        single busy one rejects the whole fan-out with that connector named
+        (issue #79)."""
         results = [
             await self.mirror_category(
                 local_connector=local_connector,
@@ -1264,6 +1390,7 @@ class CategoryLinker:
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_category_from(
         self, *, local_connector: str, source: str, source_id: str, new_name: str | None = None
     ) -> str:
@@ -1307,13 +1434,24 @@ class CategoryLinker:
         for mapping in mapped:
             if mapping.connector_id == local_connector:
                 continue
-            result = await self._channel_linker.mirror_channel(
-                local_connector=local_connector,
-                local_channel_id=channel_id,
-                local_channel_name=channel_name,
-                destination=mapping.connector_id,
-                local_channel_category=mapping.category_name,
-            )
+            try:
+                result = await self._channel_linker.mirror_channel(
+                    local_connector=local_connector,
+                    local_channel_id=channel_id,
+                    local_channel_name=channel_name,
+                    destination=mapping.connector_id,
+                    local_channel_category=mapping.category_name,
+                )
+            except MirrorInProgressError:
+                # A manual `/mirror` into this destination is running - it'll
+                # pick this channel up itself if it's a child of the mirrored
+                # Category; otherwise the operator can re-run. Don't race it.
+                logger.info(
+                    "[category-sync] new channel %r -> %s deferred: a /mirror into it is in progress",
+                    channel_name,
+                    mapping.connector_id,
+                )
+                continue
             logger.info(
                 "[category-sync] new channel %r in %s's linked Category -> %s: %s",
                 channel_name,
@@ -1381,9 +1519,15 @@ class EmoteLinker:
     the token as an id if the hook is absent or comes up empty.
     """
 
-    def __init__(self, emoji_mappings: EmojiMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+    def __init__(
+        self,
+        emoji_mappings: EmojiMappingRepository,
+        connectors: dict[str, ConnectorInfo],
+        guard: MirrorGuard | None = None,
+    ) -> None:
         self._emoji_mappings = emoji_mappings
         self._connectors = connectors
+        self._guard = guard or MirrorGuard()
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -1431,6 +1575,7 @@ class EmoteLinker:
         local_label = local_info.label if local_info else local_connector
         return f"Linked {source_label} emote '{source_name}' to {local_label} emote '{local_name}'."
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_emote(
         self, *, local_connector: str, local_emote: str, destination: str, new_name: str | None = None
     ) -> str:
@@ -1512,16 +1657,22 @@ class EmoteLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_emote_all(self, *, local_connector: str, local_emote: str) -> str:
         """`/mirror emote <local> all` - mirror_emote() against every other
-        configured connector, one line of summary/skip/error per connector."""
+        configured connector, one line of summary/skip/error per connector.
+        Reserves every destination up front, so a single busy one rejects the
+        whole fan-out with that connector named (issue #79)."""
         results = [
-            await self.mirror_emote(local_connector=local_connector, local_emote=local_emote, destination=destination)
+            await self.mirror_emote(
+                local_connector=local_connector, local_emote=local_emote, destination=destination
+            )
             for destination in self._connectors
             if destination != local_connector
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_emote_from(
         self, *, local_connector: str, source: str, source_emote: str, new_name: str | None = None
     ) -> str:
@@ -1769,9 +1920,15 @@ class RoleLinker:
     the token as an id if the hook is absent or comes up empty.
     """
 
-    def __init__(self, role_mappings: RoleMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+    def __init__(
+        self,
+        role_mappings: RoleMappingRepository,
+        connectors: dict[str, ConnectorInfo],
+        guard: MirrorGuard | None = None,
+    ) -> None:
         self._role_mappings = role_mappings
         self._connectors = connectors
+        self._guard = guard or MirrorGuard()
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -1827,6 +1984,7 @@ class RoleLinker:
             f"{local_label} role '{local_name}' ({local_id})."
         )
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_role(
         self, *, local_connector: str, local_role: str, destination: str, new_name: str | None = None
     ) -> str:
@@ -1874,16 +2032,22 @@ class RoleLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_role_all(self, *, local_connector: str, local_role: str) -> str:
         """`/mirror role <local> all` - mirror_role() against every other
-        configured connector, one line of summary/skip/error per connector."""
+        configured connector, one line of summary/skip/error per connector.
+        Reserves every destination up front, so a single busy one rejects the
+        whole fan-out with that connector named (issue #79)."""
         results = [
-            await self.mirror_role(local_connector=local_connector, local_role=local_role, destination=destination)
+            await self.mirror_role(
+                local_connector=local_connector, local_role=local_role, destination=destination
+            )
             for destination in self._connectors
             if destination != local_connector
         ]
         return "\n".join(results) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_role_from(
         self, *, local_connector: str, source: str, source_role: str, new_name: str | None = None
     ) -> str:

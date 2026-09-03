@@ -22,6 +22,7 @@ from stoat_discord_bridge.admin_commands import (
     CategoryLinker,
     ChannelLinker,
     EmoteLinker,
+    MirrorInProgressError,
     RoleLinker,
     UserLinker,
 )
@@ -389,6 +390,16 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 is_thread_category=True,
                 category_from_channel_id=str(parent.id),
             )
+        except MirrorInProgressError as exc:
+            # A manual /mirror into one of the destinations is still running;
+            # mirror_channel_all is all-or-nothing, so the thread isn't
+            # mirrored anywhere this pass. Not an error - just log and bail.
+            logger.info(
+                "[discord:%s] deferred auto-mirror of thread %s: %s", self.connector_id, thread.id, exc
+            )
+            self._pending_thread_starter.pop(thread.id, None)
+            self._thread_ready.discard(thread.id)
+            return
         except Exception:
             logger.exception("[discord:%s] failed to auto-mirror thread %s", self.connector_id, thread.id)
             self._pending_thread_starter.pop(thread.id, None)

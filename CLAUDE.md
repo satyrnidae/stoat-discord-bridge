@@ -402,6 +402,31 @@ identically from each connector's own `services/*.py` module. Nothing is
 bridged (or mention-linked) automatically — every pair is linked explicitly
 via those commands.
 
+Every `mirror_*` entry point on those linkers is wrapped by
+`_guards_mirror`, which reserves the operation's **destination
+connector(s)** on a single shared `MirrorGuard` for the duration
+(`bridge.run()` hands the one instance to all four linkers) — `… to` /
+`… from` reserve the one destination, the `… all` fan-outs reserve *every*
+other connector (`_mirror_all_other_connectors`). A `/mirror` — of any
+entity kind — into a connector another `/mirror` is still writing to fails
+fast with a user-facing `MirrorInProgressError` (a `LinkError` subclass, so
+every "relay `str(exc)` to the admin" path already handles it), the message
+naming which connector is busy, rather than racing it into duplicate
+channels/Categories/roles/emoji (issue #79 — `/mirror channel` especially
+is slow). An `… all` is all-or-nothing: one busy destination rejects the
+whole fan-out before it starts rather than being silently skipped. The
+reservation is keyed to the running asyncio task, so one operation that
+fans out through several linker methods in the same task (`… all`,
+`/mirror category` mirroring each child channel, `… from` delegating to
+`… to`) re-enters freely, while a genuinely concurrent command — always a
+separate task — is the one rejected. Mirrors into *different* destinations
+still run in parallel. `CategoryLinker.sync_new_channel`'s auto-sync
+catches the rejection and defers that channel (the manual mirror picks it
+up if it's a child of the mirrored Category); `_handle_thread_create`'s
+auto-mirror (via `mirror_channel_all`) catches it and logs a deferral —
+the thread is re-tried on nothing, so it just isn't mirrored until the
+operator re-runs.
+
 When `/mirror channel` (or `/mirror channel from`, thread auto-mirror, or
 linked-Category auto-sync) **creates** a counterpart channel, it carries the
 source channel's cosmetic metadata over so the new channel isn't left blank
