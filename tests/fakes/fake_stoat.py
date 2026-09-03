@@ -134,6 +134,38 @@ class FakeChannel:
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
 
 
+class FakePartialMessageable:
+    """What stoat.py's Client.get_channel(..., partial=True) hands back on a
+    cache miss: an id plus the Messageable send/typing/fetch_message surface,
+    and deliberately no `.name` / `.category` / `.role_permissions` - those
+    live only on a fully cached channel."""
+
+    def __init__(self, id: str) -> None:
+        self.id = id
+        self.sent: list[dict] = []
+        self.typing_events: list[str] = []
+        self._messages: dict[str, FakeStoatMessage] = {}
+        self._next_message_id = 1
+
+    async def begin_typing(self) -> None:
+        self.typing_events.append("begin")
+
+    async def end_typing(self) -> None:
+        self.typing_events.append("end")
+
+    async def send(self, content: str, *, masquerade=None) -> FakeSentMessage:
+        self.sent.append({"content": content, "masquerade": masquerade})
+        message_id = str(self._next_message_id)
+        self._next_message_id += 1
+        return FakeSentMessage(id=message_id)
+
+    def get_message(self, message_id: str, *, partial: bool = True) -> FakeStoatMessage:
+        return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
+
+    async def fetch_message(self, message_id: str) -> FakeStoatMessage:
+        return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
+
+
 class FakeCategory:
     def __init__(self, id: str, title: str, *, channels: list[str] | None = None) -> None:
         self.id = id
@@ -247,11 +279,16 @@ class FakeClient:
     def add_user(self, user_id: str, user) -> None:
         self._users[user_id] = user
 
-    def get_channel(self, channel_id: str, *, partial: bool = False) -> FakeChannel:
+    def get_channel(self, channel_id: str, *, partial: bool = False):
+        # Matches stoat.py 1.2.1's Client.get_channel: a cache-only lookup
+        # that, on a miss, returns None (partial=False) or a bare
+        # PartialMessageable stub (partial=True) - it never raises for a
+        # missing channel and never does I/O. FakePartialMessageable carries
+        # just the send/typing/fetch_message surface, no .name/.category.
         channel = self._channels.get(channel_id)
-        if channel is None:
-            raise LookupError(f"no such channel: {channel_id}")
-        return channel
+        if channel is not None:
+            return channel
+        return FakePartialMessageable(channel_id) if partial else None
 
     def get_server(self, server_id: str, *, partial: bool = False) -> FakeServer:
         server = self._servers.get(server_id)
