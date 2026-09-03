@@ -704,6 +704,48 @@ async def test_ensure_channel_reports_channel_even_if_category_placement_fails()
     assert channel_id == "chan-general"  # channel creation itself still succeeded
 
 
+async def test_ensure_channel_clips_a_long_name_and_category_to_32_chars():
+    # A Discord channel/category name mirrored onto Stoat can exceed Stoat's
+    # 32-char limit; ensure_channel has to clip both before creating.
+    server = FakeServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("a" * 40, "b" * 40)
+
+    assert server.created_channels == ["a" * 32]
+    assert channel_id == "chan-" + "a" * 32
+    assert server.created_categories == [{"name": "b" * 32, "channels": ["chan-" + "a" * 32]}]
+
+
+async def test_ensure_channel_matches_an_existing_channel_stored_under_the_clipped_name():
+    # A re-mirror passes the full unclipped name again; it must line up with
+    # the clipped name Stoat kept last time rather than spawn a duplicate.
+    server = FakeServer(id="s1")
+    server.channels.append(FakeChannel(id="chan-existing", name="a" * 32))
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("a" * 40)
+
+    assert channel_id == "chan-existing"
+    assert server.created_channels == []
+
+
+async def test_ensure_category_clips_a_long_name_to_32_chars():
+    server = FakeServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    category_id = await sender.ensure_category("c" * 40)
+
+    assert category_id == "cat-" + "c" * 32
+    assert server.created_categories == [{"name": "c" * 32, "channels": []}]
+
+
 async def test_ensure_channel_falls_back_to_server_edit_when_the_category_endpoint_404s():
     class OldStoatServer(FakeServer):
         async def create_category(self, name, *, channels):

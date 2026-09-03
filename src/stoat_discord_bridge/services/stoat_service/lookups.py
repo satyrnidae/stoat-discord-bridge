@@ -16,6 +16,7 @@ import stoat
 from stoat import routes as stoat_routes
 from stoat.core import ulid_new
 
+from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.models import CustomEmoji
 from stoat_discord_bridge.services.stoat_service.formatting import _avatar_url, _display_name
 
@@ -242,7 +243,15 @@ class StoatLookupsMixin:
         Discord's thread/forum-post auto-mirroring created, so
         `/link-category` later refuses to link it and later threads for the
         same parent resolve the Category by id rather than title (surviving a
-        rename). See DiscordSenderService._handle_thread_create."""
+        rename). See DiscordSenderService._handle_thread_create.
+
+        `name` (and `category`) may have originated on a connector with a
+        looser name limit than Stoat's 32 chars - clip both so the create
+        can't be rejected and so the get-or-create match lines up with the
+        (already-clipped) name Stoat stored on a prior mirror."""
+        name = clip_name(name)
+        if category is not None:
+            category = clip_name(category)
         # Fetch the server fresh rather than trust the cache. Beyond needing a
         # full Server (`.categories` / `.channels`) instead of a BaseServer,
         # the channel-name dedupe below and `_ensure_channel_in_category`'s
@@ -574,7 +583,10 @@ class StoatLookupsMixin:
 
     async def ensure_role(self, name: str) -> str:
         """Get-or-create a role named `name`, returning its id - this
-        connector's `ConnectorInfo.ensure_role` for `/mirror role`."""
+        connector's `ConnectorInfo.ensure_role` for `/mirror role`. `name`
+        is clipped to Stoat's 32-char limit (it may have come from a
+        connector that allows longer role names)."""
+        name = clip_name(name)
         server = self._client.get_server(self.server_id, partial=False)
         if not isinstance(server, stoat.Server):
             server = await self._client.fetch_server(self.server_id)
@@ -680,6 +692,7 @@ class StoatLookupsMixin:
         (see its docstring); the raw-PATCH list comes from `_full_category_list`
         - a fresh fetch, not the cache - so it can't revert the layout
         (issue #27)."""
+        name = clip_name(name)
         server, raw_categories = await self._full_category_list()
         lowered = name.casefold()
         existing = next(
