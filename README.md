@@ -174,6 +174,19 @@ involved, and an unbridged channel or a transient failure is silently
 skipped. The indicator always shows as the bridge bot — neither a Discord
 webhook nor a Stoat masquerade can attribute typing to the origin user.
 
+## Message edit sync
+
+Editing a message's text in a bridged channel edits every other connector's
+relayed copy in place (`supports_edits` / `edit_message`, keyed off the same
+cross-connector message-id tracking reaction sync uses — Discord ⇄ Stoat
+only, IRC has no edit-in-place). The new text is re-rendered through the same
+mention/emoji rewrites the first relay used; a relay that was split across
+several posts is matched chunk-for-post. Best-effort and silent, and
+loop-safe two ways: a bot-authored edit (the bridge's own webhook/masquerade
+message) is ignored, and the coordinator briefly records the edits it issued
+so the resulting echo is dropped. The platform's own "(edited)" marker then
+appears on the copies automatically.
+
 ## Commands
 
 Every admin/status command (`/status`, `/link channel`, `/linked channels`,
@@ -200,7 +213,7 @@ src/stoat_discord_bridge/
   storage/
     mongo.py                 # MongoDB connection (motor)
     channel_mappings.py       # which channels, across connectors, are bridged together
-    message_sync.py            # cross-connector message ID references, for future edit/delete sync
+    message_sync.py            # cross-connector message ID references, for edit sync (and future delete sync)
     emoji_mappings.py           # cross-connector custom emoji ID references, for reaction sync
 ```
 

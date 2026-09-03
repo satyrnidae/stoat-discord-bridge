@@ -66,6 +66,13 @@ class _StoatClient(stoat_commands.Bot):
     async def on_message(self, message, /) -> None:
         await self._owner._handle_message(message)
 
+    async def on_message_update(self, event, /) -> None:
+        # stoat.events.MessageUpdateEvent (event_name 'message_update'):
+        # `.message` (PartialMessage, changed fields), `.before` / `.after`
+        # (Optional[Message], cache-dependent). Verified against stoat.py
+        # 1.2.1; live-server payload completeness unverified.
+        await self._owner._handle_message_update(event)
+
     async def on_server_channel_create(self, event, /) -> None:
         await self._owner._handle_channel_create(event.channel)
 

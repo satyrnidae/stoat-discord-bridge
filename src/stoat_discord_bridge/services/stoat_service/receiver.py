@@ -23,7 +23,7 @@ import stoat
 # `receive()` at call time - the historical monkeypatch seam.
 import stoat_discord_bridge.services.stoat_service as _stoat_pkg
 
-from stoat_discord_bridge.models import CustomEmoji, StandardMessage
+from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.formatting import (
     chunk_content,
@@ -61,6 +61,7 @@ class StoatReceiverService(ReceiverService):
     supports_emoji = True
     supports_pins = True
     supports_typing = True
+    supports_edits = True
 
     # How long a single relayed typing indicator lingers before it's ended,
     # unless `trigger_typing` is called again first. Stoat/Revolt keeps a
@@ -123,40 +124,11 @@ class StoatReceiverService(ReceiverService):
         # text - see issue #39. Anything too large or unfetchable falls back
         # to an inlined URL below so it's not lost.
         files, undownloadable = await download_attachments(message.attachments)
-        content = message.content_markdown or ""
-        if self._user_mappings is not None:
-            content = await rewrite_mentions(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="stoat",
-                user_mappings=self._user_mappings,
-                mentioned_users=message.mentioned_users,
-            )
-        if self._channel_mappings is not None:
-            content = await rewrite_channel_mentions(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="stoat",
-                channel_mappings=self._channel_mappings,
-            )
-        if self._role_mappings is not None:
-            content = await rewrite_role_mentions(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="stoat",
-                role_mappings=self._role_mappings,
-            )
-        if self._emoji_mappings is not None:
-            content = await rewrite_emoji(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="stoat",
-                emoji_mappings=self._emoji_mappings,
-            )
+        content = await self._rewrite_content(
+            origin_connector_id=message.origin_connector_id,
+            content_markdown=message.content_markdown,
+            mentioned_users=message.mentioned_users,
+        )
         if undownloadable:
             content = inline_attachment_urls(content, undownloadable)
         if content:
@@ -191,6 +163,81 @@ class StoatReceiverService(ReceiverService):
         # parent channel grouped at its top (see the sender method's docstring).
         await self._sender.group_parent_channel_with_threads(target_channel_id)
         return ids
+
+    async def _rewrite_content(
+        self, *, origin_connector_id: str, content_markdown: str | None, mentioned_users: dict[str, str]
+    ) -> str:
+        """Run the shared user / channel / role / emoji mention rewrites over a
+        relayed message's text - used by `receive()` for the first post and by
+        `edit_message()` to re-render it when the source is edited. Attachment
+        handling stays in `receive()` (an edit doesn't re-sync files)."""
+        content = content_markdown or ""
+        if self._user_mappings is not None:
+            content = await rewrite_mentions(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                user_mappings=self._user_mappings,
+                mentioned_users=mentioned_users,
+            )
+        if self._channel_mappings is not None:
+            content = await rewrite_channel_mentions(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                channel_mappings=self._channel_mappings,
+            )
+        if self._role_mappings is not None:
+            content = await rewrite_role_mentions(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                role_mappings=self._role_mappings,
+            )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="stoat",
+                emoji_mappings=self._emoji_mappings,
+            )
+        return content
+
+    async def edit_message(
+        self, *, target_channel_id: str, target_message_ids: list[str], edit: StandardEdit
+    ) -> None:
+        """Re-render the edited text and patch every masqueraded post the
+        original relay produced in this channel (Stoat lets the bot edit its
+        own messages, masqueraded ones included). A relay split across N posts
+        is matched chunk-for-post; a shortened edit blanks the leftover posts
+        (zero-width space); an edit that grew past the existing posts drops the
+        overflow. Best-effort: a post that's since been deleted, or an edit the
+        server rejects, is skipped."""
+        if not target_message_ids:
+            return
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        content = await self._rewrite_content(
+            origin_connector_id=edit.origin_connector_id,
+            content_markdown=edit.new_content_markdown,
+            mentioned_users=edit.mentioned_users,
+        )
+        chunks = chunk_content(content, _stoat_pkg._CONTENT_LIMIT) if content else []
+        for index, message_id in enumerate(target_message_ids):
+            body = chunks[index] if index < len(chunks) else "​"
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.edit(content=body)
+            except Exception:
+                logger.warning(
+                    "[stoat:%s] couldn't edit relayed message %s in channel %s",
+                    self.connector_id,
+                    message_id,
+                    target_channel_id,
+                )
 
     async def add_reaction(self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji) -> None:
         """Idempotent: skips the API call if the bridge bot has already

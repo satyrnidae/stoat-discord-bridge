@@ -44,12 +44,16 @@ class _Recorder:
         self.emoji_deleted: list = []
         self.pins: list = []
         self.typing: list = []
+        self.edits: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
 
     async def on_pin(self, pin) -> None:
         self.pins.append(pin)
+
+    async def on_edit(self, edit) -> None:
+        self.edits.append(edit)
 
     async def on_typing(self, typing) -> None:
         self.typing.append(typing)
@@ -76,6 +80,7 @@ def _make_sender(
         on_emoji_deleted=recorder.on_emoji_deleted,
         on_pin=recorder.on_pin,
         on_typing=recorder.on_typing,
+        on_edit=recorder.on_edit,
         linker=linker,
         category_linker=category_linker,
     )
@@ -200,13 +205,16 @@ async def test_handle_raw_message_edit_emits_a_pin_when_pinned_toggles():
     ]
 
 
-async def test_handle_raw_message_edit_ignores_a_plain_content_edit():
+async def test_handle_raw_message_edit_ignores_an_auto_embed_update():
+    # A link Discord just unfurled: `content` present (unchanged) but no
+    # `edited_timestamp` - must not tag the relayed copies "(edited)".
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
 
-    await sender._handle_raw_message_edit(_edit_payload(data={"content": "edited"}))
+    await sender._handle_raw_message_edit(_edit_payload(data={"content": "edited", "embeds": [{}]}))
 
     assert recorder.pins == []
+    assert recorder.edits == []
 
 
 async def test_handle_raw_message_edit_ignores_a_different_guild():
@@ -216,6 +224,36 @@ async def test_handle_raw_message_edit_ignores_a_different_guild():
     await sender._handle_raw_message_edit(_edit_payload(guild_id=999, data={"pinned": True}))
 
     assert recorder.pins == []
+
+
+async def test_handle_raw_message_edit_emits_an_edit_on_a_real_content_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(
+        _edit_payload(
+            data={"content": "fixed typo", "edited_timestamp": "2026-09-03T00:00:00+00:00"},
+            message=SimpleNamespace(author=SimpleNamespace(bot=False), mentions=[]),
+        )
+    )
+
+    assert [(e.origin_channel_id, e.origin_message_id, e.new_content_markdown) for e in recorder.edits] == [
+        ("42", "7", "fixed typo")
+    ]
+
+
+async def test_handle_raw_message_edit_drops_a_bot_authored_edit_echo():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(
+        _edit_payload(
+            data={"content": "x", "edited_timestamp": "2026-09-03T00:00:00+00:00"},
+            message=SimpleNamespace(author=SimpleNamespace(bot=True), mentions=[]),
+        )
+    )
+
+    assert recorder.edits == []
 
 
 # ---------------------------------------------------------------- _handle_typing

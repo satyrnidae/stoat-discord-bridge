@@ -27,6 +27,7 @@ from collections.abc import Awaitable, Callable
 
 from stoat_discord_bridge.models import (
     CustomEmoji,
+    StandardEdit,
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
@@ -37,6 +38,7 @@ from stoat_discord_bridge.models import (
 
 OnMessage = Callable[[StandardMessage], Awaitable[None]]
 OnReaction = Callable[[StandardReaction], Awaitable[None]]
+OnEdit = Callable[[StandardEdit], Awaitable[None]]
 OnPin = Callable[[StandardPin], Awaitable[None]]
 OnTyping = Callable[[StandardTyping], Awaitable[None]]
 OnEmojiCreated = Callable[[StandardEmojiCreated], Awaitable[None]]
@@ -66,6 +68,7 @@ class SenderService(ABC):
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
+        on_edit: OnEdit | None = None,
     ) -> None:
         self._on_message = on_message
         self._on_reaction = on_reaction
@@ -73,6 +76,7 @@ class SenderService(ABC):
         self._on_emoji_deleted = on_emoji_deleted
         self._on_pin = on_pin
         self._on_typing = on_typing
+        self._on_edit = on_edit
 
     @abstractmethod
     async def start(self) -> None:
@@ -87,6 +91,7 @@ class ReceiverService(ABC):
     supports_emoji: bool = False
     supports_pins: bool = False
     supports_typing: bool = False
+    supports_edits: bool = False
 
     @abstractmethod
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
@@ -112,6 +117,17 @@ class ReceiverService(ABC):
         """Remove the bridge's own `emoji` reaction from `target_message_id`.
         Only called when `supports_reactions`. Should be idempotent (no-op if
         the bridge isn't currently reacting with `emoji`)."""
+        raise NotImplementedError
+
+    async def edit_message(
+        self, *, target_channel_id: str, target_message_ids: list[str], edit: StandardEdit
+    ) -> None:
+        """Re-render `edit.new_content_markdown` and edit the bridge's relayed
+        copy of a message whose source was edited. `target_message_ids` is
+        every native post the original relay produced in this channel, in order
+        (a long message may have been split across several). Only called when
+        `supports_edits`. Best-effort and silent — a post that's since been
+        deleted, or one the platform won't let the bridge edit, is skipped."""
         raise NotImplementedError
 
     async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:

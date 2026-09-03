@@ -15,7 +15,7 @@ import asyncio
 import aiohttp
 import pytest
 
-from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage
+from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.discord_service import DiscordReceiverService
 from stoat_discord_bridge.services.base import PartialRelayError
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
@@ -66,6 +66,55 @@ async def test_receive_posts_through_the_channels_webhook():
         {"content": "hello", "username": "Alice", "avatar_url": "https://cdn.example/alice.png", "thread": None}
     ]
     assert ids == ["1000"]
+
+
+def _edit(**overrides) -> StandardEdit:
+    defaults = dict(
+        origin_connector_id="stoat",
+        origin_channel_id="s-100",
+        origin_message_id="m1",
+        new_content_markdown="edited text",
+    )
+    defaults.update(overrides)
+    return StandardEdit(**defaults)
+
+
+async def test_edit_message_patches_the_relayed_webhook_post():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.edit_message(target_channel_id="42", target_message_ids=["1000"], edit=_edit())
+
+    webhook = channel.created_webhooks[0]
+    assert [(e["message_id"], e["content"]) for e in webhook.edited] == [(1000, "edited text")]
+
+
+async def test_edit_message_blanks_the_posts_a_shortened_edit_no_longer_fills():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.edit_message(
+        target_channel_id="42", target_message_ids=["1000", "1001"], edit=_edit(new_content_markdown="now short")
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert [(e["message_id"], e["content"]) for e in webhook.edited] == [(1000, "now short"), (1001, "​")]
+
+
+async def test_edit_message_matches_each_split_chunk_to_its_post(monkeypatch):
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+    monkeypatch.setattr("stoat_discord_bridge.services.discord_service._CONTENT_LIMIT", 5)
+
+    await receiver.edit_message(
+        target_channel_id="42", target_message_ids=["1000", "1001"], edit=_edit(new_content_markdown="abcdefghij")
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert [e["content"] for e in webhook.edited] == ["abcde", "fghij"]
 
 
 async def test_receive_splits_long_content_into_multiple_webhook_sends(monkeypatch):

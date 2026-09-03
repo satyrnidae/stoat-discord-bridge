@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import aiohttp
 import pytest
 
-from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage
+from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError
 from stoat_discord_bridge.services.stoat_service import StoatReceiverService, StoatSenderService
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
@@ -73,6 +73,43 @@ def _message(**overrides) -> StandardMessage:
 
 def _make_receiver(client: FakeClient, user_mappings: UserMappingRepository | None = None) -> StoatReceiverService:
     return StoatReceiverService(_FakeSender(client), user_mappings=user_mappings)
+
+
+# ---------------------------------------------------------------- edit_message()
+
+
+def _edit(**overrides) -> StandardEdit:
+    defaults = dict(
+        origin_connector_id="discord",
+        origin_channel_id="d-100",
+        origin_message_id="m1",
+        new_content_markdown="edited text",
+    )
+    defaults.update(overrides)
+    return StandardEdit(**defaults)
+
+
+async def test_edit_message_edits_the_relayed_masqueraded_post():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.edit_message(target_channel_id="42", target_message_ids=["7"], edit=_edit())
+
+    assert (await channel.fetch_message("7")).edits == ["edited text"]
+
+
+async def test_edit_message_blanks_posts_a_shortened_edit_no_longer_fills():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.edit_message(
+        target_channel_id="42", target_message_ids=["7", "8"], edit=_edit(new_content_markdown="short")
+    )
+
+    assert (await channel.fetch_message("7")).edits == ["short"]
+    assert (await channel.fetch_message("8")).edits == ["​"]
 
 
 # ---------------------------------------------------------------- receive()

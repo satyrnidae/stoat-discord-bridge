@@ -73,6 +73,13 @@ class FakeStoatMessage:
         self.pinned = pinned
         self.pin_calls = 0
         self.unpin_calls = 0
+        self.content: str | None = None
+        self.edits: list[str | None] = []
+
+    async def edit(self, *, content=None, **kwargs) -> "FakeStoatMessage":
+        self.content = content
+        self.edits.append(content)
+        return self
 
     async def react(self, emoji) -> None:
         self.added_reactions.append(emoji)

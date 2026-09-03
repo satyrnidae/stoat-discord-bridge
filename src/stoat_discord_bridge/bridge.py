@@ -26,6 +26,7 @@ from stoat_discord_bridge.config import BridgeConfig
 from stoat_discord_bridge.health_server import start_health_server
 from stoat_discord_bridge.models import (
     CustomEmoji,
+    StandardEdit,
     StandardEmojiCreated,
     StandardEmojiDeleted,
     StandardMessage,
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PIN_SUPPRESS_TTL = 10.0
+_EDIT_SUPPRESS_TTL = 10.0
 
 
 class BridgeCoordinator:
@@ -88,6 +90,13 @@ class BridgeCoordinator:
         # back out - same two-layer loop guard (idempotent hook + short-TTL
         # record) RoleSyncCoordinator uses.
         self._recent_pins: dict[tuple[str, str, str, bool], float] = {}
+        # A ~10s record of edit writes we just issued, keyed
+        # (connector_id, channel_id, message_id), so the message-update event
+        # our own edit_message() triggers is dropped rather than fanned back
+        # out. Same two-layer loop guard the pin/role sync use - the bot-author
+        # filter in each sender's edit handler is the first layer, this the
+        # backstop for when the echoed event arrives without a resolvable author.
+        self._recent_edits: dict[tuple[str, str, str], float] = {}
 
     def register_receiver(self, receiver: ReceiverService) -> None:
         """Every bridged connector's receiver must be registered before any
@@ -260,6 +269,50 @@ class BridgeCoordinator:
                 )
             except Exception:
                 logger.exception("pin relay from %s to %s failed", pin.origin_connector_id, ref.connector_id)
+
+    async def handle_edit(self, edit: StandardEdit) -> None:
+        """Relay a message content edit onto every other connector's copy of
+        the same message. Silently does nothing if the message was never
+        bridged, or a target connector doesn't advertise `supports_edits`
+        (IRC) - both are expected, not errors. Loop-safe: an `edit_message`
+        we issued is recorded briefly so the resulting message-update echo is
+        dropped here."""
+        now = time.monotonic()
+        self._recent_edits = {k: v for k, v in self._recent_edits.items() if now - v < _EDIT_SUPPRESS_TTL}
+        if (
+            self._recent_edits.pop(
+                (edit.origin_connector_id, edit.origin_channel_id, edit.origin_message_id), None
+            )
+            is not None
+        ):
+            return  # our own edit echoing back
+
+        group = await self._message_sync.find_group(
+            edit.origin_connector_id, edit.origin_channel_id, edit.origin_message_id
+        )
+        if group is None:
+            return  # this message isn't tracked as bridged
+
+        # A relay may have been split into several native posts in one channel;
+        # collect them per (connector, channel) in the order they were posted.
+        by_channel: dict[tuple[str, str], list[str]] = {}
+        for ref in group:
+            if ref.connector_id == edit.origin_connector_id:
+                continue
+            by_channel.setdefault((ref.connector_id, ref.channel_id), []).append(ref.message_id)
+
+        for (connector_id, channel_id), message_ids in by_channel.items():
+            receiver = self._receivers.get(connector_id)
+            if receiver is None or not receiver.supports_edits:
+                continue
+            for message_id in message_ids:
+                self._recent_edits[(connector_id, channel_id, message_id)] = time.monotonic()
+            try:
+                await receiver.edit_message(
+                    target_channel_id=channel_id, target_message_ids=message_ids, edit=edit
+                )
+            except Exception:
+                logger.exception("edit relay from %s to %s failed", edit.origin_connector_id, connector_id)
 
     async def _translate_emoji(
         self, origin_connector_id: str, emoji: str | CustomEmoji, target_connector_id: str
@@ -609,6 +662,7 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             on_pin=coordinator.handle_pin,
             on_typing=coordinator.handle_typing,
+            on_edit=coordinator.handle_edit,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -679,6 +733,7 @@ async def run(config: BridgeConfig) -> None:
             on_emoji_deleted=coordinator.handle_emoji_deleted,
             on_pin=coordinator.handle_pin,
             on_typing=coordinator.handle_typing,
+            on_edit=coordinator.handle_edit,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,

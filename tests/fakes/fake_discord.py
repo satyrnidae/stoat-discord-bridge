@@ -123,6 +123,7 @@ class FakeWebhook:
         self.id = id
         self.user = user
         self.sent: list[dict] = []
+        self.edited: list[dict] = []
         self._raises = raises
         self._next_message_id = 1000
 
@@ -144,6 +145,12 @@ class FakeWebhook:
         self.sent.append(record)
         message_id = self._next_message_id
         self._next_message_id += 1
+        return FakeSentMessage(id=message_id)
+
+    async def edit_message(self, message_id: int, *, content: str, thread: Any = None) -> FakeSentMessage:
+        if self._raises is not None:
+            raise self._raises
+        self.edited.append({"message_id": message_id, "content": content, "thread": thread})
         return FakeSentMessage(id=message_id)
 
 

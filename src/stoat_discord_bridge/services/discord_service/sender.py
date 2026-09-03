@@ -27,9 +27,10 @@ from stoat_discord_bridge.admin_commands import (
 )
 from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
-from stoat_discord_bridge.models import StandardMessage, StandardPin, StandardTyping
+from stoat_discord_bridge.models import StandardEdit, StandardMessage, StandardPin, StandardTyping
 from stoat_discord_bridge.services.base import (
     OnChannelRolePermissionChanged,
+    OnEdit,
     OnEmojiCreated,
     OnEmojiDeleted,
     OnMemberRolesChanged,
@@ -72,6 +73,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         on_emoji_deleted: OnEmojiDeleted | None = None,
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
+        on_edit: OnEdit | None = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -87,7 +89,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         # accepted (e.g. for tests) but those commands will then report
         # themselves unconfigured.
         SenderService.__init__(
-            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing
+            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing, on_edit
         )
         self._config = config
         self.connector_id = config.id
@@ -239,29 +241,53 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
     #     return None
 
     async def _handle_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
-        """MESSAGE_UPDATE fires both when a message is pinned and when it's
-        unpinned (Discord has a `pins_add` system message but no `pins_remove`
-        one, so this is the only event that covers both directions). Emit a
-        StandardPin whenever the payload carries a `pinned` field.
+        """MESSAGE_UPDATE covers three cases the bridge cares about:
 
-        Heuristic: a pin toggle sends a minimal payload
-        (`{id, channel_id, guild_id, pinned}`) while a content edit carries
-        `content`/`edited_timestamp` and no `pinned` - so `"pinned" in data`
-        distinguishes them. A stray resync (e.g. a future payload shape that
-        includes `pinned` on every edit) is harmless: the receiver's
-        set_pinned() is idempotent and BridgeCoordinator suppresses the echo.
+        - a **pin toggle** - a minimal payload (`{id, channel_id, guild_id,
+          pinned}`); Discord has a `pins_add` system message but no
+          `pins_remove` one, so this is the only event covering both
+          directions. Emitted as a `StandardPin` whenever `pinned` is present.
+        - a **content edit** by the message's author - the payload carries a
+          fresh `content` and an `edited_timestamp`. Emitted as a
+          `StandardEdit` so `BridgeCoordinator` can sync every relayed copy.
+        - an **auto-embed** update (a link Discord just unfurled) - carries
+          `embeds` but no `edited_timestamp`; ignored, so a bare link paste
+          doesn't tag every destination "(edited)".
+
+        A bot-authored edit (our own webhook message being synced) is dropped
+        here - the relay path only ever forwards a real user's edit, and
+        `BridgeCoordinator` suppresses the resulting echo as a backstop.
         """
-        if self._on_pin is None or payload.guild_id != self._config.guild_id:
+        if payload.guild_id != self._config.guild_id:
             return
         data = payload.data or {}
-        if "pinned" not in data:
+        if "pinned" in data:
+            if self._on_pin is not None:
+                await self._on_pin(
+                    StandardPin(
+                        origin_connector_id=self.connector_id,
+                        origin_channel_id=str(payload.channel_id),
+                        origin_message_id=str(payload.message_id),
+                        pinned=bool(data["pinned"]),
+                    )
+                )
             return
-        await self._on_pin(
-            StandardPin(
+        if self._on_edit is None or not data.get("edited_timestamp") or "content" not in data:
+            return
+        edited = getattr(payload, "message", None)
+        author = getattr(edited, "author", None)
+        if author is not None and getattr(author, "bot", False):
+            return  # our own webhook edit echoing back
+        mentioned_users = {
+            str(u.id): u.display_name for u in (getattr(edited, "mentions", None) or [])
+        }
+        await self._on_edit(
+            StandardEdit(
                 origin_connector_id=self.connector_id,
                 origin_channel_id=str(payload.channel_id),
                 origin_message_id=str(payload.message_id),
-                pinned=bool(data["pinned"]),
+                new_content_markdown=data.get("content") or "",
+                mentioned_users=mentioned_users,
             )
         )
 

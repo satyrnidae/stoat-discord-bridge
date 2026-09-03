@@ -137,6 +137,25 @@ class StandardPin:
 
 
 @dataclass(frozen=True)
+class StandardEdit:
+    """A message *content* edit on `origin_connector_id`, in the platform-
+    neutral shape senders/receivers pass around. Relayed onto every other
+    connector's copy of the same message (tracked via MessageSyncRepository)
+    for connectors that advertise `ReceiverService.supports_edits` — Discord ⇄
+    Stoat only, IRC has no edit-in-place. See BridgeCoordinator.handle_edit.
+
+    `mentioned_users` mirrors `StandardMessage.mentioned_users` — the origin's
+    name for every user the *edited* text @-mentions — so a receiver can
+    re-expand an unlinked `<@id>` the same way the original relay did."""
+
+    origin_connector_id: ConnectorId
+    origin_channel_id: str
+    origin_message_id: str  # the message being edited, native id on the origin platform
+    new_content_markdown: str
+    mentioned_users: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class StandardTyping:
     """A "user started typing" event, in the platform-neutral shape senders/
     receivers pass around. Relayed only onto connectors that advertise

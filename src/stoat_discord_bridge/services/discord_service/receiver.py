@@ -21,7 +21,7 @@ import discord
 # `stoat_discord_bridge.services.discord_service._CONTENT_LIMIT` is picked up
 # by `receive()` at call time - the historical monkeypatch seam.
 import stoat_discord_bridge.services.discord_service as _discord_pkg
-from stoat_discord_bridge.models import CustomEmoji, StandardMessage
+from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.discord_service.formatting import (
     _USERNAME_LIMIT,
@@ -55,6 +55,7 @@ class DiscordReceiverService(ReceiverService):
     supports_emoji = True
     supports_pins = True
     supports_typing = True
+    supports_edits = True
 
     def __init__(
         self,
@@ -116,40 +117,11 @@ class DiscordReceiverService(ReceiverService):
         # text - see issue #39. Anything too large or unfetchable falls back
         # to an inlined URL below so it's not lost.
         files, undownloadable = await download_attachments(message.attachments)
-        content = message.content_markdown or ""
-        if self._user_mappings is not None:
-            content = await rewrite_mentions(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="discord",
-                user_mappings=self._user_mappings,
-                mentioned_users=message.mentioned_users,
-            )
-        if self._channel_mappings is not None:
-            content = await rewrite_channel_mentions(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="discord",
-                channel_mappings=self._channel_mappings,
-            )
-        if self._role_mappings is not None:
-            content = await rewrite_role_mentions(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="discord",
-                role_mappings=self._role_mappings,
-            )
-        if self._emoji_mappings is not None:
-            content = await rewrite_emoji(
-                content,
-                origin_connector_id=message.origin_connector_id,
-                target_connector_id=self.connector_id,
-                target_kind="discord",
-                emoji_mappings=self._emoji_mappings,
-            )
+        content = await self._rewrite_content(
+            origin_connector_id=message.origin_connector_id,
+            content_markdown=message.content_markdown,
+            mentioned_users=message.mentioned_users,
+        )
         if undownloadable:
             content = inline_attachment_urls(content, undownloadable)
         if content:
@@ -185,6 +157,82 @@ class DiscordReceiverService(ReceiverService):
             logger.debug("[discord:%s] webhook message sent, id=%s", self.connector_id, sent.id)
             ids.append(str(sent.id))
         return ids
+
+    async def _rewrite_content(
+        self, *, origin_connector_id: str, content_markdown: str | None, mentioned_users: dict[str, str]
+    ) -> str:
+        """Run the shared user / channel / role / emoji mention rewrites over a
+        relayed message's text - used by `receive()` for the first post and by
+        `edit_message()` to re-render it when the source is edited. Attachment
+        handling stays in `receive()` (an edit doesn't re-sync files)."""
+        content = content_markdown or ""
+        if self._user_mappings is not None:
+            content = await rewrite_mentions(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                user_mappings=self._user_mappings,
+                mentioned_users=mentioned_users,
+            )
+        if self._channel_mappings is not None:
+            content = await rewrite_channel_mentions(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                channel_mappings=self._channel_mappings,
+            )
+        if self._role_mappings is not None:
+            content = await rewrite_role_mentions(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                role_mappings=self._role_mappings,
+            )
+        if self._emoji_mappings is not None:
+            content = await rewrite_emoji(
+                content,
+                origin_connector_id=origin_connector_id,
+                target_connector_id=self.connector_id,
+                target_kind="discord",
+                emoji_mappings=self._emoji_mappings,
+            )
+        return content
+
+    async def edit_message(
+        self, *, target_channel_id: str, target_message_ids: list[str], edit: StandardEdit
+    ) -> None:
+        """Re-render the edited text and patch every webhook post the original
+        relay produced in this channel. A relay split across N posts is matched
+        chunk-for-post; a shortened edit that no longer fills every post blanks
+        the leftovers (zero-width space - the webhook API rejects a truly empty
+        edit). An edit that *grew* past what the existing posts hold drops the
+        overflow rather than posting new messages mid-channel out of order -
+        rare, and the earlier posts still update. Best-effort: a post that's
+        since been deleted just fails its one `edit_message` and is skipped."""
+        if not target_message_ids:
+            return
+        webhook, thread = await self._get_or_create_webhook(target_channel_id)
+        content = await self._rewrite_content(
+            origin_connector_id=edit.origin_connector_id,
+            content_markdown=edit.new_content_markdown,
+            mentioned_users=edit.mentioned_users,
+        )
+        chunks = chunk_content(content, _discord_pkg._CONTENT_LIMIT) if content else []
+        thread_kwarg = {"thread": thread} if thread is not None else {}
+        for index, message_id in enumerate(target_message_ids):
+            body = chunks[index] if index < len(chunks) else "​"
+            try:
+                await webhook.edit_message(int(message_id), content=body, **thread_kwarg)
+            except discord.HTTPException:
+                logger.warning(
+                    "[discord:%s] couldn't edit relayed message %s in channel %s",
+                    self.connector_id,
+                    message_id,
+                    target_channel_id,
+                )
 
     async def add_reaction(self, *, target_channel_id: str, target_message_id: str, emoji: str | CustomEmoji) -> None:
         """Idempotent: skips the API call if the bridge bot has already
