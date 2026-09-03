@@ -64,25 +64,28 @@ def _entity_autocomplete_choices(
     The `value` is always the bare native id - what the linker wants.
 
     Whatever the operator has typed is *always* offered back as its own
-    choice (`Use "<current>"`), first in the list, unless it already matches
-    a listed entity's id exactly - so a name/id the `list_*` hook doesn't
-    know about (an unchunked member, a stale cache, a connector with no hook
-    at all) can still be picked from the menu instead of only by blind free
-    text (issue #80). Every id/name option downstream accepts a bare name or
-    id, so the raw token is a valid value on its own."""
+    choice (`Use "<current>"`), first in the list, unless it already names a
+    listed entity exactly (by id or by name) - so a name/id the `list_*` hook
+    doesn't know about (an unchunked member, a stale cache, a connector with
+    no hook at all) can still be picked from the menu instead of only by
+    blind free text (issue #80). Every id/name option downstream accepts a
+    bare name or id, so the raw token is a valid value on its own."""
     raw = current.strip()
-    current = current.lower()
+    current = raw.lower()
     choices: list[app_commands.Choice[str]] = []
+    exact_match = False
     for entity_id, name in entities:
         entity_id = str(entity_id)
         name = name or ""
         if current and current not in entity_id.lower() and current not in name.lower():
             continue
+        if current and current in (entity_id.lower(), name.lower()):
+            exact_match = True
         label = f"{name} ({entity_id})" if name else entity_id
         choices.append(app_commands.Choice(name=label[:100], value=entity_id[:100]))
         if len(choices) >= _CHOICE_LIMIT:
             break
-    if raw and not any(choice.value == raw[:100] for choice in choices):
+    if raw and not exact_match:
         choices.insert(0, app_commands.Choice(name=f'Use "{raw}"'[:100], value=raw[:100]))
     return choices[:_CHOICE_LIMIT]
 

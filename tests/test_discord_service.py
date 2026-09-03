@@ -1171,6 +1171,13 @@ def test_entity_autocomplete_choices_does_not_double_up_on_an_exact_id_match():
     assert [c.value for c in choices] == ["222"]
 
 
+def test_entity_autocomplete_choices_does_not_double_up_on_an_exact_name_match():
+    # typing a listed entity's exact name must not add a second `Use "..."`
+    # choice carrying the name where the id is already on offer
+    choices = _entity_autocomplete_choices("moderators", _entities())
+    assert [(c.name, c.value) for c in choices] == [("Moderators (222)", "222")]
+
+
 def test_entity_autocomplete_choices_ignores_a_blank_query_for_the_passthrough():
     assert _entity_autocomplete_choices("   ", []) == []
 
