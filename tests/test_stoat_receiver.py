@@ -53,6 +53,7 @@ class _FakeSender:
     get_masquerade_identity = StoatSenderService.get_masquerade_identity
     group_parent_channel_with_threads = StoatSenderService.group_parent_channel_with_threads
     _move_channel_to_category_top = StoatSenderService._move_channel_to_category_top
+    _full_category_list = StoatSenderService._full_category_list
 
 
 def _message(**overrides) -> StandardMessage:

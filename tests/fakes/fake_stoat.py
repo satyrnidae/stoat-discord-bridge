@@ -266,6 +266,7 @@ class FakeClient:
     def __init__(self) -> None:
         self._channels: dict[str, FakeChannel] = {}
         self._servers: dict[str, FakeServer] = {}
+        self._fresh_servers: dict[str, FakeServer] = {}
         self._users: dict[str, Any] = {}
 
     def add_channel(self, channel: FakeChannel) -> FakeChannel:
@@ -274,6 +275,13 @@ class FakeClient:
 
     def add_server(self, server: FakeServer) -> FakeServer:
         self._servers[server.id] = server
+        return server
+
+    def set_fetched_server(self, server: FakeServer) -> FakeServer:
+        """Make `fetch_server` return `server` while `get_server` (the cache)
+        keeps returning whatever `add_server` registered - so a test can model
+        a cached Server whose category list has drifted from the real one."""
+        self._fresh_servers[server.id] = server
         return server
 
     def add_user(self, user_id: str, user) -> None:
@@ -297,7 +305,7 @@ class FakeClient:
         return server
 
     async def fetch_server(self, server_id: str, *, populate_channels: bool = False) -> FakeServer:
-        server = self._servers.get(server_id)
+        server = self._fresh_servers.get(server_id) or self._servers.get(server_id)
         if server is None:
             raise LookupError(f"no such server: {server_id}")
         return server
