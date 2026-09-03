@@ -33,6 +33,11 @@ class AsyncTTLCache(Generic[_V]):
         self._maybe_sweep(now)
         return value
 
+    def invalidate(self, key: str) -> None:
+        """Drop the cached entry for `key` so the next `get` re-runs `loader`.
+        A no-op if nothing is cached under it."""
+        self._entries.pop(key, None)
+
     def _maybe_sweep(self, now: float) -> None:
         # Entries are only refreshed on re-access, so a one-off lookup would
         # otherwise sit in the dict forever. Drop everything expired once the
