@@ -264,7 +264,14 @@ entity in and creates the local copy - respecting already-linked entities
 channel's linked Category when that Category is `/link category`-linked -
 resolved by `ChannelLinker._local_category_for_source_channel`, not by an
 exact Category-name match - and only falls back to a same-named Category when
-it isn't linked (issue #50). Both directions of every
+it isn't linked (issue #50). When `/mirror category` *creates* the
+counterpart Category, it records it (and places the source Category's child
+channels) under the title it just asked `ensure_category` for, not by
+re-resolving the id through the connector's name cache - that cache is
+populated at connect and blind to a brand-new Category, so re-resolving
+handed back the raw id, which then got stored as the Category name and
+passed on as a child-channel Category title, spawning a second Category
+literally named after the id (issue #64). Both directions of every
 `/mirror <noun>` take an optional trailing `new_name` (`admin_commands.py`'s
 `_clean_new_name`): the name the counterpart is created/matched under on the
 destination instead of carrying the source name over - routed through the
