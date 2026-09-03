@@ -1,13 +1,11 @@
-"""Small helper for fitting a channel/category/role name into the
-32-character limit Stoat enforces on its own channel/category/role names,
-used whenever the bridge creates a Stoat entity from a name that originated
-on another connector - Discord thread mirroring and the `/mirror` admin
-commands both feed names through here.
+"""Small helper for fitting a Discord channel/category name into the
+32-character limit Stoat enforces on its own channel/category names, used
+when mirroring a Discord thread onto another connector.
 """
 
 from __future__ import annotations
 
-# Stoat channel / category / role names are capped at 32 characters.
+# Stoat category/channel names are capped at 32 characters.
 _NAME_LIMIT = 32
 
 
