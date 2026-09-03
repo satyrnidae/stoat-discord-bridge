@@ -61,6 +61,13 @@ def _strip_discord_mention(raw: str) -> str:
 _CUSTOM_EMOJI_RE = re.compile(r"^<a?:(\w+):(\w+)>$")
 _EMOJI_SHORTCODE_RE = re.compile(r"^:([\w~+-]+):$")
 
+# A token shaped like a native entity id rather than a human-chosen name: an
+# all-digit Discord snowflake, or a 26-char Crockford-base32 ULID (Stoat). Used
+# to decide whether an unresolvable `/mirror channel category:` value is a typo'd
+# id (reject) or a name for a Category to create (pass through) - see
+# ChannelLinker._resolve_destination_category_name.
+_BARE_ID_RE = re.compile(r"\A(?:\d{15,}|[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})\Z")
+
 
 def _strip_emote_token(raw: str) -> str:
     token = raw.strip()
@@ -71,6 +78,44 @@ def _strip_emote_token(raw: str) -> str:
     if match:
         return match.group(1)
     return token
+
+
+def pop_kv_option(tokens: list[str], key: str) -> tuple[list[str], str | None]:
+    """Pull the first ``key:value`` (or ``key=value``) token out of ``tokens``,
+    returning ``(remaining tokens, value)`` - ``value`` is ``None`` when no such
+    token is present. The key match is case-insensitive; the value keeps its
+    original case. Discord models `/mirror channel`'s ``category`` option
+    natively, but Stoat's `stoat.ext.commands` and IRC's bare DM commands parse
+    positionally - a `category` that can hold arbitrary ids/names can't be
+    positional there, so both take it as this `PARAM:value` pair anywhere in the
+    argument list (issue #75).
+
+    A quoted value (``key:"two words"`` / ``key:'two words'``) reassembles the
+    tokens the caller's whitespace split broke it into, up to the closing quote,
+    and the surrounding quotes are stripped - the only way a multi-word value
+    survives, since both callers hand this a pre-split token list."""
+    prefix_colon = f"{key.lower()}:"
+    prefix_eq = f"{key.lower()}="
+    value: str | None = None
+    remaining: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        lowered = token.lower()
+        if value is None and (lowered.startswith(prefix_colon) or lowered.startswith(prefix_eq)):
+            raw = token[len(key) + 1 :]
+            quote = raw[:1]
+            if quote in ('"', "'"):
+                raw = raw[1:]
+                while not raw.endswith(quote) and i + 1 < len(tokens):
+                    i += 1
+                    raw = f"{raw} {tokens[i]}"
+                raw = raw[:-1] if raw.endswith(quote) else raw
+            value = raw
+        else:
+            remaining.append(token)
+        i += 1
+    return remaining, value
 
 
 def _clean_new_name(raw: str | None) -> str | None:
@@ -428,6 +473,7 @@ class ChannelLinker:
         local_channel_category: str | None = None,
         is_thread_category: bool = False,
         category_from_channel_id: str | None = None,
+        destination_category: str | None = None,
         new_name: str | None = None,
     ) -> str:
         """Ensure `local_channel_id` (on `local_connector`) has a linked
@@ -467,6 +513,16 @@ class ChannelLinker:
         `bot-config` thread lands under Stoat's "Bot Config"), not the
         Discord name. Falls back to `local_channel_category` when the parent
         has no linked channel on `destination`.
+
+        `destination_category`, if given, is a Category id or name *on
+        `destination`* that the mirrored channel is placed under - it overrides
+        linked-Category resolution and same-name matching entirely (issue #75):
+        `category_from_channel_id` and the `/link category` lookup are both
+        skipped. An id is resolved to its title (so `ensure_channel` doesn't
+        create a Category named after the id); a bare name that doesn't resolve
+        is get-or-created by `ensure_channel` as-is. `mirror_channel_from` routes
+        its own `[category]` (a *local* Category) through here, since its
+        `destination` is the local connector.
 
         `new_name`, if given, is the name to create/find the counterpart under
         on `destination` instead of carrying `local_channel_name` over -
@@ -521,7 +577,12 @@ class ChannelLinker:
 
         category = local_channel_category
         category_parent_channel_id: str | None = None
-        if category_from_channel_id is not None:
+        explicit_category = _clean_new_name(destination_category)
+        if explicit_category is not None:
+            # An explicit Category on `destination` wins over every other
+            # source of a Category name - linked Categories included (issue #75).
+            category = await self._resolve_destination_category_name(destination, explicit_category)
+        elif category_from_channel_id is not None:
             linked_parent = await self._linked_channel(
                 local_connector, category_from_channel_id, destination
             )
@@ -605,7 +666,13 @@ class ChannelLinker:
         return "\n".join(results) if results else "no other connectors configured."
 
     async def mirror_channel_from(
-        self, *, local_connector: str, source: str, source_id: str, new_name: str | None = None
+        self,
+        *,
+        local_connector: str,
+        source: str,
+        source_id: str,
+        new_name: str | None = None,
+        local_category: str | None = None,
     ) -> str:
         """`/mirror channel from <source> <source_id>` - the inbound
         direction: `source`'s `source_id` channel already exists, so create a
@@ -618,6 +685,12 @@ class ChannelLinker:
         source channel sits in a Category that's already linked (via
         `/link category`) to a Category here, the new local channel is placed
         into *that* linked Category rather than a fresh same-named one.
+
+        `local_category`, if given, is a Category id or name here on
+        `local_connector` that the new channel is placed under instead -
+        overriding the linked-Category resolution above (issue #75). It's
+        forwarded as `mirror_channel`'s `destination_category` (whose
+        `destination` in this swapped call *is* `local_connector`).
 
         `new_name`, if given, names the freshly-created local channel instead
         of carrying the source channel's name over (issue #44)."""
@@ -634,8 +707,45 @@ class ChannelLinker:
             local_channel_id=source_id,
             local_channel_name=source_name,
             destination=local_connector,
+            destination_category=local_category,
             new_name=new_name,
         )
+
+    async def _resolve_destination_category_name(self, connector: str, token: str) -> str:
+        """Resolve a Category id-or-name `token` on `connector` to the Category
+        *title* `ensure_channel` places a channel under. A name is resolved to
+        its id then back to the canonical title; a bare id is turned into its
+        title directly. A `token` that resolves to nothing is passed straight
+        through as a title for `ensure_channel` to get-or-create - *unless* it's
+        shaped like a platform id (all-digit Discord snowflake, 26-char ULID),
+        which then raises rather than spawning a Category literally named after
+        an id nothing matched (the issue #64 failure mode)."""
+        info = self._connectors.get(connector)
+        if info is None:
+            return token
+        category_id = token
+        if info.resolve_category_id_by_name is not None:
+            try:
+                resolved = await info.resolve_category_id_by_name(token)
+            except Exception:
+                logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
+                resolved = None
+            if resolved:
+                category_id = resolved
+        if info.resolve_category_name is not None:
+            try:
+                name = await info.resolve_category_name(category_id)
+            except Exception:
+                logger.debug("couldn't resolve category id %r on %s", category_id, connector, exc_info=True)
+                name = None
+            if name:
+                return name
+        if _BARE_ID_RE.match(token):
+            raise LinkError(
+                f"couldn't find a Category matching '{token}' on {info.label} - "
+                "pass an existing Category's id/name, or a name to create."
+            )
+        return token
 
     async def _local_category_for_source_channel(
         self, local_connector: str, source: str, source_channel_id: str

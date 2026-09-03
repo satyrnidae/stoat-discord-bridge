@@ -45,15 +45,24 @@ class _MirrorOwner:
     def __init__(self):
         self.mirror_role_calls = []
         self.mirror_emote_calls = []
+        self.mirror_channel_calls = []
+        self.mirror_channel_from_calls = []
+        self.replies = []
 
     async def _reply(self, ctx, text):
-        pass
+        self.replies.append(text)
 
     async def _mirror_role(self, ctx, local_id=None, service=None, new_name=None):
         self.mirror_role_calls.append((local_id, service, new_name))
 
     async def _mirror_emote(self, ctx, local_id=None, service=None, new_name=None):
         self.mirror_emote_calls.append((local_id, service, new_name))
+
+    async def _mirror_channel(self, ctx, local_id=None, service=None, new_name=None, category=None):
+        self.mirror_channel_calls.append((local_id, service, new_name, category))
+
+    async def _mirror_channel_from(self, ctx, service, external_id, new_name=None, category=None):
+        self.mirror_channel_from_calls.append((service, external_id, new_name, category))
 
 
 async def test_mirror_role_to_lone_arg_is_the_role_not_the_service():
@@ -86,6 +95,34 @@ async def test_mirror_emote_to_lone_arg_is_the_emote_not_the_service():
         ("blob", "all", None),
         ("blob", "stoat", "blobcat"),
     ]
+
+
+async def test_mirror_channel_to_pulls_a_category_kv_token_from_anywhere():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands["channel"].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "stoat", "general")
+    await to.callback(SimpleNamespace(), "stoat", "general", "category:01ABC")
+    await to.callback(SimpleNamespace(), "stoat", "category:Bot Config", "general", "lobby")
+
+    assert owner.mirror_channel_calls == [
+        ("general", "stoat", None, None),
+        ("general", "stoat", None, "01ABC"),
+        ("general", "stoat", "lobby", "Bot Config"),
+    ]
+
+
+async def test_mirror_channel_from_pulls_a_category_kv_token_and_validates_arity():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    frm = bot.all_commands["mirror"].all_commands["channel"].all_commands["from"]
+
+    await frm.callback(SimpleNamespace(), "discord", "d1", "category:Team Beta")
+    await frm.callback(SimpleNamespace(), "discord")
+
+    assert owner.mirror_channel_from_calls == [("discord", "d1", None, "Team Beta")]
+    assert owner.replies and "Usage:" in owner.replies[-1]
 
 
 class _FakeShard:

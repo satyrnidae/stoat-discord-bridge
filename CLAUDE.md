@@ -315,7 +315,18 @@ entity in and creates the local copy - respecting already-linked entities
 channel's linked Category when that Category is `/link category`-linked -
 resolved by `ChannelLinker._local_category_for_source_channel`, not by an
 exact Category-name match - and only falls back to a same-named Category when
-it isn't linked (issue #50). When `/mirror category` *creates* the
+it isn't linked (issue #50). `/mirror channel` (both directions) also takes an
+optional `category` - a Category id or name (`ChannelLinker.mirror_channel`'s
+`destination_category`, resolved to a title by
+`_resolve_destination_category_name`) that the counterpart is placed under,
+overriding `category_from_channel_id` *and* the linked-Category lookup entirely
+(issue #75): on `to` it's a Category on the destination service (so it needs a
+single service, not `all`), on `from` a local Category (routed through the same
+`destination_category`, since `mirror_channel_from` calls `mirror_channel` with
+`destination` = the local connector). Discord models it as the native `category`
+option; Stoat and IRC take it as a `category:`/`CATEGORY:` key/value token
+(`admin_commands.pop_kv_option`) - the first `/mirror channel` parameter that
+can't be positional. When `/mirror category` *creates* the
 counterpart Category, it records it (and places the source Category's child
 channels) under the title it just asked `ensure_category` for, not by
 re-resolving the id through the connector's name cache - that cache is

@@ -532,6 +532,7 @@ async def test_mirror_channel_to_a_single_destination():
             "local_channel_name": "general",
             "destination": "discord",
             "local_channel_category": None,
+            "destination_category": None,
             "new_name": None,
         }
     ]
@@ -611,7 +612,13 @@ async def test_mirror_channel_from_routes_to_the_linker():
     await sender._mirror_channel_from(ctx, "discord", "d1")
 
     assert linker.mirror_channel_from_calls == [
-        {"local_connector": "stoat", "source": "discord", "source_id": "d1", "new_name": None}
+        {
+            "local_connector": "stoat",
+            "source": "discord",
+            "source_id": "d1",
+            "new_name": None,
+            "local_category": None,
+        }
     ]
     assert ctx.channel.sent[0]["content"] == "mirrored from ok"
 
@@ -624,8 +631,46 @@ async def test_mirror_channel_from_forwards_a_new_name():
     await sender._mirror_channel_from(ctx, "discord", "d1", "lobby")
 
     assert linker.mirror_channel_from_calls == [
-        {"local_connector": "stoat", "source": "discord", "source_id": "d1", "new_name": "lobby"}
+        {
+            "local_connector": "stoat",
+            "source": "discord",
+            "source_id": "d1",
+            "new_name": "lobby",
+            "local_category": None,
+        }
     ]
+
+
+async def test_mirror_channel_forwards_the_destination_category():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._mirror_channel(ctx, "general", "discord", None, "Announcements")
+
+    assert linker.mirror_channel_calls[0]["destination_category"] == "Announcements"
+
+
+async def test_mirror_channel_rejects_a_category_with_all():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._mirror_channel(ctx, "general", "all", None, "Announcements")
+
+    assert linker.mirror_channel_calls == []
+    assert linker.mirror_channel_all_calls == []
+    assert "single service" in ctx.channel.sent[0]["content"]
+
+
+async def test_mirror_channel_from_forwards_the_local_category():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx()
+
+    await sender._mirror_channel_from(ctx, "discord", "d1", None, "Team Beta")
+
+    assert linker.mirror_channel_from_calls[0]["local_category"] == "Team Beta"
 
 
 async def test_mirror_role_from_routes_to_the_role_linker():
