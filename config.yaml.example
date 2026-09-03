@@ -55,6 +55,13 @@ discord:
     # endpoint is blocked for bots (issue #58) - so this only affects inbound
     # display here, never what this connector forwards outward.
     pronoun_forwarding: true
+    # Whether this connector forwards its own senders' displayed name colour
+    # (their top coloured role) so a receiver that can tint a relayed name
+    # (Stoat's masquerade, issue #74) does. Defaults to true; set false (or
+    # DISCORD__0__COLOR_FORWARDING=false) to relay without a colour. Discord's
+    # webhook receiver can't tint a relayed name, so here this only governs
+    # the outbound value.
+    color_forwarding: true
 
 stoat:
   - id: stoat_public
@@ -83,6 +90,14 @@ stoat:
     # skip the lookup. (stoat.py doesn't model a pronoun field, so this reads
     # the raw profile JSON - a no-op on a deployment that has no such field.)
     pronoun_forwarding: true
+    # Whether a relayed sender's displayed name colour is applied to their
+    # masquerade here (issue #74), and whether this connector forwards its
+    # own senders' colour outward. Defaults to true; set false (or
+    # STOAT__1__COLOR_FORWARDING=false) for a plain (uncoloured) masquerade
+    # name. Applying an inbound colour needs the bot's `manage_roles`
+    # permission in the target channel - a send Stoat rejects for it is
+    # retried uncoloured.
+    color_forwarding: true
     # When a Discord thread is mirrored here (a channel under a Category
     # named after the thread's parent channel), also move that parent
     # channel into the Category, at the top - so the parent channel and all

@@ -49,6 +49,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
     _extract_pronouns,
     _map_attachments,
     _map_mentioned_users,
+    _member_colour,
 )
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
@@ -193,6 +194,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 attachments=_map_attachments(message),
                 source_label=self._config.label,
                 sender_pronouns=await self._resolve_sender_pronouns(message),
+                sender_color=self._resolve_sender_color(message),
                 mentioned_users=_map_mentioned_users(message),
             )
         )
@@ -299,6 +301,15 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         except Exception:
             return _avatar_url(author)
         return _avatar_url(fresh)
+
+    def _resolve_sender_color(self, message) -> str | None:
+        """The sender's displayed name colour, forwarded to a receiver that can
+        tint a relayed name (Stoat's masquerade, issue #74). Network-free -
+        reads the cached member's top coloured role. None when this connector's
+        `color_forwarding` is off, or the sender has no colour."""
+        if not self._config.color_forwarding:
+            return None
+        return _member_colour(message.author)
 
     async def _resolve_sender_pronouns(self, message) -> str | None:
         """Best-effort pronouns for `message.author`, cached per user

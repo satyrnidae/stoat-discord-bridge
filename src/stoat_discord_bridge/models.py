@@ -62,6 +62,15 @@ class StandardMessage:
     # whose connector has `pronoun_forwarding` on shows it alongside
     # `source_label`.
     sender_pronouns: str | None = None
+    # The sender's displayed name colour as a CSS colour string ("#5865f2",
+    # and any other valid CSS colour a platform allows - Stoat role colours
+    # can be gradients), resolved best-effort by the origin sender from the
+    # sender's top coloured role when that connector has `color_forwarding`
+    # on. None where the sender has no colour, the platform has no user-colour
+    # concept (IRC always), or it couldn't be resolved. Only Stoat's receiver
+    # consumes it - a masquerade carries a `color` (issue #74); Discord
+    # webhooks and IRC can't tint a relayed name.
+    sender_color: str | None = None
     # Native user id -> display name on the origin, for every user the message
     # @-mentions. Lets a receiver expand a `<@id>` mention of a user who ISN'T
     # /link-user-linked on the target into a readable `@Display Name` instead

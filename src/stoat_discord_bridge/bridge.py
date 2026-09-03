@@ -773,6 +773,7 @@ async def run(config: BridgeConfig) -> None:
             emoji_mappings=emoji_mappings,
             source_forwarding=sc.source_forwarding,
             pronoun_forwarding=sc.pronoun_forwarding,
+            color_forwarding=sc.color_forwarding,
         )
         coordinator.register_receiver(receiver)
         connector_infos[sc.id] = ConnectorInfo(

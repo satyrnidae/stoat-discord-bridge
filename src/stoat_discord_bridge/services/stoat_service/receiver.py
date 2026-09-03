@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 class StoatReceiverService(ReceiverService):
     """Posts into Stoat "as" a remote (Discord/IRC) user via masquerade.
 
-    Masquerade is a `send()` kwarg (`MessageMasquerade(name=, avatar=)`), not
-    a separate webhook-style API, so this reuses the already-connected
+    Masquerade is a `send()` kwarg (`MessageMasquerade(name=, avatar=, color=)`),
+    not a separate webhook-style API, so this reuses the already-connected
     sender client for the same server rather than needing its own identity
     to post through. The bot must have the `use_masquerade` permission in
     the target channel.
@@ -80,6 +80,7 @@ class StoatReceiverService(ReceiverService):
         emoji_mappings: EmojiMappingRepository | None = None,
         source_forwarding: bool = True,
         pronoun_forwarding: bool = True,
+        color_forwarding: bool = True,
     ) -> None:
         self.connector_id = sender.connector_id
         self._sender = sender
@@ -89,6 +90,7 @@ class StoatReceiverService(ReceiverService):
         self._emoji_mappings = emoji_mappings
         self._source_forwarding = source_forwarding
         self._pronoun_forwarding = pronoun_forwarding
+        self._color_forwarding = color_forwarding
         # target_channel_id -> monotonic deadline the keep-alive loop stops at,
         # and the loop task itself (one per channel currently "typing").
         self._typing_until: dict[str, float] = {}
@@ -118,6 +120,10 @@ class StoatReceiverService(ReceiverService):
         masquerade = stoat.MessageMasquerade(
             name=sender_name,
             avatar=avatar_url,
+            # The origin sender's name colour (issue #74). Setting it needs the
+            # bot's `manage_roles` permission in the channel; a send rejected
+            # for it is retried uncoloured below rather than lost.
+            color=message.sender_color if self._color_forwarding else None,
         )
         # Re-upload the message's attachments as native Stoat files rather
         # than pasting their (often short-lived, signed) CDN URLs into the
@@ -140,23 +146,40 @@ class StoatReceiverService(ReceiverService):
         ids: list[str] = []
         for index, chunk in enumerate(chunks):
             attach = files if files and index == len(chunks) - 1 else None
+            attach_kw = {"attachments": list(attach)} if attach else {}
             logger.debug(
-                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r, files=%d): %r",
+                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r, color=%r, files=%d): %r",
                 self.connector_id,
                 target_channel_id,
                 masquerade.name,
                 masquerade.avatar,
+                masquerade.color,
                 len(attach) if attach else 0,
                 chunk,
             )
             try:
-                sent = await channel.send(
-                    chunk,
-                    masquerade=masquerade,
-                    **({"attachments": list(attach)} if attach else {}),
-                )
+                sent = await channel.send(chunk, masquerade=masquerade, **attach_kw)
             except Exception as exc:
-                raise PartialRelayError(ids, exc) from exc
+                if masquerade.color is None:
+                    raise PartialRelayError(ids, exc) from exc
+                # The colour is the only part of the masquerade that needs an
+                # elevated permission (`manage_roles`); if a send failed with
+                # one set, retry without it before giving up so a bot lacking
+                # that permission still relays (uncoloured, this chunk and the
+                # rest of the split) instead of dropping every message. A
+                # failure that wasn't about the colour just resurfaces from
+                # the retry, carrying the original error.
+                masquerade = stoat.MessageMasquerade(name=masquerade.name, avatar=masquerade.avatar)
+                try:
+                    sent = await channel.send(chunk, masquerade=masquerade, **attach_kw)
+                except Exception:
+                    raise PartialRelayError(ids, exc) from exc
+                logger.warning(
+                    "[stoat:%s] masqueraded send into %s succeeded only after dropping the name "
+                    "colour - the bot likely lacks manage_roles there",
+                    self.connector_id,
+                    target_channel_id,
+                )
             logger.debug("[stoat:%s] masqueraded message sent, id=%s", self.connector_id, sent.id)
             ids.append(str(sent.id))
         # Best-effort, never fatal to the relay: keep a thread Category's

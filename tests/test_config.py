@@ -160,6 +160,35 @@ def test_pronoun_forwarding_defaults_on_and_is_overridable_per_connector_kind(
     assert config.irc[0].pronoun_forwarding is True  # default
 
 
+def test_color_forwarding_defaults_on_and_is_overridable(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("STOAT__0__COLOR_FORWARDING", "false")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord_a
+            guild_id: 1
+            bot_token: t0
+            color_forwarding: false
+          - id: discord_b
+            guild_id: 2
+            bot_token: t1
+        stoat:
+          - id: stoat_a
+            server_id: s1
+            api_url: https://a.example/api
+            bot_token: t2
+        irc:
+          - id: irc_a
+            host: irc.example.net
+        """,
+    )
+    config = load_config(path)
+    assert config.discord[0].color_forwarding is False  # literal override
+    assert config.discord[1].color_forwarding is True  # default
+    assert config.stoat[0].color_forwarding is False  # env override
+
+
 def test_stoat_command_prefix_defaults_and_is_overridable(tmp_path, isolated_env, monkeypatch):
     monkeypatch.setenv("STOAT__2__COMMAND_PREFIX", "?")
     path = _write_config(
