@@ -1064,6 +1064,35 @@ async def test_mirror_channel_from_new_name_names_the_new_local_channel(fake_db)
     assert seen == ["lobby"]
 
 
+async def test_mirror_channel_from_into_irc_stores_the_normalized_name(fake_db):
+    # issue #51: the `MIRROR CHANNEL FROM discord <chan>` direction on IRC lands
+    # in the same link_channel path - the pulled-in name must get the `#` too.
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return name if name.startswith("#") else f"#{name}"
+
+    async def discord_channel_name(channel_id):
+        return "danksquad" if channel_id == "d1" else None
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_channel_name=discord_channel_name),
+        "irc": ConnectorInfo(
+            id="irc",
+            label="IRC",
+            ensure_channel=ensure_channel,
+            normalize_channel_name=lambda n: n if n.startswith("#") else f"#{n}",
+        ),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    await linker.mirror_channel_from(local_connector="irc", source="discord", source_id="d1")
+
+    group = await channel_mappings.get_bridge_group("irc", "#danksquad")
+    assert group is not None
+    mapped = {m.connector_id: m.channel_name for m in await channel_mappings.get_mapped_channels(group)}
+    assert mapped["irc"] == "#danksquad"
+
+
 async def test_mirror_channel_skips_if_already_synced(fake_db):
     calls = []
 
