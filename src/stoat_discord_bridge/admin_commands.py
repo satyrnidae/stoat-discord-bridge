@@ -33,7 +33,7 @@ from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingR
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
 
 if TYPE_CHECKING:
-    from stoat_discord_bridge.models import CustomEmoji
+    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
@@ -127,14 +127,21 @@ class ConnectorInfo:
     # in it. Discord/Stoat leave the channel in place (it's a real,
     # human-created channel there, not one the bridge necessarily made).
     on_channel_unlinked: Callable[[str, str], Awaitable[None]] | None = None
+    # Best-effort read of a channel's cosmetic metadata (description, NSFW /
+    # maturity flag, icon URL) as a `ChannelMetadata`, or None if the channel
+    # can't be resolved. `/mirror channel` reads this off the *source*
+    # channel and hands it to the destination's `ensure_channel` so a
+    # freshly-mirrored channel isn't left blank (issue #32). IRC leaves it
+    # unset - IRC channels carry none of those.
+    describe_channel: Callable[[str], Awaitable["ChannelMetadata | None"]] | None = None
     # Idempotent get-or-create: ensures a channel named `name` exists on
     # this connector, returning its native id (existing or newly created).
     # The second argument is an optional Category name - if given, the
     # matched-or-created channel should end up inside a same-named Category
     # on this connector (creating it if needed). None if this connector kind
-    # doesn't support channel creation (e.g. Discord has no channel-creation
-    # capability in this codebase at all - /mirror channel then reports that
-    # connector as unsupported rather than calling this).
+    # doesn't support channel creation (/mirror channel then reports that
+    # connector as unsupported rather than calling this - only IRC leaves it
+    # unset now that Discord and Stoat both implement it).
     # The third argument, is_thread_category, marks the matched/created
     # Category (if any) as one Discord's thread/forum-post auto-mirroring
     # created (see DiscordSenderService._handle_thread_create), via
@@ -147,7 +154,10 @@ class ConnectorInfo:
     # binding (ThreadCategoryRepository), so the Category is resolved by id
     # rather than by title on later threads - surviving a Category rename.
     # None for every other caller.
-    ensure_channel: Callable[[str, str | None, bool, str | None], Awaitable[str]] | None = None
+    # An optional `metadata` keyword (a `ChannelMetadata`) is passed by
+    # `/mirror channel` when the source channel had any - the hook applies
+    # it only when it actually creates the channel, never onto a reused one.
+    ensure_channel: Callable[..., Awaitable[str]] | None = None
     # Best-effort native-user-id -> display-name lookup, for `/linked-users`
     # to show real names instead of raw ids. None, an exception, or a falsy
     # return all fall back to the raw id, same as resolve_channel_name.
@@ -446,9 +456,26 @@ class ChannelLinker:
                 if linked_parent.channel_name:
                     category = linked_parent.channel_name
 
+        # Cosmetic metadata (description / maturity / icon) off the source
+        # channel, so the mirrored channel isn't created blank (issue #32).
+        # Best-effort - a missing hook or a raising one just means no
+        # metadata is carried. Only passed on when there's something to pass:
+        # keeps `ensure_channel` callers that don't take the keyword (older
+        # test fakes) untouched, and lets each hook apply it on create only.
+        metadata = None
+        src_info = self._connectors.get(local_connector)
+        if src_info is not None and src_info.describe_channel is not None:
+            try:
+                metadata = await src_info.describe_channel(local_channel_id)
+            except Exception as exc:
+                logger.warning(
+                    "mirror channel: %s.describe_channel(%r) failed: %s", local_connector, local_channel_id, exc
+                )
+        extra = {"metadata": metadata} if metadata is not None else {}
+
         try:
             destination_channel_id = await dest_info.ensure_channel(
-                local_channel_name, category, is_thread_category, category_parent_channel_id
+                local_channel_name, category, is_thread_category, category_parent_channel_id, **extra
             )
         except Exception as exc:
             logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, local_channel_name, exc)

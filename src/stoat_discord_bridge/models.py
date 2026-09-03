@@ -49,6 +49,25 @@ class StandardMessage:
 
 
 @dataclass(frozen=True)
+class ChannelMetadata:
+    """A bridged channel's cosmetic properties, read off the source channel
+    when `/mirror channel` (or thread / linked-Category auto-mirror) creates
+    its counterpart so the new channel isn't left blank - see
+    `admin_commands.ChannelLinker.mirror_channel` and each connector's
+    `ensure_channel` hook, which applies these *only on the create path*
+    (a mirror that reuses an existing channel leaves its metadata alone).
+
+    `icon_url` is only ever populated for a Stoat source - Discord guild
+    text channels have no per-channel icon - and only Stoat's
+    `ensure_channel` consumes it; IRC ignores the whole struct.
+    """
+
+    description: str | None = None
+    nsfw: bool = False
+    icon_url: str | None = None
+
+
+@dataclass(frozen=True)
 class CustomEmoji:
     """A custom (non-unicode) emoji. A plain unicode emoji needs no platform
     ID translation, so it's passed around as a bare `str` instead of this."""

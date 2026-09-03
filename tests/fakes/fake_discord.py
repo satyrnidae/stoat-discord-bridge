@@ -247,6 +247,17 @@ class FakeEmoji:
         self.animated = animated
 
 
+class FakeCategoryChannel(discord.CategoryChannel):
+    """Stands in for discord.CategoryChannel - needed for the
+    isinstance(..., discord.CategoryChannel) checks in the Category-placement
+    hooks. Skips the real __init__ (same pattern as FakeGuildChannel)."""
+
+    def __init__(self, id: int, *, name: str = "Team", guild: "FakeGuild | None" = None) -> None:
+        self.id = id
+        self.name = name
+        self.guild = guild
+
+
 class FakeGuild:
     def __init__(self, id: int, *, raises: BaseException | None = None) -> None:
         self.id = id
@@ -254,6 +265,26 @@ class FakeGuild:
         self.created_emoji_calls: list[dict] = []
         self._next_emoji_id = 1
         self._members: dict[int, FakeUser] = {}
+        self.text_channels: list = []
+        self.categories: list = []
+        self.created_text_channels: list[dict] = []
+        self.created_categories: list[str] = []
+
+    async def create_text_channel(self, name: str, *, reason: str | None = None, **kwargs) -> FakeGuildChannel:
+        self.created_text_channels.append({"name": name, **kwargs})
+        channel = FakeGuildChannel(id=self._next_emoji_id + 5000, name=name, guild=self, category=kwargs.get("category"))
+        self._next_emoji_id += 1
+        channel.topic = kwargs.get("topic")
+        channel.nsfw = bool(kwargs.get("nsfw", False))
+        self.text_channels.append(channel)
+        return channel
+
+    async def create_category(self, name: str, *, reason: str | None = None) -> FakeCategoryChannel:
+        self.created_categories.append(name)
+        category = FakeCategoryChannel(id=self._next_emoji_id + 9000, name=name, guild=self)
+        self._next_emoji_id += 1
+        self.categories.append(category)
+        return category
 
     def add_member(self, member: FakeUser) -> FakeUser:
         self._members[member.id] = member
