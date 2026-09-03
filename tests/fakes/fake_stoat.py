@@ -98,6 +98,9 @@ class FakeChannel:
         server_id: str | None = None,
         raises: BaseException | None = None,
         category: Any = None,
+        description: str | None = None,
+        nsfw: bool = False,
+        icon: Any = None,
         viewable_by: set[str] | None = None,
     ) -> None:
         self.id = id
@@ -109,9 +112,19 @@ class FakeChannel:
         self._next_message_id = 1
         self.category = category
         self.typing_events: list[str] = []
+        self.description = description
+        self.nsfw = nsfw
+        self.icon = icon
+        self.edits: list[dict] = []
         # When set, the channel models stoat.py's ServerChannel.permissions_for:
         # a member id in the set sees the channel, one outside it doesn't.
         self._viewable_by = viewable_by
+
+    async def edit(self, **kwargs) -> "FakeChannel":
+        self.edits.append(kwargs)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        return self
 
     def permissions_for(self, target, /):
         if self._viewable_by is None:
@@ -197,6 +210,7 @@ class FakeServer:
         self.categories: list[Any] = []
         self._raises = raises
         self.created_channels: list[str] = []
+        self.created_channel_calls: list[dict] = []
         self.created_categories: list[dict] = []
         self.server_edits: list[dict] = []
         self.state = SimpleNamespace(http=SimpleNamespace(request=self._http_request))
@@ -235,9 +249,12 @@ class FakeServer:
             raise LookupError(f"no such member: {user_id}")
         return member
 
-    async def create_channel(self, *, name: str):
+    async def create_channel(self, *, name: str, description: str | None = None, nsfw: bool | None = None):
         self.created_channels.append(name)
-        channel = FakeChannel(id=f"chan-{name}", name=name, server_id=self.id)
+        self.created_channel_calls.append({"name": name, "description": description, "nsfw": nsfw})
+        channel = FakeChannel(
+            id=f"chan-{name}", name=name, server_id=self.id, description=description, nsfw=bool(nsfw)
+        )
         self.channels.append(channel)
         return channel
 

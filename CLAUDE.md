@@ -245,6 +245,22 @@ identically from each connector's own `services/*.py` module. Nothing is
 bridged (or mention-linked) automatically — every pair is linked explicitly
 via those commands.
 
+When `/mirror channel` (or `/mirror channel from`, thread auto-mirror, or
+linked-Category auto-sync) **creates** a counterpart channel, it carries the
+source channel's cosmetic metadata over so the new channel isn't left blank
+(`models.ChannelMetadata` — description, NSFW/maturity flag, icon URL). The
+source connector's `ConnectorInfo.describe_channel` hook reads it, and it's
+passed to the destination's `ensure_channel` as a `metadata=` keyword which
+each hook applies **only on the create path** — a mirror that reuses/matches
+an existing channel leaves its metadata untouched. Discord (topic + NSFW; no
+per-channel icon) and Stoat (description + NSFW + icon, the icon a
+best-effort `channel.edit` after create) both implement `describe_channel`
+and channel creation; IRC's `ensure_channel` sets only the channel TOPIC from
+`description` (and only when its JOIN just created the channel — the server
+auto-ops the first joiner), leaves `describe_channel` unset, and ignores
+NSFW/icon. All best-effort — a missing or raising `describe_channel` just
+means no metadata is carried.
+
 `RoleLinker` (`storage/role_mappings.py`) is the role-level counterpart of
 `ChannelLinker`. Every id argument also accepts a bare role name via each
 connector's `resolve_role_id_by_name` hook; `/mirror role` creates-or-matches
