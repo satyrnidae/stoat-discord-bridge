@@ -1,9 +1,12 @@
 """Sender-side pronoun resolution for issue #54.
 
-Neither discord.py 2.7.1 nor stoat.py 1.2.1 models a pronoun field, so each
-sender reads it best-effort off a raw profile request. These tests cover the
-raw-payload parsing, the per-server-before-account preference, the
-`pronoun_forwarding` gate, and the per-user cache - without any network.
+stoat.py 1.2.1 models no pronoun field, so the Stoat sender reads it
+best-effort off a raw profile request. These tests cover the raw-payload
+parsing, the per-server-before-account preference, the `pronoun_forwarding`
+gate, and the per-user cache - without any network.
+
+Discord has no bot-accessible pronoun source at all (its profile endpoint is
+403-blocked for bots - issue #58), so its resolver is a disabled stub.
 """
 
 from __future__ import annotations
@@ -81,78 +84,27 @@ def test_extract_pronouns(payload, expected):
 # ----------------------------------------------------------------- Discord sender
 
 
-class _FakeDiscordHTTP:
-    def __init__(self, response=None, raises: BaseException | None = None) -> None:
-        self._response = response
-        self._raises = raises
-        self.calls: list = []
-
-    async def request(self, route, **kwargs):
-        self.calls.append((route.method, route.url, kwargs.get("params")))
-        if self._raises is not None:
-            raise self._raises
-        return self._response
-
-
-def _discord_sender(http, *, pronoun_forwarding: bool = True) -> DiscordSenderService:
-    sender = DiscordSenderService(
-        DiscordConnectorConfig(
-            id="discord", label="Discord", guild_id=123, bot_token="t", pronoun_forwarding=pronoun_forwarding
-        ),
-        on_message=_noop,
-        health=HealthTracker({"discord": "Discord"}),
-    )
-    sender._client = SimpleNamespace(http=http)
-    return sender
-
-
 async def _noop(_message) -> None:
     pass
 
 
-async def test_discord_prefers_the_guild_member_profile_pronouns():
-    http = _FakeDiscordHTTP(
-        {"user_profile": {"pronouns": "she/her"}, "guild_member_profile": {"pronouns": "she/they"}}
-    )
-    sender = _discord_sender(http)
-
-    assert await sender._resolve_sender_pronouns(555) == "she/they"
-    assert http.calls[0][2] == {"guild_id": "123", "with_mutual_guilds": "false"}
-
-
-async def test_discord_falls_back_to_the_account_profile_pronouns():
-    http = _FakeDiscordHTTP({"user_profile": {"pronouns": "she/her"}, "guild_member_profile": {}})
-    sender = _discord_sender(http)
-
-    assert await sender._resolve_sender_pronouns(555) == "she/her"
-
-
-async def test_discord_no_pronouns_anywhere_is_none():
-    sender = _discord_sender(_FakeDiscordHTTP({"user_profile": {}, "guild_member_profile": {}}))
-    assert await sender._resolve_sender_pronouns(555) is None
-
-
-async def test_discord_a_raising_profile_request_is_swallowed():
-    sender = _discord_sender(_FakeDiscordHTTP(raises=RuntimeError("429")))
-    assert await sender._resolve_sender_pronouns(555) is None
-
-
-async def test_discord_pronoun_forwarding_off_skips_the_request_entirely():
-    http = _FakeDiscordHTTP({"user_profile": {"pronouns": "she/her"}})
-    sender = _discord_sender(http, pronoun_forwarding=False)
-
-    assert await sender._resolve_sender_pronouns(555) is None
-    assert http.calls == []
-
-
-async def test_discord_pronouns_are_cached_per_user():
-    http = _FakeDiscordHTTP({"guild_member_profile": {"pronouns": "she/her"}})
-    sender = _discord_sender(http)
-
-    await sender._resolve_sender_pronouns(555)
-    await sender._resolve_sender_pronouns(555)
-
-    assert len(http.calls) == 1
+async def test_discord_pronoun_resolution_is_disabled():
+    """Discord has no bot-accessible pronoun source - the profile endpoint is
+    403-blocked for bots (issue #58) - so `_resolve_sender_pronouns` is a stub
+    that always yields None, regardless of `pronoun_forwarding`."""
+    for pronoun_forwarding in (True, False):
+        sender = DiscordSenderService(
+            DiscordConnectorConfig(
+                id="discord",
+                label="Discord",
+                guild_id=123,
+                bot_token="t",
+                pronoun_forwarding=pronoun_forwarding,
+            ),
+            on_message=_noop,
+            health=HealthTracker({"discord": "Discord"}),
+        )
+        assert await sender._resolve_sender_pronouns(555) is None
 
 
 # ----------------------------------------------------------------- Stoat sender

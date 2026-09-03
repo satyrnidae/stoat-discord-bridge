@@ -54,11 +54,13 @@ class StandardMessage:
     # None only for a message a sender built before this field existed.
     source_label: str | None = None
     # The sender's pronouns as free text ("she/her"), resolved best-effort by
-    # the origin sender from the platform's profile - Discord's profile
-    # endpoint, Stoat's per-server-then-account profile - when that connector
-    # has `pronoun_forwarding` on. None where unknown, unavailable, or the
-    # platform has no such concept (IRC always). A receiver whose connector
-    # has `pronoun_forwarding` on shows it alongside `source_label`.
+    # the origin sender from the platform's profile (Stoat's
+    # per-server-then-account profile) when that connector has
+    # `pronoun_forwarding` on. None where unknown, unavailable, or the
+    # platform has no bot-accessible pronoun field - IRC always, and Discord
+    # (its profile endpoint is 403-blocked for bots, issue #58). A receiver
+    # whose connector has `pronoun_forwarding` on shows it alongside
+    # `source_label`.
     sender_pronouns: str | None = None
     # Native user id -> display name on the origin, for every user the message
     # @-mentions. Lets a receiver expand a `<@id>` mention of a user who ISN'T
