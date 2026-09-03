@@ -253,7 +253,12 @@ lookup (a channel id there *is* its name) — it just sterilizes the token
 into the `#name` shape the server accepts (prepends `#`, drops characters
 IRC channel names can't hold — `irc_service.formatting.normalize_channel_name`,
 also used by `ensure_channel`), so `/link channel irc general` works the
-same as `/link channel irc #general` (issue #41). On Discord those id options are also
+same as `/link channel irc #general` (issue #41). That same helper is wired
+as `ConnectorInfo.normalize_channel_name` and applied by
+`ChannelLinker.link_channel` to a mirrored channel's stored *name*, so
+`/mirror channel to irc danksquad` records name `#danksquad` to match the
+`#danksquad` id `ensure_channel` returned rather than a bare `danksquad`
+(issue #51). On Discord those id options are also
 **autocompleted**: the `external_id` option lists the real
 channels/roles/users/Categories/emoji on whatever connector the `service`
 option names, and `local_id` lists this guild's own — pulled live from the

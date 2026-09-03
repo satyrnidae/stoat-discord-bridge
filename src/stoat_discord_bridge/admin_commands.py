@@ -112,6 +112,14 @@ class ConnectorInfo:
     # can't hold - see irc_service.formatting.normalize_channel_name), so
     # `/link channel irc general` behaves like `/link channel irc #general`.
     resolve_channel_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
+    # Fold a channel *name* into the shape this connector actually stores it
+    # under, so a name carried over from another connector by `/mirror channel`
+    # is recorded consistently with the id `ensure_channel` returned. Only IRC
+    # wires this (to `normalize_channel_name`): a channel mirrored there as
+    # `danksquad` gets id `#danksquad` from `ensure_channel`, and this keeps the
+    # stored name `#danksquad` too rather than the bare `danksquad` (issue #51).
+    # Synchronous; None (every other connector) leaves the name untouched.
+    normalize_channel_name: Callable[[str], str] | None = None
     # Best-effort native-channel-id -> (category_id, category_name) lookup for
     # the Category a channel sits in, or None if it's uncategorised / can't be
     # resolved. Used by `/mirror channel from <service> <external_id>` to place
@@ -374,7 +382,8 @@ class ChannelLinker:
             )
         bridge_group = source_group or destination_group or uuid.uuid4().hex
 
-        source_name = await self._resolve_name(source, source_id)
+        source_name = self._normalize_name(source, await self._resolve_name(source, source_id))
+        destination_name = self._normalize_name(local_connector, destination_name)
         await self._channel_mappings.upsert(
             ChannelMapping(bridge_group=bridge_group, connector_id=source, channel_id=source_id, channel_name=source_name)
         )
@@ -723,6 +732,21 @@ class ChannelLinker:
             if channel_id:
                 return channel_id
         return token
+
+    def _normalize_name(self, connector_id: str, name: str) -> str:
+        """Fold `name` into the shape `connector_id` stores channel names under
+        (IRC's `#`-prefix sterilization), so a name carried over by
+        `/mirror channel` matches the id `ensure_channel` produced (issue #51).
+        A connector with no `normalize_channel_name` hook - everything but IRC -
+        leaves the name untouched."""
+        info = self._connectors.get(connector_id)
+        if info is None or info.normalize_channel_name is None:
+            return name
+        try:
+            return info.normalize_channel_name(name)
+        except Exception:
+            logger.debug("couldn't normalize channel name %r on %s", name, connector_id, exc_info=True)
+            return name
 
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)

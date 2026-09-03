@@ -479,6 +479,16 @@ async def test_resolve_channel_id_by_name_sterilizes_input():
     assert await sender.resolve_channel_id_by_name("My Cool, Channel") == "#my-cool-channel"
 
 
+# ---------------------------------------------------------- normalize_channel_name (issue #51)
+
+
+async def test_normalize_channel_name_adds_hash_prefix():
+    sender = _make_sender()
+
+    assert sender.normalize_channel_name("danksquad") == "#danksquad"
+    assert sender.normalize_channel_name("#danksquad") == "#danksquad"
+
+
 # ---------------------------------------------------------- list_channels (issue #41)
 
 

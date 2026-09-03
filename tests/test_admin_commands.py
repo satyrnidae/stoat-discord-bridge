@@ -1012,6 +1012,36 @@ async def test_mirror_channel_blank_new_name_falls_back_to_the_source_name(fake_
     assert seen == ["general"]
 
 
+async def test_mirror_channel_stores_the_destination_normalized_name(fake_db):
+    # issue #51: mirroring a channel to IRC as `danksquad` has ensure_channel
+    # hand back id `#danksquad` - the stored name must be normalized to match,
+    # not left as the bare `danksquad` carried over from the source.
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return name if name.startswith("#") else f"#{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "irc": ConnectorInfo(
+            id="irc",
+            label="IRC",
+            ensure_channel=ensure_channel,
+            normalize_channel_name=lambda n: n if n.startswith("#") else f"#{n}",
+        ),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="danksquad", destination="irc"
+    )
+
+    assert "IRC channel '#danksquad' (#danksquad)" in summary
+    group = await channel_mappings.get_bridge_group("irc", "#danksquad")
+    assert group is not None
+    mapped = {m.connector_id: m.channel_name for m in await channel_mappings.get_mapped_channels(group)}
+    assert mapped["irc"] == "#danksquad"
+
+
 async def test_mirror_channel_from_new_name_names_the_new_local_channel(fake_db):
     seen = []
 
