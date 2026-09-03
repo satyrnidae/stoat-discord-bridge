@@ -856,6 +856,44 @@ async def test_mirror_channel_without_ensure_channel_reports_unsupported(fake_db
     assert "doesn't support channel creation" in summary
 
 
+async def test_mirror_channel_refuses_a_source_the_bot_cant_see(fake_db):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        raise AssertionError("ensure_channel must not run for a hidden source channel")
+
+    async def cant_see(_channel_id):
+        return False
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", can_view_channel=cant_see),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    with pytest.raises(LinkError, match="can't see channel"):
+        await linker.mirror_channel(
+            local_connector="discord", local_channel_id="d1", local_channel_name="__hidden__", destination="stoat"
+        )
+
+
+async def test_mirror_channel_proceeds_when_visibility_is_unknown(fake_db):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"stoat_{name}"
+
+    async def cant_tell(_channel_id):
+        return None  # "can't tell" must not block the mirror
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", can_view_channel=cant_tell),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert "Linked Discord channel 'd1'" in summary
+
+
 async def test_mirror_channel_creates_and_links(fake_db):
     created = {}
 

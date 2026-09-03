@@ -169,6 +169,30 @@ class StoatLookupsMixin:
         )
         return name, avatar_url
 
+    async def can_view_channel(self, channel_id: str) -> bool | None:
+        """`ConnectorInfo.can_view_channel`: True if the bridge bot can see
+        `channel_id` on this server, False if the channel resolves but the
+        bot's roles leave it without `view_channel` there, None if it can't
+        tell (uncached channel, no self id yet, unresolvable bot member, or
+        an error). `/mirror channel` refuses on an explicit False so a
+        private channel the bot can't see is never mirrored (issue #33)."""
+        if getattr(self, "_self_id", None) is None:
+            return None
+        channel = self._client.get_channel(channel_id, partial=False)
+        if channel is None or not hasattr(channel, "permissions_for"):
+            return None
+        try:
+            member = await self._client.get_server(self.server_id, partial=True).fetch_member(self._self_id)
+        except Exception:
+            logger.debug("[stoat:%s] couldn't fetch own member for channel-visibility check", self.connector_id)
+            return None
+        if member is None:
+            return None
+        try:
+            return bool(channel.permissions_for(member).view_channel)
+        except Exception:
+            return None
+
     async def get_channel_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> name lookup, used as this connector's
         `ConnectorInfo.resolve_channel_name` for `/link channel`.

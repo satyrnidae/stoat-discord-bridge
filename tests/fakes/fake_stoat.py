@@ -101,6 +101,7 @@ class FakeChannel:
         description: str | None = None,
         nsfw: bool = False,
         icon: Any = None,
+        viewable_by: set[str] | None = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -115,12 +116,20 @@ class FakeChannel:
         self.nsfw = nsfw
         self.icon = icon
         self.edits: list[dict] = []
+        # When set, the channel models stoat.py's ServerChannel.permissions_for:
+        # a member id in the set sees the channel, one outside it doesn't.
+        self._viewable_by = viewable_by
 
     async def edit(self, **kwargs) -> "FakeChannel":
         self.edits.append(kwargs)
         for key, value in kwargs.items():
             setattr(self, key, value)
         return self
+
+    def permissions_for(self, target, /):
+        if self._viewable_by is None:
+            raise AttributeError("this FakeChannel doesn't model permissions")
+        return SimpleNamespace(view_channel=str(getattr(target, "id", target)) in self._viewable_by)
 
     async def begin_typing(self) -> None:
         if self._raises is not None:

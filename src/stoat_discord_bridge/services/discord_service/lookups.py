@@ -39,6 +39,30 @@ class DiscordLookupsMixin:
             return None
         return getattr(channel, "name", None)
 
+    async def can_view_channel(self, channel_id: str) -> bool | None:
+        """`ConnectorInfo.can_view_channel`: True if the bridge bot can see
+        `channel_id` in this guild, False if the channel resolves but the bot
+        lacks `view_channel` on it, None if it can't tell (bad id, uncached,
+        error, or no bot member). `/mirror channel` refuses on an explicit
+        False - Discord otherwise hands a bot without `view_channel` a
+        placeholder name (`__hidden__`) that would become the mirrored
+        channel's name (issue #33)."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            cid = int(channel_id)
+        except (TypeError, ValueError):
+            return None
+        channel = guild.get_channel_or_thread(cid)
+        me = guild.me
+        if channel is None or me is None:
+            return None
+        try:
+            return bool(channel.permissions_for(me).view_channel)
+        except Exception:
+            return None
+
     async def resolve_channel_id_by_name(self, token: str) -> str | None:
         """Resolve a bare channel name to its id so the `/link channel` etc.
         commands accept either - this connector's

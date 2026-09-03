@@ -204,7 +204,15 @@ reach it on each connector is documented in
 `/mirror <noun>` behaviour), `from <service> <external_id>` pulls a remote
 entity in and creates the local copy - respecting already-linked entities
 (a `from` channel lands in the local counterpart of the source channel's
-linked Category; bridge/mapping groups are reused). On Discord the channel,
+linked Category; bridge/mapping groups are reused). `/mirror channel` (both
+directions) refuses a source channel the bridge bot can't see - gated by
+`ConnectorInfo.can_view_channel` (Discord/Stoat check the bot member's
+`view_channel` on the channel; IRC leaves it unset), checked in
+`ChannelLinker.mirror_channel` and, for the Discord current-channel case,
+also against `interaction.app_permissions` - so it never mirrors a hidden
+channel into a stub named after the platform's `__hidden__` placeholder
+(issue #33). Deliberately narrow: only a definite "bot lacks view here"
+blocks it; a `None`/"can't tell" result doesn't. On Discord the channel,
 role, user, category and emote commands are real `app_commands` subcommand
 groups (`/link`, `/unlink`, `/mirror`, `/linked`) - and each `/mirror <noun>`
 is itself a `to`/`from` subgroup; on Stoat they're the equivalent

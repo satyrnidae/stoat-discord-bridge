@@ -101,6 +101,16 @@ class ConnectorInfo:
     # source channel's linked Category (rather than a fresh same-named one).
     # IRC leaves this unset - it has no Category concept.
     resolve_channel_category: Callable[[str], Awaitable[tuple[str, str] | None]] | None = None
+    # Best-effort "can the bridge bot actually see this channel?" check, keyed
+    # by native channel id. Returns True (visible), False (the channel
+    # resolves but the bot lacks the view permission on it), or None ("can't
+    # tell" - bad id, uncached, an error, or a connector kind with no
+    # visibility concept). `ChannelLinker.mirror_channel` refuses on an
+    # explicit False so `/mirror channel` (both `to` and `from`) never mirrors
+    # a channel the bot can't see into a stub named after the platform's
+    # hidden-channel placeholder (issue #33). IRC leaves this unset - every
+    # channel it's in is one it can see.
+    can_view_channel: Callable[[str], Awaitable[bool | None]] | None = None
     # Called with a freshly-linked channel id on this connector. Only IRC
     # connectors set this, to JOIN the channel immediately instead of
     # waiting for a restart to pick up the new mapping.
@@ -393,6 +403,12 @@ class ChannelLinker:
         it marks that destination Category as thread-only, so
         `/link-category` later refuses to link it.
 
+        Raises LinkError (aborting the whole operation, `all` included) when
+        the connector's can_view_channel hook says for certain the bridge bot
+        can't see `local_channel_id` - mirroring a channel the bot can't see
+        otherwise creates a stub named after the platform's hidden-channel
+        placeholder (issue #33).
+
         `category_from_channel_id`, if given, is a channel id on
         `local_connector` (the thread's parent channel) whose linked
         counterpart's name *on `destination`* becomes the Category title
@@ -407,6 +423,12 @@ class ChannelLinker:
             raise LinkError("can't mirror a channel to its own connector.")
 
         local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
+
+        if await self._channel_is_hidden(local_connector, local_channel_id):
+            raise LinkError(
+                f"the bridge bot can't see channel '{local_channel_id}' on "
+                f"{self._connectors[local_connector].label} - give it access to that channel first."
+            )
 
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is not None:
@@ -678,6 +700,22 @@ class ChannelLinker:
             logger.debug("couldn't resolve channel name for %s on %s", channel_id, connector_id, exc_info=True)
             return channel_id
         return name or channel_id
+
+    async def _channel_is_hidden(self, connector_id: str, channel_id: str) -> bool:
+        """True only when the connector's can_view_channel hook says, for
+        certain, that the bridge bot can't see `channel_id`. A missing hook,
+        an error, or a "can't tell" (None) all return False - the guard is
+        deliberately narrow so it never blocks a mirror on a shaky signal
+        (see mirror_channel / issue #33)."""
+        info = self._connectors.get(connector_id)
+        if info is None or info.can_view_channel is None:
+            return False
+        try:
+            visible = await info.can_view_channel(channel_id)
+        except Exception:
+            logger.debug("can_view_channel(%s) failed on %s", channel_id, connector_id, exc_info=True)
+            return False
+        return visible is False
 
     async def _notify_linked(self, connector_id: str, channel_id: str) -> None:
         info = self._connectors.get(connector_id)

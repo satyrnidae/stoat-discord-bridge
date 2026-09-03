@@ -139,10 +139,14 @@ class FakeInteraction:
         user_id: int = 1,
         category: SimpleNamespace | None = None,
         namespace: SimpleNamespace | None = None,
+        app_can_view: bool = True,
     ):
         self.channel_id = channel_id
         self.channel = SimpleNamespace(name=channel_name, category=category)
         self.user = SimpleNamespace(id=user_id)
+        # discord.py fills this from the interaction payload - the app's
+        # computed permissions in the channel the command was run in.
+        self.app_permissions = SimpleNamespace(view_channel=app_can_view)
         # discord.py exposes the other, already-filled option values on
         # `interaction.namespace` during an autocomplete callback - the
         # `external_id` autocomplete reads `.service` off it.
@@ -239,6 +243,49 @@ async def test_mirror_channel_uses_invoking_channel_when_no_explicit_id_given():
     call = linker.mirror_channel_calls[0]
     assert call["local_channel_id"] == "555"
     assert call["local_channel_name"] == "the-current-one"
+
+
+async def test_mirror_channel_refuses_the_invoking_channel_when_the_bot_cant_see_it():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=555, channel_name="__hidden__", app_can_view=False)
+
+    await sender._handle_mirror_channel(interaction, "stoat", None)
+
+    assert linker.mirror_channel_calls == []
+    assert linker.mirror_channel_all_calls == []
+    assert interaction.deferred is False  # refused before the up-front defer
+    assert interaction.sent and "can't see this channel" in interaction.sent[0]
+
+
+async def test_mirror_channel_defers_before_the_slow_linker_call_and_replies_via_followup():
+    # Regression for #34: creating channels+webhooks on the target outruns
+    # Discord's 3s interaction deadline, so the handler must defer up front
+    # and answer via followup rather than interaction.response.send_message.
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(interaction, "stoat", None)
+
+    assert interaction.deferred is True
+    assert interaction.sent == ["ok"]
+
+
+async def test_mirror_channel_link_error_is_reported_via_followup_after_defer():
+    from stoat_discord_bridge.admin_commands import LinkError
+
+    class _Boom(FakeLinker):
+        async def mirror_channel(self, **kwargs):
+            raise LinkError("nope")
+
+    sender = _make_sender(_Boom())
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(interaction, "stoat", None)
+
+    assert interaction.deferred is True
+    assert interaction.sent == ["nope"]
 
 
 async def test_mirror_channel_from_strips_a_pasted_mention_and_routes_to_the_linker():
@@ -811,6 +858,37 @@ async def test_resolve_category_id_by_name_matches_by_name_and_passes_ids_throug
     assert await sender.resolve_category_id_by_name("team chat") == "10"
     assert await sender.resolve_category_id_by_name("10") == "10"
     assert await sender.resolve_category_id_by_name("missing") is None
+
+
+# ---------------------------------------------------------------- can_view_channel
+
+
+def _guild_with_channel(*, channel_id: int, can_view: bool, bot_member: object | None = "me"):
+    perms = SimpleNamespace(view_channel=can_view)
+    channel = SimpleNamespace(id=channel_id, permissions_for=lambda _m: perms)
+    return SimpleNamespace(
+        get_channel_or_thread=lambda cid: channel if cid == channel_id else None,
+        me=bot_member,
+    )
+
+
+async def test_can_view_channel_reflects_the_bot_permission(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: _guild_with_channel(channel_id=7, can_view=True))
+    assert await sender.can_view_channel("7") is True
+
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: _guild_with_channel(channel_id=7, can_view=False))
+    assert await sender.can_view_channel("7") is False
+
+
+async def test_can_view_channel_is_none_when_the_channel_or_guild_is_unknown(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: None)
+    assert await sender.can_view_channel("7") is None
+
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: _guild_with_channel(channel_id=7, can_view=True))
+    assert await sender.can_view_channel("999") is None
+    assert await sender.can_view_channel("not-an-int") is None
 
 
 # ---------------------------------------------------------------- _handle_channel_create

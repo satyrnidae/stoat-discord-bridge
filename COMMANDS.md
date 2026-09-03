@@ -229,6 +229,11 @@ is reported per-connector rather than aborting the rest when `all` is used.
 `<service>`, so pass `all` explicitly to name just a channel
 (`/mirror channel to all my-channel`).
 
+A channel the bridge bot can't actually see is refused rather than mirrored
+into a stub named after the platform's hidden-channel placeholder — grant the
+bot access to the channel first. (The check is best-effort: only a definite
+"the bot lacks view permission here" blocks it.)
+
 ### `/mirror channel from <service> <external_id>`
 
 The inbound direction: `<service>`'s `<external_id>` channel already exists,
@@ -239,7 +244,8 @@ linked entities": if the source channel sits in a Category that's already
 linked (via `/link category`) to a Category here, the new local channel is
 placed into *that* linked Category rather than a fresh same-named one.
 `<external_id>` also accepts a bare channel name. There's no `all` form -
-`from` always names one source.
+`from` always names one source. As with `to`, a source channel the bridge bot
+can't see on `<service>` is refused rather than mirrored.
 
 - **Discord**: `/mirror channel to` / `/mirror channel from` subcommands
   under the `/mirror channel` group (Manage Server; `to`'s `service`

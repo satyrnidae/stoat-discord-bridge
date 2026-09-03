@@ -310,6 +310,9 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
+        # Creating/matching the role on the target connector is a network
+        # round-trip that can outrun Discord's 3s deadline - defer + followup.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             if service is None or service.lower() == "all":
                 summary = await self._role_linker.mirror_role_all(
@@ -321,9 +324,9 @@ class DiscordLinkingMixin:
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror-role rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_role_from(
         self, interaction: discord.Interaction, service: str, external_id: str
@@ -341,15 +344,16 @@ class DiscordLinkingMixin:
             service,
             external_id,
         )
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             summary = await self._role_linker.mirror_role_from(
                 local_connector=self.connector_id, source=service, source_role=external_id
             )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror role from rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_link_emote(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: str
@@ -428,6 +432,9 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
+        # Recreating the emoji on the target connector uploads its image -
+        # comfortably past Discord's 3s deadline - so defer + followup.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             if service is None or service.lower() == "all":
                 summary = await self._emote_linker.mirror_emote_all(
@@ -439,9 +446,9 @@ class DiscordLinkingMixin:
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror emote rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_emote_from(
         self, interaction: discord.Interaction, service: str, external_id: str
@@ -458,15 +465,16 @@ class DiscordLinkingMixin:
             service,
             external_id,
         )
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             summary = await self._emote_linker.mirror_emote_from(
                 local_connector=self.connector_id, source=service, source_emote=external_id
             )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror emote from rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_link_user(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: discord.Member
@@ -512,6 +520,18 @@ class DiscordLinkingMixin:
         else:
             channel_id = str(interaction.channel_id)
             channel_name = getattr(interaction.channel, "name", channel_id)
+            # The bot can be handed an interaction from a channel it can't
+            # actually see; mirroring it then names the new channel after
+            # Discord's `__hidden__` placeholder (issue #33). app_permissions
+            # is the interaction channel's computed perms for this app - no
+            # cache needed - so it catches the current-channel case even when
+            # the channel never reached the guild cache.
+            if not interaction.app_permissions.view_channel:
+                await interaction.response.send_message(
+                    "I can't see this channel, so I can't mirror it - grant me access to it first.",
+                    ephemeral=True,
+                )
+                return
         channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
             "[discord:%s] %s ran /mirror channel service=%s local_id=%s",
@@ -520,6 +540,10 @@ class DiscordLinkingMixin:
             service,
             channel_id,
         )
+        # Mirroring creates channels + webhooks on the target connector, which
+        # runs well past Discord's 3s interaction-response deadline - defer up
+        # front and reply via followup so the token doesn't expire mid-run.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             if service is None or service.lower() == "all":
                 summary = await self._linker.mirror_channel_all(
@@ -538,9 +562,9 @@ class DiscordLinkingMixin:
                 )
         except LinkError as exc:
             logger.info("[discord:%s] /mirror channel rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
 
     async def _handle_mirror_channel_from(
         self, interaction: discord.Interaction, service: str, external_id: str
