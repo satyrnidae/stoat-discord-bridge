@@ -63,15 +63,21 @@ class AsyncTTLCache(Generic[_V]):
 
 
 class RefreshThrottle:
-    """Guards an expensive "re-fetch everything from the API" call so running
-    it repeatedly inside one command flow only hits the network once.
+    """Guards an expensive "re-fetch everything from the API" call so a burst
+    of them collapses to one network round-trip.
 
     A `/mirror <noun> all` fan-out (and `/mirror category`, which re-enters
     `mirror_channel` per child) would otherwise force a full server re-fetch
-    per destination per child. `due()` returns True at most once per
-    `min_interval` seconds - and stamps the clock as it does, so the caller
-    doesn't have to - letting a genuinely new command a few seconds later
-    still refresh while a burst collapses to one fetch.
+    per destination per child. `due()` is a pure check - it returns False for
+    `min_interval` seconds after the last `mark()`; the caller runs the fetch
+    and only `mark()`s once it actually succeeds, so a failed fetch doesn't
+    burn the window and the next attempt retries immediately.
+
+    The window spans the whole service instance, not one command, so two
+    distinct `/mirror` commands issued inside `min_interval` share it - the
+    second reads the (just-refreshed) cache without re-fetching. That's the
+    intended trade: the fan-out saving is worth far more than catching an
+    entity created in that sub-`min_interval` gap between two commands.
     """
 
     def __init__(self, min_interval: float) -> None:
@@ -79,13 +85,9 @@ class RefreshThrottle:
         self._last = float("-inf")
 
     def due(self) -> bool:
-        now = time.monotonic()
-        if now - self._last < self._min_interval:
-            return False
-        self._last = now
-        return True
+        return time.monotonic() - self._last >= self._min_interval
 
-    def reset(self) -> None:
-        """Forget the last refresh so the next `due()` returns True - used
-        after a write that's known to have changed server state."""
-        self._last = float("-inf")
+    def mark(self) -> None:
+        """Record that a refresh just completed - `due()` then returns False
+        until `min_interval` seconds have passed."""
+        self._last = time.monotonic()

@@ -149,10 +149,20 @@ async def test_refresh_is_throttled_within_the_interval():
     assert client.fetch_server_calls == 1  # the burst collapsed to one fetch
 
 
-async def test_refresh_survives_a_failing_fetch_server():
-    class _Boom(_FakeClient):
-        async def fetch_server(self, server_id, *, populate_channels=False):
-            raise RuntimeError("network down")
+async def test_a_failing_fetch_server_does_not_burn_the_throttle_window():
+    calls = {"n": 0}
 
-    sender = _sender(_Boom(cached=_FakeServer("s1"), fresh=_FakeServer("s1")))
-    await sender.refresh()  # must not raise
+    class _Flaky(_FakeClient):
+        async def fetch_server(self, server_id, *, populate_channels=False):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("network down")
+            return self._fresh
+
+    sender = _sender(_Flaky(cached=_FakeServer("s1"), fresh=_FakeServer("s1", roles=[_role("r2", "Admins")])))
+
+    await sender.refresh()  # first attempt fails, must not raise
+    await sender.refresh()  # immediately retries rather than being throttled
+
+    assert calls["n"] == 2
+    assert await sender.resolve_role_id_by_name("Admins") == "r2"

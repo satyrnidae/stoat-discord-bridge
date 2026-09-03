@@ -88,25 +88,19 @@ async def test_put_value_still_expires_on_ttl():
 # ---------------------------------------------------------------- RefreshThrottle
 
 
-async def test_refresh_throttle_allows_the_first_call_then_blocks_within_the_interval():
+async def test_refresh_throttle_due_is_a_pure_check_until_mark():
     throttle = RefreshThrottle(min_interval=60)
 
     assert throttle.due() is True
+    assert throttle.due() is True  # due() alone never consumes the window
+    throttle.mark()
     assert throttle.due() is False
     assert throttle.due() is False
 
 
-async def test_refresh_throttle_with_a_zero_interval_always_allows():
+async def test_refresh_throttle_with_a_zero_interval_is_always_due():
     throttle = RefreshThrottle(min_interval=0)
 
     assert throttle.due() is True
-    assert throttle.due() is True
-
-
-async def test_refresh_throttle_reset_reopens_the_window():
-    throttle = RefreshThrottle(min_interval=60)
-
-    assert throttle.due() is True
-    assert throttle.due() is False
-    throttle.reset()
+    throttle.mark()
     assert throttle.due() is True

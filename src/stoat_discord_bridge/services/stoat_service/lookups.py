@@ -35,11 +35,12 @@ _DESCRIPTION_LIMIT = 1024
 # that burst is served from here rather than re-fetching.
 _CATEGORY_CACHE_TTL = 15.0
 
-# How long `refresh()` waits before a repeat full server re-fetch is allowed
-# (issue #81). A single `/mirror <noun> all` or `/mirror category` re-enters
-# the per-destination/per-child mirror many times in a row; the throttle
-# collapses that to one round-trip, while a fresh command a few seconds on
-# still gets a real refresh.
+# How long after a successful `refresh()` the next one is skipped (issue
+# #81). A single `/mirror <noun> all` or `/mirror category` re-enters the
+# per-destination/per-child mirror many times in a row; the throttle
+# collapses that whole burst to one server re-fetch. Two separate `/mirror`
+# commands run within this window also share the one refresh - an accepted
+# trade (see RefreshThrottle).
 _REFRESH_MIN_INTERVAL = 10.0
 
 
@@ -875,19 +876,26 @@ class StoatLookupsMixin:
         one command re-enters this many times.
 
         Best-effort throughout: `fetch_server` failing aborts the refresh
-        (leaving the cache untouched), and the member / emoji follow-up
+        *without* marking the throttle (leaving the cache untouched, the next
+        attempt free to retry at once), and the member / emoji follow-up
         fetches are each guarded independently. A client whose cache isn't
         reachable (some tests) just drops the fresh data after the fetch. The
         server/channel write mirrors stoat.py's own `ServerCreateEvent`
         handling.
         """
-        if not self._refresh_throttle().due():
+        throttle = self._refresh_throttle()
+        if not throttle.due():
             return
         try:
             server = await self._client.fetch_server(self.server_id, populate_channels=True)
         except Exception:
             logger.debug("[stoat:%s] refresh: fetch_server failed", self.connector_id, exc_info=True)
             return
+        # The costly network hop landed - hold off the next full refresh now,
+        # even if a follow-up fetch below fails (the cache is already mostly
+        # current and re-fetching the whole server wouldn't fix a member/emoji
+        # sub-fetch that's erroring).
+        throttle.mark()
 
         # Seed the short-TTL Category cache off the same fetch so a follow-up
         # `_fresh_categories` read is served from here rather than re-fetching.
