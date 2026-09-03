@@ -215,7 +215,7 @@ and creates the local copy. On Discord `channel` / `role` / `category` /
 under them; on Stoat they're the same tokens as a chat message; on IRC only
 `MIRROR CHANNEL` exists, taking `TO` / `FROM` as its first token.
 
-### `/mirror channel to [<local_id>] [<service>|all]`
+### `/mirror channel to [<service>|all] [<local_id>]`
 
 Ensures a linked counterpart of `<local_id>` (or the invoking channel, if
 omitted) exists on `service` — or every other configured connector, if
@@ -224,7 +224,10 @@ that connector's `ensure_channel` hook if it doesn't already have a matching
 channel, then linking it. A service that can't create channels (Discord
 has no channel-creation capability in this codebase) or hits a link conflict
 is reported per-connector rather than aborting the rest when `all` is used.
-`<local_id>` also accepts a bare channel name.
+`<local_id>` also accepts a bare channel name. Both arguments are optional and
+`<service>` leads (matching `from`'s shape); a lone argument is read as
+`<service>`, so pass `all` explicitly to name just a channel
+(`/mirror channel to all my-channel`).
 
 ### `/mirror channel from <service> <external_id>`
 
@@ -241,13 +244,13 @@ placed into *that* linked Category rather than a fresh same-named one.
 - **Discord**: `/mirror channel to` / `/mirror channel from` subcommands
   under the `/mirror channel` group (Manage Server; `to`'s `service`
   autocomplete includes the literal `all` choice, `from`'s doesn't)
-- **Stoat**: `/mirror channel to [<local_id|name>] [<service>|all]` /
+- **Stoat**: `/mirror channel to [<service>|all] [<local_id|name>]` /
   `/mirror channel from <service> <external_id|name>` message commands
   (Manage Server)
-- **IRC**: `MIRROR CHANNEL TO <local_id> [<service>|all]` /
+- **IRC**: `MIRROR CHANNEL TO [<service>|all] <local_id>` /
   `MIRROR CHANNEL FROM <service> <external_id>`, DM (IRC-operator; `TO`'s
-  local id always required and hoisted first - no "current channel" to
-  default to; `service` optional on `TO` and defaults to `all`)
+  local id is always required - no "current channel" to default to - so a
+  lone `TO` argument is the id and `service` defaults to `all`)
 
 ## Categories: `/link category`, `/mirror category`, `/linked categories`, `/unlink category`
 
@@ -276,10 +279,12 @@ two Categories are linked, any **new channel** created inside either one is
 automatically mirrored (created + linked, same logic as `/mirror channel`)
 into every other connector's own linked Category. Manage Server.
 
-### `/mirror category to [<local_id|name>] [<service>|all]` / `/mirror category from <service> <external_id|name>`
+### `/mirror category to [<service>|all] [<local_id|name>]` / `/mirror category from <service> <external_id|name>`
 
 `to` ensures a linked counterpart of the local Category exists on `<service>`
-(or every other connector, if `all` - the default): reuses the existing
+(or every other connector, if `all` - the default; both arguments are
+optional and `<service>` leads, so a lone argument is read as `<service>`):
+reuses the existing
 linked Category if the pair is already linked, otherwise creates a same-named
 one (name only) and links it. Then relocates the source Category's channels
 onto that destination Category - a child already linked to a `<service>`

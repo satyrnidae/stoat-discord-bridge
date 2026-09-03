@@ -32,7 +32,7 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   LINKED USERS [local_id|name] - cross-connector user links, read-only
   LINK CHANNEL <local_id> <service> <external_id> - bridge a channel (IRC-operator)
   LINK USER <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (IRC-operator)
-  MIRROR CHANNEL TO <local_id> [service|all] - create+link a matching channel elsewhere (IRC-operator)
+  MIRROR CHANNEL TO [service|all] <local_id> - create+link a matching channel elsewhere (IRC-operator)
   MIRROR CHANNEL FROM <service> <external_id> - create+link a local channel mirroring a remote one (IRC-operator)
   UNLINK CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK USER [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
@@ -130,12 +130,13 @@ class IrcAdminCommandsMixin:
                 return
             self._notify(nick, summary)
         elif command == "MIRROR CHANNEL":
-            # `MIRROR CHANNEL TO <local_id> [service|all]` pushes a local
-            # channel onto another connector (the historical behaviour);
-            # `MIRROR CHANNEL FROM <service> <external_id>` pulls a remote
-            # channel in and creates the local copy. Unlike Discord/Stoat, an
-            # IRC DM has no "current channel", so `TO`'s local_id is always
-            # required and hoisted first, same as LINK/UNLINK CHANNEL.
+            # `MIRROR CHANNEL TO [service|all] <local_id>` pushes a local
+            # channel onto another connector; `MIRROR CHANNEL FROM <service>
+            # <external_id>` pulls a remote channel in and creates the local
+            # copy. Both lead with `<service>` (matching Discord/Stoat); the
+            # local id is always required on `TO` (an IRC DM has no "current
+            # channel"), so 1 arg is just the id (service defaults to `all`),
+            # 2 args are service then id.
             direction = args[0].upper() if args else ""
             rest = args[1:]
             if self._linker is None:
@@ -146,16 +147,16 @@ class IrcAdminCommandsMixin:
                     summary = await self._linker.mirror_channel_all(
                         local_connector=self.connector_id, local_channel_id=rest[0], local_channel_name=rest[0]
                     )
-                elif direction == "TO" and len(rest) == 2 and rest[1].lower() == "all":
+                elif direction == "TO" and len(rest) == 2 and rest[0].lower() == "all":
                     summary = await self._linker.mirror_channel_all(
-                        local_connector=self.connector_id, local_channel_id=rest[0], local_channel_name=rest[0]
+                        local_connector=self.connector_id, local_channel_id=rest[1], local_channel_name=rest[1]
                     )
                 elif direction == "TO" and len(rest) == 2:
                     summary = await self._linker.mirror_channel(
                         local_connector=self.connector_id,
-                        local_channel_id=rest[0],
-                        local_channel_name=rest[0],
-                        destination=rest[1],
+                        local_channel_id=rest[1],
+                        local_channel_name=rest[1],
+                        destination=rest[0],
                     )
                 elif direction == "FROM" and len(rest) == 2:
                     summary = await self._linker.mirror_channel_from(
@@ -164,7 +165,7 @@ class IrcAdminCommandsMixin:
                 else:
                     self._notify(
                         nick,
-                        "Usage: MIRROR CHANNEL TO <local_id> [service|all] | MIRROR CHANNEL FROM <service> <external_id>",
+                        "Usage: MIRROR CHANNEL TO [service|all] <local_id> | MIRROR CHANNEL FROM <service> <external_id>",
                     )
                     return
             except LinkError as exc:

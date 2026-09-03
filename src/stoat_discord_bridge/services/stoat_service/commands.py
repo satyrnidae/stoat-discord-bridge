@@ -29,10 +29,10 @@ _HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
   {p}link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
   {p}link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
   {p}link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
-  {p}mirror channel to [local_id|name] [service|all] | from <service> <external_id|name> - create+link a matching channel (Manage Server)
+  {p}mirror channel to [service|all] [local_id|name] | from <service> <external_id|name> - create+link a matching channel (Manage Server)
   {p}mirror role to <local_id|name> [service|all] | from <service> <external_id|name> - create+link a matching role (Manage Server)
   {p}mirror emote to <local_id|name> [service|all] | from <service> <external_id|name> - recreate+link a custom emoji (Manage Server)
-  {p}mirror category to [local_id|name] [service|all] | from <service> <external_id|name> - create+link a Category and mirror its channels (Manage Server)
+  {p}mirror category to [service|all] [local_id|name] | from <service> <external_id|name> - create+link a Category and mirror its channels (Manage Server)
   {p}unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
   {p}unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
   {p}unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
@@ -131,14 +131,15 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         await owner._linked_emotes(ctx, local_id)
 
     # `/mirror <noun>` is a two-way group: `to` pushes a local entity onto
-    # another connector (the historical `/mirror <noun>` behaviour, arg order
-    # unchanged), `from` pulls a remote entity in and creates the local copy.
+    # another connector, `from` pulls a remote entity in and creates the local
+    # copy. Both lead with `<service>` where the local id is also optional
+    # (channel, category); role/emote keep the required `<local_id>` first.
     @mirror.group(name="channel", invoke_without_command=True)
     async def mirror_channel(ctx):
         await owner._reply(ctx, f"Usage: {p}mirror channel <to|from> …")
 
     @mirror_channel.command(name="to")
-    async def mirror_channel_to(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+    async def mirror_channel_to(ctx, service: typing.Optional[str] = None, local_id: typing.Optional[str] = None):
         await owner._mirror_channel(ctx, local_id, service)
 
     @mirror_channel.command(name="from")
@@ -162,7 +163,7 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         await owner._reply(ctx, f"Usage: {p}mirror category <to|from> …")
 
     @mirror_category.command(name="to")
-    async def mirror_category_to(ctx, local_id: typing.Optional[str] = None, service: typing.Optional[str] = None):
+    async def mirror_category_to(ctx, service: typing.Optional[str] = None, local_id: typing.Optional[str] = None):
         await owner._mirror_category(ctx, local_id, service)
 
     @mirror_category.command(name="from")

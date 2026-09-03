@@ -314,7 +314,7 @@ def build_command_tree(service) -> None:
         service=channel_service_autocomplete(include_all=True), local_id=channel_local_ac
     )
     async def mirror_channel_to_command(
-        interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_channel(interaction, service, local_id)
 
@@ -434,7 +434,7 @@ def build_command_tree(service) -> None:
         service=category_service_autocomplete(include_all=True), local_id=category_local_ac
     )
     async def mirror_category_to_command(
-        interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_mirror_category(interaction, local_id, service)
 

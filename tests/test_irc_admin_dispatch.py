@@ -293,7 +293,7 @@ async def test_mirror_channel_to_a_single_destination():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO #general discord")
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general")
 
     assert linker.mirror_channel_calls == [
         {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general", "destination": "discord"}
@@ -305,7 +305,7 @@ async def test_mirror_channel_to_all_is_case_insensitive():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO #general ALL")
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO ALL #general")
 
     assert linker.mirror_channel_all_calls == [
         {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general"}
@@ -344,7 +344,7 @@ async def test_mirror_channel_wrong_arg_count_sends_usage():
     assert conn.notice_calls == [
         (
             "alice",
-            "Usage: MIRROR CHANNEL TO <local_id> [service|all] | MIRROR CHANNEL FROM <service> <external_id>",
+            "Usage: MIRROR CHANNEL TO [service|all] <local_id> | MIRROR CHANNEL FROM <service> <external_id>",
         )
     ]
 
