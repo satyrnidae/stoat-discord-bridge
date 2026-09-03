@@ -84,11 +84,12 @@ def _make_sender(
 
 
 def _discord_message(
-    *, channel, guild, author, content="hi", id=1, attachments=None, type=discord.MessageType.default, thread=None
+    *, channel, guild, author, content="hi", id=1, attachments=None, type=discord.MessageType.default, thread=None,
+    mentions=None,
 ):
     return SimpleNamespace(
         channel=channel, guild=guild, author=author, content=content, id=id, attachments=attachments or [],
-        type=type, thread=thread,
+        type=type, thread=thread, mentions=mentions or [],
     )
 
 

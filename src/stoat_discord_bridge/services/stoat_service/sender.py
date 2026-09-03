@@ -47,6 +47,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
     _display_name,
     _extract_pronouns,
     _map_attachments,
+    _map_mentioned_users,
 )
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
@@ -190,6 +191,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 attachments=_map_attachments(message),
                 source_label=self._config.label,
                 sender_pronouns=await self._resolve_sender_pronouns(message),
+                mentioned_users=_map_mentioned_users(message),
             )
         )
 

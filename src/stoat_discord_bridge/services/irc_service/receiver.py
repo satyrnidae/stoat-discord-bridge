@@ -79,6 +79,7 @@ class IrcReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="irc",
                 user_mappings=self._user_mappings,
+                mentioned_users=message.mentioned_users,
             )
             if self._enable_local_user_masquerade:
                 # A linked sender's user_id on IRC IS the nick (see

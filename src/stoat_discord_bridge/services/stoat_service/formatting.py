@@ -117,6 +117,25 @@ def _map_attachments(message) -> list[Attachment]:
     return out
 
 
+def _map_mentioned_users(message) -> dict[str, str]:
+    """Native user id -> display name for every user `message` @-mentions, for
+    `StandardMessage.mentioned_users` (issue #56). Best-effort: stoat.py's
+    `Message.mentions` is cache-dependent and quietly returns fewer entries
+    (or none) on a cache miss - a mention we can't name just isn't in the map
+    and the receiver leaves that `<@id>` token as-is."""
+    out: dict[str, str] = {}
+    try:
+        mentions = message.mentions
+    except Exception:
+        mentions = []
+    for member in mentions or []:
+        try:
+            out[str(member.id)] = _display_name(member)
+        except Exception:
+            continue
+    return out
+
+
 async def _download(url: str) -> bytes:
     async with aiohttp.ClientSession() as session, session.get(url) as resp:
         resp.raise_for_status()

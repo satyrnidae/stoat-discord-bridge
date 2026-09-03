@@ -75,6 +75,7 @@ def _to_standard_message(
             Attachment(url=a.url, filename=a.filename, content_type=a.content_type, size_bytes=a.size)
             for a in message.attachments
         ],
+        mentioned_users={str(u.id): u.display_name for u in (getattr(message, "mentions", None) or [])},
     )
 
 

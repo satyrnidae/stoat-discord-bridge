@@ -13,8 +13,11 @@ actually linked (false positives are possible if a word incidentally
 matches a linked nick), and the IRC-target direction is just substituting
 the plain nick text.
 
-A mentioned user with no mapping to the target connector is left exactly
-as it appeared in the original message - never dropped or replaced with
+A mentioned user with no mapping to the target connector is expanded to a
+plain `@Display Name` (the name on the origin, carried on the
+`StandardMessage.mentioned_users` map) so the target doesn't just see a
+raw `<@id>` token (issue #56); if even that name can't be recovered the
+mention is left exactly as it appeared - never dropped or replaced with
 something meaningless. Neither regex needs to know which connector
 authored the message: Discord's numeric-id and Stoat's 26-char-ULID
 mention shapes never collide with each other, so both are always tried.
@@ -184,9 +187,21 @@ async def rewrite_mentions(
     target_connector_id: str,
     target_kind: str,
     user_mappings: UserMappingRepository,
+    mentioned_users: dict[str, str] | None = None,
 ) -> str:
     """`target_kind` is one of "discord" / "stoat" / "irc" - the caller
-    (a receiver's `receive()`) already knows its own kind."""
+    (a receiver's `receive()`) already knows its own kind.
+
+    `mentioned_users` maps an origin native user id to that user's display
+    name on the origin. A `<@id>` mention of a user with no /link-user link
+    to the target is expanded to a plain `@Display Name` using this map
+    rather than relayed as the raw id token (issue #56); a mention still not
+    covered by the map is left exactly as it appeared."""
+    mentioned_users = mentioned_users or {}
+    # Unlinked `<@id>` mentions we can name are expanded only *after* the
+    # plain-word nick scan below, so an injected display name can't itself be
+    # re-read as a nick mention - the raw token is inert to that scan.
+    pending_expansions: list[tuple[str, str]] = []
     for pattern in (_DISCORD_MENTION, _STOAT_MENTION):
         for match in list(pattern.finditer(content)):
             target_id, target_name = await _resolve_target(
@@ -194,6 +209,8 @@ async def rewrite_mentions(
             )
             if target_id is not None:
                 content = content.replace(match.group(0), _render_mention(target_kind, target_id, target_name))
+            elif match.group(1) in mentioned_users:
+                pending_expansions.append((match.group(0), mentioned_users[match.group(1)]))
 
     # IRC-origin (and, harmlessly, any other origin) plain-word nick scan:
     # any linked identity whose *own* user_id literally appears in the text
@@ -208,7 +225,27 @@ async def rewrite_mentions(
         if target_id is not None:
             content = pattern.sub(_render_mention(target_kind, target_id, target_name), content)
 
+    for token, name in pending_expansions:
+        content = content.replace(token, _defang_mentions("@" + name))
+
     return content
+
+
+_ZWSP = "\u200b"
+_PING_KEYWORD = re.compile(r"@(everyone|here)\b")
+
+
+def _defang_mentions(text: str) -> str:
+    """Neutralise anything in a `@<origin display name>` expansion that a
+    target could parse as a live mention before it's spliced into relayed
+    text - an `@everyone` / `@here` mass ping (whether it's the leading `@`
+    we added or one inside the name) and any stray `<@id>` / `<#id>` /
+    `<@&id>` / `<%id>` token - by wedging a zero-width space in after the
+    sigil. It still reads the same; it just can't ping. (The bridge sets no
+    `allowed_mentions` on its webhook/masquerade sends, so an un-defanged
+    `@everyone` in a display name would be a live mass ping.)"""
+    text = _PING_KEYWORD.sub(rf"@{_ZWSP}\1", text)
+    return text.replace("<@", f"<{_ZWSP}@").replace("<#", f"<{_ZWSP}#").replace("<%", f"<{_ZWSP}%")
 
 
 async def _resolve_target(
