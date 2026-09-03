@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # How long a resolved (or absent) pronoun value is cached per user before the
 # profile endpoint is consulted again - long enough to keep a busy channel
 # from hammering it, short enough that a pronoun set later shows up soon.
-_PRONOUN_CACHE_TTL = 600.0
+# _PRONOUN_CACHE_TTL = 600.0  # noqa: ERA001 - re-enable with _resolve_sender_pronouns (issue #58)
 
 
 class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSyncMixin, SenderService):
