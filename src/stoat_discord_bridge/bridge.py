@@ -3,7 +3,7 @@ every other connector's receiver service (posts into that platform), and
 records what got relayed where via MongoDB for sync tracking.
 
 Nothing links automatically: `ChannelMappingRepository` rows only come from
-the `/link channel` and `/mirror-channels` admin commands (see
+the `/link channel` and `/mirror channel` admin commands (see
 admin_commands.py and each services/*.py module's command handler).
 """
 
@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.admin_commands import (
@@ -21,10 +20,8 @@ from stoat_discord_bridge.admin_commands import (
     ConnectorInfo,
     EmoteLinker,
     RoleLinker,
-    StructureMirrorer,
     UserLinker,
 )
-from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.config import BridgeConfig
 from stoat_discord_bridge.health_server import start_health_server
 from stoat_discord_bridge.models import (
@@ -587,13 +584,10 @@ async def run(config: BridgeConfig) -> None:
     coordinator = BridgeCoordinator(channel_mappings, message_sync, emoji_mappings, health)
 
     # Populated in place as each sender/receiver below is constructed;
-    # ChannelLinker/StructureMirrorer only read these once a command fires
-    # (well after `run()` finishes wiring), so construction order doesn't
-    # matter.
+    # ChannelLinker only reads this once a command fires (well after `run()`
+    # finishes wiring), so construction order doesn't matter.
     connector_infos: dict[str, ConnectorInfo] = {}
-    structure_providers: dict[str, Callable[[], GuildStructure]] = {}
     linker = ChannelLinker(channel_mappings, connector_infos)
-    mirrorer = StructureMirrorer(structure_providers)
     emote_linker = EmoteLinker(emoji_mappings, connector_infos)
     user_linker = UserLinker(user_mappings, connector_infos)
     category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
@@ -625,7 +619,6 @@ async def run(config: BridgeConfig) -> None:
             on_role_deleted=role_grants.handle_role_deleted,
             on_channel_role_permission_changed=role_grants.handle_channel_role_permission,
         )
-        structure_providers[dc.id] = sender.snapshot_guild_structure
         receiver = DiscordReceiverService(
             client=sender.client,
             guild_id=dc.guild_id,
@@ -679,7 +672,6 @@ async def run(config: BridgeConfig) -> None:
             on_pin=coordinator.handle_pin,
             on_typing=coordinator.handle_typing,
             linker=linker,
-            mirrorer=mirrorer,
             emote_linker=emote_linker,
             user_linker=user_linker,
             category_linker=category_linker,

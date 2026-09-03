@@ -4,7 +4,7 @@ Each mapped channel is stored as its own document keyed by (connector_id,
 channel_id), tagged with a `bridge_group` — a logical name tying together
 every connector's channel for one bridged conversation (e.g. "general").
 
-Rows are created by the `/link channel` and `/mirror-channels` admin
+Rows are created by the `/link channel` and `/mirror channel` admin
 commands (see admin_commands.py) - nothing links automatically.
 
 The Mongo field is still named "platform" (pre-dating the move to

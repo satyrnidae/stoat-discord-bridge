@@ -1,13 +1,12 @@
-"""Shared logic behind the `/link channel`, `/link category`, and
-`/mirror-channels` admin commands, called identically from each connector's
-own command handler (services/discord_service.py, stoat_service.py,
-irc_service.py) so the bridge-group/conflict logic isn't duplicated three
-times.
+"""Shared logic behind the `/link channel` and `/link category` admin
+commands, called identically from each connector's own command handler
+(services/discord_service.py, stoat_service.py, irc_service.py) so the
+bridge-group/conflict logic isn't duplicated three times.
 
 Channels never link automatically - a bridge_group only comes into being via
-`ChannelLinker.link_channel`, called directly by `/link channel` or, per
-channel created/matched, by the Stoat `/mirror-channels` handler. Categories
-are the same - only `/link-category` creates a CategoryLinker bridge_group -
+`ChannelLinker.link_channel`, called directly by `/link channel` or `/mirror
+channel`. Categories are the same - only `/link-category` creates a
+CategoryLinker bridge_group -
 but once a Category *is* linked, a new channel appearing inside it on either
 side auto-syncs onto the other's linked Category (CategoryLinker.
 sync_new_channel), which is the one place in this module something
@@ -23,7 +22,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from stoat_discord_bridge.channel_structure import GuildStructure
 from stoat_discord_bridge.storage.category_mappings import (
     CategoryMapping,
     CategoryMappingRepository,
@@ -1493,18 +1491,3 @@ class RoleLinker:
             logger.debug("couldn't resolve role name for %s on %s", role_id, connector_id, exc_info=True)
             return role_id
         return name or role_id
-
-
-class StructureMirrorer:
-    """Looks up which configured connector can produce a GuildStructure
-    snapshot for a given `<source>` id, for the Stoat `/mirror-channels`
-    command. Only Discord connectors register a provider today."""
-
-    def __init__(self, structure_providers: dict[str, Callable[[], GuildStructure]]) -> None:
-        self._structure_providers = structure_providers
-
-    def get_structure(self, source: str) -> GuildStructure:
-        provider = self._structure_providers.get(source)
-        if provider is None:
-            raise LinkError(f"'{source}' isn't a known structure source (must be a Discord connector).")
-        return provider()

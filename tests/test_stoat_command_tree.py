@@ -35,7 +35,7 @@ def test_registers_the_four_groups_with_discord_matching_subcommands():
         "users",
     ]
     assert sorted(bot.all_commands["mirror"].all_commands) == ["category", "channel", "emote", "role"]
-    assert {"status", "bridge-help", "mirror-channels"} <= set(bot.all_commands)
+    assert {"status", "bridge-help"} <= set(bot.all_commands)
 
 
 class _FakeShard:

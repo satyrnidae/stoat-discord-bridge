@@ -36,7 +36,7 @@ from stoat_discord_bridge.admin_commands import (
     RoleLinker,
     UserLinker,
 )
-from stoat_discord_bridge.channel_structure import ChannelSpec, GroupSpec, GuildStructure, clip_name
+from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.models import (
     Attachment,
@@ -1263,48 +1263,6 @@ class DiscordSenderService(SenderService):
                 channel_id,
                 category_id,
             )
-
-    def snapshot_guild_structure(self) -> GuildStructure:
-        """Build a platform-neutral snapshot of the bridged guild's current
-        categories/channels, for the Stoat `/mirror-channels` command.
-
-        Reads from discord.py's gateway cache (populated by the time
-        `on_ready` fires), so this makes no Discord API calls of its own.
-        Forum posts are limited to what's currently active in cache —
-        archived posts aren't paged in.
-        """
-        guild = self._client.get_guild(self._config.guild_id)
-        if guild is None:
-            raise RuntimeError("Discord guild isn't cached yet — the bridge may still be connecting")
-
-        groups: list[GroupSpec] = []
-        for category in guild.categories:
-            channels = [
-                ChannelSpec(name=clip_name(ch.name), source_channel_id=str(ch.id))
-                for ch in category.channels
-                if isinstance(ch, (discord.TextChannel, discord.VoiceChannel))
-            ]
-            if channels:
-                groups.append(GroupSpec(name=clip_name(category.name), channels=channels))
-
-        groups.extend(
-            GroupSpec(
-                name=clip_name(forum.name),
-                channels=[
-                    ChannelSpec(name=clip_name(thread.name), source_channel_id=str(thread.id))
-                    for thread in forum.threads
-                ],
-            )
-            for forum in guild.forums
-        )
-
-        ungrouped = [
-            ChannelSpec(name=clip_name(ch.name), source_channel_id=str(ch.id))
-            for ch in (*guild.text_channels, *guild.voice_channels)
-            if ch.category is None
-        ]
-
-        return GuildStructure(groups=groups, ungrouped_channels=ungrouped)
 
     async def _handle_linked_channels(
         self, interaction: discord.Interaction, local_id: str | None = None
