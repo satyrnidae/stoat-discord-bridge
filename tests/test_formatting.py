@@ -7,6 +7,7 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     content_with_attachments,
     render_discord_timestamps,
+    strip_markdown,
 )
 
 # 2026-08-29 22:00:00 UTC
@@ -104,3 +105,48 @@ def test_render_discord_timestamps_ignores_plain_text_and_handles_multiple_token
     assert render_discord_timestamps("no tokens here", now=_NOW) == "no tokens here"
     out = render_discord_timestamps(f"a <t:{_EPOCH}:d> b <t:{_EPOCH}:t> c", now=_NOW)
     assert out == "a 8/29/2026 b 10:00 PM UTC c"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("**bold**", "bold"),
+        ("*italic*", "italic"),
+        ("__underline__", "underline"),
+        ("~~strike~~", "strike"),
+        ("||spoiler||", "spoiler"),
+        ("***bold italic***", "bold italic"),
+        ("a **b** and _c_ and `d`", "a b and c and d"),
+        ("# Heading", "Heading"),
+        ("## Heading 2", "Heading 2"),
+        ("> quoted line", "quoted line"),
+        ("plain text, nothing to do", "plain text, nothing to do"),
+        ("keeps snake_case_names intact", "keeps snake_case_names intact"),
+        (r"escaped \*not italic\*", "escaped *not italic*"),
+    ],
+)
+def test_strip_markdown_basic(source, expected):
+    assert strip_markdown(source) == expected
+
+
+def test_strip_markdown_masked_link_appends_url():
+    assert strip_markdown("see [the docs](https://example.com/x)") == "see the docs (https://example.com/x)"
+
+
+def test_strip_markdown_masked_link_with_url_as_label_is_left_bare():
+    assert (
+        strip_markdown("[https://example.com/x](https://example.com/x)") == "https://example.com/x"
+    )
+
+
+def test_strip_markdown_inline_code_is_left_literal():
+    assert strip_markdown("run `rm -rf *` now") == "run rm -rf * now"
+
+
+def test_strip_markdown_fenced_code_block_keeps_contents():
+    assert strip_markdown("```python\nx = **1**\n```") == "x = **1**"
+
+
+def test_strip_markdown_does_not_mangle_underscores_in_a_bare_url():
+    url = "https://example.com/foo_bar_baz.png"
+    assert strip_markdown(url) == url

@@ -77,6 +77,75 @@ def render_discord_timestamps(content: str, *, now: datetime | None = None) -> s
     return _DISCORD_TIMESTAMP.sub(_replace, content)
 
 
+# Discord/Stoat Markdown constructs, stripped to plain text before relaying
+# onto IRC (which has no markup). Emphasis markers are unwrapped to their
+# inner text; code keeps its contents but loses the backticks; a masked
+# `[label](url)` link becomes `label (url)`; leading heading `#`s and
+# blockquote `>`s are dropped.
+_MD_CODE_BLOCK = re.compile(r"```(?:[A-Za-z0-9_+-]*\n)?(.*?)```", re.DOTALL)
+_MD_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_MD_LINK = re.compile(r"\[([^\]\n]+)\]\(\s*<?([^)\s]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+_MD_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+", re.MULTILINE)
+_MD_BLOCKQUOTE = re.compile(r"^ {0,3}> ?", re.MULTILINE)
+_MD_UNESCAPE = re.compile(r"\\([*_~`|>#\\-])")
+# Applied in order: bold/underline (doubled markers) before italic (single),
+# so `**x**` and `__x__` don't leave a stray marker behind.
+_MD_EMPHASIS = (
+    re.compile(r"\*\*(.+?)\*\*", re.DOTALL),
+    re.compile(r"__(.+?)__", re.DOTALL),
+    re.compile(r"~~(.+?)~~", re.DOTALL),
+    re.compile(r"\|\|(.+?)\|\|", re.DOTALL),
+    re.compile(r"\*(.+?)\*", re.DOTALL),
+    # Underscore italics only at word boundaries - Discord doesn't italicise
+    # intra-word underscores, so snake_case identifiers survive.
+    re.compile(r"(?<![A-Za-z0-9_])_(.+?)_(?![A-Za-z0-9_])", re.DOTALL),
+)
+
+
+def strip_markdown(content: str) -> str:
+    """Reduce Discord/Stoat Markdown to plain text for relaying onto IRC.
+
+    Emphasis (`**bold**`, `*italic*`, `__underline__`, `~~strike~~`,
+    `||spoiler||`) is unwrapped to its inner text; inline and fenced code
+    keep their contents but lose the backticks; `[label](url)` becomes
+    `label (url)` (just `label` when the label already contains the URL);
+    leading heading `#`s and blockquote `>`s are dropped; a backslash
+    escaping a Markdown character is removed. List bullets/numbers are left
+    alone - they read fine as plain text.
+    """
+    # Pull escaped Markdown characters and code contents out first, as
+    # placeholders, so the link/heading/emphasis passes below never see
+    # markup that's meant to be literal. Restored verbatim at the end.
+    stashed: list[str] = []
+
+    def _stash(text: str) -> str:
+        stashed.append(text)
+        return f"\x00{len(stashed) - 1}\x00"
+
+    content = _MD_UNESCAPE.sub(lambda m: _stash(m.group(1)), content)
+    content = _MD_CODE_BLOCK.sub(lambda m: _stash(m.group(1).strip("\n")), content)
+    content = _MD_INLINE_CODE.sub(lambda m: _stash(m.group(1)), content)
+
+    content = _MD_LINK.sub(
+        lambda m: m.group(1) if m.group(2) in m.group(1) else f"{m.group(1)} ({m.group(2)})",
+        content,
+    )
+    content = _MD_HEADING.sub("", content)
+    content = _MD_BLOCKQUOTE.sub("", content)
+    for pattern in _MD_EMPHASIS:
+        content = pattern.sub(r"\1", content)
+
+    # re.sub doesn't re-scan inserted text, so a placeholder restored from
+    # inside a code span (an escape nested in code) needs another pass -
+    # bounded by the stash count so a literal NUL in the input can't loop.
+    holder = re.compile(r"\x00(\d+)\x00")
+    for _ in range(len(stashed) + 1):
+        if not holder.search(content):
+            break
+        content = holder.sub(lambda m: stashed[int(m.group(1))], content)
+    return content
+
+
 def content_with_attachments(message: StandardMessage) -> str:
     lines = [message.content_markdown] if message.content_markdown else []
     lines.extend(a.url for a in message.attachments)

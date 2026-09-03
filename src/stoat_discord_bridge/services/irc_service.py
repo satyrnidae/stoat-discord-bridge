@@ -5,8 +5,8 @@ can have any number of entries).
 
 IRC has no per-message identity override and no native attachment/markdown
 support, so the receiver posts through the same connection as the sender,
-prefixing each line with the remote user's name — see the TODOs in
-`IrcReceiverService.receive()` for the rest of the formatting work.
+prefixing each line with the remote user's name, inlining attachment URLs,
+and stripping Markdown to plain text (`formatting.strip_markdown`).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from stoat_discord_bridge.admin_commands import ChannelLinker, LinkError, UserLi
 from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import OnMessage, PartialRelayError, ReceiverService, SenderService
-from stoat_discord_bridge.services.formatting import chunk_content, render_discord_timestamps
+from stoat_discord_bridge.services.formatting import chunk_content, render_discord_timestamps, strip_markdown
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
     rewrite_emoji,
@@ -752,8 +752,11 @@ class IrcReceiverService(ReceiverService):
         self._emoji_mappings = emoji_mappings
 
     async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
-        # TODO: markdown stripping belongs here too.
-        content = message.content_markdown
+        # IRC has no markup - reduce Discord/Stoat Markdown to plain text
+        # before anything else, while the content is still just the message
+        # body (doing it after the attachment URLs are inlined would risk an
+        # underscore/asterisk in a CDN link being read as emphasis).
+        content = strip_markdown(message.content_markdown)
         # IRC has no native attachments - inline each attachment URL (a
         # Discord/Stoat CDN link) as its own line so an image-only message
         # isn't relayed blank. Kept inline rather than using
