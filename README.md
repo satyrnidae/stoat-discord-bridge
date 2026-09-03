@@ -68,6 +68,15 @@ service-account token, mounted as a Docker secret and pointed at by
 `docker-compose.yml` and the example in `docker-compose.override.yml`).
 Build with `--build-arg INSTALL_OP=0` to leave `op` out.
 
+Log output (and hence `docker logs`) is redacted: bot tokens, the IRC
+NickServ/OPER passwords, and any credentials embedded in the Mongo URI are
+replaced with `***` wherever they'd otherwise appear, as are the passwords
+in raw IRC `OPER` / `PASS` / `NickServ IDENTIFY` protocol lines. Set
+`LOG_REDACT_IDS=1` to additionally redact raw platform ids (Discord
+snowflakes, Stoat ULIDs) - off by default since ids aren't credentials and
+redacting them makes debugging harder. See
+`src/stoat_discord_bridge/logging_setup.py`.
+
 The bridge image ships a `HEALTHCHECK` (`docker ps` / `docker inspect` shows
 it) polling a liveness-only `GET /healthz` on port 8080
 (`src/stoat_discord_bridge/health_server.py`) - it proves the event loop is
