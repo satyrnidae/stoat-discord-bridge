@@ -98,6 +98,7 @@ class FakeChannel:
         server_id: str | None = None,
         raises: BaseException | None = None,
         category: Any = None,
+        viewable_by: set[str] | None = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -108,6 +109,14 @@ class FakeChannel:
         self._next_message_id = 1
         self.category = category
         self.typing_events: list[str] = []
+        # When set, the channel models stoat.py's ServerChannel.permissions_for:
+        # a member id in the set sees the channel, one outside it doesn't.
+        self._viewable_by = viewable_by
+
+    def permissions_for(self, target, /):
+        if self._viewable_by is None:
+            raise AttributeError("this FakeChannel doesn't model permissions")
+        return SimpleNamespace(view_channel=str(getattr(target, "id", target)) in self._viewable_by)
 
     async def begin_typing(self) -> None:
         if self._raises is not None:

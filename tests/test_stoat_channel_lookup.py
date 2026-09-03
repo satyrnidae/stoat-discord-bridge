@@ -13,6 +13,8 @@ therefore just needs a `None` guard, which these tests pin.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from stoat_discord_bridge.services.role_sync import RolePermissionOverride
@@ -100,3 +102,44 @@ async def test_set_channel_role_permission_is_a_noop_on_a_cache_miss():
 
     # no channel in cache -> get_channel returns None -> silently skipped
     await _sender().set_channel_role_permission("nope", "role-1", override)
+
+
+# --------------------------------------------------------------- can_view_channel
+
+
+def _sender_with_self(client: FakeClient, *, self_id: str = "bot", server_id: str = "s1") -> StoatSenderService:
+    sender = _sender(client=client, server_id=server_id)
+    sender._self_id = self_id
+    return sender
+
+
+async def test_can_view_channel_true_when_the_bot_member_has_view_permission():
+    client = FakeClient()
+    server = client.add_server(FakeServer("s1"))
+    server.add_member("bot", SimpleNamespace(id="bot"))
+    client.add_channel(FakeChannel(id="c1", server_id="s1", viewable_by={"bot"}))
+
+    assert await _sender_with_self(client).can_view_channel("c1") is True
+
+
+async def test_can_view_channel_false_when_the_bot_member_is_denied():
+    client = FakeClient()
+    server = client.add_server(FakeServer("s1"))
+    server.add_member("bot", SimpleNamespace(id="bot"))
+    client.add_channel(FakeChannel(id="c1", server_id="s1", viewable_by=set()))
+
+    assert await _sender_with_self(client).can_view_channel("c1") is False
+
+
+async def test_can_view_channel_is_none_on_a_cache_miss():
+    client = FakeClient()
+    client.add_server(FakeServer("s1"))
+
+    assert await _sender_with_self(client).can_view_channel("nope") is None
+
+
+async def test_can_view_channel_is_none_before_the_bot_id_is_known():
+    client = FakeClient()
+    client.add_channel(FakeChannel(id="c1", server_id="s1", viewable_by={"bot"}))
+
+    assert await _sender(client=client).can_view_channel("c1") is None
