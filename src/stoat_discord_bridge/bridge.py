@@ -712,6 +712,7 @@ async def run(config: BridgeConfig) -> None:
             resolve_channel_name=sender.get_channel_name,
             resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
             resolve_channel_category=sender.get_channel_category,
+            resolve_thread_parent=sender.get_thread_parent,
             describe_channel=sender.describe_channel,
             ensure_channel=sender.ensure_channel,
             can_view_channel=sender.can_view_channel,
