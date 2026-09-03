@@ -40,7 +40,12 @@ from stoat_discord_bridge.services.base import (
     SenderService,
 )
 from stoat_discord_bridge.services.stoat_service.client import _StoatClient
-from stoat_discord_bridge.services.stoat_service.formatting import _avatar_url, _display_name, _map_attachments
+from stoat_discord_bridge.services.stoat_service.formatting import (
+    _avatar_url,
+    _display_name,
+    _map_attachments,
+    _map_mentioned_users,
+)
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
 from stoat_discord_bridge.services.stoat_service.sync import StoatSyncMixin
@@ -174,6 +179,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 content_markdown=message.content,
                 message_id=str(message.id),
                 attachments=_map_attachments(message),
+                mentioned_users=_map_mentioned_users(message),
             )
         )
 

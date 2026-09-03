@@ -13,8 +13,11 @@ actually linked (false positives are possible if a word incidentally
 matches a linked nick), and the IRC-target direction is just substituting
 the plain nick text.
 
-A mentioned user with no mapping to the target connector is left exactly
-as it appeared in the original message - never dropped or replaced with
+A mentioned user with no mapping to the target connector is expanded to a
+plain `@Display Name` (the name on the origin, carried on the
+`StandardMessage.mentioned_users` map) so the target doesn't just see a
+raw `<@id>` token (issue #56); if even that name can't be recovered the
+mention is left exactly as it appeared - never dropped or replaced with
 something meaningless. Neither regex needs to know which connector
 authored the message: Discord's numeric-id and Stoat's 26-char-ULID
 mention shapes never collide with each other, so both are always tried.
@@ -184,9 +187,17 @@ async def rewrite_mentions(
     target_connector_id: str,
     target_kind: str,
     user_mappings: UserMappingRepository,
+    mentioned_users: dict[str, str] | None = None,
 ) -> str:
     """`target_kind` is one of "discord" / "stoat" / "irc" - the caller
-    (a receiver's `receive()`) already knows its own kind."""
+    (a receiver's `receive()`) already knows its own kind.
+
+    `mentioned_users` maps an origin native user id to that user's display
+    name on the origin. A `<@id>` mention of a user with no /link-user link
+    to the target is expanded to a plain `@Display Name` using this map
+    rather than relayed as the raw id token (issue #56); a mention still not
+    covered by the map is left exactly as it appeared."""
+    mentioned_users = mentioned_users or {}
     for pattern in (_DISCORD_MENTION, _STOAT_MENTION):
         for match in list(pattern.finditer(content)):
             target_id, target_name = await _resolve_target(
@@ -194,6 +205,8 @@ async def rewrite_mentions(
             )
             if target_id is not None:
                 content = content.replace(match.group(0), _render_mention(target_kind, target_id, target_name))
+            elif match.group(1) in mentioned_users:
+                content = content.replace(match.group(0), f"@{mentioned_users[match.group(1)]}")
 
     # IRC-origin (and, harmlessly, any other origin) plain-word nick scan:
     # any linked identity whose *own* user_id literally appears in the text

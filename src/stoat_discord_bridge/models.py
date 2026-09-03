@@ -46,6 +46,13 @@ class StandardMessage:
     content_markdown: str
     message_id: str  # native message ID on the origin platform, for sync tracking
     attachments: list[Attachment] = field(default_factory=list)
+    # Native user id -> display name on the origin, for every user the message
+    # @-mentions. Lets a receiver expand a `<@id>` mention of a user who ISN'T
+    # /link-user-linked on the target into a readable `@Display Name` instead
+    # of relaying the raw id token (issue #56). Best-effort: a sender that
+    # can't resolve a name (cache miss) or a connector with no structured
+    # mentions (IRC) just leaves the entry / whole map absent.
+    mentioned_users: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

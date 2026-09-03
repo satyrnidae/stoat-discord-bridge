@@ -117,6 +117,7 @@ class StoatReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="stoat",
                 user_mappings=self._user_mappings,
+                mentioned_users=message.mentioned_users,
             )
         if self._channel_mappings is not None:
             content = await rewrite_channel_mentions(

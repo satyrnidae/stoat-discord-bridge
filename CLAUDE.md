@@ -306,6 +306,15 @@ aren't copied). Linked-role `<@&id>` / `<%id>` mentions are rewritten into the
 target's linked role (`@Name` on IRC) alongside the user/channel mention
 rewrites.
 
+A user `<@id>` mention is rewritten to the target's native mention of the
+`/link-user`-linked identity where one exists; where it doesn't,
+`rewrite_mentions` expands it to a plain `@Display Name` (the mentioned
+user's name on the origin, carried on `StandardMessage.mentioned_users` —
+populated best-effort by the Discord/Stoat senders off the message's
+`mentions`, absent on IRC which has no structured mentions) rather than
+relaying the raw `<@id>` token (issue #56). A mention the map can't name is
+still left exactly as it appeared.
+
 `RoleSyncCoordinator` (`bridge.py`) keeps linked roles coherent:
 
 - **auto-grant** (`handle`): a cross-connector-linked user gaining/losing a

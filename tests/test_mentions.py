@@ -150,7 +150,7 @@ async def test_stoat_mention_rewritten_to_discord(fake_db):
     assert result == "hi <@111> there"
 
 
-async def test_unmapped_mention_left_untouched(fake_db):
+async def test_unmapped_mention_left_untouched_when_no_name_known(fake_db):
     repo = UserMappingRepository(fake_db)
     result = await rewrite_mentions(
         "hi <@999> there", origin_connector_id="discord", target_connector_id="stoat",
@@ -159,14 +159,43 @@ async def test_unmapped_mention_left_untouched(fake_db):
     assert result == "hi <@999> there"
 
 
-async def test_mapped_but_no_target_side_left_untouched(fake_db):
+async def test_unmapped_mention_expanded_to_origin_display_name(fake_db):
+    # issue #56: user isn't /link-user-linked on the target, so the raw
+    # <@id> token is expanded to their display name on the origin instead.
+    repo = UserMappingRepository(fake_db)
+    result = await rewrite_mentions(
+        "hi <@999> there", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", user_mappings=repo, mentioned_users={"999": "Morning Witch"},
+    )
+    assert result == "hi @Morning Witch there"
+
+
+async def test_unmapped_stoat_mention_expanded_to_origin_display_name(fake_db):
+    repo = UserMappingRepository(fake_db)
+    result = await rewrite_mentions(
+        f"hi <@{_ULID}> there", origin_connector_id="stoat", target_connector_id="irc",
+        target_kind="irc", user_mappings=repo, mentioned_users={_ULID: "witch"},
+    )
+    assert result == "hi @witch there"
+
+
+async def test_mapped_but_no_target_side_expanded_to_origin_name(fake_db):
     # linked discord<->stoat, but relaying to irc which has no entry in this link group
     repo = await _linked(fake_db, ("g1", "discord", "111"), ("g1", "stoat", "s1"))
     result = await rewrite_mentions(
         "hi <@111> there", origin_connector_id="discord", target_connector_id="irc",
-        target_kind="irc", user_mappings=repo,
+        target_kind="irc", user_mappings=repo, mentioned_users={"111": "Alice"},
     )
-    assert result == "hi <@111> there"
+    assert result == "hi @Alice there"
+
+
+async def test_linked_mention_still_wins_over_origin_name(fake_db):
+    repo = await _linked(fake_db, ("g1", "discord", "111"), ("g1", "stoat", "s1"))
+    result = await rewrite_mentions(
+        "hi <@111> there", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", user_mappings=repo, mentioned_users={"111": "Alice"},
+    )
+    assert result == "hi <@s1> there"
 
 
 async def test_irc_plain_nick_mention_rewritten_to_discord(fake_db):
