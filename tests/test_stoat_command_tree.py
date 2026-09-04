@@ -198,7 +198,7 @@ def test_signature_of_a_command_with_an_optional_arg_renders():
     )
 
 
-async def test_process_commands_records_a_recognised_command_message():
+async def test_process_commands_records_a_recognized_command_message():
     owner = object.__new__(StoatSenderService)
     owner._command_message_ids = deque(maxlen=512)
     bot = _bare_bot(owner)
@@ -239,7 +239,7 @@ async def test_on_command_error_reports_bad_usage():
     assert owner.replies == ["Usage: /link channel <service> <external_id>"]
 
 
-async def test_on_command_error_usage_honours_a_custom_prefix():
+async def test_on_command_error_usage_honors_a_custom_prefix():
     owner = _ReplyOwner()
     bot = _bare_bot(owner, prefix="!")
     ctx = SimpleNamespace(command=SimpleNamespace(qualified_name="link channel", signature="<service> <external_id>"))
@@ -250,7 +250,7 @@ async def test_on_command_error_usage_honours_a_custom_prefix():
     assert owner.replies == ["Usage: !link channel <service> <external_id>"]
 
 
-async def test_group_usage_and_help_honour_a_custom_prefix():
+async def test_group_usage_and_help_honor_a_custom_prefix():
     owner = _ReplyOwner()
     bot = _bare_bot(owner, prefix="!")
 

@@ -74,22 +74,22 @@ def _avatar_url(author) -> str | None:
     return getattr(author, "default_avatar_url", None)
 
 
-def _member_colour(author) -> str | None:
-    """Best-effort CSS colour of a Stoat member's displayed name - the colour
-    of their highest-priority coloured role, matching how the client tints it.
+def _member_color(author) -> str | None:
+    """Best-effort CSS color of a Stoat member's displayed name - the color
+    of their highest-priority colored role, matching how the client tints it.
 
     `Member.roles` is cache-dependent (needs the server and its roles cached);
-    a miss, a member with no coloured role, or a non-member author all yield
+    a miss, a member with no colored role, or a non-member author all yield
     None. Stoat role `rank` is ascending-priority (lower rank = higher), so
-    the lowest-rank coloured role wins. The role colour is already a CSS
+    the lowest-rank colored role wins. The role color is already a CSS
     string (Stoat allows gradients), passed straight through to a masquerade's
     `color` (issue #74)."""
     try:
-        coloured = [r for r in (getattr(author, "roles", None) or []) if getattr(r, "color", None)]
-        coloured.sort(key=lambda r: getattr(r, "rank", 0))
+        colored = [r for r in (getattr(author, "roles", None) or []) if getattr(r, "color", None)]
+        colored.sort(key=lambda r: getattr(r, "rank", 0))
     except Exception:
         return None
-    return coloured[0].color if coloured else None
+    return colored[0].color if colored else None
 
 
 def _extract_pronouns(data) -> str | None:

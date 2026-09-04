@@ -1,6 +1,6 @@
 """Spike #7 - pins the stoat.py gateway-event shapes that
 StoatSenderService's member/role/channel update handlers read, plus the
-handlers' own diffing behaviour.
+handlers' own diffing behavior.
 
 The introspection tests assert against the *installed* stoat.py (1.2.1 when
 written): the field names, the `event_name` -> `on_<event_name>` handler
@@ -91,7 +91,7 @@ def test_handler_names_match_the_event_name_dispatch_convention():
         assert hasattr(_StoatClient, "on_" + ev.event_name)
 
 
-# ---------------------------------------------------------------- handler behaviour
+# ---------------------------------------------------------------- handler behavior
 
 
 def _sender(**hooks):

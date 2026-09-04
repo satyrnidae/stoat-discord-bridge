@@ -76,10 +76,10 @@ class DiscordConnectorConfig:
     # "name [Discord, she/her]". Defaults on; set false to skip the profile
     # lookup and relay without pronouns.
     pronoun_forwarding: bool = True
-    # Whether this connector resolves its own senders' displayed name colour
-    # (their top coloured role) and forwards it so a receiver that can tint a
+    # Whether this connector resolves its own senders' displayed name color
+    # (their top colored role) and forwards it so a receiver that can tint a
     # relayed name (Stoat's masquerade, issue #74) does. Defaults on; set
-    # false to relay without a colour. Discord's own webhook receiver can't
+    # false to relay without a color. Discord's own webhook receiver can't
     # tint a relayed name, so here this only governs the outbound value.
     color_forwarding: bool = True
 
@@ -106,12 +106,12 @@ class StoatConnectorConfig:
     # as "name [Discord, she/her]". Defaults on; set false to skip the
     # profile lookup and relay without pronouns.
     pronoun_forwarding: bool = True
-    # Whether a relayed sender's displayed name colour is applied to their
+    # Whether a relayed sender's displayed name color is applied to their
     # masquerade here (issue #74), and whether this connector resolves its
-    # own senders' colour for other connectors. Defaults on; set false to
-    # relay under the plain (uncoloured) masquerade name. Applying an inbound
-    # colour needs the bridge bot's `manage_roles` permission in the target
-    # channel - a send Stoat rejects for it is retried uncoloured.
+    # own senders' color for other connectors. Defaults on; set false to
+    # relay under the plain (uncolored) masquerade name. Applying an inbound
+    # color needs the bridge bot's `manage_roles` permission in the target
+    # channel - a send Stoat rejects for it is retried uncolored.
     color_forwarding: bool = True
     # When a Discord thread is mirrored here as a channel under a Category
     # named after its parent channel (see

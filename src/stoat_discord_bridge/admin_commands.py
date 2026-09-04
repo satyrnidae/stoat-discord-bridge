@@ -124,10 +124,10 @@ def pop_kv_option(tokens: list[str], key: str) -> tuple[list[str], str | None]:
 def _clean_new_name(raw: str | None) -> str | None:
     """A `new_name` override off a `/mirror <noun> to|from` command, trimmed -
     or None if it was blank/absent, meaning "carry the source name over" (the
-    historical behaviour). Never normalised here: each connector's `ensure_*`
-    hook destination-normalises whatever name it's handed (IRC's `#channel`
-    sterilising, Stoat's 32-char clip, an emoji-name reject, ...), so routing
-    the override through that hook is what makes it "destination-normalised",
+    historical behavior). Never normalized here: each connector's `ensure_*`
+    hook destination-normalizes whatever name it's handed (IRC's `#channel`
+    sterilizing, Stoat's 32-char clip, an emoji-name reject, ...), so routing
+    the override through that hook is what makes it "destination-normalized",
     and the same call still get-or-creates so a same-named existing entity is
     matched rather than duplicated (issue #44)."""
     if raw is None:
@@ -299,7 +299,7 @@ class ConnectorInfo:
     # Synchronous; None (every other connector) leaves the name untouched.
     normalize_channel_name: Callable[[str], str] | None = None
     # Best-effort native-channel-id -> (category_id, category_name) lookup for
-    # the Category a channel sits in, or None if it's uncategorised / can't be
+    # the Category a channel sits in, or None if it's uncategorized / can't be
     # resolved. Used by `/mirror channel from <service> <external_id>` to place
     # the freshly-created local channel into the local counterpart of the
     # source channel's linked Category (rather than a fresh same-named one).
@@ -712,7 +712,7 @@ class ChannelLinker:
 
         `new_name`, if given, is the name to create/find the counterpart under
         on `destination` instead of carrying `local_channel_name` over -
-        destination-normalised by `ensure_channel` and matched the same way
+        destination-normalized by `ensure_channel` and matched the same way
         (issue #44)."""
         if destination not in self._connectors:
             raise LinkError(f"'{destination}' isn't a known connector.")
@@ -935,7 +935,7 @@ class ChannelLinker:
         `source_channel_id`'s Category (on `source`) is linked to via
         `/link category` - so `mirror_channel` / `mirror_channel_from` land the
         new channel there - or the source Category's own name if it isn't
-        linked, or None if the source channel is uncategorised / unresolvable.
+        linked, or None if the source channel is uncategorized / unresolvable.
         `source` and `local_connector` are just "the connector the channel is
         on" and "the connector we want the linked Category name on"; either
         direction of `/mirror channel` fills them in."""

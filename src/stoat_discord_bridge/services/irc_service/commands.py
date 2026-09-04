@@ -143,13 +143,13 @@ class IrcAdminCommandsMixin:
             # specific Category on the destination, overriding linked Categories.
             # It's a `PARAM:value` pair (can't be positional - holds arbitrary
             # ids/names) pulled out anywhere; only `TO <service>` (a single
-            # destination) honours it - not `all`, and not `FROM` (IRC, the
+            # destination) honors it - not `all`, and not `FROM` (IRC, the
             # local side there, has no Category concept).
             rest, category = pop_kv_option(list(rest), "category")
             # An optional trailing `AS <new_name>` renames the counterpart on
             # the destination instead of carrying the source name over (issue
             # #44) - split it off before the positional parse below. Only the
-            # single-destination TO and the FROM forms honour it (a fan-out
+            # single-destination TO and the FROM forms honor it (a fan-out
             # `all` has many destinations, so one name can't apply).
             new_name: str | None = None
             if len(rest) >= 2 and rest[-2].upper() == "AS":

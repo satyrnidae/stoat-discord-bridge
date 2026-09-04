@@ -50,7 +50,7 @@ from stoat_discord_bridge.services.discord_service.formatting import (
     _map_mentioned_channels,
     _map_mentioned_roles,
     _map_mentioned_users,
-    _member_colour,
+    _member_color,
     _to_standard_message,
 )
 from stoat_discord_bridge.services.discord_service.linking import DiscordLinkingMixin
@@ -223,13 +223,13 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         )
 
     def _resolve_sender_color(self, author: object) -> str | None:
-        """The sender's displayed name colour, for a receiver that can tint a
+        """The sender's displayed name color, for a receiver that can tint a
         relayed name (Stoat's masquerade, issue #74). Network-free - reads the
-        member's already-resolved top-role colour. None when this connector's
-        `color_forwarding` is off, or the sender has no colour."""
+        member's already-resolved top-role color. None when this connector's
+        `color_forwarding` is off, or the sender has no color."""
         if not self._config.color_forwarding:
             return None
-        return _member_colour(author)
+        return _member_color(author)
 
     async def _resolve_sender_pronouns(self, user_id: int | str) -> str | None:
         """Always ``None`` on Discord: there is no bot-accessible pronoun

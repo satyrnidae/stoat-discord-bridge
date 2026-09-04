@@ -53,15 +53,15 @@ def _normalize_channel_id(raw: str) -> str:
     return match.group(1) if match else raw
 
 
-def _member_colour(author: object) -> str | None:
-    """The CSS hex colour of a Discord member's displayed name, or None.
+def _member_color(author: object) -> str | None:
+    """The CSS hex color of a Discord member's displayed name, or None.
 
-    discord.py's `Member.colour` already resolves to the highest role that
-    has a non-default colour (falling back to `Colour.default()`, value 0,
-    when the member has none) - so a zero value means "no colour". A plain
-    `discord.User` with no guild context has no `.colour` and yields None.
+    discord.py's `Member.color` already resolves to the highest role that
+    has a non-default color (falling back to `Color.default()`, value 0,
+    when the member has none) - so a zero value means "no color". A plain
+    `discord.User` with no guild context has no `.color` and yields None.
     Forwarded to a Stoat masquerade's `color` (issue #74)."""
-    value = getattr(getattr(author, "colour", None), "value", 0) or 0
+    value = getattr(getattr(author, "color", None), "value", 0) or 0
     return f"#{value:06x}" if value else None
 
 

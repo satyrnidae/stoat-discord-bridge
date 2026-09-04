@@ -44,7 +44,7 @@ class _StoatClient(stoat_commands.Bot):
     a hand-rolled string-match ladder in `_handle_message`. `MessageCreateEvent`
     still also drives `on_message` (via `call_object_handlers_hook`), which is
     where message relay happens; `process_commands` below records the ids of
-    messages it recognised as commands so `_handle_message` can skip relaying
+    messages it recognized as commands so `_handle_message` can skip relaying
     them."""
 
     def __init__(self, owner: "StoatSenderService", config: StoatConnectorConfig) -> None:

@@ -308,7 +308,7 @@ async def test_mirror_channel_to_a_single_destination():
     assert conn.notice_calls == [("alice", "mirrored ok")]
 
 
-async def test_mirror_channel_to_honours_a_trailing_as_new_name():
+async def test_mirror_channel_to_honors_a_trailing_as_new_name():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
@@ -361,7 +361,7 @@ async def test_mirror_channel_from_a_remote_channel():
     assert conn.notice_calls == [("alice", "mirrored from ok")]
 
 
-async def test_mirror_channel_from_honours_a_trailing_as_new_name():
+async def test_mirror_channel_from_honors_a_trailing_as_new_name():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
@@ -372,7 +372,7 @@ async def test_mirror_channel_from_honours_a_trailing_as_new_name():
     ]
 
 
-async def test_mirror_channel_to_honours_a_category_kv_token():
+async def test_mirror_channel_to_honors_a_category_kv_token():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 

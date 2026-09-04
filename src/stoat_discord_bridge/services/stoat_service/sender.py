@@ -50,7 +50,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
     _map_attachments,
     _map_mentioned_roles,
     _map_mentioned_users,
-    _member_colour,
+    _member_color,
     _mentioned_channel_ids,
 )
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
@@ -109,7 +109,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         self._on_channel_role_permission_changed = on_channel_role_permission_changed
         self._client = _StoatClient(self, config)
         self._self_id: str | None = None
-        # ids of messages the ext.commands processor recognised as a bridge
+        # ids of messages the ext.commands processor recognized as a bridge
         # command (`/link channel …`, `/status`, …) plus the bot's own command
         # replies - `_handle_message` drops these instead of relaying them.
         self._command_message_ids: deque[str] = deque(maxlen=512)
@@ -175,7 +175,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             return
         # Bridge commands (`/link channel …`, `/status`, …) are handled by the
         # `stoat.ext.commands` processor on `_StoatClient` off this same event;
-        # anything it recognised was already filtered out above by id.
+        # anything it recognized was already filtered out above by id.
         logger.debug(
             "[stoat:%s] message %s in channel %s from %s",
             self.connector_id,
@@ -322,13 +322,13 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         return _avatar_url(fresh)
 
     def _resolve_sender_color(self, message) -> str | None:
-        """The sender's displayed name colour, forwarded to a receiver that can
+        """The sender's displayed name color, forwarded to a receiver that can
         tint a relayed name (Stoat's masquerade, issue #74). Network-free -
-        reads the cached member's top coloured role. None when this connector's
-        `color_forwarding` is off, or the sender has no colour."""
+        reads the cached member's top colored role. None when this connector's
+        `color_forwarding` is off, or the sender has no color."""
         if not self._config.color_forwarding:
             return None
-        return _member_colour(message.author)
+        return _member_color(message.author)
 
     async def _resolve_sender_pronouns(self, message) -> str | None:
         """Best-effort pronouns for `message.author`, cached per user
