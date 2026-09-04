@@ -428,7 +428,12 @@ class StoatLookupsMixin:
         forgetting the binding and falling back to the by-title path. Neither
         stoat.py's create_category nor edit_category takes a `position` - so a
         freshly-created Category is necessarily appended, landing at the
-        bottom of the server's channel list with no extra work needed here."""
+        bottom of the server's channel list with no extra work needed here.
+
+        For a thread Category (`is_thread_category`), the parent channel is
+        also pulled to the top of it here (see `group_parent_channel_with_threads`
+        for the same move on the relay path) - gated by the per-connector
+        `group_parent_channel_with_threads` option (issue #94)."""
         bound_category_id: str | None = None
         if parent_channel_id is not None and self._category_linker is not None:
             try:
@@ -493,6 +498,36 @@ class StoatLookupsMixin:
                     resolved.id,
                     parent_channel_id,
                 )
+            # Pull the thread's parent channel up into the thread Category right
+            # now, rather than leaving it to `group_parent_channel_with_threads`
+            # on the next relayed message: that reads the cache-only Category
+            # list, which never carries a Category this module just created over
+            # raw HTTP, so it no-ops until a reconnect or a `/mirror` `refresh()`
+            # repopulates the cache - by which point `/mirror channel` on a
+            # Discord thread has long since finished without grouping the parent
+            # (issue #94). Gated by the same per-connector option and skipped
+            # when the parent is missing / already on top.
+            group_parent = getattr(getattr(self, "_config", None), "group_parent_channel_with_threads", True)
+            parent_present = any(
+                str(getattr(ch, "id", ch)) == parent_channel_id for ch in (getattr(server, "channels", None) or [])
+            )
+            already_on_top = list(getattr(resolved, "channels", None) or [])[:1] == [parent_channel_id]
+            if group_parent and parent_present and not already_on_top:
+                try:
+                    await self._move_channel_to_category_top(server, parent_channel_id, str(resolved.id))
+                    logger.info(
+                        "[stoat:%s] grouped parent channel %s atop thread category %s",
+                        self.connector_id,
+                        parent_channel_id,
+                        resolved.id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[stoat:%s] couldn't group parent channel %s atop thread category %s",
+                        self.connector_id,
+                        parent_channel_id,
+                        resolved.id,
+                    )
 
     async def _place_in_category(self, server, channel_id: str, category: str, category_id: str | None = None):
         """Ensure `channel_id` is in a Category on `server`, creating one
