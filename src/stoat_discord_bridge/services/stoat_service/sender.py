@@ -51,6 +51,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
     _map_mentioned_roles,
     _map_mentioned_users,
     _member_colour,
+    _mentioned_channel_ids,
 )
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
@@ -198,6 +199,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 sender_color=self._resolve_sender_color(message),
                 mentioned_users=_map_mentioned_users(message),
                 mentioned_roles=_map_mentioned_roles(message),
+                mentioned_channels=await self._map_mentioned_channels(message.content or ""),
             )
         )
 
@@ -245,8 +247,22 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 new_content_markdown=new_content or "",
                 mentioned_users=_map_mentioned_users(after) if after is not None else {},
                 mentioned_roles=_map_mentioned_roles(after) if after is not None else {},
+                mentioned_channels=await self._map_mentioned_channels(new_content or ""),
             )
         )
+
+    async def _map_mentioned_channels(self, content: str) -> dict[str, str]:
+        """Native channel id -> name for every channel `content` `<#id>`-mentions,
+        for `StandardMessage.mentioned_channels` / `StandardEdit.mentioned_channels`
+        (issue #84). stoat.py exposes no structured channel-mention list, so this
+        scans the text and resolves each id through `get_channel_name` - a cache
+        miss just drops that entry and the receiver leaves the `<#id>` as-is."""
+        out: dict[str, str] = {}
+        for channel_id in _mentioned_channel_ids(content):
+            name = await self.get_channel_name(channel_id)
+            if name:
+                out[channel_id] = name
+        return out
 
     async def _resolve_sender_name(self, message) -> str:
         """Resolve `message.author`'s display name, fetching a fresh

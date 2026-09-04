@@ -90,11 +90,12 @@ def _make_sender(
 
 def _discord_message(
     *, channel, guild, author, content="hi", id=1, attachments=None, type=discord.MessageType.default, thread=None,
-    mentions=None, role_mentions=None,
+    mentions=None, role_mentions=None, channel_mentions=None,
 ):
     return SimpleNamespace(
         channel=channel, guild=guild, author=author, content=content, id=id, attachments=attachments or [],
         type=type, thread=thread, mentions=mentions or [], role_mentions=role_mentions or [],
+        channel_mentions=channel_mentions or [],
     )
 
 
@@ -169,6 +170,25 @@ async def test_handle_message_maps_role_mentions():
 
     [message] = recorder.messages
     assert message.mentioned_roles == {"7": "Mods"}
+
+
+async def test_handle_message_maps_channel_mentions_by_id_to_name():
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client)
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice", display_avatar=FakeAsset("https://cdn.example/alice.png"))
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author, content="see <#77>",
+            channel_mentions=[SimpleNamespace(id=77, name="off-topic")],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.mentioned_channels == {"77": "off-topic"}
 
 
 async def test_handle_message_uses_none_avatar_when_the_author_has_no_avatar():
@@ -258,14 +278,22 @@ async def test_handle_raw_message_edit_emits_an_edit_on_a_real_content_edit():
             message=SimpleNamespace(
                 mentions=[SimpleNamespace(id=9, display_name="Bob")],
                 role_mentions=[SimpleNamespace(id=3, name="Mods")],
+                channel_mentions=[SimpleNamespace(id=4, name="off-topic")],
             ),
         )
     )
 
     assert [
-        (e.origin_channel_id, e.origin_message_id, e.new_content_markdown, e.mentioned_users, e.mentioned_roles)
+        (
+            e.origin_channel_id,
+            e.origin_message_id,
+            e.new_content_markdown,
+            e.mentioned_users,
+            e.mentioned_roles,
+            e.mentioned_channels,
+        )
         for e in recorder.edits
-    ] == [("42", "7", "fixed typo", {"9": "Bob"}, {"3": "Mods"})]
+    ] == [("42", "7", "fixed typo", {"9": "Bob"}, {"3": "Mods"}, {"4": "off-topic"})]
 
 
 async def test_handle_raw_message_edit_drops_our_own_webhook_copy_being_edited():

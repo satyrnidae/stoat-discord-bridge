@@ -22,6 +22,7 @@ from stoat_discord_bridge.admin_commands import (
     CategoryLinker,
     ChannelLinker,
     EmoteLinker,
+    MirrorInProgressError,
     RoleLinker,
     UserLinker,
 )
@@ -46,6 +47,7 @@ from stoat_discord_bridge.services.base import (
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
 from stoat_discord_bridge.services.discord_service.formatting import (
+    _map_mentioned_channels,
     _map_mentioned_roles,
     _map_mentioned_users,
     _member_colour,
@@ -148,6 +150,25 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                     self.connector_id,
                     len(synced),
                     ", ".join(sorted(c.name for c in synced)) or "(none)",
+                )
+        # Pull the full member roster into cache (after the command sync, which
+        # matters more for availability) so the `/link` etc. slash commands'
+        # user autocomplete (DiscordLookupsMixin.list_users, which must not do
+        # I/O per keystroke) sees every member, not just the ones who happened
+        # to speak while the bot was running (issue #80). Needs the privileged
+        # members intent - already enabled. Best-effort and one-shot: the
+        # `chunked` guard skips it on every later reconnect, and a failure just
+        # leaves the roster as sparse as it was.
+        guild = self._guild_or_none()
+        if guild is not None and not guild.chunked:
+            try:
+                await guild.chunk()
+            except Exception:
+                logger.warning(
+                    "[discord:%s] member chunk failed; user autocomplete will only "
+                    "list members already cached from activity",
+                    self.connector_id,
+                    exc_info=True,
                 )
         logger.info(
             "[discord:%s] logged in as %s (guild %s)", self.connector_id, self._client.user, self._config.guild_id
@@ -301,6 +322,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 new_content_markdown=data.get("content") or "",
                 mentioned_users=_map_mentioned_users(getattr(payload, "message", None)),
                 mentioned_roles=_map_mentioned_roles(getattr(payload, "message", None)),
+                mentioned_channels=_map_mentioned_channels(getattr(payload, "message", None)),
             )
         )
 
@@ -372,6 +394,16 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 is_thread_category=True,
                 category_from_channel_id=str(parent.id),
             )
+        except MirrorInProgressError as exc:
+            # A manual /mirror into one of the destinations is still running;
+            # mirror_channel_all is all-or-nothing, so the thread isn't
+            # mirrored anywhere this pass. Not an error - just log and bail.
+            logger.info(
+                "[discord:%s] deferred auto-mirror of thread %s: %s", self.connector_id, thread.id, exc
+            )
+            self._pending_thread_starter.pop(thread.id, None)
+            self._thread_ready.discard(thread.id)
+            return
         except Exception:
             logger.exception("[discord:%s] failed to auto-mirror thread %s", self.connector_id, thread.id)
             self._pending_thread_starter.pop(thread.id, None)
@@ -427,7 +459,8 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         Called only after the thread has been mirrored + linked, so each
         receiver's rewrite_channel_mentions can turn the `<#thread-id>` mention
         into its own linked copy of the mirrored channel (`#<thread name>` on
-        IRC), falling back to `#<thread name>` only if it still can't resolve."""
+        IRC); `mentioned_channels` carries the thread name so it still falls
+        back to `#<thread name>` if that lookup can't resolve (issue #84)."""
         parent = thread.parent
         if parent is None:
             return
@@ -445,6 +478,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 sender_user_id=str(bot_user.id) if bot_user is not None else "",
                 content_markdown=f"{who} started a thread: <#{thread.id}>",
                 message_id=f"thread-created:{thread.id}",
+                mentioned_channels={str(thread.id): thread.name},
             )
         )
 

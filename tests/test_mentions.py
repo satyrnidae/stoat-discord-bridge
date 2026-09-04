@@ -353,3 +353,51 @@ async def test_channel_mention_unmapped_left_untouched(fake_db):
         target_kind="stoat", channel_mappings=repo,
     )
     assert result == "see <#777>"
+
+
+async def test_unmapped_channel_mention_expanded_to_origin_name(fake_db):
+    repo = ChannelMappingRepository(fake_db)
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", channel_mappings=repo, mentioned_channels={"777": "off-topic"},
+    )
+    assert result == "see #off-topic"
+
+
+async def test_unmapped_channel_mention_expanded_on_irc(fake_db):
+    repo = ChannelMappingRepository(fake_db)
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="irc",
+        target_kind="irc", channel_mappings=repo, mentioned_channels={"777": "off-topic"},
+    )
+    assert result == "see #off-topic"
+
+
+async def test_unmapped_channel_mention_left_untouched_when_no_name_known(fake_db):
+    repo = ChannelMappingRepository(fake_db)
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", channel_mappings=repo, mentioned_channels={"999": "elsewhere"},
+    )
+    assert result == "see <#777>"
+
+
+async def test_linked_channel_mention_still_wins_over_origin_name(fake_db):
+    repo = await _linked_channels(fake_db, ("g1", "discord", "777"), ("g1", "stoat", _ULID))
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="stoat",
+        target_kind="stoat", channel_mappings=repo, mentioned_channels={"777": "off-topic"},
+    )
+    assert result == f"see <#{_ULID}>"
+
+
+async def test_expanded_channel_name_cannot_mass_ping_or_inject_mentions(fake_db):
+    repo = ChannelMappingRepository(fake_db)
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="stoat", target_connector_id="discord",
+        target_kind="discord", channel_mappings=repo,
+        mentioned_channels={"777": "@everyone <@123>"},
+    )
+    assert "@everyone" not in result
+    assert "<@123>" not in result
+    assert "​" in result

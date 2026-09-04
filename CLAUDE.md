@@ -333,7 +333,23 @@ re-resolving the id through the connector's name cache - that cache is
 populated at connect and blind to a brand-new Category, so re-resolving
 handed back the raw id, which then got stored as the Category name and
 passed on as a child-channel Category title, spawning a second Category
-literally named after the id (issue #64). Both directions of every
+literally named after the id (issue #64). Every `/mirror` command
+(`/mirror channel|category|role|emote`, all of `to`/`from`/`all`)
+first force-refreshes both the source and destination connector's cached
+server state via `ConnectorInfo.refresh` (`_refresh_connectors` in
+`admin_commands.py`), so an entity created since the gateway connected isn't
+missed by the cache-only `resolve_*`/`ensure_*`/`list_*` reads and then
+duplicated (issue #81). Only Stoat wires `refresh`
+(`StoatLookupsMixin.refresh` re-fetches the server + members + emoji and
+writes them back into stoat.py's cache the way its own `ServerCreateEvent`
+does, seeding the `_fresh_categories` cache off the same fetch) - stoat.py
+1.2.1's cached `Server` genuinely drifts (patched from only a few gateway
+events, Categories from none - issue #66); Discord's cache is kept live by
+gateway events and IRC's channel state is already live, so both leave it
+unset. Best-effort (a missing/raising hook is ignored) and throttled
+(`services/caching.RefreshThrottle`, 10s) so a `... all` / `/mirror
+category` fan-out that re-enters a per-destination mirror stays one network
+round-trip. Both directions of every
 `/mirror <noun>` take an optional trailing `new_name` (`admin_commands.py`'s
 `_clean_new_name`): the name the counterpart is created/matched under on the
 destination instead of carrying the source name over - routed through the
@@ -388,12 +404,44 @@ already knows — config plus anything linked — and leaves the rest unset).
 counterpart of `_connector_autocomplete_choices`; every lookup is
 best-effort (an un-picked `service`, an unset or raising hook, or a
 disconnected client all just yield an empty menu and the option still takes
-a hand-typed id/name). Shared logic
+a hand-typed id/name). Whatever the operator has already typed is *always*
+offered back as its own `Use "<text>"` choice at the top of that menu
+(unless it exactly matches a listed id), so a name/id the `list_*` hook
+doesn't know about is still selectable rather than only enterable as blind
+free text (issue #80); to keep that menu complete for members,
+`DiscordSenderService._handle_ready` chunks the guild's full member roster
+into cache on connect (privileged members intent) instead of relying on
+whoever spoke while the bot was up. Shared logic
 lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
 `EmoteLinker` / `UserLinker` / `RoleLinker`), called
 identically from each connector's own `services/*.py` module. Nothing is
 bridged (or mention-linked) automatically — every pair is linked explicitly
 via those commands.
+
+Every `mirror_*` entry point on those linkers is wrapped by
+`_guards_mirror`, which reserves the operation's **destination
+connector(s)** on a single shared `MirrorGuard` for the duration
+(`bridge.run()` hands the one instance to all four linkers) — `… to` /
+`… from` reserve the one destination, the `… all` fan-outs reserve *every*
+other connector (`_mirror_all_other_connectors`). A `/mirror` — of any
+entity kind — into a connector another `/mirror` is still writing to fails
+fast with a user-facing `MirrorInProgressError` (a `LinkError` subclass, so
+every "relay `str(exc)` to the admin" path already handles it), the message
+naming which connector is busy, rather than racing it into duplicate
+channels/Categories/roles/emoji (issue #79 — `/mirror channel` especially
+is slow). An `… all` is all-or-nothing: one busy destination rejects the
+whole fan-out before it starts rather than being silently skipped. The
+reservation is keyed to the running asyncio task, so one operation that
+fans out through several linker methods in the same task (`… all`,
+`/mirror category` mirroring each child channel, `… from` delegating to
+`… to`) re-enters freely, while a genuinely concurrent command — always a
+separate task — is the one rejected. Mirrors into *different* destinations
+still run in parallel. `CategoryLinker.sync_new_channel`'s auto-sync
+catches the rejection and defers that channel (the manual mirror picks it
+up if it's a child of the mirrored Category); `_handle_thread_create`'s
+auto-mirror (via `mirror_channel_all`) catches it and logs a deferral —
+the thread is re-tried on nothing, so it just isn't mirrored until the
+operator re-runs.
 
 When `/mirror channel` (or `/mirror channel from`, thread auto-mirror, or
 linked-Category auto-sync) **creates** a counterpart channel, it carries the
@@ -432,7 +480,15 @@ user's name on the origin, carried on `StandardMessage.mentioned_users` —
 populated best-effort by the Discord/Stoat senders off the message's
 `mentions`, absent on IRC which has no structured mentions) rather than
 relaying the raw `<@id>` token (issue #56). A mention the map can't name is
-still left exactly as it appeared. That expansion is the one place relayed
+still left exactly as it appeared. A `<#id>` **channel** mention of a channel
+that isn't `/link channel`-linked on the target is likewise expanded by
+`rewrite_channel_mentions` to a plain `#channel-name` — the origin's name for
+the channel, carried on `StandardMessage.mentioned_channels` /
+`StandardEdit.mentioned_channels` (Discord off `Message.channel_mentions`,
+Stoat by scanning the text and resolving each id via `get_channel_name`,
+absent on IRC) — rather than relaying the raw `<#id>`, which renders as a dead
+id on the target (issue #84); an unresolvable one is left as it appeared, and
+the `#name` is run through `_defang_mentions` too. That expansion is the one place relayed
 text picks up an `@`-prefixed token from an attacker-controlled string, so
 it's run through `mentions._defang_mentions` (a zero-width space wedged in
 after the sigil of any `@everyone` / `@here` / `<@…>` / `<#…>` / `<%…>` it
@@ -535,7 +591,8 @@ only *after* the mirror+link finishes, so the `<#thread>` mention resolves. Each
 receiver rewrites that mention (`services/mentions.py`'s
 `rewrite_channel_mentions`, run alongside the user-mention rewrite) into its own
 linked copy of the mirrored channel — `<#id>` on Discord/Stoat, `#channel` on
-IRC — falling back to `#<thread name>` if it still can't resolve. A thread with
+IRC — falling back to `#<thread name>` (carried on the notice's
+`mentioned_channels`) if it still can't resolve. A thread with
 no real starter message (standalone thread / forum-post system row) skips the
 starter relay but keeps that row's author for the notice. Only
 fires when the thread's parent channel is itself already bridged; one-way

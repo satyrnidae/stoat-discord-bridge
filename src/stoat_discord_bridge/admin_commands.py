@@ -15,10 +15,13 @@ auto-links without an explicit admin command.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import functools
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -133,8 +136,138 @@ def _clean_new_name(raw: str | None) -> str | None:
     return stripped or None
 
 
+async def _refresh_connectors(connectors: "dict[str, ConnectorInfo]", *connector_ids: str) -> None:
+    """Best-effort force-refresh of each named connector's cached server
+    state before a `/mirror` command resolves names or runs a get-or-create
+    against it, so an entity created since the gateway connected isn't missed
+    and duplicated (issue #81, see `ConnectorInfo.refresh`).
+
+    A `None` connector id, a duplicate, a connector with no `refresh` hook, or
+    a hook that raises are all skipped silently. The hooks throttle repeat
+    calls themselves, so passing the same id again (a `/mirror ... all` /
+    `/mirror category` fan-out re-entering a per-destination mirror) is cheap.
+    """
+    seen: set[str] = set()
+    for connector_id in connector_ids:
+        if not connector_id or connector_id in seen:
+            continue
+        seen.add(connector_id)
+        info = connectors.get(connector_id)
+        if info is None or info.refresh is None:
+            continue
+        try:
+            await info.refresh()
+        except Exception:
+            logger.debug("refresh() failed on %s before a /mirror command", connector_id, exc_info=True)
+
+
 class LinkError(Exception):
     """User-facing error - callers should relay str(exc) back to the admin who ran the command."""
+
+
+class MirrorInProgressError(LinkError):
+    """A `/mirror <x>` command whose destination connector is still being
+    written to by another `/mirror` run - rejected up front rather than
+    left to race the first one into duplicate channels/Categories/roles/
+    emoji (issue #79). A LinkError subclass, so every existing
+    `except LinkError` / "relay str(exc) to the admin" path handles it."""
+
+
+class MirrorGuard:
+    """Serializes `/mirror <x> to|from|all` runs by *destination connector*
+    so two of them can't write into the same service at once and duplicate
+    each other's work (issue #79 - `/mirror channel` especially is slow, and
+    a second one firing mid-run re-does the not-yet-linked channels). One
+    instance is shared by every linker (ChannelLinker / CategoryLinker /
+    EmoteLinker / RoleLinker), so `/mirror channel to stoat` and
+    `/mirror role to stoat` exclude each other too.
+
+    A reservation is keyed to the running asyncio task: one mirror operation
+    that fans out across several linker methods in the same task (e.g.
+    `/mirror category`, which also mirrors each child channel, or the
+    `... all` variants) re-enters its own reservation freely, while a
+    genuinely concurrent command - always a separate task - is rejected with
+    a user-facing MirrorInProgressError. `reserve` never awaits between
+    checking and claiming, so it's atomic on the single event loop."""
+
+    def __init__(self) -> None:
+        # destination connector id -> the asyncio task holding it
+        self._held: dict[str, object] = {}
+
+    @contextlib.contextmanager
+    def reserve(
+        self, destinations: Iterable[str], connectors: dict[str, ConnectorInfo]
+    ) -> Iterator[None]:
+        # The owner identity that makes a reservation reentrant: the running
+        # task, or - if there somehow isn't one - a fresh object, so the call
+        # fails *closed* (every held destination reads as a clash) rather than
+        # matching a stored None and silently skipping the guard.
+        owner: object = asyncio.current_task() or object()
+        wanted = [d for d in dict.fromkeys(destinations) if d]
+        clash = [d for d in wanted if d in self._held and self._held[d] is not owner]
+        if clash:
+            names = ", ".join(
+                sorted((connectors[d].label if d in connectors else d) for d in clash)
+            )
+            raise MirrorInProgressError(
+                f"another /mirror into {names} is still running - wait for it to finish "
+                "before starting another, or its results may be duplicated."
+            )
+        claimed = [d for d in wanted if d not in self._held]
+        for d in claimed:
+            self._held[d] = owner
+        try:
+            yield
+        finally:
+            for d in claimed:
+                self._held.pop(d, None)
+
+
+def _guards_mirror(
+    destinations: Callable[[object, dict[str, object]], Iterable[str]],
+) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+    """Decorator for the linker `mirror_*` entry points: hold a `self._guard`
+    reservation on the destination connector(s) for the whole call, so a
+    second concurrent `/mirror` into the same service is rejected up front
+    (issue #79). `destinations(self, kwargs)` returns the connector ids to
+    reserve. All decorated methods take only keyword args after `self`, but
+    the wrapper stays fully transparent (`*args, **kwargs`); nested calls
+    within one asyncio task re-enter the reservation freely (see MirrorGuard).
+    The `... all` fan-outs reserve *every* destination up front
+    (`_mirror_all_other_connectors`), so if any one is busy the whole
+    operation is rejected before it starts rather than silently dropping that
+    connector - the error names which one."""
+
+    def deco(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+        @functools.wraps(fn)
+        async def wrapper(*args: object, **kwargs: object) -> str:
+            self = args[0]
+            guard: MirrorGuard = self._guard  # type: ignore[attr-defined]
+            connectors = self._connectors  # type: ignore[attr-defined]
+            with guard.reserve(destinations(self, kwargs), connectors):
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
+    return deco
+
+
+def _mirror_to_destination(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/mirror <x> to <service>` - reserve just the named destination."""
+    return (kw["destination"],)  # type: ignore[return-value]
+
+
+def _mirror_from_local(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/mirror <x> from <service> <id>` - the counterpart is created on the
+    invoking connector, so that's the one to reserve."""
+    return (kw["local_connector"],)  # type: ignore[return-value]
+
+
+def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/mirror <x> all` - reserve every connector the fan-out will write to,
+    so a single busy destination rejects the whole operation up front (with
+    that connector named) rather than being quietly skipped."""
+    return [d for d in self._connectors if d != kw["local_connector"]]  # type: ignore[attr-defined]
 
 
 @dataclass(frozen=True)
@@ -355,6 +488,25 @@ class ConnectorInfo:
     list_users: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     list_emotes: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
 
+    # Best-effort "re-fetch this connector's cached server state from the API"
+    # - channels, categories, roles, custom emoji, members. Every `/mirror`
+    # command (`/mirror channel|category|role|emote`, all three of
+    # `to`/`from`/`all`) calls it on both the source and destination connector
+    # before resolving any name/id or running a get-or-create, so an entity
+    # created since the gateway connected - which the cache-only
+    # `resolve_*` / `ensure_*` / `list_*` reads would otherwise miss, then
+    # duplicate - is seen (issue #81). Only Stoat wires it: stoat.py 1.2.1
+    # populates the cached Server once at connect and refreshes it from only a
+    # narrow set of gateway events (Categories never - see issue #66), so its
+    # cache genuinely drifts. Discord's cache is kept live by gateway events
+    # and IRC's channel/user state is already live, so both leave this unset.
+    # Best-effort: a missing hook, a raising one, or a partial refresh are all
+    # tolerated - the reads that follow still fall back to whatever the cache
+    # holds. The hook rate-limits itself, so the bulk `all` / `/mirror
+    # category` fan-out that re-enters a mirror per destination/child stays
+    # one network round-trip.
+    refresh: Callable[[], Awaitable[None]] | None = None
+
     # --- Capability flags, derived from which hooks are wired ---------------
     # Whether this connector kind has the concept a given command family
     # operates on. IRC has none of roles/Categories/custom emoji, so it wires
@@ -376,12 +528,42 @@ class ConnectorInfo:
         return self.resolve_emoji_name is not None
 
 
+# The Category id<->name walk shared by ChannelLinker._resolve_destination_category_name
+# and CategoryLinker._resolve_to_id / _resolve_name (issue #78). Both take an already
+# looked-up `ConnectorInfo` (or None) plus the connector id for logging.
+async def _resolve_category_id(info: ConnectorInfo | None, token: str, *, connector: str) -> str:
+    """Resolve a Category name `token` to its id via `resolve_category_id_by_name`,
+    falling back to `token` unchanged (already an id, no hook, or unresolvable)."""
+    if info is None or info.resolve_category_id_by_name is None:
+        return token
+    try:
+        resolved = await info.resolve_category_id_by_name(token)
+    except Exception:
+        logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
+        return token
+    return resolved or token
+
+
+async def _resolve_category_title(info: ConnectorInfo | None, category_id: str, *, connector: str) -> str | None:
+    """Resolve a Category id to its canonical title via `resolve_category_name`, or
+    None (no hook, unresolvable, or the hook raised)."""
+    if info is None or info.resolve_category_name is None:
+        return None
+    try:
+        name = await info.resolve_category_name(category_id)
+    except Exception:
+        logger.debug("couldn't resolve category id %r on %s", category_id, connector, exc_info=True)
+        return None
+    return name or None
+
+
 class ChannelLinker:
     def __init__(
         self,
         channel_mappings: ChannelMappingRepository,
         connectors: dict[str, ConnectorInfo],
         category_mappings: CategoryMappingRepository | None = None,
+        guard: MirrorGuard | None = None,
     ) -> None:
         # `connectors` is populated in place by bridge.run() as each sender/
         # receiver is constructed - read lazily here, only once a command
@@ -392,6 +574,9 @@ class ChannelLinker:
         # channel's Category to its already-linked local counterpart. None in
         # tests that don't exercise that path.
         self._category_mappings = category_mappings
+        # Shared across every linker by bridge.run(); a lone instance here
+        # keeps direct-construction (tests) working - see MirrorGuard.
+        self._guard = guard or MirrorGuard()
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -463,6 +648,7 @@ class ChannelLinker:
             f"{local_label} channel '{destination_name}' ({destination_channel_id})."
         )
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_channel(
         self,
         *,
@@ -532,6 +718,8 @@ class ChannelLinker:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
+
+        await _refresh_connectors(self._connectors, local_connector, destination)
 
         target_name = _clean_new_name(new_name) or local_channel_name
 
@@ -637,6 +825,7 @@ class ChannelLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_channel_all(
         self,
         *,
@@ -649,7 +838,9 @@ class ChannelLinker:
     ) -> str:
         """`/mirror channel all` - mirror_channel() against every other
         configured connector, one line of summary/skip/error per connector
-        rather than stopping at the first problem."""
+        rather than stopping at the first problem. Reserves every destination
+        up front, so if any one is mid-`/mirror` the whole fan-out is rejected
+        with that connector named, rather than quietly skipping it (issue #79)."""
         results = [
             await self.mirror_channel(
                 local_connector=local_connector,
@@ -665,6 +856,7 @@ class ChannelLinker:
         ]
         return "\n".join(results) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_channel_from(
         self,
         *,
@@ -699,6 +891,8 @@ class ChannelLinker:
         if source == local_connector:
             raise LinkError("can't mirror a channel from a connector to itself.")
 
+        await _refresh_connectors(self._connectors, source, local_connector)
+
         source_id = await self._resolve_to_id(source, source_id)
         source_name = await self._resolve_name(source, source_id)
 
@@ -723,23 +917,10 @@ class ChannelLinker:
         info = self._connectors.get(connector)
         if info is None:
             return token
-        category_id = token
-        if info.resolve_category_id_by_name is not None:
-            try:
-                resolved = await info.resolve_category_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
-                resolved = None
-            if resolved:
-                category_id = resolved
-        if info.resolve_category_name is not None:
-            try:
-                name = await info.resolve_category_name(category_id)
-            except Exception:
-                logger.debug("couldn't resolve category id %r on %s", category_id, connector, exc_info=True)
-                name = None
-            if name:
-                return name
+        category_id = await _resolve_category_id(info, token, connector=connector)
+        name = await _resolve_category_title(info, category_id, connector=connector)
+        if name:
+            return name
         if _BARE_ID_RE.match(token):
             raise LinkError(
                 f"couldn't find a Category matching '{token}' on {info.label} - "
@@ -965,11 +1146,16 @@ class CategoryLinker:
         thread_categories: ThreadCategoryRepository,
         channel_linker: ChannelLinker,
         connectors: dict[str, ConnectorInfo],
+        guard: MirrorGuard | None = None,
     ) -> None:
         self._category_mappings = category_mappings
         self._thread_categories = thread_categories
         self._channel_linker = channel_linker
         self._connectors = connectors
+        # Falls back to the ChannelLinker's guard so a bare
+        # CategoryLinker(... channel_linker ...) in tests still shares one
+        # guard with the child-channel mirrors it delegates.
+        self._guard = guard or channel_linker._guard
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -1109,6 +1295,7 @@ class CategoryLinker:
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_category(
         self,
         *,
@@ -1137,6 +1324,8 @@ class CategoryLinker:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
             raise LinkError("can't mirror a Category to its own connector.")
+
+        await _refresh_connectors(self._connectors, local_connector, destination)
 
         if local_category is not None:
             local_category_id = await self._resolve_to_id(local_connector, local_category)
@@ -1225,6 +1414,7 @@ class CategoryLinker:
                     lines.append(f"{dest_label}: '{cname}' failed: {exc}")
         return "\n".join(lines)
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_category_all(
         self,
         *,
@@ -1234,7 +1424,9 @@ class CategoryLinker:
         local_category_name: str | None = None,
     ) -> str:
         """`/mirror category <local> all` - mirror_category() against every
-        other configured connector."""
+        other configured connector. Reserves every destination up front, so a
+        single busy one rejects the whole fan-out with that connector named
+        (issue #79)."""
         results = [
             await self.mirror_category(
                 local_connector=local_connector,
@@ -1248,6 +1440,7 @@ class CategoryLinker:
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_category_from(
         self, *, local_connector: str, source: str, source_id: str, new_name: str | None = None
     ) -> str:
@@ -1291,13 +1484,24 @@ class CategoryLinker:
         for mapping in mapped:
             if mapping.connector_id == local_connector:
                 continue
-            result = await self._channel_linker.mirror_channel(
-                local_connector=local_connector,
-                local_channel_id=channel_id,
-                local_channel_name=channel_name,
-                destination=mapping.connector_id,
-                local_channel_category=mapping.category_name,
-            )
+            try:
+                result = await self._channel_linker.mirror_channel(
+                    local_connector=local_connector,
+                    local_channel_id=channel_id,
+                    local_channel_name=channel_name,
+                    destination=mapping.connector_id,
+                    local_channel_category=mapping.category_name,
+                )
+            except MirrorInProgressError:
+                # A manual `/mirror` into this destination is running - it'll
+                # pick this channel up itself if it's a child of the mirrored
+                # Category; otherwise the operator can re-run. Don't race it.
+                logger.info(
+                    "[category-sync] new channel %r -> %s deferred: a /mirror into it is in progress",
+                    channel_name,
+                    mapping.connector_id,
+                )
+                continue
             logger.info(
                 "[category-sync] new channel %r in %s's linked Category -> %s: %s",
                 channel_name,
@@ -1342,27 +1546,13 @@ class CategoryLinker:
         return await self._thread_categories.is_thread_category(connector_id, category_id)
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
-        info = self._connectors.get(connector)
-        if info is not None and info.resolve_category_id_by_name is not None:
-            try:
-                category_id = await info.resolve_category_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
-                category_id = None
-            if category_id:
-                return category_id
-        return token
+        return await _resolve_category_id(self._connectors.get(connector), token, connector=connector)
 
     async def _resolve_name(self, connector_id: str, category_id: str) -> str:
-        info = self._connectors.get(connector_id)
-        if info is None or info.resolve_category_name is None:
-            return category_id
-        try:
-            name = await info.resolve_category_name(category_id)
-        except Exception:
-            logger.debug("couldn't resolve category name for %s on %s", category_id, connector_id, exc_info=True)
-            return category_id
-        return name or category_id
+        title = await _resolve_category_title(
+            self._connectors.get(connector_id), category_id, connector=connector_id
+        )
+        return title or category_id
 
 
 class EmoteLinker:
@@ -1379,9 +1569,15 @@ class EmoteLinker:
     the token as an id if the hook is absent or comes up empty.
     """
 
-    def __init__(self, emoji_mappings: EmojiMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+    def __init__(
+        self,
+        emoji_mappings: EmojiMappingRepository,
+        connectors: dict[str, ConnectorInfo],
+        guard: MirrorGuard | None = None,
+    ) -> None:
         self._emoji_mappings = emoji_mappings
         self._connectors = connectors
+        self._guard = guard or MirrorGuard()
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -1429,6 +1625,7 @@ class EmoteLinker:
         local_label = local_info.label if local_info else local_connector
         return f"Linked {source_label} emote '{source_name}' to {local_label} emote '{local_name}'."
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_emote(
         self, *, local_connector: str, local_emote: str, destination: str, new_name: str | None = None
     ) -> str:
@@ -1447,6 +1644,8 @@ class EmoteLinker:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
             raise LinkError("can't mirror an emote to its own connector.")
+
+        await _refresh_connectors(self._connectors, local_connector, destination)
 
         source_id = await self._resolve_to_id(local_connector, local_emote)
         source_name = await self._resolve_name(local_connector, source_id)
@@ -1510,16 +1709,22 @@ class EmoteLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_emote_all(self, *, local_connector: str, local_emote: str) -> str:
         """`/mirror emote <local> all` - mirror_emote() against every other
-        configured connector, one line of summary/skip/error per connector."""
+        configured connector, one line of summary/skip/error per connector.
+        Reserves every destination up front, so a single busy one rejects the
+        whole fan-out with that connector named (issue #79)."""
         results = [
-            await self.mirror_emote(local_connector=local_connector, local_emote=local_emote, destination=destination)
+            await self.mirror_emote(
+                local_connector=local_connector, local_emote=local_emote, destination=destination
+            )
             for destination in self._connectors
             if destination != local_connector
         ]
         return "\n".join(r for r in results if r) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_emote_from(
         self, *, local_connector: str, source: str, source_emote: str, new_name: str | None = None
     ) -> str:
@@ -1767,9 +1972,15 @@ class RoleLinker:
     the token as an id if the hook is absent or comes up empty.
     """
 
-    def __init__(self, role_mappings: RoleMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+    def __init__(
+        self,
+        role_mappings: RoleMappingRepository,
+        connectors: dict[str, ConnectorInfo],
+        guard: MirrorGuard | None = None,
+    ) -> None:
         self._role_mappings = role_mappings
         self._connectors = connectors
+        self._guard = guard or MirrorGuard()
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -1825,6 +2036,7 @@ class RoleLinker:
             f"{local_label} role '{local_name}' ({local_id})."
         )
 
+    @_guards_mirror(_mirror_to_destination)
     async def mirror_role(
         self, *, local_connector: str, local_role: str, destination: str, new_name: str | None = None
     ) -> str:
@@ -1841,6 +2053,8 @@ class RoleLinker:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
             raise LinkError("can't mirror a role to its own connector.")
+
+        await _refresh_connectors(self._connectors, local_connector, destination)
 
         local_id = await self._resolve_to_id(local_connector, local_role)
         local_name = await self._resolve_name(local_connector, local_id)
@@ -1872,16 +2086,22 @@ class RoleLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+    @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_role_all(self, *, local_connector: str, local_role: str) -> str:
         """`/mirror role <local> all` - mirror_role() against every other
-        configured connector, one line of summary/skip/error per connector."""
+        configured connector, one line of summary/skip/error per connector.
+        Reserves every destination up front, so a single busy one rejects the
+        whole fan-out with that connector named (issue #79)."""
         results = [
-            await self.mirror_role(local_connector=local_connector, local_role=local_role, destination=destination)
+            await self.mirror_role(
+                local_connector=local_connector, local_role=local_role, destination=destination
+            )
             for destination in self._connectors
             if destination != local_connector
         ]
         return "\n".join(results) if results else "no other connectors configured."
 
+    @_guards_mirror(_mirror_from_local)
     async def mirror_role_from(
         self, *, local_connector: str, source: str, source_role: str, new_name: str | None = None
     ) -> str:

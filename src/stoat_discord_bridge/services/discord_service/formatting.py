@@ -81,6 +81,18 @@ def _map_mentioned_roles(message: object) -> dict[str, str]:
     return {str(r.id): r.name for r in (getattr(message, "role_mentions", None) or [])}
 
 
+def _map_mentioned_channels(message: object) -> dict[str, str]:
+    """Native channel id -> name for every channel `message` `<#id>`-mentions,
+    for `StandardMessage.mentioned_channels` / `StandardEdit.mentioned_channels`
+    (issue #84). discord.py resolves `channel_mentions` from cache, so a miss
+    (or a raw edit payload with no message) just yields fewer entries and the
+    receiver leaves that `<#id>` token as-is."""
+    return {
+        str(c.id): getattr(c, "name", str(c.id))
+        for c in (getattr(message, "channel_mentions", None) or [])
+    }
+
+
 def _to_standard_message(
     message: discord.Message,
     connector_id: str,
@@ -107,6 +119,7 @@ def _to_standard_message(
         ],
         mentioned_users=_map_mentioned_users(message),
         mentioned_roles=_map_mentioned_roles(message),
+        mentioned_channels=_map_mentioned_channels(message),
     )
 
 

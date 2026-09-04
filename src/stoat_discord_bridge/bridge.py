@@ -19,6 +19,7 @@ from stoat_discord_bridge.admin_commands import (
     ChannelLinker,
     ConnectorInfo,
     EmoteLinker,
+    MirrorGuard,
     RoleLinker,
     UserLinker,
 )
@@ -660,11 +661,16 @@ async def run(config: BridgeConfig) -> None:
     # ChannelLinker only reads this once a command fires (well after `run()`
     # finishes wiring), so construction order doesn't matter.
     connector_infos: dict[str, ConnectorInfo] = {}
-    linker = ChannelLinker(channel_mappings, connector_infos, category_mappings)
-    emote_linker = EmoteLinker(emoji_mappings, connector_infos)
+    # One guard shared by every linker so concurrent `/mirror` runs into the
+    # same destination connector (of any entity kind) are serialized (issue #79).
+    mirror_guard = MirrorGuard()
+    linker = ChannelLinker(channel_mappings, connector_infos, category_mappings, guard=mirror_guard)
+    emote_linker = EmoteLinker(emoji_mappings, connector_infos, guard=mirror_guard)
     user_linker = UserLinker(user_mappings, connector_infos)
-    category_linker = CategoryLinker(category_mappings, thread_categories, linker, connector_infos)
-    role_linker = RoleLinker(role_mappings, connector_infos)
+    category_linker = CategoryLinker(
+        category_mappings, thread_categories, linker, connector_infos, guard=mirror_guard
+    )
+    role_linker = RoleLinker(role_mappings, connector_infos, guard=mirror_guard)
     role_grants = RoleSyncCoordinator(
         role_mappings, user_mappings, connector_infos, channel_mappings, category_mappings
     )
@@ -809,6 +815,11 @@ async def run(config: BridgeConfig) -> None:
             list_roles=sender.list_roles,
             list_users=sender.list_users,
             list_emotes=sender.list_emotes,
+            # stoat.py's cached Server drifts (it's refreshed from only a few
+            # gateway events, Categories from none - issue #66), so `/mirror`
+            # forces a full re-fetch first (issue #81). Discord/IRC keep their
+            # caches live and leave this unset.
+            refresh=sender.refresh,
         )
         senders.append(sender)
         closables.append(sender)

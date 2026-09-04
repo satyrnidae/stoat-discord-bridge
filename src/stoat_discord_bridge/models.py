@@ -86,6 +86,14 @@ class StandardMessage:
     # name a role, or a connector with no role concept (IRC), just leaves the
     # entry / whole map absent.
     mentioned_roles: dict[str, str] = field(default_factory=dict)
+    # Native channel id -> channel name on the origin, for every channel the
+    # message `<#id>`-mentions. Lets a receiver expand a mention of a channel
+    # that ISN'T /link-channel-linked on the target into a readable
+    # `#channel-name` instead of relaying the raw `<#id>` token, which renders
+    # as a dead id there (issue #84 - the channel-level counterpart of #56).
+    # Best-effort: a name a sender can't resolve, or a connector with no
+    # structured channel mentions (IRC), just leaves the entry / map absent.
+    mentioned_channels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -161,10 +169,11 @@ class StandardEdit:
     for connectors that advertise `ReceiverService.supports_edits` — Discord ⇄
     Stoat only, IRC has no edit-in-place. See BridgeCoordinator.handle_edit.
 
-    `mentioned_users` / `mentioned_roles` mirror the same fields on
-    `StandardMessage` — the origin's name for every user / role the *edited*
-    text @-mentions — so a receiver can re-expand an unlinked `<@id>` /
-    `<@&id>` the same way the original relay did."""
+    `mentioned_users` / `mentioned_roles` / `mentioned_channels` mirror the
+    same-named `StandardMessage` fields — the origin's name for every user /
+    role / channel the *edited* text mentions — so a receiver can re-expand an
+    unlinked `<@id>` / `<@&id>` / `<#id>` the same way the original relay
+    did."""
 
     origin_connector_id: ConnectorId
     origin_channel_id: str
@@ -172,6 +181,7 @@ class StandardEdit:
     new_content_markdown: str
     mentioned_users: dict[str, str] = field(default_factory=dict)
     mentioned_roles: dict[str, str] = field(default_factory=dict)
+    mentioned_channels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
