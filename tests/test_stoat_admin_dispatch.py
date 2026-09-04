@@ -1259,6 +1259,62 @@ async def test_ensure_channel_dedupes_against_a_freshly_fetched_channel_list():
     assert fresh.created_channels == []
 
 
+async def test_ensure_channel_groups_the_parent_channel_atop_the_thread_category():
+    # `/mirror channel` on a Discord thread must pull the parent channel up into
+    # the freshly-created thread Category now, not leave it to the next relayed
+    # message (issue #94) - `group_parent_channel_with_threads` on the relay path
+    # reads the cache-only Category list, which never carries this brand-new
+    # Category.
+    server = FakeServer(id="s1")
+    server.channels = [FakeChannel(id="p1", name="bot-config"), FakeChannel(id="chan-general", name="general")]
+    server.categories = [
+        FakeCategory(id="cat-admin", title="Admin", channels=["p1"]),
+        FakeCategory(id="cat-1", title="Bot Config", channels=[]),
+    ]
+    client = FakeClient()
+    client.add_server(server)
+    linker = _BindingLinker()
+    sender = _make_sender(client=client, category_linker=linker)
+
+    await sender.ensure_channel("general", "Bot Config", True, "p1")
+
+    assert linker.binds == [("p1", "cat-1")]
+    [payload] = server.server_edits
+    cats = {c["title"]: c["channels"] for c in payload["categories"]}
+    assert cats["Admin"] == []  # parent pulled out of its old category
+    assert cats["Bot Config"] == ["p1", "chan-general"]  # parent first, then the thread channel
+
+
+async def test_ensure_channel_skips_the_parent_group_when_it_already_leads_the_category():
+    server = FakeServer(id="s1")
+    server.channels = [FakeChannel(id="p1", name="bot-config"), FakeChannel(id="chan-general", name="general")]
+    server.categories = [FakeCategory(id="cat-1", title="Bot Config", channels=["p1"])]
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client, category_linker=_BindingLinker())
+
+    await sender.ensure_channel("general", "Bot Config", True, "p1")
+
+    assert server.server_edits == []  # parent already on top - nothing rebuilt
+
+
+async def test_ensure_channel_skips_the_parent_group_when_the_option_is_off():
+    server = FakeServer(id="s1")
+    server.channels = [FakeChannel(id="p1", name="bot-config"), FakeChannel(id="chan-general", name="general")]
+    server.categories = [
+        FakeCategory(id="cat-admin", title="Admin", channels=["p1"]),
+        FakeCategory(id="cat-1", title="Bot Config", channels=[]),
+    ]
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client, category_linker=_BindingLinker())
+    sender._config = SimpleNamespace(group_parent_channel_with_threads=False)
+
+    await sender.ensure_channel("general", "Bot Config", True, "p1")
+
+    assert server.server_edits == []
+
+
 # ---------------------------------------------------------------- _linked_channels
 
 

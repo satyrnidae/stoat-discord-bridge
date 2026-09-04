@@ -590,7 +590,12 @@ name, and falling back to the Discord name only where the parent isn't linked
 there. It then relays the thread's own starter message into it as
 the originating user. On Stoat, if `group_parent_channel_with_threads` is set
 (default on, per-connector), the parent channel itself is also moved into that
-Category at the top — re-checked on every relayed message
+Category at the top — done once up front by `ensure_channel` when it creates
+the thread Category (issue #94 — the relay-path check below reads the
+cache-only Category list, which never carries a Category `ensure_channel`
+just made over raw HTTP until a reconnect/`refresh()` repopulates it, so
+`/mirror channel` on a thread would otherwise finish without grouping the
+parent), then re-checked on every relayed message
 (`StoatSenderService.group_parent_channel_with_threads`, called from the
 receiver) so enabling it mid-deployment takes effect without a restart. Discord's own "<user> started a thread" system message in
 the parent channel is suppressed (`_handle_message`); `_handle_thread_create`
@@ -627,7 +632,9 @@ thread grouping isn't special-cased in the auto-mirror handler but in
 thread, flips `is_thread_category` on and points `category_from_channel_id` at
 the parent channel itself — so a manually-mirrored thread lands under (and
 binds) a Category named after its parent, and the parent channel gets pulled
-in, instead of dropping into the parent's own linked Category (issue #72).
+into it (by `ensure_channel`, see the `group_parent_channel_with_threads`
+note above — issue #94), instead of dropping into the parent's own linked
+Category (issue #72).
 
 A Discord **forum/media channel** itself (a `discord.ForumChannel`, not a
 `Thread` under one) can't be a relay target — it has no top-level message
