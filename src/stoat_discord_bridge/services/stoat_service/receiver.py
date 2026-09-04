@@ -136,6 +136,7 @@ class StoatReceiverService(ReceiverService):
             mentioned_users=message.mentioned_users,
             mentioned_roles=message.mentioned_roles,
             mentioned_channels=message.mentioned_channels,
+            mentioned_emoji=message.mentioned_emoji,
         )
         if undownloadable:
             content = inline_attachment_urls(content, undownloadable)
@@ -197,6 +198,7 @@ class StoatReceiverService(ReceiverService):
         mentioned_users: dict[str, str],
         mentioned_roles: dict[str, str] | None = None,
         mentioned_channels: dict[str, str] | None = None,
+        mentioned_emoji: dict[str, str] | None = None,
     ) -> str:
         """Run the shared user / channel / role / emoji mention rewrites over a
         relayed message's text - used by `receive()` for the first post and by
@@ -237,6 +239,7 @@ class StoatReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="stoat",
                 emoji_mappings=self._emoji_mappings,
+                mentioned_emoji=mentioned_emoji,
             )
         return content
 
@@ -259,6 +262,7 @@ class StoatReceiverService(ReceiverService):
             mentioned_users=edit.mentioned_users,
             mentioned_roles=edit.mentioned_roles,
             mentioned_channels=edit.mentioned_channels,
+            mentioned_emoji=edit.mentioned_emoji,
         )
         chunks = chunk_content(content, _stoat_pkg._CONTENT_LIMIT) if content else []
         for index, message_id in enumerate(target_message_ids):

@@ -158,13 +158,43 @@ async def test_unknown_stoat_emoji_removed_entirely_on_irc(fake_db):
     assert result == "hi  there"
 
 
-async def test_unmapped_custom_emoji_and_shortcodes_left_untouched(fake_db):
+async def test_unmapped_discord_emoji_falls_back_to_shortcode_on_stoat(fake_db):
+    # issue #87: an unlinked Discord emoji toward Discord/Stoat used to leak
+    # the raw `<:name:id>` token verbatim; the name is right there in the
+    # token, so it now falls back to a readable `:name:` shortcode, same as
+    # the IRC branch already did. A plain unicode shortcode is untouched either way.
     repo = await _linked_emoji(fake_db, ("discord", "111", "a"), ("stoat", _ULID, "a"))
     result = await rewrite_emoji(
         "<:other:222> and :smile:", origin_connector_id="discord", target_connector_id="stoat",
         target_kind="stoat", emoji_mappings=repo,
     )
-    assert result == "<:other:222> and :smile:"
+    assert result == ":other: and :smile:"
+
+
+async def test_unmapped_stoat_emoji_uses_mentioned_emoji_fallback_on_discord(fake_db):
+    # issue #87: an unlinked Stoat emoji toward Discord/Stoat used to leak the
+    # bare ULID between colons. Its token carries no name, so the sender's
+    # best-effort mentioned_emoji map (StandardMessage.mentioned_emoji) is
+    # used to recover one.
+    repo = await _linked_emoji(fake_db, ("discord", "111", "a"), ("stoat", _ULID, "a"))
+    other_ulid = "01BX5ZZKBKACTAV9WEVGEMMVRZ"
+    result = await rewrite_emoji(
+        f"hi :{other_ulid}: there", origin_connector_id="stoat", target_connector_id="discord",
+        target_kind="discord", emoji_mappings=repo, mentioned_emoji={other_ulid: "catvibe"},
+    )
+    assert result == "hi :catvibe: there"
+
+
+async def test_unmapped_unnamed_stoat_emoji_falls_back_to_generic_marker_on_discord(fake_db):
+    # No mentioned_emoji entry and no EmojiMappingRepository name either - the
+    # bare id must never leak; fall back to a generic marker instead.
+    repo = await _linked_emoji(fake_db, ("discord", "111", "a"), ("stoat", _ULID, "a"))
+    other_ulid = "01BX5ZZKBKACTAV9WEVGEMMVRZ"
+    result = await rewrite_emoji(
+        f"hi :{other_ulid}: there", origin_connector_id="stoat", target_connector_id="discord",
+        target_kind="discord", emoji_mappings=repo,
+    )
+    assert result == "hi :emoji: there"
 
 
 async def _linked(fake_db, *mappings):

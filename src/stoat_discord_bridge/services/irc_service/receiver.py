@@ -128,6 +128,7 @@ class IrcReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="irc",
                 emoji_mappings=self._emoji_mappings,
+                mentioned_emoji=message.mentioned_emoji,
             )
         if not content.strip():
             # A synced message with no textual content (after attachment
