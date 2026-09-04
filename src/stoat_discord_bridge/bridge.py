@@ -3,8 +3,8 @@ every other connector's receiver service (posts into that platform), and
 records what got relayed where via MongoDB for sync tracking.
 
 Nothing links automatically: `ChannelMappingRepository` rows only come from
-the `/link channel` and `/mirror channel` admin commands (see
-admin_commands.py and each services/*.py module's command handler).
+the `/link channel` and `/mirror channel` admin commands (see the
+admin_commands package and each services/*.py module's command handler).
 """
 
 from __future__ import annotations

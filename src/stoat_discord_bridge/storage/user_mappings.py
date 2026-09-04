@@ -3,7 +3,7 @@ to rewrite @mentions into each target connector's native syntax when relaying
 a message (see services/mentions.py), and to make a linked sender's relayed
 masquerade show their local identity instead of their remote one (see each
 receiver's receive(), via find_linked_user_id below). Rows are created only
-by the `/link-user` admin command (see admin_commands.py) - nothing links
+by the `/link-user` admin command (see admin_commands/user.py) - nothing links
 automatically.
 """
 

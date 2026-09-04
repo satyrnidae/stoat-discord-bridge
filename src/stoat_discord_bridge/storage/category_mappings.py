@@ -4,7 +4,7 @@ Category-level counterpart of channel_mappings.py.
 Each mapped Category is stored as its own document keyed by (connector_id,
 category_id), tagged with a `bridge_group` tying together every connector's
 Category for one linked group. Rows are created only by the `/link-category`
-admin command (see admin_commands.py's CategoryLinker) - nothing links
+admin command (see admin_commands/category.py's CategoryLinker) - nothing links
 automatically. Once linked, though, a new channel appearing inside either
 Category *is* auto-synced (created + linked) onto the other -
 CategoryLinker.sync_new_channel, called from each connector's own
