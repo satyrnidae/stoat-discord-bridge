@@ -52,6 +52,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
     _map_mentioned_users,
     _member_color,
     _mentioned_channel_ids,
+    _mentioned_emoji_ids,
 )
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
@@ -200,6 +201,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 mentioned_users=_map_mentioned_users(message),
                 mentioned_roles=_map_mentioned_roles(message),
                 mentioned_channels=await self._map_mentioned_channels(message.content or ""),
+                mentioned_emoji=await self._map_mentioned_emoji(message.content or ""),
             )
         )
 
@@ -248,6 +250,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 mentioned_users=_map_mentioned_users(after) if after is not None else {},
                 mentioned_roles=_map_mentioned_roles(after) if after is not None else {},
                 mentioned_channels=await self._map_mentioned_channels(new_content or ""),
+                mentioned_emoji=await self._map_mentioned_emoji(new_content or ""),
             )
         )
 
@@ -262,6 +265,23 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             name = await self.get_channel_name(channel_id)
             if name:
                 out[channel_id] = name
+        return out
+
+    async def _map_mentioned_emoji(self, content: str) -> dict[str, str]:
+        """Native custom-emoji id -> name for every `:26-char-ULID:` inline
+        custom emoji referenced in `content`, for
+        `StandardMessage.mentioned_emoji` / `StandardEdit.mentioned_emoji`
+        (issue #87 - the emoji counterpart of `_map_mentioned_channels`).
+        Unlike Discord's `<:name:id>` token, Stoat's carries no name inline,
+        so this resolves each id through `get_emoji_name` (server cache, REST
+        fallback) - an id it can't name just isn't in the map and the
+        receiver falls back further (EmojiMappingRepository, then a generic
+        shortcode) rather than leaking the bare id."""
+        out: dict[str, str] = {}
+        for emoji_id in _mentioned_emoji_ids(content):
+            name = await self.get_emoji_name(emoji_id)
+            if name:
+                out[emoji_id] = name
         return out
 
     async def _resolve_sender_name(self, message) -> str:

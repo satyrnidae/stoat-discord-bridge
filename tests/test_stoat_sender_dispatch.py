@@ -20,7 +20,7 @@ from stoat_discord_bridge.models import CustomEmoji
 from stoat_discord_bridge.services.caching import AsyncTTLCache
 from stoat_discord_bridge.services.stoat_service import StoatSenderService
 from stoat_discord_bridge.status import HealthTracker
-from tests.fakes.fake_stoat import FakeAsset, FakeAuthor, FakeChannel, FakeClient, FakeServer
+from tests.fakes.fake_stoat import FakeAsset, FakeAuthor, FakeChannel, FakeClient, FakeEmoji, FakeServer
 
 
 class _Recorder:
@@ -252,6 +252,24 @@ async def test_handle_message_resolves_channel_mentions_to_names():
 
     [message] = recorder.messages
     assert message.mentioned_channels == {"01ARZ3NDEKTSV4RRFFQ69G5FAV": "off-topic"}
+
+
+async def test_handle_message_resolves_inline_emoji_to_names():
+    recorder = _Recorder()
+    client = FakeClient()
+    server = FakeServer(id="srv-1")
+    server.add_emoji(FakeEmoji(id="01ARZ3NDEKTSV4RRFFQ69G5FAV", name="catvibe"))
+    client.add_server(server)
+    sender = _make_sender(recorder, client)
+    channel = FakeChannel(id="42", name="general")
+    author = FakeAuthor(id="u1", tag="alice#0000", display_name="Alice", avatar=None)
+
+    await sender._handle_message(
+        _stoat_message(channel=channel, author=author, content="haha :01ARZ3NDEKTSV4RRFFQ69G5FAV:", id="m1")
+    )
+
+    [message] = recorder.messages
+    assert message.mentioned_emoji == {"01ARZ3NDEKTSV4RRFFQ69G5FAV": "catvibe"}
 
 
 async def test_handle_message_falls_back_to_the_bare_username_when_no_display_name():

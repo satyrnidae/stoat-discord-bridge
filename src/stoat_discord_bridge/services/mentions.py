@@ -163,41 +163,62 @@ async def rewrite_emoji(
     target_connector_id: str,
     target_kind: str,
     emoji_mappings: EmojiMappingRepository,
+    mentioned_emoji: dict[str, str] | None = None,
 ) -> str:
     """Rewrite an inline custom-emoji reference - `<:name:id>` / `<a:name:id>`
     (Discord) or `:26-char-ULID:` (Stoat) - into the target connector's own
     linked copy of that emoji: `<:name:id>` on Discord, `:id:` on Stoat.
 
-    IRC has no custom emoji, so there it's stripped to a plain `:name:`
-    shortcode (or removed entirely if the name can't be recovered) rather
-    than left as a raw `<:name:id>` / bare-ULID token.
+    An emoji with no link to the target connector falls back to a plain
+    `:name:` shortcode instead of the raw token, which isn't valid emoji
+    syntax on the target and would otherwise render as literal text exposing
+    a bare id (issue #87, the emoji counterpart of the #56/#4/#84 mention
+    fallbacks). Discord's token carries the name inline (`match.group(2)`);
+    Stoat's bare-ULID token doesn't, so that name comes from `mentioned_emoji`
+    (an origin id -> name map, best-effort - see the Stoat sender) or, failing
+    that, `EmojiMappingRepository.find_name` (recovers a name if the emoji is
+    in some mapping group even without a link to *this* target). On IRC a
+    still-unnamed Stoat emoji is removed entirely (unchanged from before);
+    on Discord/Stoat it falls back to a generic `:emoji:` marker rather than
+    a bare id. Both id shapes are always tried; a Discord numeric id and a
+    Stoat ULID never collide.
 
-    On Discord/Stoat, an emoji with no link to the target connector is left
-    exactly as it appeared (same rule as the mention rewrites). Both id
-    shapes are always tried; a Discord numeric id and a Stoat ULID never
-    collide."""
-    for match in list(_DISCORD_CUSTOM_EMOJI.finditer(content)):
+    Both patterns are matched against the *original* `content` up front,
+    before any substitution: a Discord-target/Stoat-target replacement for a
+    linked emoji renders as a bare `:id:`, which is exactly the Stoat token
+    shape, so matching the second pattern against already-rewritten text
+    would re-process the first loop's own output."""
+    mentioned_emoji = mentioned_emoji or {}
+    discord_matches = list(_DISCORD_CUSTOM_EMOJI.finditer(content))
+    stoat_matches = list(_STOAT_CUSTOM_EMOJI.finditer(content))
+    for match in discord_matches:
         ref = await emoji_mappings.find_equivalent_ref(
             origin_connector_id, match.group(3), target_connector_id
         )
         if ref is not None:
             replacement = _render_emoji(target_kind, ref.emoji_id, ref.name or match.group(2))
-        elif target_kind == "irc":
-            replacement = f":{match.group(2)}:"  # name is right there in the Discord token
         else:
-            continue
+            # No link to the target - the name is right there in the Discord
+            # token, so fall back to a readable shortcode on every target
+            # kind rather than leaving the raw, unrenderable `<:name:id>`.
+            replacement = f":{match.group(2)}:"
         content = content.replace(match.group(0), replacement)
-    for match in list(_STOAT_CUSTOM_EMOJI.finditer(content)):
+    for match in stoat_matches:
         ref = await emoji_mappings.find_equivalent_ref(
             origin_connector_id, match.group(1), target_connector_id
         )
         if ref is not None:
             replacement = _render_emoji(target_kind, ref.emoji_id, ref.name)
-        elif target_kind == "irc":
-            name = await emoji_mappings.find_name(origin_connector_id, match.group(1))
-            replacement = f":{name}:" if name else ""
         else:
-            continue
+            name = mentioned_emoji.get(match.group(1)) or await emoji_mappings.find_name(
+                origin_connector_id, match.group(1)
+            )
+            if name:
+                replacement = f":{name}:"
+            elif target_kind == "irc":
+                replacement = ""
+            else:
+                replacement = ":emoji:"
         content = content.replace(match.group(0), replacement)
     return content
 

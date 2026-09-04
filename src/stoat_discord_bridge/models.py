@@ -94,6 +94,14 @@ class StandardMessage:
     # Best-effort: a name a sender can't resolve, or a connector with no
     # structured channel mentions (IRC), just leaves the entry / map absent.
     mentioned_channels: dict[str, str] = field(default_factory=dict)
+    # Native custom-emoji id -> name on the origin, for every inline custom
+    # emoji the message's text references. Discord's `<:name:id>` token
+    # already carries its name, so only a Stoat-origin sender populates this
+    # (its `:ULID:` token doesn't) - lets a receiver fall back to a readable
+    # `:name:` shortcode for an emoji with no link to the target instead of
+    # relaying the bare id (issue #87, the emoji counterpart of #56/#4/#84).
+    # Best-effort: an id a sender can't name just leaves the entry absent.
+    mentioned_emoji: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -169,11 +177,11 @@ class StandardEdit:
     for connectors that advertise `ReceiverService.supports_edits` — Discord ⇄
     Stoat only, IRC has no edit-in-place. See BridgeCoordinator.handle_edit.
 
-    `mentioned_users` / `mentioned_roles` / `mentioned_channels` mirror the
-    same-named `StandardMessage` fields — the origin's name for every user /
-    role / channel the *edited* text mentions — so a receiver can re-expand an
-    unlinked `<@id>` / `<@&id>` / `<#id>` the same way the original relay
-    did."""
+    `mentioned_users` / `mentioned_roles` / `mentioned_channels` /
+    `mentioned_emoji` mirror the same-named `StandardMessage` fields — the
+    origin's name for every user / role / channel / custom emoji the *edited*
+    text mentions — so a receiver can re-expand an unlinked `<@id>` / `<@&id>`
+    / `<#id>` / emoji token the same way the original relay did."""
 
     origin_connector_id: ConnectorId
     origin_channel_id: str
@@ -182,6 +190,7 @@ class StandardEdit:
     mentioned_users: dict[str, str] = field(default_factory=dict)
     mentioned_roles: dict[str, str] = field(default_factory=dict)
     mentioned_channels: dict[str, str] = field(default_factory=dict)
+    mentioned_emoji: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
