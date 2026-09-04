@@ -109,27 +109,40 @@ async def rewrite_role_mentions(
     target_connector_id: str,
     target_kind: str,
     role_mappings: RoleMappingRepository,
+    mentioned_roles: dict[str, str] | None = None,
 ) -> str:
     """Rewrite a `<@&role-id>` (Discord) / `<%role-id>` (Stoat) mention of a
     cross-connector-linked role into the target connector's own copy of that
-    role - native syntax on Discord/Stoat, or `@name` on IRC. A mention of a
-    role with no mapping to the target connector is left exactly as it
-    appeared (same rule as user/channel mentions). Both id shapes are always
-    tried; Discord's numeric ids and Stoat's 26-char ULIDs never collide."""
+    role - native syntax on Discord/Stoat, or `@name` on IRC.
+
+    `mentioned_roles` maps an origin native role id to that role's name on the
+    origin. A mention of a role with no mapping to the target is expanded to a
+    plain `@Role Name` using this map rather than relayed as the raw id token
+    (issue #4 - the role counterpart of the issue-#56 user-mention fix); a
+    mention still not covered by the map is left exactly as it appeared. Both
+    id shapes are always tried; Discord's numeric ids and Stoat's 26-char
+    ULIDs never collide."""
+    mentioned_roles = mentioned_roles or {}
+    # Unlinked mentions we can name are expanded only after the linked-role
+    # rewrite below, so an expanded `@Name` can't collide with a real
+    # `<%id>` / `<@&id>` we just wrote (and the expansion is defanged).
+    pending_expansions: list[tuple[str, str]] = []
     for pattern in (_DISCORD_ROLE_MENTION, _STOAT_ROLE_MENTION):
         for match in list(pattern.finditer(content)):
+            target = None
             bridge_group = await role_mappings.get_bridge_group(origin_connector_id, match.group(1))
-            if bridge_group is None:
-                continue
-            target = next(
-                (
-                    m
-                    for m in await role_mappings.get_mapped_roles(bridge_group)
-                    if m.connector_id == target_connector_id
-                ),
-                None,
-            )
+            if bridge_group is not None:
+                target = next(
+                    (
+                        m
+                        for m in await role_mappings.get_mapped_roles(bridge_group)
+                        if m.connector_id == target_connector_id
+                    ),
+                    None,
+                )
             if target is None:
+                if match.group(1) in mentioned_roles:
+                    pending_expansions.append((match.group(0), mentioned_roles[match.group(1)]))
                 continue
             if target_kind == "discord":
                 replacement = f"<@&{target.role_id}>"
@@ -138,6 +151,8 @@ async def rewrite_role_mentions(
             else:
                 replacement = f"@{target.role_name}"
             content = content.replace(match.group(0), replacement)
+    for token, name in pending_expansions:
+        content = content.replace(token, _defang_mentions("@" + name))
     return content
 
 

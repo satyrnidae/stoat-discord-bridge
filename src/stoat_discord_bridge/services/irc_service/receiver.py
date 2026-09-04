@@ -119,6 +119,7 @@ class IrcReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="irc",
                 role_mappings=self._role_mappings,
+                mentioned_roles=message.mentioned_roles,
             )
         if self._emoji_mappings is not None:
             content = await rewrite_emoji(

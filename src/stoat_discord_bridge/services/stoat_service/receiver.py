@@ -134,6 +134,7 @@ class StoatReceiverService(ReceiverService):
             origin_connector_id=message.origin_connector_id,
             content_markdown=message.content_markdown,
             mentioned_users=message.mentioned_users,
+            mentioned_roles=message.mentioned_roles,
             mentioned_channels=message.mentioned_channels,
         )
         if undownloadable:
@@ -194,6 +195,7 @@ class StoatReceiverService(ReceiverService):
         origin_connector_id: str,
         content_markdown: str | None,
         mentioned_users: dict[str, str],
+        mentioned_roles: dict[str, str] | None = None,
         mentioned_channels: dict[str, str] | None = None,
     ) -> str:
         """Run the shared user / channel / role / emoji mention rewrites over a
@@ -226,6 +228,7 @@ class StoatReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="stoat",
                 role_mappings=self._role_mappings,
+                mentioned_roles=mentioned_roles,
             )
         if self._emoji_mappings is not None:
             content = await rewrite_emoji(
@@ -254,6 +257,7 @@ class StoatReceiverService(ReceiverService):
             origin_connector_id=edit.origin_connector_id,
             content_markdown=edit.new_content_markdown,
             mentioned_users=edit.mentioned_users,
+            mentioned_roles=edit.mentioned_roles,
             mentioned_channels=edit.mentioned_channels,
         )
         chunks = chunk_content(content, _stoat_pkg._CONTENT_LIMIT) if content else []

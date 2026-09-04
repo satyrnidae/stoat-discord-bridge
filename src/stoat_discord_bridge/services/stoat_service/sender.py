@@ -48,6 +48,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
     _display_name,
     _extract_pronouns,
     _map_attachments,
+    _map_mentioned_roles,
     _map_mentioned_users,
     _member_colour,
     _mentioned_channel_ids,
@@ -197,6 +198,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 sender_pronouns=await self._resolve_sender_pronouns(message),
                 sender_color=self._resolve_sender_color(message),
                 mentioned_users=_map_mentioned_users(message),
+                mentioned_roles=_map_mentioned_roles(message),
                 mentioned_channels=await self._map_mentioned_channels(message.content or ""),
             )
         )
@@ -244,6 +246,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 origin_message_id=str(message_id),
                 new_content_markdown=new_content or "",
                 mentioned_users=_map_mentioned_users(after) if after is not None else {},
+                mentioned_roles=_map_mentioned_roles(after) if after is not None else {},
                 mentioned_channels=await self._map_mentioned_channels(new_content or ""),
             )
         )
