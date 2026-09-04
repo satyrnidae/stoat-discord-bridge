@@ -12,6 +12,7 @@ re-check it. Composed into `DiscordSenderService`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable
 
 import discord
 
@@ -24,11 +25,49 @@ logger = logging.getLogger(__name__)
 class DiscordLinkingMixin:
     """Command-handler half of `DiscordSenderService`."""
 
+    async def _linker_configured(
+        self, interaction: discord.Interaction, linker: object | None, message: str
+    ) -> bool:
+        """True if `linker` is configured; otherwise replies `message`
+        (ephemeral) and returns False, so a handler opens with
+        `if not await self._linker_configured(interaction, self._x_linker,
+        "...isn't configured."): return` instead of repeating the
+        None-check/reply/return three-liner (issue #106)."""
+        if linker is not None:
+            return True
+        await interaction.response.send_message(message, ephemeral=True)
+        return False
+
+    async def _reply_linker_result(
+        self,
+        interaction: discord.Interaction,
+        coro: Awaitable[str],
+        *,
+        log_context: str,
+        deferred: bool = False,
+        empty_fallback: str | None = None,
+    ) -> None:
+        """The `try: summary = await <linker call> / except LinkError: log +
+        reply(str(exc)) / else: reply(summary)` shape every mutating
+        handler ends with. `deferred` picks `interaction.followup.send`
+        (a handler that already called `interaction.response.defer()` for a
+        slow mirror) over `interaction.response.send_message`;
+        `empty_fallback` (the mirror handlers' "Nothing to mirror.") is
+        substituted for a falsy `summary`, matching each handler's own
+        `summary or "..."` it used to write inline (issue #106)."""
+        reply = interaction.followup.send if deferred else interaction.response.send_message
+        try:
+            summary = await coro
+        except LinkError as exc:
+            logger.info("[discord:%s] %s rejected: %s", self.connector_id, log_context, exc)
+            await reply(str(exc), ephemeral=True)
+            return
+        await reply(summary if empty_fallback is None else (summary or empty_fallback), ephemeral=True)
+
     async def _handle_linked_channels(
         self, interaction: discord.Interaction, local_id: str | None = None
     ) -> None:
-        if self._linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
             return
         channel_id = _normalize_channel_id(local_id) if local_id else str(interaction.channel_id)
         summary = await self._linker.list_linked_channels(
@@ -37,8 +76,7 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(summary, ephemeral=True)
 
     async def _handle_linked_users(self, interaction: discord.Interaction, local_id: discord.Member | None) -> None:
-        if self._user_linker is None:
-            await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._user_linker, "User linking isn't configured."):
             return
         if local_id is not None:
             summary = await self._user_linker.list_linked_users(
@@ -51,8 +89,7 @@ class DiscordLinkingMixin:
     async def _handle_link_channel(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: str | None
     ) -> None:
-        if self._linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
             return
         external_id = _normalize_channel_id(external_id)
         if local_id is not None:
@@ -65,20 +102,18 @@ class DiscordLinkingMixin:
             external_id,
             local_id,
         )
-        try:
-            summary = await self._linker.link_channel(
+        await self._reply_linker_result(
+            interaction,
+            self._linker.link_channel(
                 local_connector=self.connector_id,
                 local_channel_id=str(interaction.channel_id),
                 local_channel_name=getattr(interaction.channel, "name", str(interaction.channel_id)),
                 source=service,
                 source_id=external_id,
                 destination_id=local_id,
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /link channel rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+            ),
+            log_context="/link channel",
+        )
 
     def _invoking_category_id(self, interaction: discord.Interaction) -> str | None:
         category = getattr(interaction.channel, "category", None)
@@ -87,8 +122,7 @@ class DiscordLinkingMixin:
     async def _handle_linked_categories(
         self, interaction: discord.Interaction, local_id: str | None = None
     ) -> None:
-        if self._category_linker is None:
-            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._category_linker, "Category linking isn't configured."):
             return
         local_id = _normalize_channel_id(local_id) if local_id else None
         if local_id is None and self._invoking_category_id(interaction) is None:
@@ -104,8 +138,7 @@ class DiscordLinkingMixin:
     async def _handle_link_category(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: str | None
     ) -> None:
-        if self._category_linker is None:
-            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._category_linker, "Category linking isn't configured."):
             return
         category = getattr(interaction.channel, "category", None)
         local_id = _normalize_channel_id(local_id) if local_id else None
@@ -121,26 +154,23 @@ class DiscordLinkingMixin:
             external_id,
             local_id,
         )
-        try:
-            summary = await self._category_linker.link_category(
+        await self._reply_linker_result(
+            interaction,
+            self._category_linker.link_category(
                 local_connector=self.connector_id,
                 local_category_id=None if category is None else str(category.id),
                 local_category_name="" if category is None else category.name,
                 source=service,
                 source_id=external_id,
                 destination_id=local_id,
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /link category rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+            ),
+            log_context="/link category",
+        )
 
     async def _handle_unlink_category(
         self, interaction: discord.Interaction, local_id: str | None = None, service: str | None = None
     ) -> None:
-        if self._category_linker is None:
-            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._category_linker, "Category linking isn't configured."):
             return
         local_id = _normalize_channel_id(local_id) if local_id else None
         if local_id is None and self._invoking_category_id(interaction) is None:
@@ -153,18 +183,16 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
-        try:
-            summary = await self._category_linker.unlink_category(
+        await self._reply_linker_result(
+            interaction,
+            self._category_linker.unlink_category(
                 local_connector=self.connector_id,
                 local_category_id=self._invoking_category_id(interaction),
                 local_category=local_id,
                 destination=service,
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /unlink category rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+            ),
+            log_context="/unlink category",
+        )
 
     async def _handle_mirror_category(
         self,
@@ -173,8 +201,7 @@ class DiscordLinkingMixin:
         service: str | None = None,
         new_name: str | None = None,
     ) -> None:
-        if self._category_linker is None:
-            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._category_linker, "Category linking isn't configured."):
             return
         local_id = _normalize_channel_id(local_id) if local_id else None
         if local_id is None and self._invoking_category_id(interaction) is None:
@@ -193,18 +220,13 @@ class DiscordLinkingMixin:
             local_category_id=self._invoking_category_id(interaction),
             local_category=local_id,
         )
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._category_linker.mirror_category_all(**kwargs)
-            else:
-                summary = await self._category_linker.mirror_category(
-                    destination=service, new_name=new_name, **kwargs
-                )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror category rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+        if service is None or service.lower() == "all":
+            coro = self._category_linker.mirror_category_all(**kwargs)
+        else:
+            coro = self._category_linker.mirror_category(destination=service, new_name=new_name, **kwargs)
+        await self._reply_linker_result(
+            interaction, coro, log_context="/mirror category", deferred=True, empty_fallback="Nothing to mirror."
+        )
 
     async def _handle_mirror_category_from(
         self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
@@ -212,8 +234,7 @@ class DiscordLinkingMixin:
         """`/mirror category from <service> <external_id>`: create a local
         Category mirroring `service`'s, link them, and relocate/mirror its
         channels into the local Category."""
-        if self._category_linker is None:
-            await interaction.response.send_message("Category linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._category_linker, "Category linking isn't configured."):
             return
         logger.info(
             "[discord:%s] %s ran /mirror category from service=%s external_id=%s",
@@ -223,21 +244,20 @@ class DiscordLinkingMixin:
             external_id,
         )
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            summary = await self._category_linker.mirror_category_from(
+        await self._reply_linker_result(
+            interaction,
+            self._category_linker.mirror_category_from(
                 local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror category from rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+            ),
+            log_context="/mirror category from",
+            deferred=True,
+            empty_fallback="Nothing to mirror.",
+        )
 
     async def _handle_link_role(
         self, interaction: discord.Interaction, local_id: str, service: str, external_id: str
     ) -> None:
-        if self._role_linker is None:
-            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._role_linker, "Role linking isn't configured."):
             return
         local_id = _normalize_role_id(local_id)
         external_id = _normalize_role_id(external_id)
@@ -249,24 +269,21 @@ class DiscordLinkingMixin:
             service,
             external_id,
         )
-        try:
-            summary = await self._role_linker.link_role(
+        await self._reply_linker_result(
+            interaction,
+            self._role_linker.link_role(
                 local_connector=self.connector_id,
                 local_role=local_id,
                 source=service,
                 source_role=external_id,
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /link-role rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+            ),
+            log_context="/link-role",
+        )
 
     async def _handle_unlink_role(
         self, interaction: discord.Interaction, local_id: str, service: str | None
     ) -> None:
-        if self._role_linker is None:
-            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._role_linker, "Role linking isn't configured."):
             return
         local_id = _normalize_role_id(local_id)
         logger.info(
@@ -276,21 +293,16 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
-        try:
-            summary = await self._role_linker.unlink_role(
-                local_connector=self.connector_id, local_role=local_id, destination=service
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /unlink-role rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await self._reply_linker_result(
+            interaction,
+            self._role_linker.unlink_role(local_connector=self.connector_id, local_role=local_id, destination=service),
+            log_context="/unlink-role",
+        )
 
     async def _handle_linked_roles(
         self, interaction: discord.Interaction, local_id: str | None, service: str | None
     ) -> None:
-        if self._role_linker is None:
-            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._role_linker, "Role linking isn't configured."):
             return
         summary = await self._role_linker.list_linked_roles(
             local_connector=self.connector_id,
@@ -306,8 +318,7 @@ class DiscordLinkingMixin:
         service: str | None,
         new_name: str | None = None,
     ) -> None:
-        if self._role_linker is None:
-            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._role_linker, "Role linking isn't configured."):
             return
         if not local_id:
             await interaction.response.send_message("Which role? Pass a role id or name.", ephemeral=True)
@@ -323,28 +334,22 @@ class DiscordLinkingMixin:
         # Creating/matching the role on the target connector is a network
         # round-trip that can outrun Discord's 3s deadline - defer + followup.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._role_linker.mirror_role_all(
-                    local_connector=self.connector_id, local_role=local_id
-                )
-            else:
-                summary = await self._role_linker.mirror_role(
-                    local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
-                )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror-role rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+        if service is None or service.lower() == "all":
+            coro = self._role_linker.mirror_role_all(local_connector=self.connector_id, local_role=local_id)
+        else:
+            coro = self._role_linker.mirror_role(
+                local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
+            )
+        await self._reply_linker_result(
+            interaction, coro, log_context="/mirror-role", deferred=True, empty_fallback="Nothing to mirror."
+        )
 
     async def _handle_mirror_role_from(
         self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror role from <service> <external_id>`: create-or-match a
         local role mirroring `service`'s role, and link them."""
-        if self._role_linker is None:
-            await interaction.response.send_message("Role linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._role_linker, "Role linking isn't configured."):
             return
         external_id = _normalize_role_id(external_id)
         logger.info(
@@ -355,21 +360,20 @@ class DiscordLinkingMixin:
             external_id,
         )
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            summary = await self._role_linker.mirror_role_from(
+        await self._reply_linker_result(
+            interaction,
+            self._role_linker.mirror_role_from(
                 local_connector=self.connector_id, source=service, source_role=external_id, new_name=new_name
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror role from rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+            ),
+            log_context="/mirror role from",
+            deferred=True,
+            empty_fallback="Nothing to mirror.",
+        )
 
     async def _handle_link_emote(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: str
     ) -> None:
-        if self._emote_linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._emote_linker, "Linking isn't configured."):
             return
         logger.info(
             "[discord:%s] %s ran /link emote service=%s external_id=%s local_id=%s",
@@ -379,24 +383,21 @@ class DiscordLinkingMixin:
             external_id,
             local_id,
         )
-        try:
-            summary = await self._emote_linker.link_emote(
+        await self._reply_linker_result(
+            interaction,
+            self._emote_linker.link_emote(
                 local_connector=self.connector_id,
                 local_id=local_id,
                 source=service,
                 source_id=external_id,
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /link emote rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+            ),
+            log_context="/link emote",
+        )
 
     async def _handle_unlink_emote(
         self, interaction: discord.Interaction, local_id: str, service: str | None
     ) -> None:
-        if self._emote_linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._emote_linker, "Linking isn't configured."):
             return
         logger.info(
             "[discord:%s] %s ran /unlink emote local_id=%s service=%s",
@@ -405,21 +406,16 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
-        try:
-            summary = await self._emote_linker.unlink_emote(
-                local_connector=self.connector_id, local_emote=local_id, destination=service
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /unlink emote rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await self._reply_linker_result(
+            interaction,
+            self._emote_linker.unlink_emote(local_connector=self.connector_id, local_emote=local_id, destination=service),
+            log_context="/unlink emote",
+        )
 
     async def _handle_linked_emotes(
         self, interaction: discord.Interaction, local_id: str | None
     ) -> None:
-        if self._emote_linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._emote_linker, "Linking isn't configured."):
             return
         summary = await self._emote_linker.list_linked_emotes(
             local_connector=self.connector_id, local_emote=local_id
@@ -433,8 +429,7 @@ class DiscordLinkingMixin:
         service: str | None,
         new_name: str | None = None,
     ) -> None:
-        if self._emote_linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._emote_linker, "Linking isn't configured."):
             return
         if not local_id:
             await interaction.response.send_message("Which emote? Pass an emoji id or name.", ephemeral=True)
@@ -449,28 +444,22 @@ class DiscordLinkingMixin:
         # Recreating the emoji on the target connector uploads its image -
         # comfortably past Discord's 3s deadline - so defer + followup.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._emote_linker.mirror_emote_all(
-                    local_connector=self.connector_id, local_emote=local_id
-                )
-            else:
-                summary = await self._emote_linker.mirror_emote(
-                    local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
-                )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror emote rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+        if service is None or service.lower() == "all":
+            coro = self._emote_linker.mirror_emote_all(local_connector=self.connector_id, local_emote=local_id)
+        else:
+            coro = self._emote_linker.mirror_emote(
+                local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
+            )
+        await self._reply_linker_result(
+            interaction, coro, log_context="/mirror emote", deferred=True, empty_fallback="Nothing to mirror."
+        )
 
     async def _handle_mirror_emote_from(
         self, interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror emote from <service> <external_id>`: recreate-or-match
         `service`'s custom emoji locally, and link them."""
-        if self._emote_linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._emote_linker, "Linking isn't configured."):
             return
         logger.info(
             "[discord:%s] %s ran /mirror emote from service=%s external_id=%s",
@@ -480,15 +469,15 @@ class DiscordLinkingMixin:
             external_id,
         )
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            summary = await self._emote_linker.mirror_emote_from(
+        await self._reply_linker_result(
+            interaction,
+            self._emote_linker.mirror_emote_from(
                 local_connector=self.connector_id, source=service, source_emote=external_id, new_name=new_name
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror emote from rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+            ),
+            log_context="/mirror emote from",
+            deferred=True,
+            empty_fallback="Nothing to mirror.",
+        )
 
     async def _handle_link_user(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: discord.Member
@@ -498,8 +487,7 @@ class DiscordLinkingMixin:
         # end up linked to a mistyped/malformed id or a bare "@name" - see
         # LinkError-free "Unknown User"/`<@@name>` mangling that caused
         # further downstream once such a bad id was already on file.
-        if self._user_linker is None:
-            await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._user_linker, "User linking isn't configured."):
             return
         logger.info(
             "[discord:%s] %s ran /link user service=%s external_id=%s local_id=%s",
@@ -509,18 +497,16 @@ class DiscordLinkingMixin:
             external_id,
             local_id.id,
         )
-        try:
-            summary = await self._user_linker.link_user(
+        await self._reply_linker_result(
+            interaction,
+            self._user_linker.link_user(
                 local_connector=self.connector_id,
                 local_user_id=str(local_id.id),
                 source=service,
                 source_user_id=external_id,
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /link user rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+            ),
+            log_context="/link user",
+        )
 
     async def _handle_mirror_channel(
         self,
@@ -530,8 +516,7 @@ class DiscordLinkingMixin:
         new_name: str | None = None,
         category: str | None = None,
     ) -> None:
-        if self._linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
             return
         if category and (service is None or service.lower() == "all"):
             await interaction.response.send_message(
@@ -569,29 +554,26 @@ class DiscordLinkingMixin:
         # runs well past Discord's 3s interaction-response deadline - defer up
         # front and reply via followup so the token doesn't expire mid-run.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._linker.mirror_channel_all(
-                    local_connector=self.connector_id,
-                    local_channel_id=channel_id,
-                    local_channel_name=channel_name,
-                    local_channel_category=channel_category,
-                )
-            else:
-                summary = await self._linker.mirror_channel(
-                    local_connector=self.connector_id,
-                    local_channel_id=channel_id,
-                    local_channel_name=channel_name,
-                    destination=service,
-                    local_channel_category=channel_category,
-                    destination_category=category,
-                    new_name=new_name,
-                )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror channel rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+        if service is None or service.lower() == "all":
+            coro = self._linker.mirror_channel_all(
+                local_connector=self.connector_id,
+                local_channel_id=channel_id,
+                local_channel_name=channel_name,
+                local_channel_category=channel_category,
+            )
+        else:
+            coro = self._linker.mirror_channel(
+                local_connector=self.connector_id,
+                local_channel_id=channel_id,
+                local_channel_name=channel_name,
+                destination=service,
+                local_channel_category=channel_category,
+                destination_category=category,
+                new_name=new_name,
+            )
+        await self._reply_linker_result(
+            interaction, coro, log_context="/mirror channel", deferred=True, empty_fallback="Nothing to mirror."
+        )
 
     async def _handle_mirror_channel_from(
         self,
@@ -606,8 +588,7 @@ class DiscordLinkingMixin:
         in the local counterpart of the source channel's linked Category - or
         in `category` (a local Category id/name), if given, which overrides
         that (issue #75)."""
-        if self._linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
             return
         external_id = _normalize_channel_id(external_id)
         logger.info(
@@ -618,25 +599,24 @@ class DiscordLinkingMixin:
             external_id,
         )
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            summary = await self._linker.mirror_channel_from(
+        await self._reply_linker_result(
+            interaction,
+            self._linker.mirror_channel_from(
                 local_connector=self.connector_id,
                 source=service,
                 source_id=external_id,
                 new_name=new_name,
                 local_category=category,
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /mirror channel from rejected: %s", self.connector_id, exc)
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send(summary or "Nothing to mirror.", ephemeral=True)
+            ),
+            log_context="/mirror channel from",
+            deferred=True,
+            empty_fallback="Nothing to mirror.",
+        )
 
     async def _handle_unlink_channel(
         self, interaction: discord.Interaction, service: str | None, local_id: str | None
     ) -> None:
-        if self._linker is None:
-            await interaction.response.send_message("Linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
             return
         channel_id = _normalize_channel_id(local_id) if local_id is not None else str(interaction.channel_id)
         logger.info(
@@ -646,21 +626,16 @@ class DiscordLinkingMixin:
             service,
             channel_id,
         )
-        try:
-            summary = await self._linker.unlink_channel(
-                local_connector=self.connector_id, local_channel_id=channel_id, destination=service
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /unlink channel rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await self._reply_linker_result(
+            interaction,
+            self._linker.unlink_channel(local_connector=self.connector_id, local_channel_id=channel_id, destination=service),
+            log_context="/unlink channel",
+        )
 
     async def _handle_unlink_user(
         self, interaction: discord.Interaction, service: str | None, local_id: discord.Member | None
     ) -> None:
-        if self._user_linker is None:
-            await interaction.response.send_message("User linking isn't configured.", ephemeral=True)
+        if not await self._linker_configured(interaction, self._user_linker, "User linking isn't configured."):
             return
         target = local_id or interaction.user
         logger.info(
@@ -670,12 +645,8 @@ class DiscordLinkingMixin:
             service,
             target.id,
         )
-        try:
-            summary = await self._user_linker.unlink_user(
-                local_connector=self.connector_id, local_user_id=str(target.id), destination=service
-            )
-        except LinkError as exc:
-            logger.info("[discord:%s] /unlink user rejected: %s", self.connector_id, exc)
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(summary, ephemeral=True)
+        await self._reply_linker_result(
+            interaction,
+            self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=str(target.id), destination=service),
+            log_context="/unlink user",
+        )

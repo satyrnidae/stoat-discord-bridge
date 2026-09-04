@@ -36,6 +36,8 @@ from dataclasses import dataclass
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from stoat_discord_bridge.storage.base_mapping import BaseMappingRepository
+
 
 @dataclass(frozen=True)
 class CategoryMapping:
@@ -45,38 +47,28 @@ class CategoryMapping:
     category_name: str
 
 
-class CategoryMappingRepository:
+class CategoryMappingRepository(BaseMappingRepository[CategoryMapping]):
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
-        self._collection = db["category_mappings"]
-
-    async def get_bridge_group(self, connector_id: str, category_id: str) -> str | None:
-        doc = await self._collection.find_one({"connector_id": connector_id, "category_id": category_id})
-        return doc["bridge_group"] if doc else None
-
-    async def get_mapped_categories(self, bridge_group: str) -> list[CategoryMapping]:
-        cursor = self._collection.find({"bridge_group": bridge_group})
-        return [_from_doc(doc) async for doc in cursor]
-
-    async def upsert(self, mapping: CategoryMapping) -> None:
-        await self._collection.update_one(
-            {"connector_id": mapping.connector_id, "category_id": mapping.category_id},
-            {"$set": {"bridge_group": mapping.bridge_group, "category_name": mapping.category_name}},
-            upsert=True,
+        super().__init__(
+            db,
+            "category_mappings",
+            _from_doc,
+            connector_field="connector_id",
+            id_field="category_id",
+            group_field="bridge_group",
+            name_field="category_name",
         )
 
-    async def delete_mapping(self, connector_id: str, category_id: str) -> bool:
-        """Removes just this one Category from its bridge group - the rest
-        of the group (if any) stays linked to each other. For
-        `/unlink-category <destination>`, which kicks a single member rather
-        than dissolving the whole group."""
-        result = await self._collection.delete_one({"connector_id": connector_id, "category_id": category_id})
-        return result.deleted_count > 0
+    async def get_bridge_group(self, connector_id: str, category_id: str) -> str | None:
+        return await self.get_group(connector_id, category_id)
+
+    async def get_mapped_categories(self, bridge_group: str) -> list[CategoryMapping]:
+        return await self.get_mapped(bridge_group)
 
     async def delete_bridge_group(self, bridge_group: str) -> int:
         """Dissolves an entire bridge group - every member Category, not
         just one. For `/unlink-category`'s default ("all") behavior."""
-        result = await self._collection.delete_many({"bridge_group": bridge_group})
-        return result.deleted_count
+        return await self.delete_group(bridge_group)
 
 
 def _from_doc(doc: dict) -> CategoryMapping:

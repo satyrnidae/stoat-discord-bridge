@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable
 
 from stoat_discord_bridge.admin_commands import LinkError, pop_kv_option
 
@@ -44,6 +45,29 @@ class IrcAdminCommandsMixin:
     service for `connector_id`, `_linker`, `_user_linker`, `_loop`,
     `_pending_whois`, `connection`, and `_schedule`."""
 
+    def _linker_configured(self, nick: str, linker: object | None, message: str) -> bool:
+        """True if `linker` is configured; otherwise notifies `nick` with
+        `message` and returns False, so a handler opens with `if not
+        self._linker_configured(nick, self._x_linker, "...isn't
+        configured."): return` instead of repeating the
+        None-check/notify/return three-liner (issue #106)."""
+        if linker is not None:
+            return True
+        self._notify(nick, message)
+        return False
+
+    async def _reply_linker_result(self, nick: str, coro: Awaitable[str], *, log_context: str) -> None:
+        """The `try: summary = await <linker call> / except LinkError: log +
+        notify(str(exc)) / else: notify(summary)` shape every mutating
+        branch of `_handle_dm_command` ends with."""
+        try:
+            summary = await coro
+        except LinkError as exc:
+            logger.info("[irc:%s] %s rejected: %s", self.connector_id, log_context, exc)
+            self._notify(nick, str(exc))
+            return
+        self._notify(nick, summary)
+
     async def _handle_linked_channels_command(self, nick: str, args: list[str]) -> None:
         # Unlike Discord/Stoat, an IRC DM has no "current channel" context to
         # default to (same reasoning as MIRROR CHANNEL's local_id),
@@ -51,8 +75,7 @@ class IrcAdminCommandsMixin:
         if len(args) != 1:
             self._notify(nick, "Usage: LINKED CHANNELS <local_id>")
             return
-        if self._linker is None:
-            self._notify(nick, "Linking isn't configured.")
+        if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
             return
         summary = await self._linker.list_linked_channels(local_connector=self.connector_id, local_channel_id=args[0])
         self._notify(nick, summary)
@@ -61,8 +84,7 @@ class IrcAdminCommandsMixin:
         """`LINKED USERS [local_id]`: with no argument, lists every
         cross-connector user link (for debugging); given an IRC nick, shows
         just that identity's link."""
-        if self._user_linker is None:
-            self._notify(nick, "Linking isn't configured.")
+        if not self._linker_configured(nick, self._user_linker, "Linking isn't configured."):
             return
         if args:
             summary = await self._user_linker.list_linked_users(local_connector=self.connector_id, local_user_id=args[0])
@@ -92,43 +114,37 @@ class IrcAdminCommandsMixin:
                 self._notify(nick, "Usage: LINK CHANNEL <local_id> <service> <external_id>")
                 return
             local_id, service, external_id = args
-            if self._linker is None:
-                self._notify(nick, "Linking isn't configured.")
+            if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
                 return
-            try:
-                summary = await self._linker.link_channel(
+            await self._reply_linker_result(
+                nick,
+                self._linker.link_channel(
                     local_connector=self.connector_id,
                     local_channel_id=local_id,
                     local_channel_name=local_id,
                     source=service,
                     source_id=external_id,
                     destination_id=local_id,
-                )
-            except LinkError as exc:
-                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
-                self._notify(nick, str(exc))
-                return
-            self._notify(nick, summary)
+                ),
+                log_context=command,
+            )
         elif command == "LINK_USER":
             if len(args) != 3:
                 self._notify(nick, "Usage: LINK USER <service> <external_id|name> <local_id|name>")
                 return
             service, external_id, local_id = args
-            if self._user_linker is None:
-                self._notify(nick, "User linking isn't configured.")
+            if not self._linker_configured(nick, self._user_linker, "User linking isn't configured."):
                 return
-            try:
-                summary = await self._user_linker.link_user(
+            await self._reply_linker_result(
+                nick,
+                self._user_linker.link_user(
                     local_connector=self.connector_id,
                     local_user_id=local_id,
                     source=service,
                     source_user_id=external_id,
-                )
-            except LinkError as exc:
-                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
-                self._notify(nick, str(exc))
-                return
-            self._notify(nick, summary)
+                ),
+                log_context=command,
+            )
         elif command == "MIRROR CHANNEL":
             # `MIRROR CHANNEL TO [service|all] <local_id>` pushes a local
             # channel onto another connector; `MIRROR CHANNEL FROM <service>
@@ -155,8 +171,7 @@ class IrcAdminCommandsMixin:
             if len(rest) >= 2 and rest[-2].upper() == "AS":
                 new_name = rest[-1]
                 rest = rest[:-2]
-            if self._linker is None:
-                self._notify(nick, "Linking isn't configured.")
+            if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
                 return
             single_to = direction == "TO" and len(rest) == 2 and rest[0].lower() != "all"
             if category and not single_to:
@@ -165,40 +180,35 @@ class IrcAdminCommandsMixin:
                     "CATEGORY:<id|name> only applies to MIRROR CHANNEL TO <service> <local_id> (a single service).",
                 )
                 return
-            try:
-                if direction == "TO" and len(rest) == 1:
-                    summary = await self._linker.mirror_channel_all(
-                        local_connector=self.connector_id, local_channel_id=rest[0], local_channel_name=rest[0]
-                    )
-                elif direction == "TO" and len(rest) == 2 and rest[0].lower() == "all":
-                    summary = await self._linker.mirror_channel_all(
-                        local_connector=self.connector_id, local_channel_id=rest[1], local_channel_name=rest[1]
-                    )
-                elif direction == "TO" and len(rest) == 2:
-                    summary = await self._linker.mirror_channel(
-                        local_connector=self.connector_id,
-                        local_channel_id=rest[1],
-                        local_channel_name=rest[1],
-                        destination=rest[0],
-                        destination_category=category,
-                        new_name=new_name,
-                    )
-                elif direction == "FROM" and len(rest) == 2:
-                    summary = await self._linker.mirror_channel_from(
-                        local_connector=self.connector_id, source=rest[0], source_id=rest[1], new_name=new_name
-                    )
-                else:
-                    self._notify(
-                        nick,
-                        "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
-                        "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
-                    )
-                    return
-            except LinkError as exc:
-                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
-                self._notify(nick, str(exc))
+            if direction == "TO" and len(rest) == 1:
+                coro = self._linker.mirror_channel_all(
+                    local_connector=self.connector_id, local_channel_id=rest[0], local_channel_name=rest[0]
+                )
+            elif direction == "TO" and len(rest) == 2 and rest[0].lower() == "all":
+                coro = self._linker.mirror_channel_all(
+                    local_connector=self.connector_id, local_channel_id=rest[1], local_channel_name=rest[1]
+                )
+            elif direction == "TO" and len(rest) == 2:
+                coro = self._linker.mirror_channel(
+                    local_connector=self.connector_id,
+                    local_channel_id=rest[1],
+                    local_channel_name=rest[1],
+                    destination=rest[0],
+                    destination_category=category,
+                    new_name=new_name,
+                )
+            elif direction == "FROM" and len(rest) == 2:
+                coro = self._linker.mirror_channel_from(
+                    local_connector=self.connector_id, source=rest[0], source_id=rest[1], new_name=new_name
+                )
+            else:
+                self._notify(
+                    nick,
+                    "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
+                    "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
+                )
                 return
-            self._notify(nick, summary)
+            await self._reply_linker_result(nick, coro, log_context=command)
         elif command == "UNLINK CHANNEL":
             # Same "no current channel" reasoning as MIRROR CHANNEL -
             # local_id is always required, hoisted to the first arg.
@@ -212,18 +222,15 @@ class IrcAdminCommandsMixin:
             else:
                 self._notify(nick, "Usage: UNLINK CHANNEL <local_id> [service|all]")
                 return
-            if self._linker is None:
-                self._notify(nick, "Linking isn't configured.")
+            if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
                 return
-            try:
-                summary = await self._linker.unlink_channel(
+            await self._reply_linker_result(
+                nick,
+                self._linker.unlink_channel(
                     local_connector=self.connector_id, local_channel_id=local_id, destination=service
-                )
-            except LinkError as exc:
-                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
-                self._notify(nick, str(exc))
-                return
-            self._notify(nick, summary)
+                ),
+                log_context=command,
+            )
         elif command == "UNLINK_USER":
             # Unlike UNLINK CHANNEL, both args are optional here: service
             # defaults to "all", and local_id defaults to the nick
@@ -234,18 +241,15 @@ class IrcAdminCommandsMixin:
                 return
             service = args[0] if args else None
             local_id = args[1] if len(args) > 1 else nick
-            if self._user_linker is None:
-                self._notify(nick, "User linking isn't configured.")
+            if not self._linker_configured(nick, self._user_linker, "User linking isn't configured."):
                 return
-            try:
-                summary = await self._user_linker.unlink_user(
+            await self._reply_linker_result(
+                nick,
+                self._user_linker.unlink_user(
                     local_connector=self.connector_id, local_user_id=local_id, destination=service
-                )
-            except LinkError as exc:
-                logger.info("[irc:%s] %s rejected: %s", self.connector_id, command, exc)
-                self._notify(nick, str(exc))
-                return
-            self._notify(nick, summary)
+                ),
+                log_context=command,
+            )
 
     async def _check_is_oper(self, nick: str) -> bool:
         # WHOIS is async on this library (reply numerics arrive later, on

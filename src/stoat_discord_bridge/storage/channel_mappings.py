@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from stoat_discord_bridge.storage.base_mapping import BaseMappingRepository
+
 
 @dataclass(frozen=True)
 class ChannelMapping:
@@ -28,42 +30,28 @@ class ChannelMapping:
     channel_name: str
 
 
-class ChannelMappingRepository:
+class ChannelMappingRepository(BaseMappingRepository[ChannelMapping]):
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
-        self._collection = db["channel_mappings"]
-
-    async def get_bridge_group(self, connector_id: str, channel_id: str) -> str | None:
-        doc = await self._collection.find_one({"platform": connector_id, "channel_id": channel_id})
-        return doc["bridge_group"] if doc else None
-
-    async def get_mapped_channels(self, bridge_group: str) -> list[ChannelMapping]:
-        cursor = self._collection.find({"bridge_group": bridge_group})
-        return [_from_doc(doc) async for doc in cursor]
-
-    async def get_all_for_connector(self, connector_id: str) -> list[ChannelMapping]:
-        cursor = self._collection.find({"platform": connector_id})
-        return [_from_doc(doc) async for doc in cursor]
-
-    async def upsert(self, mapping: ChannelMapping) -> None:
-        await self._collection.update_one(
-            {"platform": mapping.connector_id, "channel_id": mapping.channel_id},
-            {"$set": {"bridge_group": mapping.bridge_group, "channel_name": mapping.channel_name}},
-            upsert=True,
+        super().__init__(
+            db,
+            "channel_mappings",
+            _from_doc,
+            connector_field="platform",
+            id_field="channel_id",
+            group_field="bridge_group",
+            name_field="channel_name",
         )
 
-    async def delete_mapping(self, connector_id: str, channel_id: str) -> bool:
-        """Removes just this one channel from its bridge group - the rest of
-        the group (if any) stays linked to each other. For `/unlink channel
-        <destination>`, which kicks a single member rather than dissolving
-        the whole group."""
-        result = await self._collection.delete_one({"platform": connector_id, "channel_id": channel_id})
-        return result.deleted_count > 0
+    async def get_bridge_group(self, connector_id: str, channel_id: str) -> str | None:
+        return await self.get_group(connector_id, channel_id)
+
+    async def get_mapped_channels(self, bridge_group: str) -> list[ChannelMapping]:
+        return await self.get_mapped(bridge_group)
 
     async def delete_bridge_group(self, bridge_group: str) -> int:
         """Dissolves an entire bridge group - every member channel, not just
         one. For `/unlink channel`'s default ("all") behavior."""
-        result = await self._collection.delete_many({"bridge_group": bridge_group})
-        return result.deleted_count
+        return await self.delete_group(bridge_group)
 
 
 def _from_doc(doc: dict) -> ChannelMapping:

@@ -30,6 +30,8 @@ from dataclasses import dataclass
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from stoat_discord_bridge.storage.base_mapping import BaseMappingRepository
+
 
 @dataclass(frozen=True)
 class RoleMapping:
@@ -39,27 +41,24 @@ class RoleMapping:
     role_name: str
 
 
-class RoleMappingRepository:
+class RoleMappingRepository(BaseMappingRepository[RoleMapping]):
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
-        self._collection = db["role_mappings"]
+        super().__init__(
+            db,
+            "role_mappings",
+            _from_doc,
+            connector_field="connector_id",
+            id_field="role_id",
+            group_field="bridge_group",
+            name_field="role_name",
+            dedup_on_upsert=True,
+        )
 
     async def get_bridge_group(self, connector_id: str, role_id: str) -> str | None:
-        doc = await self._collection.find_one({"connector_id": connector_id, "role_id": role_id})
-        return doc["bridge_group"] if doc else None
+        return await self.get_group(connector_id, role_id)
 
     async def get_mapped_roles(self, bridge_group: str) -> list[RoleMapping]:
-        cursor = self._collection.find({"bridge_group": bridge_group})
-        return [_from_doc(doc) async for doc in cursor]
-
-    async def get_all_for_connector(self, connector_id: str) -> list[RoleMapping]:
-        cursor = self._collection.find({"connector_id": connector_id})
-        return [_from_doc(doc) async for doc in cursor]
-
-    async def get_all(self) -> list[RoleMapping]:
-        """Every linked role, across every connector and group - for the
-        `/linked roles` command's "list everything" mode."""
-        cursor = self._collection.find({})
-        return [_from_doc(doc) async for doc in cursor]
+        return await self.get_mapped(bridge_group)
 
     async def find_linked_role_id(
         self, origin_connector_id: str, origin_role_id: str, target_connector_id: str
@@ -70,46 +69,12 @@ class RoleMappingRepository:
         `target_connector_id`. Used by the auto-grant and permission-mirror
         flows (see bridge.py's RoleSyncCoordinator). Mirrors
         UserMappingRepository.find_linked_user_id."""
-        bridge_group = await self.get_bridge_group(origin_connector_id, origin_role_id)
-        if bridge_group is None:
-            return None
-        for mapping in await self.get_mapped_roles(bridge_group):
-            if mapping.connector_id == target_connector_id:
-                return mapping.role_id
-        return None
-
-    async def upsert(self, mapping: RoleMapping) -> None:
-        # A bridge group should have at most one role per connector. Without
-        # this, relinking a connector's id within an existing group (e.g.
-        # correcting one that was mistyped when first linked) would leave the
-        # old, wrong id sitting in the group alongside the new one - same
-        # guard as user_mappings.py.
-        await self._collection.delete_many(
-            {
-                "bridge_group": mapping.bridge_group,
-                "connector_id": mapping.connector_id,
-                "role_id": {"$ne": mapping.role_id},
-            }
-        )
-        await self._collection.update_one(
-            {"connector_id": mapping.connector_id, "role_id": mapping.role_id},
-            {"$set": {"bridge_group": mapping.bridge_group, "role_name": mapping.role_name}},
-            upsert=True,
-        )
-
-    async def delete_mapping(self, connector_id: str, role_id: str) -> bool:
-        """Removes just this one role from its bridge group - the rest of the
-        group (if any) stays linked to each other. For `/unlink role
-        <destination>`, which kicks a single member rather than dissolving
-        the whole group."""
-        result = await self._collection.delete_one({"connector_id": connector_id, "role_id": role_id})
-        return result.deleted_count > 0
+        return await self.find_linked_id(origin_connector_id, origin_role_id, target_connector_id)
 
     async def delete_bridge_group(self, bridge_group: str) -> int:
         """Dissolves an entire bridge group - every member role, not just
         one. For `/unlink role`'s default ("all") behavior."""
-        result = await self._collection.delete_many({"bridge_group": bridge_group})
-        return result.deleted_count
+        return await self.delete_group(bridge_group)
 
 
 def _from_doc(doc: dict) -> RoleMapping:

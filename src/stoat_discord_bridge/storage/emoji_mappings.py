@@ -68,13 +68,32 @@ class EmojiMappingRepository:
         index from ever reserving this emoji again."""
         await self._collection.delete_one({"_id": ObjectId(group_id)})
 
+    async def _find_doc(self, connector_id: str, emoji_id: str) -> dict | None:
+        """The raw document (if any) whose `refs` array contains a
+        (connector_id, emoji_id) ref - the `$elemMatch` lookup shared by
+        every method below that starts from a single ref rather than a group
+        id (issue #106)."""
+        return await self._collection.find_one(
+            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
+        )
+
+    async def _find_doc_and_remaining(self, connector_id: str, emoji_id: str) -> tuple[dict, list[dict]] | None:
+        """`_find_doc`'s doc, plus its `refs` array with the (connector_id,
+        emoji_id) ref removed - the shared lookup behind `delete_ref` and
+        `forget`, which differ only in what to do with an empty remainder."""
+        doc = await self._find_doc(connector_id, emoji_id)
+        if doc is None:
+            return None
+        remaining = [
+            ref for ref in doc["refs"] if not (ref["platform"] == connector_id and ref["emoji_id"] == emoji_id)
+        ]
+        return doc, remaining
+
     async def get_group_id(self, connector_id: str, emoji_id: str) -> str | None:
         """Which mapping group (if any) already contains this (connector_id,
         emoji_id) ref - used by EmoteLinker to detect/merge with an existing
         group when manually linking two already-existing emoji."""
-        doc = await self._collection.find_one(
-            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
-        )
+        doc = await self._find_doc(connector_id, emoji_id)
         return str(doc["_id"]) if doc else None
 
     async def get_refs(self, group_id: str) -> list[EmojiRef]:
@@ -100,14 +119,10 @@ class EmojiMappingRepository:
         no group cleanup - `EmoteLinker.unlink_emote` decides when a group is
         no longer a bridge (unlike `forget`, which is delete-sync bookkeeping
         and keeps the group alive until every copy is gone)."""
-        doc = await self._collection.find_one(
-            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
-        )
-        if doc is None:
+        found = await self._find_doc_and_remaining(connector_id, emoji_id)
+        if found is None:
             return
-        remaining = [
-            ref for ref in doc["refs"] if not (ref["platform"] == connector_id and ref["emoji_id"] == emoji_id)
-        ]
+        doc, remaining = found
         await self._collection.update_one({"_id": doc["_id"]}, {"$set": {"refs": remaining}})
 
     async def delete_group(self, group_id: str) -> int:
@@ -128,9 +143,7 @@ class EmojiMappingRepository:
     ) -> EmojiRef | None:
         """Like `find_equivalent` but returns the whole target ref (id + name)
         - message-content emoji rewriting needs the name too."""
-        doc = await self._collection.find_one(
-            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
-        )
+        doc = await self._find_doc(connector_id, emoji_id)
         if doc is None:
             return None
         for ref in doc["refs"]:
@@ -142,9 +155,7 @@ class EmojiMappingRepository:
         """The stored name of a single (connector_id, emoji_id) ref, from
         whatever group holds it - IRC emote-stripping needs the name even
         though IRC never has its own linked copy."""
-        doc = await self._collection.find_one(
-            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
-        )
+        doc = await self._find_doc(connector_id, emoji_id)
         if doc is None:
             return None
         for ref in doc["refs"]:
@@ -157,14 +168,10 @@ class EmojiMappingRepository:
         called when that connector's copy is deleted. The group itself is only
         deleted once every connector's copy is gone; a ref still remaining
         elsewhere means a reaction using it there should keep resolving."""
-        doc = await self._collection.find_one(
-            {"refs": {"$elemMatch": {"platform": connector_id, "emoji_id": emoji_id}}}
-        )
-        if doc is None:
+        found = await self._find_doc_and_remaining(connector_id, emoji_id)
+        if found is None:
             return
-        remaining = [
-            ref for ref in doc["refs"] if not (ref["platform"] == connector_id and ref["emoji_id"] == emoji_id)
-        ]
+        doc, remaining = found
         if remaining:
             await self._collection.update_one({"_id": doc["_id"]}, {"$set": {"refs": remaining}})
         else:
