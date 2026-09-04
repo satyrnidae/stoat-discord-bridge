@@ -528,33 +528,186 @@ class ConnectorInfo:
         return self.resolve_emoji_name is not None
 
 
-# The Category id<->name walk shared by ChannelLinker._resolve_destination_category_name
-# and CategoryLinker._resolve_to_id / _resolve_name (issue #78). Both take an already
-# looked-up `ConnectorInfo` (or None) plus the connector id for logging.
-async def _resolve_category_id(info: ConnectorInfo | None, token: str, *, connector: str) -> str:
-    """Resolve a Category name `token` to its id via `resolve_category_id_by_name`,
-    falling back to `token` unchanged (already an id, no hook, or unresolvable)."""
-    if info is None or info.resolve_category_id_by_name is None:
+# The id<->name walk shared by every `<Kind>Linker._resolve_to_id` /
+# `_resolve_name` (issue #106 - CategoryLinker's own
+# _resolve_category_id/_resolve_category_title already did this for
+# Categories alone; this is the generalized form every linker delegates to).
+async def _resolve_entity_id(
+    token: str,
+    id_by_name_hook: Callable[[str], Awaitable[str | None]] | None,
+    *,
+    connector: str,
+    kind: str,
+) -> str:
+    """Resolve a bare `kind` name `token` to its native id via
+    `id_by_name_hook`, falling back to `token` unchanged - already an id, no
+    such hook on this connector (e.g. IRC, whose ids already ARE the
+    human-typed name), or the hook raised/came up empty."""
+    if id_by_name_hook is None:
         return token
     try:
-        resolved = await info.resolve_category_id_by_name(token)
+        resolved = await id_by_name_hook(token)
     except Exception:
-        logger.debug("couldn't resolve category name %r on %s", token, connector, exc_info=True)
+        logger.debug("couldn't resolve %s name %r on %s", kind, token, connector, exc_info=True)
         return token
     return resolved or token
 
 
-async def _resolve_category_title(info: ConnectorInfo | None, category_id: str, *, connector: str) -> str | None:
-    """Resolve a Category id to its canonical title via `resolve_category_name`, or
-    None (no hook, unresolvable, or the hook raised)."""
-    if info is None or info.resolve_category_name is None:
+async def _resolve_entity_title(
+    entity_id: str,
+    name_hook: Callable[[str], Awaitable[str | None]] | None,
+    *,
+    connector: str,
+    kind: str,
+) -> str | None:
+    """Resolve a native `kind` id to its display name/title via `name_hook`,
+    or None - no such hook, it raised, or it came up empty. Callers fall back
+    to the id itself when this returns None."""
+    if name_hook is None:
         return None
     try:
-        name = await info.resolve_category_name(category_id)
+        name = await name_hook(entity_id)
     except Exception:
-        logger.debug("couldn't resolve category id %r on %s", category_id, connector, exc_info=True)
+        logger.debug("couldn't resolve %s id %r on %s", kind, entity_id, connector, exc_info=True)
         return None
     return name or None
+
+
+def _require_known_connector(connectors: "dict[str, ConnectorInfo]", connector_id: str) -> None:
+    """The `if <connector> not in self._connectors: raise LinkError(...)`
+    guard every `link_*`/`mirror_*`/`mirror_*_from` entry point opens with."""
+    if connector_id not in connectors:
+        raise LinkError(f"'{connector_id}' isn't a known connector.")
+
+
+def _reject_self_link(*, source: str, source_id: str, local_connector: str, local_id: str, message: str) -> None:
+    """The `if source == local_connector and source_id == local_id: raise
+    LinkError(...)` guard every linker's `link_<kind>` opens its
+    conflict-checking with. Split out from `_group_conflict_check` (rather
+    than folded into one combined step, as `_link_conflict_check` below
+    does for the common case) so `CategoryLinker.link_category` can still
+    run its thread-category guard in between the two, matching its original
+    ordering."""
+    if source == local_connector and source_id == local_id:
+        raise LinkError(message)
+
+
+async def _group_conflict_check(
+    get_group: Callable[[str, str], Awaitable[str | None]],
+    *,
+    source: str,
+    source_id: str,
+    local_connector: str,
+    local_id: str,
+    conflict_message: str,
+) -> tuple[str | None, str | None]:
+    """Look up each side's existing group via `get_group` and raise LinkError
+    (`conflict_message`) if both belong to two *different* ones already (no
+    auto-merge - the operator unlinks one side first). Returns `(source_group,
+    local_group)` rather than a single merged id, since EmoteLinker's
+    reservation-based persistence branches on which specific side is already
+    grouped - most callers just combine them themselves
+    (`source_group or local_group or uuid.uuid4().hex`)."""
+    source_group = await get_group(source, source_id)
+    local_group = await get_group(local_connector, local_id)
+    if source_group and local_group and source_group != local_group:
+        raise LinkError(conflict_message)
+    return source_group, local_group
+
+
+async def _link_conflict_check(
+    get_group: Callable[[str, str], Awaitable[str | None]],
+    *,
+    source: str,
+    source_id: str,
+    local_connector: str,
+    local_id: str,
+    self_link_message: str,
+    conflict_message: str,
+) -> tuple[str | None, str | None]:
+    """The shared tail of every linker's `link_<kind>` (`CategoryLinker`
+    excepted - see `_reject_self_link`'s docstring), once both sides have
+    been resolved to native ids: refuse linking an entity to itself, then
+    apply `_group_conflict_check`."""
+    _reject_self_link(source=source, source_id=source_id, local_connector=local_connector, local_id=local_id, message=self_link_message)
+    return await _group_conflict_check(
+        get_group,
+        source=source,
+        source_id=source_id,
+        local_connector=local_connector,
+        local_id=local_id,
+        conflict_message=conflict_message,
+    )
+
+
+async def format_linked_listing(
+    mappings: "Iterable[object]",
+    connectors: "dict[str, ConnectorInfo]",
+    id_attr: str,
+    name_attr: str | None = None,
+    *,
+    resolve_name: Callable[[str, str], Awaitable[str]] | None = None,
+    marker_for: tuple[str, str] | None = None,
+    marker_text: str = "",
+) -> list[str]:
+    """The line-per-member formatting shared by every `list_linked_*`
+    method: one `"{label}: {name} ({id})"` line per mapping, sorted by
+    `(connector_id, <id_attr>)`.
+
+    `name_attr` reads the display name straight off the stored mapping
+    (ChannelLinker/CategoryLinker, which stash the name at link time);
+    `resolve_name(connector_id, entity_id)` instead resolves it live off the
+    connector (EmoteLinker/UserLinker/RoleLinker, whose resolve hook can
+    reflect a rename since linking) - in which case the id is dropped from a
+    line whenever it's identical to the resolved name (e.g. IRC, whose
+    user_id already IS the display name).
+
+    `marker_for`, a `(connector_id, id)` pair, appends `marker_text` to that
+    one line - the "(this channel)"/"(this Category)" flag `/linked
+    channels`/`/linked categories` put on the invoking entity. Unset for the
+    live-resolved linkers, which have no such "this one" context."""
+    lines = []
+    for mapping in sorted(mappings, key=lambda m: (m.connector_id, getattr(m, id_attr))):  # type: ignore[attr-defined]
+        info = connectors.get(mapping.connector_id)
+        label = info.label if info else mapping.connector_id
+        entity_id = getattr(mapping, id_attr)
+        name = await resolve_name(mapping.connector_id, entity_id) if resolve_name else getattr(mapping, name_attr)
+        if marker_for is not None:
+            marker = marker_text if (mapping.connector_id, entity_id) == marker_for else ""
+            lines.append(f"{label}: {name} ({entity_id}){marker}")
+        else:
+            lines.append(f"{label}: {name}" if name == entity_id else f"{label}: {name} ({entity_id})")
+    return lines
+
+
+async def _kick_group_member(
+    mapped: "Iterable[object]",
+    destination: str,
+    *,
+    id_attr: str,
+    not_a_member_message: str,
+    delete_mapping: Callable[[str, str], Awaitable[None]],
+    dissolve_survivors: Callable[[list], Awaitable[None]] | None = None,
+) -> "tuple[object, list]":
+    """The shared `/unlink <x>` "kick one member out" arithmetic every
+    linker's `unlink_<kind>` runs once it's decided `destination` names a
+    single group member rather than the whole group: find its mapping in
+    `mapped` (LinkError, `not_a_member_message`, if it isn't one), delete
+    just that mapping, then - when `dissolve_survivors` is given - drop the
+    rest of the group too if that would leave at most one member behind ("a
+    group of one isn't a bridge"). Only ChannelLinker/EmoteLinker/RoleLinker
+    dissolve on a lone survivor; CategoryLinker/UserLinker don't (pass
+    `dissolve_survivors=None`) - issue #106. Returns `(the kicked mapping,
+    the survivors)` so a caller that needs them for something else
+    (ChannelLinker's on_channel_unlinked announcement) doesn't recompute."""
+    target = next((m for m in mapped if m.connector_id == destination), None)  # type: ignore[attr-defined]
+    if target is None:
+        raise LinkError(not_a_member_message)
+    await delete_mapping(destination, getattr(target, id_attr))
+    survivors = [m for m in mapped if m.connector_id != destination]  # type: ignore[attr-defined]
+    if dissolve_survivors is not None and len(survivors) <= 1:
+        await dissolve_survivors(survivors)
+    return target, survivors
 
 
 class ChannelLinker:
@@ -601,8 +754,7 @@ class ChannelLinker:
         two channels are the same channel, or both are already linked to two
         *different* existing bridge groups (no auto-merge - the operator has
         to unlink one side first)."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
 
         source_id = await self._resolve_to_id(source, source_id)
 
@@ -613,15 +765,17 @@ class ChannelLinker:
             destination_channel_id = await self._resolve_to_id(local_connector, destination_id)
             destination_name = await self._resolve_name(local_connector, destination_channel_id)
 
-        if source == local_connector and source_id == destination_channel_id:
-            raise LinkError("can't link a channel to itself.")
-
-        source_group = await self._channel_mappings.get_bridge_group(source, source_id)
-        destination_group = await self._channel_mappings.get_bridge_group(local_connector, destination_channel_id)
-        if source_group and destination_group and source_group != destination_group:
-            raise LinkError(
+        source_group, destination_group = await _link_conflict_check(
+            self._channel_mappings.get_bridge_group,
+            source=source,
+            source_id=source_id,
+            local_connector=local_connector,
+            local_id=destination_channel_id,
+            self_link_message="can't link a channel to itself.",
+            conflict_message=(
                 "both channels are already linked, but to different bridge groups - unlink one before relinking."
-            )
+            ),
+        )
         bridge_group = source_group or destination_group or uuid.uuid4().hex
 
         source_name = self._normalize_name(source, await self._resolve_name(source, source_id))
@@ -714,8 +868,7 @@ class ChannelLinker:
         on `destination` instead of carrying `local_channel_name` over -
         destination-normalized by `ensure_channel` and matched the same way
         (issue #44)."""
-        if destination not in self._connectors:
-            raise LinkError(f"'{destination}' isn't a known connector.")
+        _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
 
@@ -886,8 +1039,7 @@ class ChannelLinker:
 
         `new_name`, if given, names the freshly-created local channel instead
         of carrying the source channel's name over (issue #44)."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror a channel from a connector to itself.")
 
@@ -917,8 +1069,12 @@ class ChannelLinker:
         info = self._connectors.get(connector)
         if info is None:
             return token
-        category_id = await _resolve_category_id(info, token, connector=connector)
-        name = await _resolve_category_title(info, category_id, connector=connector)
+        category_id = await _resolve_entity_id(
+            token, info.resolve_category_id_by_name, connector=connector, kind="category"
+        )
+        name = await _resolve_entity_title(
+            category_id, info.resolve_category_name, connector=connector, kind="category"
+        )
         if name:
             return name
         if _BARE_ID_RE.match(token):
@@ -972,16 +1128,14 @@ class ChannelLinker:
             return "This channel isn't linked to any others."
 
         mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
-        lines = []
-        for mapping in sorted(mapped, key=lambda m: (m.connector_id, m.channel_id)):
-            info = self._connectors.get(mapping.connector_id)
-            label = info.label if info else mapping.connector_id
-            marker = (
-                " (this channel)"
-                if mapping.connector_id == local_connector and mapping.channel_id == local_channel_id
-                else ""
-            )
-            lines.append(f"{label}: {mapping.channel_name} ({mapping.channel_id}){marker}")
+        lines = await format_linked_listing(
+            mapped,
+            self._connectors,
+            "channel_id",
+            "channel_name",
+            marker_for=(local_connector, local_channel_id),
+            marker_text=" (this channel)",
+        )
         return "Linked channels:\n" + "\n".join(lines)
 
     async def unlink_channel(self, *, local_connector: str, local_channel_id: str, destination: str | None) -> str:
@@ -1008,19 +1162,22 @@ class ChannelLinker:
             await self._announce_unlinked(mapped, removed=mapped)
             return f"Unlinked this channel's entire bridge group ({count} channel(s) removed)."
 
-        target = next((m for m in mapped if m.connector_id == destination), None)
-        if target is None:
-            raise LinkError(f"'{destination}' isn't linked in this channel's bridge group.")
-        await self._channel_mappings.delete_mapping(destination, target.channel_id)
-        survivors = [m for m in mapped if m.connector_id != destination]
-        if len(survivors) <= 1:
-            # only one member (or none) would be left - a group of one isn't a
-            # bridge, so dissolve it fully and announce every former member.
+        async def _dissolve(survivors: list[ChannelMapping]) -> None:
+            # only one member (or none) would be left - a group of one isn't
+            # a bridge, so dissolve it fully.
             for m in survivors:
                 await self._channel_mappings.delete_mapping(m.connector_id, m.channel_id)
-            await self._announce_unlinked(mapped, removed=mapped)
-        else:
-            await self._announce_unlinked(mapped, removed=[target])
+
+        target, survivors = await _kick_group_member(
+            mapped,
+            destination,
+            id_attr="channel_id",
+            not_a_member_message=f"'{destination}' isn't linked in this channel's bridge group.",
+            delete_mapping=self._channel_mappings.delete_mapping,
+            dissolve_survivors=_dissolve,
+        )
+        # announce every former member on a dissolve, just the kicked one otherwise
+        await self._announce_unlinked(mapped, removed=mapped if len(survivors) <= 1 else [target])
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} channel '{target.channel_name}' ({target.channel_id}) from this bridge group."
 
@@ -1064,17 +1221,10 @@ class ChannelLinker:
         """Resolve a bare channel name to its native id so the channel
         commands accept either. A token the hook doesn't recognize (or a
         connector with no hook - e.g. IRC, where a channel id is already
-        `#name`) is returned unchanged. Mirrors RoleLinker._resolve_to_id."""
+        `#name`) is returned unchanged."""
         info = self._connectors.get(connector)
-        if info is not None and info.resolve_channel_id_by_name is not None:
-            try:
-                channel_id = await info.resolve_channel_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve channel name %r on %s", token, connector, exc_info=True)
-                channel_id = None
-            if channel_id:
-                return channel_id
-        return token
+        hook = info.resolve_channel_id_by_name if info else None
+        return await _resolve_entity_id(token, hook, connector=connector, kind="channel")
 
     def _normalize_name(self, connector_id: str, name: str) -> str:
         """Fold `name` into the shape `connector_id` stores channel names under
@@ -1093,13 +1243,8 @@ class ChannelLinker:
 
     async def _resolve_name(self, connector_id: str, channel_id: str) -> str:
         info = self._connectors.get(connector_id)
-        if info is None or info.resolve_channel_name is None:
-            return channel_id
-        try:
-            name = await info.resolve_channel_name(channel_id)
-        except Exception:
-            logger.debug("couldn't resolve channel name for %s on %s", channel_id, connector_id, exc_info=True)
-            return channel_id
+        hook = info.resolve_channel_name if info else None
+        name = await _resolve_entity_title(channel_id, hook, connector=connector_id, kind="channel")
         return name or channel_id
 
     async def _channel_is_hidden(self, connector_id: str, channel_id: str) -> bool:
@@ -1180,8 +1325,7 @@ class CategoryLinker:
         it here would create a second, conflicting sync path onto the same
         channels. Once linked, any new channel that appears in either
         Category is auto-synced onto the other - see sync_new_channel."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
 
         source_id = await self._resolve_to_id(source, source_id)
         if destination_id is not None:
@@ -1196,8 +1340,13 @@ class CategoryLinker:
             destination_category_id = destination_id
             destination_name = await self._resolve_name(local_connector, destination_id)
 
-        if source == local_connector and source_id == destination_category_id:
-            raise LinkError("can't link a Category to itself.")
+        _reject_self_link(
+            source=source,
+            source_id=source_id,
+            local_connector=local_connector,
+            local_id=destination_category_id,
+            message="can't link a Category to itself.",
+        )
 
         if await self._thread_categories.is_thread_category(source, source_id) or await self._thread_categories.is_thread_category(
             local_connector, destination_category_id
@@ -1206,12 +1355,16 @@ class CategoryLinker:
                 "that Category was auto-created for Discord thread mirroring and can't be linked with /link category."
             )
 
-        source_group = await self._category_mappings.get_bridge_group(source, source_id)
-        destination_group = await self._category_mappings.get_bridge_group(local_connector, destination_category_id)
-        if source_group and destination_group and source_group != destination_group:
-            raise LinkError(
+        source_group, destination_group = await _group_conflict_check(
+            self._category_mappings.get_bridge_group,
+            source=source,
+            source_id=source_id,
+            local_connector=local_connector,
+            local_id=destination_category_id,
+            conflict_message=(
                 "both Categories are already linked, but to different bridge groups - unlink one before relinking."
-            )
+            ),
+        )
         bridge_group = source_group or destination_group or uuid.uuid4().hex
 
         source_name = await self._resolve_name(source, source_id)
@@ -1252,16 +1405,14 @@ class CategoryLinker:
             return "This Category isn't linked to any others."
 
         mapped = await self._category_mappings.get_mapped_categories(bridge_group)
-        lines = []
-        for mapping in sorted(mapped, key=lambda m: (m.connector_id, m.category_id)):
-            info = self._connectors.get(mapping.connector_id)
-            label = info.label if info else mapping.connector_id
-            marker = (
-                " (this Category)"
-                if mapping.connector_id == local_connector and mapping.category_id == local_category_id
-                else ""
-            )
-            lines.append(f"{label}: {mapping.category_name} ({mapping.category_id}){marker}")
+        lines = await format_linked_listing(
+            mapped,
+            self._connectors,
+            "category_id",
+            "category_name",
+            marker_for=(local_connector, local_category_id),
+            marker_text=" (this Category)",
+        )
         return "Linked Categories:\n" + "\n".join(lines)
 
     async def unlink_category(
@@ -1288,10 +1439,13 @@ class CategoryLinker:
             return f"Unlinked this Category's entire bridge group ({count} Category(s) removed)."
 
         mapped = await self._category_mappings.get_mapped_categories(bridge_group)
-        target = next((m for m in mapped if m.connector_id == destination), None)
-        if target is None:
-            raise LinkError(f"'{destination}' isn't linked in this Category's bridge group.")
-        await self._category_mappings.delete_mapping(destination, target.category_id)
+        target, _survivors = await _kick_group_member(
+            mapped,
+            destination,
+            id_attr="category_id",
+            not_a_member_message=f"'{destination}' isn't linked in this Category's bridge group.",
+            delete_mapping=self._category_mappings.delete_mapping,
+        )
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
 
@@ -1320,8 +1474,7 @@ class CategoryLinker:
         `new_name`, if given, is the title to create/find the counterpart
         Category under on `destination` instead of the source Category's title
         (issue #44); it doesn't rename any mirrored child channels."""
-        if destination not in self._connectors:
-            raise LinkError(f"'{destination}' isn't a known connector.")
+        _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a Category to its own connector.")
 
@@ -1452,8 +1605,7 @@ class CategoryLinker:
 
         `new_name`, if given, titles the local counterpart Category instead of
         carrying the source Category's title over (issue #44)."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror a Category from a connector to itself.")
         return await self.mirror_category(
@@ -1546,12 +1698,14 @@ class CategoryLinker:
         return await self._thread_categories.is_thread_category(connector_id, category_id)
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
-        return await _resolve_category_id(self._connectors.get(connector), token, connector=connector)
+        info = self._connectors.get(connector)
+        hook = info.resolve_category_id_by_name if info else None
+        return await _resolve_entity_id(token, hook, connector=connector, kind="category")
 
     async def _resolve_name(self, connector_id: str, category_id: str) -> str:
-        title = await _resolve_category_title(
-            self._connectors.get(connector_id), category_id, connector=connector_id
-        )
+        info = self._connectors.get(connector_id)
+        hook = info.resolve_category_name if info else None
+        title = await _resolve_entity_title(category_id, hook, connector=connector_id, kind="category")
         return title or category_id
 
 
@@ -1588,20 +1742,21 @@ class EmoteLinker:
         emoji arguments accept an id or a bare name. Raises LinkError if
         `source` is unknown, the two are the same emoji, or both already
         belong to two *different* existing mapping groups."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
 
         source_id = await self._resolve_to_id(source, source_id)
         local_id = await self._resolve_to_id(local_connector, local_id)
-        if source == local_connector and source_id == local_id:
-            raise LinkError("can't link an emote to itself.")
-
-        source_group = await self._emoji_mappings.get_group_id(source, source_id)
-        local_group = await self._emoji_mappings.get_group_id(local_connector, local_id)
-        if source_group and local_group and source_group != local_group:
-            raise LinkError(
+        source_group, local_group = await _link_conflict_check(
+            self._emoji_mappings.get_group_id,
+            source=source,
+            source_id=source_id,
+            local_connector=local_connector,
+            local_id=local_id,
+            self_link_message="can't link an emote to itself.",
+            conflict_message=(
                 "both emotes are already linked, but to different mapping groups - unlink one before relinking."
-            )
+            ),
+        )
 
         source_name = await self._resolve_name(source, source_id)
         local_name = await self._resolve_name(local_connector, local_id)
@@ -1640,8 +1795,7 @@ class EmoteLinker:
         `new_name`, if given, is the name the counterpart emoji is
         created/matched under on `destination` instead of the source emoji's
         name (issue #44)."""
-        if destination not in self._connectors:
-            raise LinkError(f"'{destination}' isn't a known connector.")
+        _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror an emote to its own connector.")
 
@@ -1734,8 +1888,7 @@ class EmoteLinker:
 
         `new_name`, if given, names the local counterpart emoji instead of
         carrying the source emoji's name over (issue #44)."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror an emote from a connector to itself.")
         return await self.mirror_emote(
@@ -1762,12 +1915,7 @@ class EmoteLinker:
 
         lines = []
         for refs in groups:
-            parts = []
-            for ref in sorted(refs, key=lambda r: (r.connector_id, r.emoji_id)):
-                info = self._connectors.get(ref.connector_id)
-                label = info.label if info else ref.connector_id
-                name = await self._resolve_name(ref.connector_id, ref.emoji_id)
-                parts.append(f"{label}: {name}" if name == ref.emoji_id else f"{label}: {name} ({ref.emoji_id})")
+            parts = await format_linked_listing(refs, self._connectors, "emoji_id", resolve_name=self._resolve_name)
             lines.append(" ↔ ".join(parts))
         return "Linked emotes:\n" + "\n".join(lines)
 
@@ -1786,38 +1934,31 @@ class EmoteLinker:
             return f"Unlinked this emote's entire mapping group ({count} emote(s) removed)."
 
         refs = await self._emoji_mappings.get_refs(group_id)
-        target = next((r for r in refs if r.connector_id == destination), None)
-        if target is None:
-            raise LinkError(f"'{destination}' isn't linked in this emote's mapping group.")
-        await self._emoji_mappings.delete_ref(destination, target.emoji_id)
-        survivors = [r for r in refs if r.connector_id != destination]
-        if len(survivors) <= 1:
+
+        async def _dissolve(survivors: list[EmojiRef]) -> None:
             await self._emoji_mappings.delete_group(group_id)
+
+        target, _survivors = await _kick_group_member(
+            refs,
+            destination,
+            id_attr="emoji_id",
+            not_a_member_message=f"'{destination}' isn't linked in this emote's mapping group.",
+            delete_mapping=self._emoji_mappings.delete_ref,
+            dissolve_survivors=_dissolve,
+        )
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} emote '{target.name}' ({target.emoji_id}) from this mapping group."
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         token = _strip_emote_token(token)
         info = self._connectors.get(connector)
-        if info is not None and info.resolve_emoji_id_by_name is not None:
-            try:
-                emoji_id = await info.resolve_emoji_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve emoji name %r on %s", token, connector, exc_info=True)
-                emoji_id = None
-            if emoji_id:
-                return emoji_id
-        return token
+        hook = info.resolve_emoji_id_by_name if info else None
+        return await _resolve_entity_id(token, hook, connector=connector, kind="emoji")
 
     async def _resolve_name(self, connector_id: str, emoji_id: str) -> str:
         info = self._connectors.get(connector_id)
-        if info is None or info.resolve_emoji_name is None:
-            return emoji_id
-        try:
-            name = await info.resolve_emoji_name(emoji_id)
-        except Exception:
-            logger.debug("couldn't resolve emoji name for %s on %s", emoji_id, connector_id, exc_info=True)
-            return emoji_id
+        hook = info.resolve_emoji_name if info else None
+        name = await _resolve_entity_title(emoji_id, hook, connector=connector_id, kind="emoji")
         return name or emoji_id
 
 
@@ -1844,19 +1985,20 @@ class UserLinker:
         """Link `source`'s `source_user_id` to `local_user_id` on `local_connector`.
         Raises LinkError if `source` is unknown, the two are already the same
         identity, or both already belong to two *different* existing link groups."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
         source_user_id = await self._resolve_to_id(source, _strip_discord_mention(source_user_id))
         local_user_id = await self._resolve_to_id(local_connector, _strip_discord_mention(local_user_id))
-        if source == local_connector and source_user_id == local_user_id:
-            raise LinkError("can't link a user to themselves.")
-
-        source_group = await self._user_mappings.get_link_group(source, source_user_id)
-        local_group = await self._user_mappings.get_link_group(local_connector, local_user_id)
-        if source_group and local_group and source_group != local_group:
-            raise LinkError(
+        source_group, local_group = await _link_conflict_check(
+            self._user_mappings.get_link_group,
+            source=source,
+            source_id=source_user_id,
+            local_connector=local_connector,
+            local_id=local_user_id,
+            self_link_message="can't link a user to themselves.",
+            conflict_message=(
                 "both users are already linked, but to different link groups - unlink one before relinking."
-            )
+            ),
+        )
         link_group = source_group or local_group or uuid.uuid4().hex
 
         await self._user_mappings.upsert(
@@ -1895,15 +2037,12 @@ class UserLinker:
 
         lines = []
         for group_mappings in groups:
-            parts = []
-            for mapping in sorted(group_mappings, key=lambda m: (m.connector_id, m.user_id)):
-                info = self._connectors.get(mapping.connector_id)
-                label = info.label if info else mapping.connector_id
-                name = await self._resolve_user_name(mapping.connector_id, mapping.user_id)
-                # Only show the raw id alongside the name when it adds
-                # information - for IRC (whose user_id already IS the nick)
-                # or a failed/unconfigured resolution, they're identical.
-                parts.append(f"{label}: {name}" if name == mapping.user_id else f"{label}: {name} ({mapping.user_id})")
+            # A raw id only shown alongside the name when it adds
+            # information - for IRC (whose user_id already IS the nick) or a
+            # failed/unconfigured resolution, they're identical.
+            parts = await format_linked_listing(
+                group_mappings, self._connectors, "user_id", resolve_name=self._resolve_user_name
+            )
             lines.append(" ↔ ".join(parts))
         return "Linked users:\n" + "\n".join(lines)
 
@@ -1924,10 +2063,13 @@ class UserLinker:
             return f"Unlinked this user's entire link group ({count} identity/identities removed)."
 
         mapped = await self._user_mappings.get_mapped_users(link_group)
-        target = next((m for m in mapped if m.connector_id == destination), None)
-        if target is None:
-            raise LinkError(f"'{destination}' isn't linked in this user's link group.")
-        await self._user_mappings.delete_mapping(destination, target.user_id)
+        target, _survivors = await _kick_group_member(
+            mapped,
+            destination,
+            id_attr="user_id",
+            not_a_member_message=f"'{destination}' isn't linked in this user's link group.",
+            delete_mapping=self._user_mappings.delete_mapping,
+        )
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} user '{target.user_id}' from this user's link group."
 
@@ -1936,25 +2078,13 @@ class UserLinker:
         resolve_user_id_by_name hook; an absent/raising/empty hook (or an
         already-an-id token) leaves the token untouched."""
         info = self._connectors.get(connector)
-        if info is not None and info.resolve_user_id_by_name is not None:
-            try:
-                user_id = await info.resolve_user_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve user name %r on %s", token, connector, exc_info=True)
-                user_id = None
-            if user_id:
-                return user_id
-        return token
+        hook = info.resolve_user_id_by_name if info else None
+        return await _resolve_entity_id(token, hook, connector=connector, kind="user")
 
     async def _resolve_user_name(self, connector_id: str, user_id: str) -> str:
         info = self._connectors.get(connector_id)
-        if info is None or info.resolve_user_name is None:
-            return user_id
-        try:
-            name = await info.resolve_user_name(user_id)
-        except Exception:
-            logger.debug("couldn't resolve user name for %s on %s", user_id, connector_id, exc_info=True)
-            return user_id
+        hook = info.resolve_user_name if info else None
+        name = await _resolve_entity_title(user_id, hook, connector=connector_id, kind="user")
         return name or user_id
 
 
@@ -2000,21 +2130,22 @@ class RoleLinker:
         or a bare name. Raises LinkError if `source` is unknown, the two are
         the same role, or both are already linked to two different bridge
         groups."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
 
         source_id = await self._resolve_to_id(source, source_role)
         local_id = await self._resolve_to_id(local_connector, destination_role or local_role)
 
-        if source == local_connector and source_id == local_id:
-            raise LinkError("can't link a role to itself.")
-
-        source_group = await self._role_mappings.get_bridge_group(source, source_id)
-        local_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
-        if source_group and local_group and source_group != local_group:
-            raise LinkError(
+        source_group, local_group = await _link_conflict_check(
+            self._role_mappings.get_bridge_group,
+            source=source,
+            source_id=source_id,
+            local_connector=local_connector,
+            local_id=local_id,
+            self_link_message="can't link a role to itself.",
+            conflict_message=(
                 "both roles are already linked, but to different bridge groups - unlink one before relinking."
-            )
+            ),
+        )
         bridge_group = source_group or local_group or uuid.uuid4().hex
 
         source_name = await self._resolve_name(source, source_id)
@@ -2049,8 +2180,7 @@ class RoleLinker:
 
         `new_name`, if given, is the name to create/find the counterpart role
         under on `destination` instead of the source role's name (issue #44)."""
-        if destination not in self._connectors:
-            raise LinkError(f"'{destination}' isn't a known connector.")
+        _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a role to its own connector.")
 
@@ -2112,8 +2242,7 @@ class RoleLinker:
 
         `new_name`, if given, names the local counterpart role instead of
         carrying the source role's name over (issue #44)."""
-        if source not in self._connectors:
-            raise LinkError(f"'{source}' isn't a known connector.")
+        _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror a role from a connector to itself.")
         return await self.mirror_role(
@@ -2142,12 +2271,9 @@ class RoleLinker:
 
         lines = []
         for group_mappings in groups:
-            parts = []
-            for mapping in sorted(group_mappings, key=lambda m: (m.connector_id, m.role_id)):
-                info = self._connectors.get(mapping.connector_id)
-                label = info.label if info else mapping.connector_id
-                name = await self._resolve_name(mapping.connector_id, mapping.role_id)
-                parts.append(f"{label}: {name}" if name == mapping.role_id else f"{label}: {name} ({mapping.role_id})")
+            parts = await format_linked_listing(
+                group_mappings, self._connectors, "role_id", resolve_name=self._resolve_name
+            )
             lines.append(" ↔ ".join(parts))
         return "Linked roles:\n" + "\n".join(lines)
 
@@ -2166,36 +2292,29 @@ class RoleLinker:
             return f"Unlinked this role's entire bridge group ({count} role(s) removed)."
 
         mapped = await self._role_mappings.get_mapped_roles(bridge_group)
-        target = next((m for m in mapped if m.connector_id == destination), None)
-        if target is None:
-            raise LinkError(f"'{destination}' isn't linked in this role's bridge group.")
-        await self._role_mappings.delete_mapping(destination, target.role_id)
-        survivors = [m for m in mapped if m.connector_id != destination]
-        if len(survivors) <= 1:
+
+        async def _dissolve(survivors: list[RoleMapping]) -> None:
             for m in survivors:
                 await self._role_mappings.delete_mapping(m.connector_id, m.role_id)
+
+        target, _survivors = await _kick_group_member(
+            mapped,
+            destination,
+            id_attr="role_id",
+            not_a_member_message=f"'{destination}' isn't linked in this role's bridge group.",
+            delete_mapping=self._role_mappings.delete_mapping,
+            dissolve_survivors=_dissolve,
+        )
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} role '{target.role_name}' ({target.role_id}) from this bridge group."
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         info = self._connectors.get(connector)
-        if info is not None and info.resolve_role_id_by_name is not None:
-            try:
-                role_id = await info.resolve_role_id_by_name(token)
-            except Exception:
-                logger.debug("couldn't resolve role name %r on %s", token, connector, exc_info=True)
-                role_id = None
-            if role_id:
-                return role_id
-        return token
+        hook = info.resolve_role_id_by_name if info else None
+        return await _resolve_entity_id(token, hook, connector=connector, kind="role")
 
     async def _resolve_name(self, connector_id: str, role_id: str) -> str:
         info = self._connectors.get(connector_id)
-        if info is None or info.resolve_role_name is None:
-            return role_id
-        try:
-            name = await info.resolve_role_name(role_id)
-        except Exception:
-            logger.debug("couldn't resolve role name for %s on %s", role_id, connector_id, exc_info=True)
-            return role_id
+        hook = info.resolve_role_name if info else None
+        name = await _resolve_entity_title(role_id, hook, connector=connector_id, kind="role")
         return name or role_id
