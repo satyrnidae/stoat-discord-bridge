@@ -4,7 +4,7 @@ counterpart of channel_mappings.py / category_mappings.py.
 Each mapped role is stored as its own document keyed by (connector_id,
 role_id), tagged with a `bridge_group` tying together every connector's role
 for one linked group. Rows are created only by the `/link role` / `/mirror
-role` admin commands (see admin_commands.py's RoleLinker) - nothing links
+role` admin commands (see admin_commands/role.py's RoleLinker) - nothing links
 automatically.
 
 Roles are Discord/Stoat only - IRC has no role concept, same as Categories.

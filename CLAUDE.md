@@ -46,7 +46,7 @@ python -m stoat_discord_bridge
 Tests: `pytest` (config lives in `pyproject.toml`'s `[tool.pytest.ini_options]`).
 Covers the pure-logic layer - `config.py`'s env/YAML resolution, the
 storage repositories (against an in-memory fake Mongo, `tests/conftest.py`),
-`admin_commands.py`'s linkers, `services/mentions.py`, and a few
+`admin_commands`'s linkers, `services/mentions.py`, and a few
 network-free pieces of the service modules (IRC's WHOIS-based oper check,
 Stoat's websocket-gateway discovery). Does not cover the actual
 Discord/Stoat/IRC network integration - no live-server or full-client-mock
@@ -355,7 +355,7 @@ literally named after the id (issue #64). Every `/mirror` command
 (`/mirror channel|category|role|emote`, all of `to`/`from`/`all`)
 first force-refreshes both the source and destination connector's cached
 server state via `ConnectorInfo.refresh` (`_refresh_connectors` in
-`admin_commands.py`), so an entity created since the gateway connected isn't
+`admin_commands/common.py`), so an entity created since the gateway connected isn't
 missed by the cache-only `resolve_*`/`ensure_*`/`list_*` reads and then
 duplicated (issue #81). Only Stoat wires `refresh`
 (`StoatLookupsMixin.refresh` re-fetches the server + members + emoji and
@@ -368,7 +368,7 @@ unset. Best-effort (a missing/raising hook is ignored) and throttled
 (`services/caching.RefreshThrottle`, 10s) so a `... all` / `/mirror
 category` fan-out that re-enters a per-destination mirror stays one network
 round-trip. Both directions of every
-`/mirror <noun>` take an optional trailing `new_name` (`admin_commands.py`'s
+`/mirror <noun>` take an optional trailing `new_name` (`admin_commands/common.py`'s
 `_clean_new_name`): the name the counterpart is created/matched under on the
 destination instead of carrying the source name over - routed through the
 destination's `ensure_*` hook so it's destination-normalized and still
@@ -430,8 +430,8 @@ free text (issue #80); to keep that menu complete for members,
 `DiscordSenderService._handle_ready` chunks the guild's full member roster
 into cache on connect (privileged members intent) instead of relying on
 whoever spoke while the bot was up. Shared logic
-lives in `admin_commands.py` (`ChannelLinker` / `CategoryLinker` /
-`EmoteLinker` / `UserLinker` / `RoleLinker`), called
+lives in the `admin_commands` package (`ChannelLinker` / `CategoryLinker` /
+`EmoteLinker` / `UserLinker` / `RoleLinker`, one per module), called
 identically from each connector's own `services/*.py` module. Nothing is
 bridged (or mention-linked) automatically — every pair is linked explicitly
 via those commands.
@@ -665,7 +665,10 @@ src/stoat_discord_bridge/
   config.py                    # loads config.yaml, layering env vars over it per-field (see its docstring)
   models.py                    # StandardMessage - the platform-neutral message format
   channel_structure.py         # clip_name helper for fitting names into Stoat's 32-char channel-name limit
-  admin_commands.py            # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
+  admin_commands/               # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
+    common.py                   # ConnectorInfo hook dataclass, LinkError/MirrorInProgressError, MirrorGuard, pop_kv_option, id/name-resolution + conflict-check helpers
+    channel.py / category.py / emote.py / user.py / role.py # one linker class per module - category.py depends on channel.py (mirrors a linked Category's child channels); the rest are independent
+    __init__.py                 # re-exports every public name, so `from stoat_discord_bridge.admin_commands import <name>` still works unchanged
   bridge.py                    # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
   status.py                    # HealthTracker: per-connector sync target health, read by the /status commands
   services/
