@@ -17,7 +17,7 @@ from stoat import routes as stoat_routes
 from stoat.core import ulid_new
 
 from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
-from stoat_discord_bridge.services.caching import AsyncTTLCache
+from stoat_discord_bridge.services.caching import AsyncTTLCache, RefreshThrottle
 from stoat_discord_bridge.services.stoat_service.formatting import _avatar_url, _display_name, _download
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,35 @@ _DESCRIPTION_LIMIT = 1024
 # repeatedly while someone types, and once one load has landed the rest of
 # that burst is served from here rather than re-fetching.
 _CATEGORY_CACHE_TTL = 15.0
+
+# How long after a successful `refresh()` the next one is skipped (issue
+# #81). A single `/mirror <noun> all` or `/mirror category` re-enters the
+# per-destination/per-child mirror many times in a row; the throttle
+# collapses that whole burst to one server re-fetch. Two separate `/mirror`
+# commands run within this window also share the one refresh - an accepted
+# trade (see RefreshThrottle).
+_REFRESH_MIN_INTERVAL = 10.0
+
+
+def _undefined_cache_context():
+    """stoat.py's cache writers (`store_server` / `store_channel` / ...) all
+    take a `BaseCacheContext`. Outside an event handler there's no natural
+    one, so hand them the library's "undefined" context - the same thing its
+    own `ReadyEvent` uses. Returns None if neither the module singleton nor
+    the class is importable (a stoat.py that's moved them), letting `refresh`
+    skip the cache write entirely."""
+    try:
+        from stoat.cache import _UNDEFINED
+
+        return _UNDEFINED
+    except Exception:
+        pass
+    try:
+        from stoat.cache import CacheContextType, UndefinedCacheContext
+
+        return UndefinedCacheContext(type=CacheContextType.undefined)
+    except Exception:
+        return None
 
 
 def _create_channel_metadata_kwargs(metadata: ChannelMetadata | None) -> dict:
@@ -820,6 +849,91 @@ class StoatLookupsMixin:
         cache = getattr(self, "_category_cache", None)
         if cache is not None:
             cache.invalidate(self.server_id)
+
+    def _refresh_throttle(self) -> "RefreshThrottle":
+        """The throttle behind `refresh()`, created lazily so the mixin works
+        when a test builds the service with `object.__new__` (skipping
+        `__init__`) - same pattern as `_category_list_cache`."""
+        throttle = getattr(self, "_refresh_throttle_obj", None)
+        if throttle is None:
+            throttle = RefreshThrottle(_REFRESH_MIN_INTERVAL)
+            self._refresh_throttle_obj = throttle
+        return throttle
+
+    async def refresh(self) -> None:
+        """`ConnectorInfo.refresh`: re-fetch this server's channels, roles,
+        custom emoji and members from the API and write them back into
+        stoat.py's cache, so a following `resolve_* / ensure_* / list_*` read
+        (all cache-backed) sees an entity created since the gateway connected
+        rather than missing it and letting `/mirror` spawn a duplicate (issue
+        #81).
+
+        stoat.py 1.2.1 populates the cached `Server` once at connect and only
+        patches it from a narrow set of gateway events - Categories not at all
+        (issue #66), and a create on another client is easy to miss - so the
+        cache genuinely drifts. `/mirror` isn't a hot path, so a full
+        re-fetch is fine; `RefreshThrottle` only guards the fan-out case where
+        one command re-enters this many times.
+
+        Best-effort throughout: `fetch_server` failing aborts the refresh
+        *without* marking the throttle (leaving the cache untouched, the next
+        attempt free to retry at once), and the member / emoji follow-up
+        fetches are each guarded independently. A client whose cache isn't
+        reachable (some tests) just drops the fresh data after the fetch. The
+        server/channel write mirrors stoat.py's own `ServerCreateEvent`
+        handling.
+        """
+        throttle = self._refresh_throttle()
+        if not throttle.due():
+            return
+        try:
+            server = await self._client.fetch_server(self.server_id, populate_channels=True)
+        except Exception:
+            logger.debug("[stoat:%s] refresh: fetch_server failed", self.connector_id, exc_info=True)
+            return
+        # The costly network hop landed - hold off the next full refresh now,
+        # even if a follow-up fetch below fails (the cache is already mostly
+        # current and re-fetching the whole server wouldn't fix a member/emoji
+        # sub-fetch that's erroring).
+        throttle.mark()
+
+        # Seed the short-TTL Category cache off the same fetch so a follow-up
+        # `_fresh_categories` read is served from here rather than re-fetching.
+        try:
+            categories = getattr(server, "categories", None)
+            if categories is not None:
+                self._category_list_cache().put(self.server_id, list(categories))
+            else:
+                self._invalidate_category_cache()
+        except Exception:
+            self._invalidate_category_cache()
+
+        cache = getattr(getattr(self._client, "state", None), "cache", None)
+        if cache is None:
+            return
+        ctx = _undefined_cache_context()
+        if ctx is None:
+            return
+        try:
+            prepare = getattr(server, "prepare_cached", None)
+            for channel in (prepare() if callable(prepare) else []) or []:
+                cache.store_channel(channel, ctx)
+            cache.store_server(server, ctx)
+        except Exception:
+            logger.debug("[stoat:%s] refresh: couldn't cache server/channels", self.connector_id, exc_info=True)
+            return
+
+        try:
+            members = await server.fetch_members()
+            cache.overwrite_server_members(self.server_id, {str(m.id): m for m in members}, ctx)
+        except Exception:
+            logger.debug("[stoat:%s] refresh: couldn't refresh members", self.connector_id, exc_info=True)
+
+        try:
+            for emoji in await server.fetch_emojis():
+                cache.store_emoji(emoji, ctx)
+        except Exception:
+            logger.debug("[stoat:%s] refresh: couldn't refresh emoji", self.connector_id, exc_info=True)
 
     async def resolve_category_id_by_name(self, token: str) -> str | None:
         """Resolve a bare Category title to its id (case-insensitive, first

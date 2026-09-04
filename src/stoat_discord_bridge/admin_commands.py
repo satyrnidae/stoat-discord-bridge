@@ -136,6 +136,31 @@ def _clean_new_name(raw: str | None) -> str | None:
     return stripped or None
 
 
+async def _refresh_connectors(connectors: "dict[str, ConnectorInfo]", *connector_ids: str) -> None:
+    """Best-effort force-refresh of each named connector's cached server
+    state before a `/mirror` command resolves names or runs a get-or-create
+    against it, so an entity created since the gateway connected isn't missed
+    and duplicated (issue #81, see `ConnectorInfo.refresh`).
+
+    A `None` connector id, a duplicate, a connector with no `refresh` hook, or
+    a hook that raises are all skipped silently. The hooks throttle repeat
+    calls themselves, so passing the same id again (a `/mirror ... all` /
+    `/mirror category` fan-out re-entering a per-destination mirror) is cheap.
+    """
+    seen: set[str] = set()
+    for connector_id in connector_ids:
+        if not connector_id or connector_id in seen:
+            continue
+        seen.add(connector_id)
+        info = connectors.get(connector_id)
+        if info is None or info.refresh is None:
+            continue
+        try:
+            await info.refresh()
+        except Exception:
+            logger.debug("refresh() failed on %s before a /mirror command", connector_id, exc_info=True)
+
+
 class LinkError(Exception):
     """User-facing error - callers should relay str(exc) back to the admin who ran the command."""
 
@@ -463,6 +488,25 @@ class ConnectorInfo:
     list_users: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     list_emotes: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
 
+    # Best-effort "re-fetch this connector's cached server state from the API"
+    # - channels, categories, roles, custom emoji, members. Every `/mirror`
+    # command (`/mirror channel|category|role|emote`, all three of
+    # `to`/`from`/`all`) calls it on both the source and destination connector
+    # before resolving any name/id or running a get-or-create, so an entity
+    # created since the gateway connected - which the cache-only
+    # `resolve_*` / `ensure_*` / `list_*` reads would otherwise miss, then
+    # duplicate - is seen (issue #81). Only Stoat wires it: stoat.py 1.2.1
+    # populates the cached Server once at connect and refreshes it from only a
+    # narrow set of gateway events (Categories never - see issue #66), so its
+    # cache genuinely drifts. Discord's cache is kept live by gateway events
+    # and IRC's channel/user state is already live, so both leave this unset.
+    # Best-effort: a missing hook, a raising one, or a partial refresh are all
+    # tolerated - the reads that follow still fall back to whatever the cache
+    # holds. The hook rate-limits itself, so the bulk `all` / `/mirror
+    # category` fan-out that re-enters a mirror per destination/child stays
+    # one network round-trip.
+    refresh: Callable[[], Awaitable[None]] | None = None
+
     # --- Capability flags, derived from which hooks are wired ---------------
     # Whether this connector kind has the concept a given command family
     # operates on. IRC has none of roles/Categories/custom emoji, so it wires
@@ -675,6 +719,8 @@ class ChannelLinker:
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
 
+        await _refresh_connectors(self._connectors, local_connector, destination)
+
         target_name = _clean_new_name(new_name) or local_channel_name
 
         local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
@@ -844,6 +890,8 @@ class ChannelLinker:
             raise LinkError(f"'{source}' isn't a known connector.")
         if source == local_connector:
             raise LinkError("can't mirror a channel from a connector to itself.")
+
+        await _refresh_connectors(self._connectors, source, local_connector)
 
         source_id = await self._resolve_to_id(source, source_id)
         source_name = await self._resolve_name(source, source_id)
@@ -1277,6 +1325,8 @@ class CategoryLinker:
         if destination == local_connector:
             raise LinkError("can't mirror a Category to its own connector.")
 
+        await _refresh_connectors(self._connectors, local_connector, destination)
+
         if local_category is not None:
             local_category_id = await self._resolve_to_id(local_connector, local_category)
         if local_category_id is None:
@@ -1594,6 +1644,8 @@ class EmoteLinker:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
             raise LinkError("can't mirror an emote to its own connector.")
+
+        await _refresh_connectors(self._connectors, local_connector, destination)
 
         source_id = await self._resolve_to_id(local_connector, local_emote)
         source_name = await self._resolve_name(local_connector, source_id)
@@ -2001,6 +2053,8 @@ class RoleLinker:
             raise LinkError(f"'{destination}' isn't a known connector.")
         if destination == local_connector:
             raise LinkError("can't mirror a role to its own connector.")
+
+        await _refresh_connectors(self._connectors, local_connector, destination)
 
         local_id = await self._resolve_to_id(local_connector, local_role)
         local_name = await self._resolve_name(local_connector, local_id)

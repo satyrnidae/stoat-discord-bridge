@@ -815,6 +815,11 @@ async def run(config: BridgeConfig) -> None:
             list_roles=sender.list_roles,
             list_users=sender.list_users,
             list_emotes=sender.list_emotes,
+            # stoat.py's cached Server drifts (it's refreshed from only a few
+            # gateway events, Categories from none - issue #66), so `/mirror`
+            # forces a full re-fetch first (issue #81). Discord/IRC keep their
+            # caches live and leave this unset.
+            refresh=sender.refresh,
         )
         senders.append(sender)
         closables.append(sender)
