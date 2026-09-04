@@ -11,6 +11,7 @@ all check. Composed into `StoatSenderService`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable
 
 from stoat_discord_bridge.admin_commands import LinkError
 from stoat_discord_bridge.services.stoat_service.formatting import _channel_category
@@ -21,11 +22,54 @@ logger = logging.getLogger(__name__)
 class StoatLinkingMixin:
     """Command-handler half of `StoatSenderService`."""
 
+    async def _linker_configured(self, ctx, linker: object | None, message: str) -> bool:
+        """True if `linker` is configured; otherwise replies `message` and
+        returns False, so a handler opens with `if not await
+        self._linker_configured(ctx, self._x_linker, "...isn't
+        configured."): return` instead of repeating the
+        None-check/reply/return three-liner (issue #106)."""
+        if linker is not None:
+            return True
+        await self._reply(ctx, message)
+        return False
+
+    async def _require_admin(self, ctx) -> bool:
+        """True if the invoking user has Stoat's Manage Server permission;
+        otherwise replies the standard rejection message and returns False,
+        so a mutating handler opens with `if not await
+        self._require_admin(ctx): return` instead of repeating the
+        `_is_admin`/reply/return three-liner (issue #106, item 7's "at
+        minimum" fix - the fully declarative gate Discord's `app_commands`
+        enjoys, closing the actual safety gap of a handler that forgets this
+        call entirely, is left for a follow-up: it needs verifying against a
+        live server how `stoat.ext.commands`' check decorators interact with
+        this module's `_compat.py` patches, which unit tests against the fake
+        client can't exercise)."""
+        if self._is_admin(ctx.message):
+            return True
+        await self._reply(ctx, "You need the Manage Server permission to do that.")
+        return False
+
+    async def _reply_linker_result(
+        self, ctx, coro: Awaitable[str], *, log_context: str, empty_fallback: str | None = None
+    ) -> None:
+        """The `try: summary = await <linker call> / except LinkError: log +
+        reply(str(exc)) / else: reply(summary)` shape every mutating handler
+        ends with. `empty_fallback` (the mirror handlers' "Nothing to
+        mirror.") is substituted for a falsy `summary`, matching each
+        handler's own `summary or "..."` it used to write inline."""
+        try:
+            summary = await coro
+        except LinkError as exc:
+            logger.info("[stoat:%s] %s rejected: %s", self.connector_id, log_context, exc)
+            await self._reply(ctx, str(exc))
+            return
+        await self._reply(ctx, summary if empty_fallback is None else (summary or empty_fallback))
+
     async def _linked_channels(self, ctx, local_id: str | None = None) -> None:
         """`/linked channels [local_id|name]` - read-only. Defaults to the
         invoking channel."""
-        if self._linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
             return
         target = local_id if local_id else str(ctx.channel.id)
         summary = await self._linker.list_linked_channels(
@@ -35,8 +79,7 @@ class StoatLinkingMixin:
 
     async def _linked_categories(self, ctx, local_id: str | None = None) -> None:
         """`/linked categories [<local_id|name>]` - read-only."""
-        if self._category_linker is None:
-            await self._reply(ctx, "Category linking isn't configured.")
+        if not await self._linker_configured(ctx, self._category_linker, "Category linking isn't configured."):
             return
         category = _channel_category(ctx.channel)
         if local_id is None and category is None:
@@ -54,8 +97,7 @@ class StoatLinkingMixin:
         cross-connector user link (for debugging); given a Stoat user id or
         display name, shows just that identity's link. No permission gate -
         read-only, same as /status and /linked channels."""
-        if self._user_linker is None:
-            await self._reply(ctx, "User linking isn't configured.")
+        if not await self._linker_configured(ctx, self._user_linker, "User linking isn't configured."):
             return
         if local_id:
             summary = await self._user_linker.list_linked_users(
@@ -68,11 +110,9 @@ class StoatLinkingMixin:
     async def _link_channel(self, ctx, service: str, external_id: str, local_id: str | None = None) -> None:
         """`/link channel <service> <external_id|name> [local_id|name]`: the
         local side defaults to the invoking channel."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
             return
         logger.info(
             "[stoat:%s] %s ran /link channel local_id=%s service=%s external_id=%s",
@@ -82,31 +122,27 @@ class StoatLinkingMixin:
             service,
             external_id,
         )
-        try:
-            summary = await self._linker.link_channel(
+        await self._reply_linker_result(
+            ctx,
+            self._linker.link_channel(
                 local_connector=self.connector_id,
                 local_channel_id=str(ctx.channel.id),
                 local_channel_name=getattr(ctx.channel, "name", str(ctx.channel.id)),
                 source=service,
                 source_id=external_id,
                 destination_id=local_id,
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /link channel rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/link channel",
+        )
 
     async def _link_category(self, ctx, service: str, external_id: str, local_id: str | None = None) -> None:
         """`/link category <service> <external_id|name> [<local_id|name>]`:
         links the invoking channel's Category (or `local_id`'s Category, if
         given) to `external_id`'s Category on `service`. Once linked, a new
         channel appearing in either Category auto-syncs onto the other."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._category_linker is None:
-            await self._reply(ctx, "Category linking isn't configured.")
+        if not await self._linker_configured(ctx, self._category_linker, "Category linking isn't configured."):
             return
         category = _channel_category(ctx.channel)
         if category is None and local_id is None:
@@ -120,28 +156,24 @@ class StoatLinkingMixin:
             external_id,
             local_id,
         )
-        try:
-            summary = await self._category_linker.link_category(
+        await self._reply_linker_result(
+            ctx,
+            self._category_linker.link_category(
                 local_connector=self.connector_id,
                 local_category_id=str(category.id) if category is not None else None,
                 local_category_name=category.title if category is not None else "",
                 source=service,
                 source_id=external_id,
                 destination_id=local_id,
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /link category rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/link category",
+        )
 
     async def _link_emote(self, ctx, service: str, external_id: str, local_id: str) -> None:
         """`/link emote <service> <external_id|name> <local_id|name>`."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._emote_linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._emote_linker, "Linking isn't configured."):
             return
         logger.info(
             "[stoat:%s] %s ran /link emote service=%s external_id=%s local_id=%s",
@@ -151,41 +183,32 @@ class StoatLinkingMixin:
             external_id,
             local_id,
         )
-        try:
-            summary = await self._emote_linker.link_emote(
+        await self._reply_linker_result(
+            ctx,
+            self._emote_linker.link_emote(
                 local_connector=self.connector_id,
                 local_id=local_id,
                 source=service,
                 source_id=external_id,
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /link emote rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/link emote",
+        )
 
     async def _unlink_emote(self, ctx, local_id: str, service: str | None = None) -> None:
         """`/unlink emote <local_id|name> [<service>|all]`."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._emote_linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._emote_linker, "Linking isn't configured."):
             return
-        try:
-            summary = await self._emote_linker.unlink_emote(
-                local_connector=self.connector_id, local_emote=local_id, destination=service
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /unlink emote rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+        await self._reply_linker_result(
+            ctx,
+            self._emote_linker.unlink_emote(local_connector=self.connector_id, local_emote=local_id, destination=service),
+            log_context="/unlink emote",
+        )
 
     async def _linked_emotes(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/linked emotes [<local_id|name>] [<service>|all]` - read-only."""
-        if self._emote_linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._emote_linker, "Linking isn't configured."):
             return
         summary = await self._emote_linker.list_linked_emotes(
             local_connector=self.connector_id, local_emote=local_id, service=service
@@ -196,57 +219,42 @@ class StoatLinkingMixin:
         self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
     ) -> None:
         """`/mirror emote to <local_id|name> [<service>|all] [new_name]`."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._emote_linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._emote_linker, "Linking isn't configured."):
             return
         if not local_id:
             await self._reply(ctx, "Which emote? Pass an emoji id or name.")
             return
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._emote_linker.mirror_emote_all(
-                    local_connector=self.connector_id, local_emote=local_id
-                )
-            else:
-                summary = await self._emote_linker.mirror_emote(
-                    local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
-                )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror emote rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+        if service is None or service.lower() == "all":
+            coro = self._emote_linker.mirror_emote_all(local_connector=self.connector_id, local_emote=local_id)
+        else:
+            coro = self._emote_linker.mirror_emote(
+                local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
+            )
+        await self._reply_linker_result(ctx, coro, log_context="/mirror emote")
 
     async def _mirror_emote_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror emote from <service> <external_id|name> [new_name]`:
         recreate-or-match `service`'s custom emoji locally and link them."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._emote_linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._emote_linker, "Linking isn't configured."):
             return
-        try:
-            summary = await self._emote_linker.mirror_emote_from(
+        await self._reply_linker_result(
+            ctx,
+            self._emote_linker.mirror_emote_from(
                 local_connector=self.connector_id, source=service, source_emote=external_id, new_name=new_name
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror emote from rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/mirror emote from",
+        )
 
     async def _link_user(self, ctx, service: str, external_id: str, local_id: str) -> None:
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._user_linker is None:
-            await self._reply(ctx, "User linking isn't configured.")
+        if not await self._linker_configured(ctx, self._user_linker, "User linking isn't configured."):
             return
         logger.info(
             "[stoat:%s] %s ran /link user service=%s external_id=%s local_id=%s",
@@ -256,18 +264,16 @@ class StoatLinkingMixin:
             external_id,
             local_id,
         )
-        try:
-            summary = await self._user_linker.link_user(
+        await self._reply_linker_result(
+            ctx,
+            self._user_linker.link_user(
                 local_connector=self.connector_id,
                 local_user_id=local_id,
                 source=service,
                 source_user_id=external_id,
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /link user rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/link user",
+        )
 
     async def _mirror_channel(
         self,
@@ -281,8 +287,7 @@ class StoatLinkingMixin:
         local_id defaults to the invoking channel; service defaults to "all".
         `category` (a Category id/name on the target service) overrides linked
         Categories and needs a single service (issue #75)."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
         if category and (service is None or service.lower() == "all"):
             await self._reply(
@@ -295,8 +300,7 @@ class StoatLinkingMixin:
             channel_id = str(ctx.channel.id)
             channel_name = getattr(ctx.channel, "name", channel_id)
 
-        if self._linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
             return
         channel_category = await self.get_channel_category_name(channel_id)
         logger.info(
@@ -306,29 +310,24 @@ class StoatLinkingMixin:
             channel_id,
             service,
         )
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._linker.mirror_channel_all(
-                    local_connector=self.connector_id,
-                    local_channel_id=channel_id,
-                    local_channel_name=channel_name,
-                    local_channel_category=channel_category,
-                )
-            else:
-                summary = await self._linker.mirror_channel(
-                    local_connector=self.connector_id,
-                    local_channel_id=channel_id,
-                    local_channel_name=channel_name,
-                    destination=service,
-                    local_channel_category=channel_category,
-                    destination_category=category,
-                    new_name=new_name,
-                )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror channel rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+        if service is None or service.lower() == "all":
+            coro = self._linker.mirror_channel_all(
+                local_connector=self.connector_id,
+                local_channel_id=channel_id,
+                local_channel_name=channel_name,
+                local_channel_category=channel_category,
+            )
+        else:
+            coro = self._linker.mirror_channel(
+                local_connector=self.connector_id,
+                local_channel_id=channel_id,
+                local_channel_name=channel_name,
+                destination=service,
+                local_channel_category=channel_category,
+                destination_category=category,
+                new_name=new_name,
+            )
+        await self._reply_linker_result(ctx, coro, log_context="/mirror channel")
 
     async def _mirror_channel_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None, category: str | None = None
@@ -338,37 +337,31 @@ class StoatLinkingMixin:
         the local counterpart of the source channel's linked Category - or in
         `category` (a local Category id/name), if given, which overrides that
         (issue #75)."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
             return
-        try:
-            summary = await self._linker.mirror_channel_from(
+        await self._reply_linker_result(
+            ctx,
+            self._linker.mirror_channel_from(
                 local_connector=self.connector_id,
                 source=service,
                 source_id=external_id,
                 new_name=new_name,
                 local_category=category,
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror channel from rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/mirror channel from",
+        )
 
     async def _unlink_channel(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/unlink channel [local_id|name] [<service>|all]`: local_id
         defaults to the invoking channel; service defaults to "all"
         (dissolving the whole bridge group)."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
         channel_id = local_id if local_id else str(ctx.channel.id)
 
-        if self._linker is None:
-            await self._reply(ctx, "Linking isn't configured.")
+        if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
             return
         logger.info(
             "[stoat:%s] %s ran /unlink channel local_id=%s service=%s",
@@ -377,25 +370,19 @@ class StoatLinkingMixin:
             channel_id,
             service,
         )
-        try:
-            summary = await self._linker.unlink_channel(
-                local_connector=self.connector_id, local_channel_id=channel_id, destination=service
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /unlink channel rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+        await self._reply_linker_result(
+            ctx,
+            self._linker.unlink_channel(local_connector=self.connector_id, local_channel_id=channel_id, destination=service),
+            log_context="/unlink channel",
+        )
 
     async def _unlink_category(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/unlink category [<local_id|name>] [<service>|all]`: local Category
         defaults to the invoking channel's own; service defaults to "all"
         (dissolving the whole bridge group)."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._category_linker is None:
-            await self._reply(ctx, "Category linking isn't configured.")
+        if not await self._linker_configured(ctx, self._category_linker, "Category linking isn't configured."):
             return
         category = _channel_category(ctx.channel)
         if local_id is None and category is None:
@@ -408,28 +395,24 @@ class StoatLinkingMixin:
             local_id,
             service,
         )
-        try:
-            summary = await self._category_linker.unlink_category(
+        await self._reply_linker_result(
+            ctx,
+            self._category_linker.unlink_category(
                 local_connector=self.connector_id,
                 local_category_id=str(category.id) if category is not None else None,
                 local_category=local_id,
                 destination=service,
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /unlink category rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/unlink category",
+        )
 
     async def _mirror_category(
         self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
     ) -> None:
         """`/mirror category [<local_id|name>] [<service>|all] [new_name]`."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._category_linker is None:
-            await self._reply(ctx, "Category linking isn't configured.")
+        if not await self._linker_configured(ctx, self._category_linker, "Category linking isn't configured."):
             return
         category = _channel_category(ctx.channel)
         if local_id is None and category is None:
@@ -441,18 +424,13 @@ class StoatLinkingMixin:
             local_category=local_id,
             local_category_name=category.title if category is not None else None,
         )
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._category_linker.mirror_category_all(**kwargs)
-            else:
-                summary = await self._category_linker.mirror_category(
-                    destination=service, new_name=new_name, **kwargs
-                )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror category rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary or "Nothing to mirror.")
+        if service is None or service.lower() == "all":
+            coro = self._category_linker.mirror_category_all(**kwargs)
+        else:
+            coro = self._category_linker.mirror_category(destination=service, new_name=new_name, **kwargs)
+        await self._reply_linker_result(
+            ctx, coro, log_context="/mirror category", empty_fallback="Nothing to mirror."
+        )
 
     async def _mirror_category_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
@@ -460,33 +438,28 @@ class StoatLinkingMixin:
         """`/mirror category from <service> <external_id|name> [new_name]`: create
         a local Category mirroring `service`'s, link them, and relocate/mirror
         its channels into the local Category."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._category_linker is None:
-            await self._reply(ctx, "Category linking isn't configured.")
+        if not await self._linker_configured(ctx, self._category_linker, "Category linking isn't configured."):
             return
-        try:
-            summary = await self._category_linker.mirror_category_from(
+        await self._reply_linker_result(
+            ctx,
+            self._category_linker.mirror_category_from(
                 local_connector=self.connector_id, source=service, source_id=external_id, new_name=new_name
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror category from rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary or "Nothing to mirror.")
+            ),
+            log_context="/mirror category from",
+            empty_fallback="Nothing to mirror.",
+        )
 
     async def _unlink_user(self, ctx, service: str | None = None, local_id: str | None = None) -> None:
         """`/unlink user [service|all] [local_id|name]`: service defaults
         to "all" (dissolving the whole link group); local_id defaults to the
         invoking user themselves."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
         target = local_id if local_id else str(ctx.author_id)
 
-        if self._user_linker is None:
-            await self._reply(ctx, "User linking isn't configured.")
+        if not await self._linker_configured(ctx, self._user_linker, "User linking isn't configured."):
             return
         logger.info(
             "[stoat:%s] %s ran /unlink user service=%s local_id=%s",
@@ -495,23 +468,17 @@ class StoatLinkingMixin:
             service,
             target,
         )
-        try:
-            summary = await self._user_linker.unlink_user(
-                local_connector=self.connector_id, local_user_id=target, destination=service
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /unlink user rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+        await self._reply_linker_result(
+            ctx,
+            self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=target, destination=service),
+            log_context="/unlink user",
+        )
 
     async def _link_role(self, ctx, local_id: str, service: str, external_id: str) -> None:
         """`/link role <local_id|name> <service> <external_id|name>`."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._role_linker is None:
-            await self._reply(ctx, "Role linking isn't configured.")
+        if not await self._linker_configured(ctx, self._role_linker, "Role linking isn't configured."):
             return
         logger.info(
             "[stoat:%s] %s ran /link role local=%s service=%s external=%s",
@@ -521,41 +488,32 @@ class StoatLinkingMixin:
             service,
             external_id,
         )
-        try:
-            summary = await self._role_linker.link_role(
+        await self._reply_linker_result(
+            ctx,
+            self._role_linker.link_role(
                 local_connector=self.connector_id,
                 local_role=local_id,
                 source=service,
                 source_role=external_id,
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /link role rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/link role",
+        )
 
     async def _unlink_role(self, ctx, local_id: str, service: str | None = None) -> None:
         """`/unlink role <local_id|name> [<service>|all]`."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._role_linker is None:
-            await self._reply(ctx, "Role linking isn't configured.")
+        if not await self._linker_configured(ctx, self._role_linker, "Role linking isn't configured."):
             return
-        try:
-            summary = await self._role_linker.unlink_role(
-                local_connector=self.connector_id, local_role=local_id, destination=service
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /unlink role rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+        await self._reply_linker_result(
+            ctx,
+            self._role_linker.unlink_role(local_connector=self.connector_id, local_role=local_id, destination=service),
+            log_context="/unlink role",
+        )
 
     async def _linked_roles(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
         """`/linked roles [<local_id|name>] [<service>|all]` - read-only."""
-        if self._role_linker is None:
-            await self._reply(ctx, "Role linking isn't configured.")
+        if not await self._linker_configured(ctx, self._role_linker, "Role linking isn't configured."):
             return
         summary = await self._role_linker.list_linked_roles(
             local_connector=self.connector_id, local_role=local_id, service=service
@@ -566,50 +524,37 @@ class StoatLinkingMixin:
         self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
     ) -> None:
         """`/mirror role to <local_id|name> [<service>|all] [new_name]`."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._role_linker is None:
-            await self._reply(ctx, "Role linking isn't configured.")
+        if not await self._linker_configured(ctx, self._role_linker, "Role linking isn't configured."):
             return
         if not local_id:
             await self._reply(ctx, "Which role? Pass a role id or name.")
             return
-        try:
-            if service is None or service.lower() == "all":
-                summary = await self._role_linker.mirror_role_all(
-                    local_connector=self.connector_id, local_role=local_id
-                )
-            else:
-                summary = await self._role_linker.mirror_role(
-                    local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
-                )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror role rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+        if service is None or service.lower() == "all":
+            coro = self._role_linker.mirror_role_all(local_connector=self.connector_id, local_role=local_id)
+        else:
+            coro = self._role_linker.mirror_role(
+                local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
+            )
+        await self._reply_linker_result(ctx, coro, log_context="/mirror role")
 
     async def _mirror_role_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         """`/mirror role from <service> <external_id|name> [new_name]`:
         create-or-match a local role mirroring `service`'s and link them."""
-        if not self._is_admin(ctx.message):
-            await self._reply(ctx, "You need the Manage Server permission to do that.")
+        if not await self._require_admin(ctx):
             return
-        if self._role_linker is None:
-            await self._reply(ctx, "Role linking isn't configured.")
+        if not await self._linker_configured(ctx, self._role_linker, "Role linking isn't configured."):
             return
-        try:
-            summary = await self._role_linker.mirror_role_from(
+        await self._reply_linker_result(
+            ctx,
+            self._role_linker.mirror_role_from(
                 local_connector=self.connector_id, source=service, source_role=external_id, new_name=new_name
-            )
-        except LinkError as exc:
-            logger.info("[stoat:%s] /mirror role from rejected: %s", self.connector_id, exc)
-            await self._reply(ctx, str(exc))
-            return
-        await self._reply(ctx, summary)
+            ),
+            log_context="/mirror role from",
+        )
 
     def _is_admin(self, message) -> bool:
         """True if the command author has Stoat's Manage Server permission
