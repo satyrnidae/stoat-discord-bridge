@@ -194,6 +194,16 @@ Every admin/status command (`/status`, `/link channel`, `/linked channels`,
 `/linked users`, `/link emote`) and how to reach it on
 each connector is documented in [`COMMANDS.md`](COMMANDS.md).
 
+## Contributing
+
+- **Branch names** group by issue type under a folder-like prefix:
+  `bug/*`, `feat/*`, `chore/*` (e.g. `bug/94-thread-parent-group`,
+  `feat/81-mirror-full-refresh`, `chore/american-spelling`).
+- **Commit messages** follow the [Gitmoji](https://gitmoji.dev) convention —
+  lead the summary line with the emoji matching the change's type (`✨` new
+  feature, `🐛` bug fix, `♻️` refactor, `📝` docs, `✅` tests, `🔀` merge,
+  etc.).
+
 ## Layout
 
 ```

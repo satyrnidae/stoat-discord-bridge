@@ -65,6 +65,16 @@ the 1Password `op` CLI (opt out with `--build-arg INSTALL_OP=0`) so
 `OP_SERVICE_ACCOUNT_TOKEN_FILE` at a mounted secret to authenticate it
 (`config.py` loads that file into `OP_SERVICE_ACCOUNT_TOKEN`).
 
+## Contributing
+
+Branch names group by issue type under a folder-like prefix - `bug/*`,
+`feat/*`, `chore/*` (e.g. `bug/94-thread-parent-group`,
+`feat/81-mirror-full-refresh`, `chore/american-spelling`) - so use that
+shape for any branch created on this repo's behalf. Commit messages follow
+the [Gitmoji](https://gitmoji.dev) convention: lead the summary line with
+the emoji matching the change's type (`✨` new feature, `🐛` bug fix, `♻️`
+refactor, `📝` docs, `✅` tests, `🔀` merge, etc.).
+
 ## Architecture
 
 Service-based: each configured connector (a Discord guild, Stoat server, or
