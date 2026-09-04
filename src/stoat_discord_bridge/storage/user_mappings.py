@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from stoat_discord_bridge.storage.base_mapping import BaseMappingRepository
+
 
 @dataclass(frozen=True)
 class UserMapping:
@@ -24,21 +26,24 @@ class UserMapping:
     display_name: str
 
 
-class UserMappingRepository:
+class UserMappingRepository(BaseMappingRepository[UserMapping]):
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
-        self._collection = db["user_mappings"]
+        super().__init__(
+            db,
+            "user_mappings",
+            _from_doc,
+            connector_field="connector_id",
+            id_field="user_id",
+            group_field="link_group",
+            name_field="display_name",
+            dedup_on_upsert=True,
+        )
 
     async def get_link_group(self, connector_id: str, user_id: str) -> str | None:
-        doc = await self._collection.find_one({"connector_id": connector_id, "user_id": user_id})
-        return doc["link_group"] if doc else None
+        return await self.get_group(connector_id, user_id)
 
     async def get_mapped_users(self, link_group: str) -> list[UserMapping]:
-        cursor = self._collection.find({"link_group": link_group})
-        return [_from_doc(doc) async for doc in cursor]
-
-    async def get_all_for_connector(self, connector_id: str) -> list[UserMapping]:
-        cursor = self._collection.find({"connector_id": connector_id})
-        return [_from_doc(doc) async for doc in cursor]
+        return await self.get_mapped(link_group)
 
     async def find_linked_user_id(self, origin_connector_id: str, origin_user_id: str, target_connector_id: str) -> str | None:
         """If `origin_user_id` (on `origin_connector_id`) is linked to an
@@ -46,53 +51,12 @@ class UserMappingRepository:
         id there - None if unlinked, or linked but with no identity recorded
         for `target_connector_id`. Used by each receiver's receive() to swap
         a relayed message's masquerade to the locally-linked identity."""
-        link_group = await self.get_link_group(origin_connector_id, origin_user_id)
-        if link_group is None:
-            return None
-        for mapping in await self.get_mapped_users(link_group):
-            if mapping.connector_id == target_connector_id:
-                return mapping.user_id
-        return None
-
-    async def get_all(self) -> list[UserMapping]:
-        """Every linked identity, across every connector and group - for
-        the `/linked-users` debugging command's "list everything" mode."""
-        cursor = self._collection.find({})
-        return [_from_doc(doc) async for doc in cursor]
-
-    async def upsert(self, mapping: UserMapping) -> None:
-        # A link group should have at most one identity per connector.
-        # Without this, relinking a connector's id within an existing group
-        # (e.g. correcting one that was mistyped when first linked) would
-        # leave the old, wrong id sitting in the group alongside the new
-        # one - and get_mapped_users/mention rewriting would then have two
-        # same-connector entries to pick from, nondeterministically.
-        await self._collection.delete_many(
-            {
-                "link_group": mapping.link_group,
-                "connector_id": mapping.connector_id,
-                "user_id": {"$ne": mapping.user_id},
-            }
-        )
-        await self._collection.update_one(
-            {"connector_id": mapping.connector_id, "user_id": mapping.user_id},
-            {"$set": {"link_group": mapping.link_group, "display_name": mapping.display_name}},
-            upsert=True,
-        )
-
-    async def delete_mapping(self, connector_id: str, user_id: str) -> bool:
-        """Removes just this one identity from its link group - the rest of
-        the group (if any) stays linked to each other. For `/unlink-user
-        <destination>`, which kicks a single member rather than dissolving
-        the whole group."""
-        result = await self._collection.delete_one({"connector_id": connector_id, "user_id": user_id})
-        return result.deleted_count > 0
+        return await self.find_linked_id(origin_connector_id, origin_user_id, target_connector_id)
 
     async def delete_link_group(self, link_group: str) -> int:
         """Dissolves an entire link group - every linked identity, not just
         one. For `/unlink-user`'s default ("all") behavior."""
-        result = await self._collection.delete_many({"link_group": link_group})
-        return result.deleted_count
+        return await self.delete_group(link_group)
 
 
 def _from_doc(doc: dict) -> UserMapping:
