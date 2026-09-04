@@ -134,6 +134,7 @@ class StoatReceiverService(ReceiverService):
             origin_connector_id=message.origin_connector_id,
             content_markdown=message.content_markdown,
             mentioned_users=message.mentioned_users,
+            mentioned_channels=message.mentioned_channels,
         )
         if undownloadable:
             content = inline_attachment_urls(content, undownloadable)
@@ -188,7 +189,12 @@ class StoatReceiverService(ReceiverService):
         return ids
 
     async def _rewrite_content(
-        self, *, origin_connector_id: str, content_markdown: str | None, mentioned_users: dict[str, str]
+        self,
+        *,
+        origin_connector_id: str,
+        content_markdown: str | None,
+        mentioned_users: dict[str, str],
+        mentioned_channels: dict[str, str] | None = None,
     ) -> str:
         """Run the shared user / channel / role / emoji mention rewrites over a
         relayed message's text - used by `receive()` for the first post and by
@@ -211,6 +217,7 @@ class StoatReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="stoat",
                 channel_mappings=self._channel_mappings,
+                mentioned_channels=mentioned_channels,
             )
         if self._role_mappings is not None:
             content = await rewrite_role_mentions(
@@ -247,6 +254,7 @@ class StoatReceiverService(ReceiverService):
             origin_connector_id=edit.origin_connector_id,
             content_markdown=edit.new_content_markdown,
             mentioned_users=edit.mentioned_users,
+            mentioned_channels=edit.mentioned_channels,
         )
         chunks = chunk_content(content, _stoat_pkg._CONTENT_LIMIT) if content else []
         for index, message_id in enumerate(target_message_ids):

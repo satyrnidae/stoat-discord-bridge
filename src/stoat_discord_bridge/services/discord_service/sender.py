@@ -47,6 +47,7 @@ from stoat_discord_bridge.services.base import (
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
 from stoat_discord_bridge.services.discord_service.formatting import (
+    _map_mentioned_channels,
     _map_mentioned_users,
     _member_colour,
     _to_standard_message,
@@ -319,6 +320,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 origin_message_id=str(payload.message_id),
                 new_content_markdown=data.get("content") or "",
                 mentioned_users=_map_mentioned_users(getattr(payload, "message", None)),
+                mentioned_channels=_map_mentioned_channels(getattr(payload, "message", None)),
             )
         )
 
@@ -455,7 +457,8 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         Called only after the thread has been mirrored + linked, so each
         receiver's rewrite_channel_mentions can turn the `<#thread-id>` mention
         into its own linked copy of the mirrored channel (`#<thread name>` on
-        IRC), falling back to `#<thread name>` only if it still can't resolve."""
+        IRC); `mentioned_channels` carries the thread name so it still falls
+        back to `#<thread name>` if that lookup can't resolve (issue #84)."""
         parent = thread.parent
         if parent is None:
             return
@@ -473,6 +476,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 sender_user_id=str(bot_user.id) if bot_user is not None else "",
                 content_markdown=f"{who} started a thread: <#{thread.id}>",
                 message_id=f"thread-created:{thread.id}",
+                mentioned_channels={str(thread.id): thread.name},
             )
         )
 

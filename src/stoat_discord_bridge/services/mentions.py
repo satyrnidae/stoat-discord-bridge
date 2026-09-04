@@ -56,33 +56,48 @@ async def rewrite_channel_mentions(
     target_connector_id: str,
     target_kind: str,
     channel_mappings: ChannelMappingRepository,
+    mentioned_channels: dict[str, str] | None = None,
 ) -> str:
     """Rewrite a `<#channel-id>` mention of a cross-connector-linked channel
     into the target connector's own copy of that channel - its native
-    `<#id>` syntax on Discord/Stoat, or `#name` on IRC. A mention of a
-    channel with no mapping to the target connector is left exactly as it
-    appeared (same rule as user mentions). Both id shapes are always tried;
-    Discord's numeric ids and Stoat's 26-char ULIDs never collide."""
+    `<#id>` syntax on Discord/Stoat, or `#name` on IRC.
+
+    A mention of a channel with no mapping to the target is expanded to a
+    plain `#channel-name` using `mentioned_channels` (origin native channel
+    id -> its name on the origin) so the target doesn't just see a raw `<#id>`
+    token that renders as a dead id (issue #84, mirroring the unlinked-user
+    rule); a mention still not covered by that map is left exactly as it
+    appeared. Both id shapes are always tried; Discord's numeric ids and
+    Stoat's 26-char ULIDs never collide."""
+    mentioned_channels = mentioned_channels or {}
     for pattern in (_DISCORD_CHANNEL_MENTION, _STOAT_CHANNEL_MENTION):
         for match in list(pattern.finditer(content)):
-            bridge_group = await channel_mappings.get_bridge_group(origin_connector_id, match.group(1))
-            if bridge_group is None:
-                continue
-            target = next(
-                (
-                    m
-                    for m in await channel_mappings.get_mapped_channels(bridge_group)
-                    if m.connector_id == target_connector_id
-                ),
-                None,
-            )
-            if target is None:
-                continue
-            if target_kind == "irc":
-                # On IRC the channel id literally *is* the `#channel` name.
-                replacement = target.channel_id if target.channel_id.startswith("#") else f"#{target.channel_id}"
+            channel_id = match.group(1)
+            target = None
+            bridge_group = await channel_mappings.get_bridge_group(origin_connector_id, channel_id)
+            if bridge_group is not None:
+                target = next(
+                    (
+                        m
+                        for m in await channel_mappings.get_mapped_channels(bridge_group)
+                        if m.connector_id == target_connector_id
+                    ),
+                    None,
+                )
+            if target is not None:
+                if target_kind == "irc":
+                    # On IRC the channel id literally *is* the `#channel` name.
+                    replacement = target.channel_id if target.channel_id.startswith("#") else f"#{target.channel_id}"
+                else:
+                    replacement = f"<#{target.channel_id}>"
+            elif channel_id in mentioned_channels:
+                # No link to the target - fall back to a readable `#name`.
+                # Defanged like the unlinked-user expansion: a channel name is
+                # attacker-controllable on some platforms, and the bridge sets
+                # no `allowed_mentions` on its sends.
+                replacement = _defang_mentions("#" + mentioned_channels[channel_id])
             else:
-                replacement = f"<#{target.channel_id}>"
+                continue
             content = content.replace(match.group(0), replacement)
     return content
 

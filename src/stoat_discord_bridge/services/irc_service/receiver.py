@@ -110,6 +110,7 @@ class IrcReceiverService(ReceiverService):
                 target_connector_id=self.connector_id,
                 target_kind="irc",
                 channel_mappings=self._channel_mappings,
+                mentioned_channels=message.mentioned_channels,
             )
         if self._role_mappings is not None:
             content = await rewrite_role_mentions(

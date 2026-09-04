@@ -219,6 +219,22 @@ async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar
     assert message.message_id == "m1"
 
 
+async def test_handle_message_resolves_channel_mentions_to_names():
+    recorder = _Recorder()
+    client = FakeClient()
+    client.add_channel(FakeChannel(id="01ARZ3NDEKTSV4RRFFQ69G5FAV", name="off-topic"))
+    sender = _make_sender(recorder, client)
+    channel = FakeChannel(id="42", name="general")
+    author = FakeAuthor(id="u1", tag="alice#0000", display_name="Alice", avatar=None)
+
+    await sender._handle_message(
+        _stoat_message(channel=channel, author=author, content="see <#01ARZ3NDEKTSV4RRFFQ69G5FAV>", id="m1")
+    )
+
+    [message] = recorder.messages
+    assert message.mentioned_channels == {"01ARZ3NDEKTSV4RRFFQ69G5FAV": "off-topic"}
+
+
 async def test_handle_message_falls_back_to_the_bare_username_when_no_display_name():
     # the discriminator suffix (tag = "name#0000") is stripped for a
     # masquerade name - it reads as broken/internal even though accurate.
