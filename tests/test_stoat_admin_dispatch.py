@@ -809,7 +809,7 @@ async def test_ensure_channel_downloads_and_sets_the_icon_on_create(monkeypatch)
         return b"icon-bytes"
 
     monkeypatch.setattr(
-        "stoat_discord_bridge.services.stoat_service.lookups._download", fake_download
+        "stoat_discord_bridge.services.stoat_service.lookups.channels._download", fake_download
     )
     server = FakeServer(id="s1")
     client = FakeClient()

@@ -687,6 +687,16 @@ src/stoat_discord_bridge/
       #   sender.py / receiver.py - the composed *SenderService / *ReceiverService
       # linking/lookups/sync are mixins composed into *SenderService. irc_service/
       # is lighter (client / commands / formatting / sender / receiver only).
+      # stoat_service/lookups/ is itself a package (issue #92, the source-side
+      # counterpart of #90's admin_commands split): names.py (plain id<->name
+      # resolution) / identity.py (get_masquerade_identity) / channels.py
+      # (channel get-or-create) / categories.py (Category placement) /
+      # refresh.py (Category-list freshness + the #66/#81 cache-refresh
+      # machinery, split out of categories.py so neither module grows past
+      # discord_service/lookups.py's size) / roles_emoji.py (role/emoji
+      # get-or-create) / listing.py (the autocomplete list_* hooks) - composed
+      # back into one StoatLookupsMixin by __init__.py, so every existing
+      # `from .../stoat_service/lookups import StoatLookupsMixin` still works.
       # stoat_service/_compat.py runtime-patches a stoat.py 1.2.1 command-framework
       # bug (issue #40): its Command.transform/.signature call issubclass() on a
       # parameter's raw annotation, which raises TypeError for any Optional[...] /
