@@ -321,7 +321,7 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         channel names can't. `category` and `category_parent_channel_id` are
         accepted (for signature compatibility with
         ConnectorInfo.ensure_channel) and ignored - IRC has no Category
-        concept. `is_thread_category` is honoured only to withhold
+        concept. `is_thread_category` is honored only to withhold
         _PERMANENT_CHANNEL_MODE from a thread channel (threads are ephemeral
         - see join_channel's `permanent`). From `metadata` (issue #32) only
         `description` is usable - it becomes the channel TOPIC, set only when

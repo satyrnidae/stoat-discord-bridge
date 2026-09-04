@@ -62,11 +62,11 @@ class StandardMessage:
     # whose connector has `pronoun_forwarding` on shows it alongside
     # `source_label`.
     sender_pronouns: str | None = None
-    # The sender's displayed name colour as a CSS colour string ("#5865f2",
-    # and any other valid CSS colour a platform allows - Stoat role colours
+    # The sender's displayed name color as a CSS color string ("#5865f2",
+    # and any other valid CSS color a platform allows - Stoat role colors
     # can be gradients), resolved best-effort by the origin sender from the
-    # sender's top coloured role when that connector has `color_forwarding`
-    # on. None where the sender has no colour, the platform has no user-colour
+    # sender's top colored role when that connector has `color_forwarding`
+    # on. None where the sender has no color, the platform has no user-color
     # concept (IRC always), or it couldn't be resolved. Only Stoat's receiver
     # consumes it - a masquerade carries a `color` (issue #74); Discord
     # webhooks and IRC can't tint a relayed name.

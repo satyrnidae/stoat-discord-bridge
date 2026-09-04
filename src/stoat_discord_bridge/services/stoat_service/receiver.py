@@ -120,9 +120,9 @@ class StoatReceiverService(ReceiverService):
         masquerade = stoat.MessageMasquerade(
             name=sender_name,
             avatar=avatar_url,
-            # The origin sender's name colour (issue #74). Setting it needs the
+            # The origin sender's name color (issue #74). Setting it needs the
             # bot's `manage_roles` permission in the channel; a send rejected
-            # for it is retried uncoloured below rather than lost.
+            # for it is retried uncolored below rather than lost.
             color=message.sender_color if self._color_forwarding else None,
         )
         # Re-upload the message's attachments as native Stoat files rather
@@ -164,12 +164,12 @@ class StoatReceiverService(ReceiverService):
             except Exception as exc:
                 if masquerade.color is None:
                     raise PartialRelayError(ids, exc) from exc
-                # The colour is the only part of the masquerade that needs an
+                # The color is the only part of the masquerade that needs an
                 # elevated permission (`manage_roles`); if a send failed with
                 # one set, retry without it before giving up so a bot lacking
-                # that permission still relays (uncoloured, this chunk and the
+                # that permission still relays (uncolored, this chunk and the
                 # rest of the split) instead of dropping every message. A
-                # failure that wasn't about the colour just resurfaces from
+                # failure that wasn't about the color just resurfaces from
                 # the retry, carrying the original error.
                 masquerade = stoat.MessageMasquerade(name=masquerade.name, avatar=masquerade.avatar)
                 try:
@@ -178,7 +178,7 @@ class StoatReceiverService(ReceiverService):
                     raise PartialRelayError(ids, exc) from exc
                 logger.warning(
                     "[stoat:%s] masqueraded send into %s succeeded only after dropping the name "
-                    "colour - the bot likely lacks manage_roles there",
+                    "color - the bot likely lacks manage_roles there",
                     self.connector_id,
                     target_channel_id,
                 )

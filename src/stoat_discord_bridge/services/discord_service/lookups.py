@@ -85,7 +85,7 @@ class DiscordLookupsMixin:
 
     async def get_channel_category(self, channel_id: str) -> tuple[str, str] | None:
         """Best-effort channel-id -> (Category-id, Category-name), or None if
-        the channel is uncategorised / unresolvable. This connector's
+        the channel is uncategorized / unresolvable. This connector's
         `ConnectorInfo.resolve_channel_category`, used by `/mirror channel
         from` to land the new local channel in the linked local Category.
         Catches broadly (not just discord.py's own HTTPException/NotFound)

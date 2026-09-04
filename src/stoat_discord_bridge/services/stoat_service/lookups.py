@@ -268,7 +268,7 @@ class StoatLookupsMixin:
 
     async def get_channel_category(self, channel_id: str) -> tuple[str, str] | None:
         """Best-effort channel-id -> (Category-id, Category-title), or None if
-        uncategorised / unresolvable. This connector's
+        uncategorized / unresolvable. This connector's
         `ConnectorInfo.resolve_channel_category`, used by `/mirror channel
         from` to land the new local channel in the linked local Category.
         `get_channel(partial=False)` returns the cached channel or `None` on a
@@ -468,7 +468,7 @@ class StoatLookupsMixin:
                 resolved = await self._place_in_category(server, channel_id, category, bound_category_id)
             except Exception:
                 logger.exception(
-                    "[stoat:%s] category placement for %r failed on retry; channel %s left uncategorised",
+                    "[stoat:%s] category placement for %r failed on retry; channel %s left uncategorized",
                     self.connector_id,
                     category,
                     channel_id,

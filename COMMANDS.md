@@ -217,8 +217,8 @@ under them; on Stoat they're the same tokens as a chat message; on IRC only
 
 Both directions of every `/mirror <noun>` take an optional **`new_name`**: the
 name the counterpart is created (or matched) under on the destination instead
-of carrying the source name over. It's destination-normalised the same way any
-created entity is (IRC's `#channel` sterilising, Stoat's 32-char clip, an
+of carrying the source name over. It's destination-normalized the same way any
+created entity is (IRC's `#channel` sterilizing, Stoat's 32-char clip, an
 emoji-name reject...), and a same-named entity that already exists there is
 still matched rather than duplicated — so it's also the way to point
 `/mirror channel to` / `from` at an existing destination channel that isn't
@@ -307,7 +307,7 @@ can't see on `<service>` is refused rather than mirrored.
   `MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]`, DM
   (IRC-operator; `TO`'s local id is always required - no "current channel" to
   default to - so a lone `TO` argument is the id and `service` defaults to
-  `all`; `AS <new_name>` is honoured for a single-destination `TO` and for
+  `all`; `AS <new_name>` is honored for a single-destination `TO` and for
   `FROM`; `CATEGORY:<id|name>` only for a single-destination `TO` — IRC, the
   local side of `FROM`, has no Categories)
 

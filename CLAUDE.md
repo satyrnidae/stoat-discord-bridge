@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> [!IMPORTANT]
+> **Use American spelling** everywhere — identifiers, comments, docstrings,
+> log messages, documentation, and commit messages. Write `color`, `behavior`,
+> `normalize`, `recognize`, `honor`, `canceled`, etc., not their British
+> forms. (Python/library names that are themselves British — `asyncio`'s
+> `CancelledError`, discord.py's `Colour` — stay as the library spells them;
+> discord.py's `color`/`colour` aliases, prefer `color`.)
+
 ## What this is
 
 A multi-way chat bridge across any number of Discord, Stoat, and IRC servers,
@@ -228,7 +236,7 @@ end sends `end_typing`, clearing the indicator at once; Discord has no
 clear-typing API, so there the loop just stops re-arming and Discord's own
 ~10s timeout lapses it.
 
-### Source, pronoun & name-colour forwarding
+### Source, pronoun & name-color forwarding
 
 Every `StandardMessage` carries `source_label` — the origin connector's
 `config.yaml` `label` ("Discord", "Stoat (public)", "IRC"), stamped by each
@@ -272,23 +280,23 @@ off, and swallows every failure to `None`:
   its `pronoun_forwarding` only governs whether an *inbound* message's
   pronouns show in the line tag.
 
-**Name colour forwarding** (issue #74): every `StandardMessage` also carries
-`sender_color` — the sender's displayed name colour as a CSS colour string,
-resolved network-free by the origin sender from their top coloured role
-(`_member_colour` in each service's `formatting.py`, gated by a per-connector
+**Name color forwarding** (issue #74): every `StandardMessage` also carries
+`sender_color` — the sender's displayed name color as a CSS color string,
+resolved network-free by the origin sender from their top colored role
+(`_member_color` in each service's `formatting.py`, gated by a per-connector
 `color_forwarding`, default on, on `DiscordConnectorConfig` /
 `StoatConnectorConfig`). Only **Stoat's receiver** consumes it — a
 `MessageMasquerade` takes a `color`, so a relayed name is tinted with the
-origin colour; `color_forwarding` on the Stoat connector also gates that
-inbound application. Discord (`Member.colour`, resolved to `#rrggbb`; `0`
-means no colour → `None`) and Stoat (`Role.color`, an as-is CSS string, so
-gradients forward too; lowest-`rank` coloured role wins) both resolve
-outbound; **IRC** has no user-colour concept so `sender_color` is always
+origin color; `color_forwarding` on the Stoat connector also gates that
+inbound application. Discord (`Member.color`, resolved to `#rrggbb`; `0`
+means no color → `None`) and Stoat (`Role.color`, an as-is CSS string, so
+gradients forward too; lowest-`rank` colored role wins) both resolve
+outbound; **IRC** has no user-color concept so `sender_color` is always
 `None` there and it has no `color_forwarding` option. Discord webhooks and
 IRC can't tint a relayed name, so those receivers ignore `sender_color`.
-Setting a masquerade colour needs the bridge bot's `manage_roles` permission
-in the target channel — a Stoat send rejected with a colour set is retried
-once **uncoloured** (for that chunk and the rest of a split message) rather
+Setting a masquerade color needs the bridge bot's `manage_roles` permission
+in the target channel — a Stoat send rejected with a color set is retried
+once **uncolored** (for that chunk and the rest of a split message) rather
 than lost.
 
 ### Admin & status commands
@@ -308,7 +316,7 @@ commands `/link emote` / `/mirror emote to` / `/mirror emote from` /
 reach it on each connector is documented in
 `COMMANDS.md`, not duplicated here. `/mirror <noun>` is a two-way group:
 `to` pushes a local entity onto another connector (the historical
-`/mirror <noun>` behaviour), `from <service> <external_id>` pulls a remote
+`/mirror <noun>` behavior), `from <service> <external_id>` pulls a remote
 entity in and creates the local copy - respecting already-linked entities
 (bridge/mapping groups are reused). `/mirror channel` in *either* direction
 (and `all`) lands the counterpart in the destination's own copy of the source
@@ -353,7 +361,7 @@ round-trip. Both directions of every
 `/mirror <noun>` take an optional trailing `new_name` (`admin_commands.py`'s
 `_clean_new_name`): the name the counterpart is created/matched under on the
 destination instead of carrying the source name over - routed through the
-destination's `ensure_*` hook so it's destination-normalised and still
+destination's `ensure_*` hook so it's destination-normalized and still
 get-or-creates (so a same-named existing entity is matched, not duplicated);
 the way to aim `/mirror channel` at an unlinked existing destination channel,
 IRC especially (issue #44). Not on the `all` fan-out; on IRC it's a trailing

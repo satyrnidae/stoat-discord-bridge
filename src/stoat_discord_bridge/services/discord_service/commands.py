@@ -238,7 +238,7 @@ def build_command_tree(service) -> None:
         await self._handle_linked_roles(interaction, local_id, None)
 
     # `/mirror <noun>` is a two-way group: `to` pushes a local entity onto
-    # another connector (the historical `/mirror <noun>` behaviour), `from`
+    # another connector (the historical `/mirror <noun>` behavior), `from`
     # pulls a remote entity in and creates the local copy. Every `/mirror`
     # child is a subgroup - no plain subcommands mixed in.
     mirror_role_group = app_commands.Group(

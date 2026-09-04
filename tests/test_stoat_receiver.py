@@ -200,7 +200,7 @@ async def test_receive_omits_pronouns_when_pronoun_forwarding_is_off():
     assert channel.sent[0]["masquerade"].name == "Alice [Discord]"
 
 
-async def test_receive_forwards_the_sender_colour_onto_the_masquerade():
+async def test_receive_forwards_the_sender_color_onto_the_masquerade():
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))
     receiver = _make_receiver(client)
@@ -210,7 +210,7 @@ async def test_receive_forwards_the_sender_colour_onto_the_masquerade():
     assert channel.sent[0]["masquerade"].color == "#5865f2"
 
 
-async def test_receive_omits_the_colour_when_color_forwarding_is_off():
+async def test_receive_omits_the_color_when_color_forwarding_is_off():
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))
     receiver = StoatReceiverService(_FakeSender(client), color_forwarding=False)
@@ -220,7 +220,7 @@ async def test_receive_omits_the_colour_when_color_forwarding_is_off():
     assert channel.sent[0]["masquerade"].color is None
 
 
-async def test_receive_retries_uncoloured_when_a_coloured_send_is_rejected(monkeypatch):
+async def test_receive_retries_uncolored_when_a_colored_send_is_rejected(monkeypatch):
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))
     receiver = _make_receiver(client)
@@ -241,8 +241,8 @@ async def test_receive_retries_uncoloured_when_a_coloured_send_is_rejected(monke
         _message(content_markdown="abcdefghij", sender_color="#5865f2"), target_channel_id="42"
     )
 
-    # first chunk: coloured attempt rejected, uncoloured retry succeeds; the
-    # second chunk then goes straight out uncoloured (no wasted retry).
+    # first chunk: colored attempt rejected, uncolored retry succeeds; the
+    # second chunk then goes straight out uncolored (no wasted retry).
     assert seen == ["#5865f2", None, None]
     assert ids == ["1", "2"]
 
