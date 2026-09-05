@@ -1,6 +1,4 @@
 from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, UserLinker, pop_kv_option
-from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
-from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 
 # ---------------------------------------------------------------- .connectors (Discord autocomplete)

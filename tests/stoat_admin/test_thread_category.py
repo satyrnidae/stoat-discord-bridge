@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from tests.fakes.fake_stoat import FakeCategory, FakeChannel, FakeClient, FakeServer
-from tests.stoat_admin.conftest import FakeLinker, _make_ctx, _make_sender
+from tests.stoat_admin.conftest import _make_sender
 
 
 # --------------------------------- thread-Category binding (parent <-> category id)

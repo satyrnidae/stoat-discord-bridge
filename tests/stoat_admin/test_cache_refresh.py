@@ -4,7 +4,7 @@ import stoat
 
 from stoat_discord_bridge.models import ChannelMetadata
 from tests.fakes.fake_stoat import FakeAsset, FakeCategory, FakeChannel, FakeClient, FakeServer
-from tests.stoat_admin.conftest import FakeLinker, _make_ctx, _make_sender
+from tests.stoat_admin.conftest import _make_sender
 
 
 # ---------------------------------------------------------------- ensure_channel / Category placement

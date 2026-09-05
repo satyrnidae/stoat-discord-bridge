@@ -1,6 +1,6 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, EmoteLinker, LinkError, UserLinker
+from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkError, UserLinker
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 
