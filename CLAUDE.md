@@ -53,6 +53,18 @@ Discord/Stoat/IRC network integration - no live-server or full-client-mock
 tests exist yet, so those still need manual verification. No linter config
 in this repo yet; CI (`.github/workflows/ci.yml`) runs `pytest` on Python
 3.11-3.13 plus an sdist/wheel build on every push to `main` and every PR.
+`tests/` mirrors the source layout: a suite that outgrew one module
+(admin_commands' linkers, the Stoat/Discord admin-command dispatch surfaces,
+the Discord/Stoat receivers, the Discord sender's gateway-event dispatch,
+IRC's connection-free surface, `BridgeCoordinator`) is a same-named package
+instead - one file per concern plus a `conftest.py` for the fakes/fixtures
+that concern's files share (`tests/admin_commands/`, `tests/stoat_admin/`,
+`tests/discord_service/`, `tests/discord_receiver/`, `tests/stoat_receiver/`,
+`tests/discord_sender_dispatch/`, `tests/irc_service/`, `tests/bridge/`).
+`tests/fakes/fake_linkers.py` holds the one `ChannelLinker`/`UserLinker`
+double pair actually shared verbatim across connectors (Stoat and IRC's
+admin-dispatch suites); a fake shape specific to one connector or one
+package stays in that package's own `conftest.py` instead.
 
 Docker: `docker compose up --build` runs the bridge plus a MongoDB
 instance (data persisted in a named volume) - see the README's Docker
