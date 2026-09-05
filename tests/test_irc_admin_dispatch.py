@@ -20,6 +20,7 @@ from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.services.irc_service import IrcSenderService
 from stoat_discord_bridge.status import HealthTracker
 from tests.fakes.fake_irc import FakeIrcConnection, FakeIrcEvent
+from tests.fakes.fake_linkers import FakeLinker, FakeUserLinker
 
 
 def _irc_config(**overrides):
@@ -34,75 +35,6 @@ def _irc_config(**overrides):
 
 async def _noop(_message) -> None:
     pass
-
-
-class FakeLinker:
-    def __init__(self, *, raises: LinkError | None = None) -> None:
-        self._raises = raises
-        self.link_channel_calls: list[dict] = []
-        self.mirror_channel_calls: list[dict] = []
-        self.mirror_channel_all_calls: list[dict] = []
-        self.mirror_channel_from_calls: list[dict] = []
-        self.list_linked_channels_calls: list[dict] = []
-        self.unlink_channel_calls: list[dict] = []
-
-    async def link_channel(self, **kwargs):
-        self.link_channel_calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "linked ok"
-
-    async def list_linked_channels(self, **kwargs):
-        self.list_linked_channels_calls.append(kwargs)
-        return "Linked channels:\nIRC: #general (#general) (this channel)"
-
-    async def mirror_channel(self, **kwargs):
-        self.mirror_channel_calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "mirrored ok"
-
-    async def mirror_channel_all(self, **kwargs):
-        self.mirror_channel_all_calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "mirrored to all ok"
-
-    async def mirror_channel_from(self, **kwargs):
-        self.mirror_channel_from_calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "mirrored from ok"
-
-    async def unlink_channel(self, **kwargs):
-        self.unlink_channel_calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "unlinked ok"
-
-
-class FakeUserLinker:
-    def __init__(self, *, raises: LinkError | None = None) -> None:
-        self._raises = raises
-        self.calls: list[dict] = []
-        self.list_linked_users_calls: list[dict] = []
-        self.unlink_user_calls: list[dict] = []
-
-    async def link_user(self, **kwargs):
-        self.calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "user linked ok"
-
-    async def list_linked_users(self, **kwargs):
-        self.list_linked_users_calls.append(kwargs)
-        return "Linked users:\nDiscord: ShrinerH (216591124222050304) ↔ Stoat: shriner (01KH)"
-
-    async def unlink_user(self, **kwargs):
-        self.unlink_user_calls.append(kwargs)
-        if self._raises is not None:
-            raise self._raises
-        return "user unlinked ok"
 
 
 def _make_sender(
@@ -441,7 +373,7 @@ async def test_privmsg_linked_channels_is_scheduled_not_run_inline():
 
 
 async def test_linked_channels_reports_the_requested_channel():
-    linker = FakeLinker()
+    linker = FakeLinker(list_linked_channels_summary="Linked channels:\nIRC: #general (#general) (this channel)")
     sender, conn = _make_sender(linker=linker)
 
     await sender._handle_linked_channels_command("alice", ["#general"])
