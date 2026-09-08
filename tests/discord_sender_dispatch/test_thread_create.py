@@ -121,9 +121,10 @@ async def test_handle_thread_create_names_category_after_the_destinations_linked
     await sender._handle_thread_create(thread)
 
     # category = Stoat's own name for the linked parent channel, not the
-    # Discord parent's name ("Announcements"); Stoat's own channel id for the
-    # parent is forwarded too, to key the persistent thread-Category binding.
-    assert calls == [("Test Thread", "Bot Config", "s-general")]
+    # Discord parent's name ("Announcements"), prefixed with the thread marker
+    # (issue #98); Stoat's own channel id for the parent is forwarded too, to
+    # key the persistent thread-Category binding.
+    assert calls == [("Test Thread", "🧵 #Bot Config", "s-general")]
 
 
 async def test_handle_thread_create_marks_destination_category_as_thread_category(fake_db):

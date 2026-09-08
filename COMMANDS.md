@@ -328,7 +328,9 @@ Category defaults to the invoking channel's own where an explicit
 A Category that Discord's thread/forum-post auto-mirroring created on Stoat
 (see the README's Discord threads section) can never be linked this way -
 `/link category` rejects it, so thread mirroring's synthetic Categories always
-stay outside the bridge.
+stay outside the bridge. Its title is prefixed with a `🧵 #` thread marker
+(e.g. `🧵 #general`) so it stands out from an ordinary same-named Category;
+the mirrored thread channels under it keep their plain names.
 
 ### `/link category <service> <external_id|name> [<local_id|name>]`
 

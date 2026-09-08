@@ -609,7 +609,13 @@ thread's **parent channel** (so every thread under one parent groups together
 on the destination) — using each destination's *own* linked name for that
 parent channel (`mirror_channel`'s `category_from_channel_id`), not the Discord
 name, and falling back to the Discord name only where the parent isn't linked
-there. It then relays the thread's own starter message into it as
+there. That Category's title is prefixed with a `🧵 #` thread marker
+(`channel_structure.thread_category_title`, applied at the single
+`ChannelLinker.mirror_channel` insertion point every thread mirror funnels
+through, clipped to the same 32-char limit afterward) so a bridge-generated
+thread group stands out from an ordinary same-named Category — issue #98; the
+mirrored thread *channel* names are left unprefixed (Stoat renders a
+client-side leading `#` on them already). It then relays the thread's own starter message into it as
 the originating user. On Stoat, if `group_parent_channel_with_threads` is set
 (default on, per-connector), the parent channel itself is also moved into that
 Category at the top — done once up front by `ensure_channel` when it creates
@@ -643,7 +649,11 @@ has since been deleted self-heals: the next thread forgets the binding, creates
 a fresh Category by the linked parent name, and rebinds (orphaned thread
 channels are left where they are). Pre-binding rows (no `parent_channel_id`)
 still register as thread categories and are rewritten to the bound shape on the
-next thread for that parent.
+next thread for that parent; `group_parent_channel_with_threads`'s legacy
+no-binding fallback (a direct Category-title↔channel-name match) strips the
+`🧵 #` prefix off the title first (`strip_thread_category_prefix`) so an
+old thread Category titled `🧵 #general` still matches parent channel
+`general`.
 
 Running `/mirror channel to <service>` (or `/mirror channel from discord <id>`
 on the other connector) **on a Discord thread** now takes the same path: the
