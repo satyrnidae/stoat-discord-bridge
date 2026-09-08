@@ -217,10 +217,13 @@ under them; on Stoat they're the same tokens as a chat message; on IRC only
 
 Both directions of every `/mirror <noun>` take an optional **`new_name`**: the
 name the counterpart is created (or matched) under on the destination instead
-of carrying the source name over. It's destination-normalized the same way any
-created entity is (IRC's `#channel` sterilizing, Stoat's 32-char clip, an
-emoji-name reject...), and a same-named entity that already exists there is
-still matched rather than duplicated — so it's also the way to point
+of carrying the source name over. Any name — carried-over or `new_name` — that
+exceeds the destination's channel/category/role name-length limit is clipped to
+fit before creation (Discord 100, Stoat 32, IRC's advertised CHANNELLEN or the
+RFC's 50), and it's then destination-normalized the same way any created entity
+is (IRC's `#channel` sterilizing, an emoji-name reject...); a same-named entity
+that already exists there is still matched rather than duplicated — so it's also
+the way to point
 `/mirror channel to` / `from` at an existing destination channel that isn't
 linked yet, especially on IRC where there may be no channel to `/link` against
 (issue #44). On Discord/Stoat it's a trailing optional argument (`new_name` on

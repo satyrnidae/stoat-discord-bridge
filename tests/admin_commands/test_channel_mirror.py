@@ -228,6 +228,121 @@ async def test_mirror_channel_from_into_irc_stores_the_normalized_name(fake_db):
     assert mapped["irc"] == "#danksquad"
 
 
+# ---------------------------------------------------------------- name clipping (issue #99)
+
+
+async def test_mirror_channel_clips_the_name_to_the_destination_limit(fake_db):
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", channel_name_limit=100),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", channel_name_limit=32, ensure_channel=ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="a" * 40,
+        destination="stoat",
+    )
+
+    assert seen == ["a" * 32]
+    group = await channel_mappings.get_bridge_group("stoat", "stoat_" + "a" * 32)
+    assert group is not None
+    mapped = {m.connector_id: m.channel_name for m in await channel_mappings.get_mapped_channels(group)}
+    assert mapped["stoat"] == "a" * 32  # stored name matches what ensure_channel was handed
+
+
+async def test_mirror_channel_within_the_limit_is_byte_identical_to_before(fake_db):
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", channel_name_limit=100),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", channel_name_limit=32, ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert seen == ["general"]
+
+
+async def test_mirror_channel_new_name_override_is_also_clipped(fake_db):
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", channel_name_limit=100),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", channel_name_limit=32, ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        new_name="z" * 50,
+    )
+
+    assert seen == ["z" * 32]
+
+
+async def test_mirror_channel_into_irc_normalizes_then_clips_and_the_stored_name_agrees(fake_db):
+    from stoat_discord_bridge.services.irc_service.formatting import normalize_channel_name
+
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        # IRC's ensure_channel re-normalizes (with its own CHANLEN); the id it
+        # returns is that #name.
+        channel = normalize_channel_name(name, 10)
+        seen.append(channel)
+        return channel
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", channel_name_limit=100),
+        "irc": ConnectorInfo(
+            id="irc",
+            label="IRC",
+            channel_name_limit=10,
+            normalize_channel_name=lambda n: normalize_channel_name(n, 10),
+            ensure_channel=ensure_channel,
+        ),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="General Chat Room",
+        destination="irc",
+    )
+
+    # "#general-chat-room" normalized, then clipped to 10 chars (prefix included)
+    assert seen == ["#general-c"]
+    group = await channel_mappings.get_bridge_group("irc", "#general-c")
+    assert group is not None
+    mapped = {m.connector_id: m.channel_name for m in await channel_mappings.get_mapped_channels(group)}
+    assert mapped["irc"] == "#general-c"  # stored name == id, no length disagreement (issue #51)
+
+
 async def test_mirror_channel_skips_if_already_synced(fake_db):
     calls = []
 

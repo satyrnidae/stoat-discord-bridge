@@ -393,7 +393,17 @@ get-or-creates (so a same-named existing entity is matched, not duplicated);
 the way to aim `/mirror channel` at an unlinked existing destination channel,
 IRC especially (issue #44). Not on the `all` fan-out; on IRC it's a trailing
 `AS <new_name>`; `/mirror category`'s renames only the Category, not its
-mirrored child channels. `/mirror channel` (both
+mirrored child channels. Any name the linker hands `ensure_channel` /
+`ensure_category` / `ensure_role` - carried-over source name or `new_name`
+override - is first clipped (`channel_structure.clip_name`) to the destination
+`ConnectorInfo.channel_name_limit` / `category_name_limit` / `role_name_limit`
+(Discord 100, Stoat 32, IRC's advertised `CHANNELLEN` or `RFC_CHANNEL_NAME_LIMIT`
+= 50; `None` = no clip), so a name that fits the source platform isn't rejected
+or silently mangled by the destination's API (issue #99). For channels the clip
+runs *after* `_normalize_name` (IRC's `#`-prefix + sterilization) so the stored
+name and the id `ensure_channel` returns can't disagree on length;
+`IrcSenderService.ensure_channel` / `normalize_channel_name` also truncate to the
+live `CHANNELLEN` as a backstop for paths other than `/mirror`. `/mirror channel` (both
 directions) refuses a source channel the bridge bot can't see - gated by
 `ConnectorInfo.can_view_channel` (Discord/Stoat check the bot member's
 `view_channel` on the channel; IRC leaves it unset), checked in
@@ -691,7 +701,7 @@ tests/                          # pytest suite - see README's Tests section
 src/stoat_discord_bridge/
   config.py                    # loads config.yaml, layering env vars over it per-field (see its docstring)
   models.py                    # StandardMessage - the platform-neutral message format
-  channel_structure.py         # clip_name helper for fitting names into Stoat's 32-char channel-name limit
+  channel_structure.py         # clip_name(name, limit=32) clips a mirrored channel/category/role name to a destination's limit (#99); thread_category_title adds the 🧵 # thread-group marker (#98)
   admin_commands/               # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
     common.py                   # ConnectorInfo hook dataclass, LinkError/MirrorInProgressError, MirrorGuard, pop_kv_option, id/name-resolution + conflict-check helpers
     channel.py / category.py / emote.py / user.py / role.py # one linker class per module - category.py depends on channel.py (mirrors a linked Category's child channels); the rest are independent

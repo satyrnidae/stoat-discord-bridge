@@ -179,6 +179,66 @@ async def test_mirror_role_all_one_line_per_connector(fake_db):
     assert any("IRC: doesn't support role creation" in line for line in lines)
 
 
+async def test_mirror_role_clips_the_name_to_the_destination_limit(fake_db):
+    # issue #99: a role name that fits Discord (100) is clipped to Stoat's 32.
+    seen = []
+
+    async def ensure_role(name):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    async def d_name(role_id):
+        return {"d1": "R" * 40}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", role_name_limit=100, resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", role_name_limit=32, ensure_role=ensure_role),
+    )
+    linker = _linker(fake_db, connectors)
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert seen == ["R" * 32]
+
+
+async def test_mirror_role_within_the_limit_is_untouched(fake_db):
+    seen = []
+
+    async def ensure_role(name):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", role_name_limit=100, resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", role_name_limit=32, ensure_role=ensure_role),
+    )
+    linker = _linker(fake_db, connectors)
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert seen == ["Mods"]
+
+
+async def test_mirror_role_new_name_override_is_also_clipped(fake_db):
+    seen = []
+
+    async def ensure_role(name):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", role_name_limit=100, resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", role_name_limit=32, ensure_role=ensure_role),
+    )
+    linker = _linker(fake_db, connectors)
+    await linker.mirror_role(
+        local_connector="discord", local_role="d1", destination="stoat", new_name="M" * 50
+    )
+    assert seen == ["M" * 32]
+
+
 # ---- mirror_role_from
 
 

@@ -48,6 +48,7 @@ from stoat_discord_bridge.services.irc_service import (
     IrcReceiverService,
     IrcSenderService,
 )
+from stoat_discord_bridge.services.irc_service.formatting import RFC_CHANNEL_NAME_LIMIT
 from stoat_discord_bridge.services.stoat_service import (
     StoatReceiverService,
     StoatSenderService,
@@ -715,6 +716,10 @@ async def run(config: BridgeConfig) -> None:
         connector_infos[dc.id] = ConnectorInfo(
             id=dc.id,
             label=dc.label,
+            # Discord caps channel/category/role names at 100 chars (issue #99).
+            channel_name_limit=100,
+            category_name_limit=100,
+            role_name_limit=100,
             resolve_channel_name=sender.get_channel_name,
             resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
             resolve_channel_category=sender.get_channel_category,
@@ -785,6 +790,10 @@ async def run(config: BridgeConfig) -> None:
         connector_infos[sc.id] = ConnectorInfo(
             id=sc.id,
             label=sc.label,
+            # Stoat caps channel/category/role names at 32 chars (issue #99).
+            channel_name_limit=32,
+            category_name_limit=32,
+            role_name_limit=32,
             resolve_channel_name=sender.get_channel_name,
             resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
             resolve_channel_category=sender.get_channel_category,
@@ -849,6 +858,11 @@ async def run(config: BridgeConfig) -> None:
         connector_infos[ic.id] = ConnectorInfo(
             id=ic.id,
             label=ic.label,
+            # A conservative RFC-2812-derived default; the live server-advertised
+            # CHANNELLEN (tighter on some networks) is applied as a backstop in
+            # IrcSenderService.ensure_channel / normalize_channel_name. IRC has
+            # no category or role concept (issue #99).
+            channel_name_limit=RFC_CHANNEL_NAME_LIMIT,
             on_channel_linked=sender.join_channel,
             on_channel_unlinked=sender.part_channel,
             ensure_channel=sender.ensure_channel,

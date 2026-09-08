@@ -1,12 +1,21 @@
-"""Small helper for fitting a Discord channel/category name into the
-32-character limit Stoat enforces on its own channel/category names, used
-when mirroring a Discord thread onto another connector.
+"""Small helper for clipping a channel/category/role name to a destination
+connector's per-entity name-length limit before a `/mirror` command hands it
+to that connector's `ensure_*` hook (issue #99), plus the thread-group
+Category title marker (issue #98).
+
+Originally channel-only: fitting a Discord thread name into the 32-character
+limit Stoat enforces on its own channel/category names, when mirroring a
+Discord thread onto another connector. That call site
+(`ChannelLinker.mirror_channel`, via `thread_category_title`) still relies on
+the default limit.
 """
 
 from __future__ import annotations
 
-# Stoat category/channel names are capped at 32 characters.
-_NAME_LIMIT = 32
+# Stoat channel/category/role names are all capped at 32 characters, which is
+# also the tightest limit the bridge deals with - so it stays the default and
+# the original Discord-thread-mirror call site is unaffected.
+_DEFAULT_NAME_LIMIT = 32
 
 # A bridge-generated thread-group Category is titled with this marker (thread
 # emoji + the channel-identifier `#`) so it stands out from an ordinary
@@ -19,8 +28,10 @@ _NAME_LIMIT = 32
 THREAD_CATEGORY_PREFIX = "🧵 #"
 
 
-def clip_name(name: str) -> str:
-    return name.strip()[:_NAME_LIMIT]
+def clip_name(name: str, limit: int = _DEFAULT_NAME_LIMIT) -> str:
+    """`name` stripped of surrounding whitespace and truncated to `limit`
+    characters (default 32 - Stoat's cap)."""
+    return name.strip()[:limit]
 
 
 def thread_category_title(name: str) -> str:

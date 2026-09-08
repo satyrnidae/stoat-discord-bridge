@@ -29,6 +29,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     format_linked_listing,
 )
+from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.storage.category_mappings import (
     CategoryMapping,
     CategoryMappingRepository,
@@ -251,6 +252,13 @@ class CategoryLinker:
 
         dest_info = self._connectors[destination]
         dest_label = dest_info.label
+
+        # Clip to the destination's category-name limit so a title that fits
+        # the source platform isn't rejected/mangled by the destination's API
+        # (issue #99). `new_name` overrides ride the same `target_name`; child
+        # channels are clipped independently by `ChannelLinker.mirror_channel`.
+        if dest_info.category_name_limit is not None:
+            target_name = clip_name(target_name, dest_info.category_name_limit)
 
         bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
         dest_category_id: str | None = None

@@ -79,6 +79,45 @@ async def test_ensure_channel_does_not_set_topic_when_the_channel_already_existe
     assert conn.topic_calls == []
 
 
+# ---------------------------------------------------------- CHANNELLEN truncation backstop (issue #99)
+
+
+async def test_ensure_channel_truncates_an_over_long_name_to_the_rfc_default(monkeypatch):
+    sender = _make_sender()
+    conn = FakeConnection()  # no `features` -> RFC_CHANNEL_NAME_LIMIT (50, prefix included)
+    _patch_connection(monkeypatch, sender, conn)
+
+    result = await sender.ensure_channel("a" * 80)
+
+    assert result == "#" + "a" * 49
+    assert conn.join_calls == ["#" + "a" * 49]
+
+
+async def test_ensure_channel_honors_a_stricter_server_advertised_channellen(monkeypatch):
+    from types import SimpleNamespace
+
+    sender = _make_sender()
+    conn = FakeConnection()
+    conn.features = SimpleNamespace(channellen=10)
+    _patch_connection(monkeypatch, sender, conn)
+
+    result = await sender.ensure_channel("a" * 80)
+
+    assert result == "#" + "a" * 9
+
+
+async def test_normalize_channel_name_truncates_to_channellen(monkeypatch):
+    from types import SimpleNamespace
+
+    sender = _make_sender()
+    conn = FakeConnection()
+    conn.features = SimpleNamespace(channellen=8)
+    _patch_connection(monkeypatch, sender, conn)
+
+    # so the stored name matches the id ensure_channel would produce (issue #99)
+    assert sender.normalize_channel_name("a" * 40) == "#" + "a" * 7
+
+
 # ---------------------------------------------------------- resolve_channel_id_by_name (issue #41)
 
 
