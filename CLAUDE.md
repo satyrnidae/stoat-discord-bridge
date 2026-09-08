@@ -58,7 +58,7 @@ in this repo yet; CI (`.github/workflows/ci.yml`) runs `pytest` on Python
 the Discord/Stoat receivers, the Discord sender's gateway-event dispatch,
 IRC's connection-free surface, `BridgeCoordinator`) is a same-named package
 instead - one file per concern plus a `conftest.py` for the fakes/fixtures
-that concern's files share (`tests/admin_commands/`, `tests/stoat_admin/`,
+that concern's files share (`tests/admin_commands/`, `tests/stoat_service/`,
 `tests/discord_service/`, `tests/discord_receiver/`, `tests/stoat_receiver/`,
 `tests/discord_sender_dispatch/`, `tests/irc_service/`, `tests/bridge/`).
 `tests/fakes/fake_linkers.py` holds the one `ChannelLinker`/`UserLinker`

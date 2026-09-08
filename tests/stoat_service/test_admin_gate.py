@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from tests.fakes.fake_stoat import FakeChannel
-from tests.stoat_admin.conftest import (
+from tests.stoat_service.conftest import (
     FakeCategoryLinker,
     FakeEmoteLinker,
     FakeLinker,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from stoat_discord_bridge.admin_commands import LinkError
 from tests.fakes.fake_stoat import FakeCategory, FakeChannel
-from tests.stoat_admin.conftest import FakeCategoryLinker, _make_ctx, _make_sender
+from tests.stoat_service.conftest import FakeCategoryLinker, _make_ctx, _make_sender
 
 
 # ---------------------------------------------------------------- _linked_categories

@@ -1,5 +1,5 @@
 """Shared fixtures/fakes for the StoatSenderService admin-command dispatch
-suite (`tests/stoat_admin/`) - the `_link_*` / `_mirror_channel` / `_linked_*`
+suite (`tests/stoat_service/`) - the `_link_*` / `_mirror_channel` / `_linked_*`
 / `_unlink_*` methods the `stoat.ext.commands` tree on `_StoatClient` forwards
 to, and the `_is_admin` Manage-Server gate behind the mutating ones.
 

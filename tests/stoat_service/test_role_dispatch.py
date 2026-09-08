@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.stoat_admin.conftest import FakeRoleLinker, _make_ctx, _make_sender
+from tests.stoat_service.conftest import FakeRoleLinker, _make_ctx, _make_sender
 
 
 # ---------------------------------------------------------------- role commands

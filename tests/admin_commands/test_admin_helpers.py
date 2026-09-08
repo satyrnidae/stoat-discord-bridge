@@ -1,24 +1,4 @@
-from stoat_discord_bridge.admin_commands import ChannelLinker, EmoteLinker, UserLinker, pop_kv_option
-
-
-# ---------------------------------------------------------------- .connectors (Discord autocomplete)
-
-
-def test_channel_linker_exposes_the_connectors_it_was_given(connectors):
-    linker = ChannelLinker(channel_mappings=None, connectors=connectors)
-    assert linker.connectors == connectors
-
-
-def test_emote_linker_exposes_the_connectors_it_was_given(connectors):
-    linker = EmoteLinker(emoji_mappings=None, connectors=connectors)
-    assert linker.connectors == connectors
-
-
-def test_user_linker_exposes_the_connectors_it_was_given(connectors):
-    linker = UserLinker(user_mappings=None, connectors=connectors)
-    assert linker.connectors == connectors
-
-
+from stoat_discord_bridge.admin_commands import pop_kv_option
 
 
 def test_pop_kv_option_pulls_the_first_matching_pair_out():

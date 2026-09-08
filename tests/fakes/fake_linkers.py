@@ -1,5 +1,5 @@
 """Shared fake `ChannelLinker`/`UserLinker` doubles for the Stoat and IRC
-admin-command dispatch suites (`tests/stoat_admin/`, `tests/test_irc_admin_dispatch.py`)
+admin-command dispatch suites (`tests/stoat_service/`, `tests/test_irc_admin_dispatch.py`)
 - both connectors' `_link_channel`/`_mirror_channel`/... handlers forward to the same
 `admin_commands` linker shape, so the fakes standing in for them were previously
 declared twice, identically apart from the canned `list_linked_channels` summary

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from stoat_discord_bridge.admin_commands import LinkError
-from tests.stoat_admin.conftest import FakeEmoteLinker, FakeUserLinker, _make_ctx, _make_sender
+from tests.stoat_service.conftest import FakeEmoteLinker, FakeUserLinker, _make_ctx, _make_sender
 
 
 # ---------------------------------------------------------------- _link_emote
