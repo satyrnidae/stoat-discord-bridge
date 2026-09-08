@@ -24,6 +24,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     format_linked_listing,
 )
+from stoat_discord_bridge.channel_structure import thread_category_title
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
@@ -268,6 +269,17 @@ class ChannelLinker:
             )
             if linked_category is not None:
                 category = linked_category
+
+        # A bridge-generated thread group's Category is titled with a marker
+        # prefix (thread emoji + `#`) so it stands out from an ordinary
+        # same-named Category (issue #98). Applied here - the single point the
+        # auto-mirror and both manual-mirror directions funnel through - and
+        # before the title reaches `ensure_channel`, whose existing-Category
+        # match is by exact title, so an idempotent re-mirror computes the
+        # same prefixed string and reuses the Category rather than nesting a
+        # `🧵 #🧵 #<name>`. The mirrored *channel* name is left untouched.
+        if is_thread_category and category is not None:
+            category = thread_category_title(category)
 
         # Cosmetic metadata (description / maturity / icon) off the source
         # channel, so the mirrored channel isn't created blank (issue #32).

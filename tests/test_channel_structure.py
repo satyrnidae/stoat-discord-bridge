@@ -1,4 +1,9 @@
-from stoat_discord_bridge.channel_structure import clip_name
+from stoat_discord_bridge.channel_structure import (
+    THREAD_CATEGORY_PREFIX,
+    clip_name,
+    strip_thread_category_prefix,
+    thread_category_title,
+)
 
 
 def test_clip_name_strips_whitespace():
@@ -14,3 +19,22 @@ def test_clip_name_truncates_to_32_chars():
 
 def test_clip_name_strips_then_truncates():
     assert clip_name("  " + "a" * 40 + "  ") == "a" * 32
+
+
+def test_thread_category_title_prefixes_with_the_marker():
+    assert thread_category_title("general") == "🧵 #general"
+    assert thread_category_title("  general  ") == "🧵 #general"
+
+
+def test_thread_category_title_clips_after_prefixing():
+    clipped = thread_category_title("a" * 50)
+    assert len(clipped) == 32
+    assert clipped.startswith(THREAD_CATEGORY_PREFIX)
+
+
+def test_strip_thread_category_prefix_round_trips():
+    assert strip_thread_category_prefix(thread_category_title("general")) == "general"
+
+
+def test_strip_thread_category_prefix_leaves_an_unprefixed_title_alone():
+    assert strip_thread_category_prefix("general") == "general"

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 
+from stoat_discord_bridge.channel_structure import strip_thread_category_prefix
 from stoat_discord_bridge.services.caching import AsyncTTLCache, RefreshThrottle
 
 logger = logging.getLogger(__name__)
@@ -239,7 +240,10 @@ class _RefreshMixin:
                 parent = next((ch for ch in channels if str(ch.id) == bound_parent_id), None)
             else:
                 # Legacy row with no parent binding - fall back to name match.
-                parent = next((ch for ch in channels if ch.name == thread_cat.title), None)
+                # The Category title carries a `🧵 #` marker prefix (issue #98)
+                # that the parent channel name doesn't, so strip it first.
+                wanted = strip_thread_category_prefix(thread_cat.title)
+                parent = next((ch for ch in channels if ch.name == wanted), None)
             if parent is None:
                 return
             if list(getattr(thread_cat, "channels", None) or [])[:1] == [parent.id]:

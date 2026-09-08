@@ -173,6 +173,26 @@ async def test_receive_groups_the_parent_channel_atop_the_thread_category():
     assert cats["bot-config"] == ["parent-1", "thread-1"]  # parent first, then the thread
 
 
+async def test_receive_groups_the_parent_via_the_prefix_stripped_legacy_name_match():
+    # A legacy thread Category (no parent binding) is now titled "🧵 #bot-config"
+    # by issue #98's prefix; the fallback name match must strip that marker to
+    # still find parent channel "bot-config".
+    client = FakeClient()
+    server = _thread_grouping_server()
+    server.categories[1].title = "🧵 #bot-config"
+    client.add_server(server)
+    client.add_channel(FakeChannel(id="thread-1"))
+    receiver = _make_receiver(client)
+    receiver._sender._category_linker = _ThreadCats({"cat-bc"})
+
+    await receiver.receive(_message(), target_channel_id="thread-1")
+
+    [payload] = server.server_edits
+    cats = {c["id"]: c["channels"] for c in payload["categories"]}
+    assert cats["cat-admin"] == []
+    assert cats["cat-bc"] == ["parent-1", "thread-1"]
+
+
 async def test_receive_groups_the_parent_by_binding_after_a_rename():
     client = FakeClient()
     server = _thread_grouping_server()

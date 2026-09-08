@@ -247,7 +247,35 @@ async def test_mirror_channel_forwards_is_thread_category_to_ensure_channel(fake
         local_channel_category="Announcements",
         is_thread_category=True,
     )
-    assert calls == [("Test Thread", "Announcements", True)]
+    # A thread-category title is prefixed with the thread marker (issue #98).
+    assert calls == [("Test Thread", "🧵 #Announcements", True)]
+
+
+async def test_mirror_channel_thread_category_prefix_is_not_doubled_on_a_second_thread(fake_db):
+    """Two threads under the same parent both resolve to the identical
+    prefixed Category title - never "🧵 #🧵 #<name>" (issue #98)."""
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append(category)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    for thread_id in ("d1", "d2"):
+        await linker.mirror_channel(
+            local_connector="discord",
+            local_channel_id=thread_id,
+            local_channel_name=f"thread {thread_id}",
+            destination="stoat",
+            local_channel_category="Announcements",
+            is_thread_category=True,
+        )
+    assert calls == ["🧵 #Announcements", "🧵 #Announcements"]
 
 
 async def test_mirror_channel_defaults_is_thread_category_to_false(fake_db):
@@ -387,8 +415,9 @@ async def test_mirror_channel_infers_thread_category_from_resolve_thread_parent(
         destination="stoat", local_channel_category="Some Other Category",
     )
 
-    # thread Category named after (and bound to) Stoat's own copy of the parent
-    assert calls == [("cool thread", "Bot Config", True, "s-parent")]
+    # thread Category named after (and bound to) Stoat's own copy of the
+    # parent, prefixed with the thread marker (issue #98)
+    assert calls == [("cool thread", "🧵 #Bot Config", True, "s-parent")]
 
 
 async def test_mirror_channel_thread_parent_falls_back_to_source_name_when_unlinked(fake_db):
@@ -412,8 +441,9 @@ async def test_mirror_channel_thread_parent_falls_back_to_source_name_when_unlin
         destination="stoat",
     )
 
-    # parent not linked on Stoat -> Category by the Discord parent name, no binding id
-    assert calls == [("cool thread", "bot-config", True, None)]
+    # parent not linked on Stoat -> Category by the Discord parent name
+    # (thread-marker prefixed, issue #98), no binding id
+    assert calls == [("cool thread", "🧵 #bot-config", True, None)]
 
 
 async def test_mirror_channel_non_thread_ignores_resolve_thread_parent(fake_db):
