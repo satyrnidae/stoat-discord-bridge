@@ -33,7 +33,7 @@ _HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full d
   LINKED USERS [local_id|name] - cross-connector user links, read-only
   LINK CHANNEL <local_id> <service> <external_id> - bridge a channel (IRC-operator)
   LINK USER <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (IRC-operator)
-  MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] - create+link a matching channel elsewhere; CATEGORY:<> (single service) overrides linked Categories (IRC-operator)
+  MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] - create+link a matching channel elsewhere; CATEGORY:<> (single service) overrides linked Categories (IRC-operator)
   MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>] - create+link a local channel mirroring a remote one (IRC-operator)
   UNLINK CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
   UNLINK USER [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
@@ -146,13 +146,14 @@ class IrcAdminCommandsMixin:
                 log_context=command,
             )
         elif command == "MIRROR CHANNEL":
-            # `MIRROR CHANNEL TO [service|all] <local_id>` pushes a local
+            # `MIRROR CHANNEL TO <service|all> <local_id>` pushes a local
             # channel onto another connector; `MIRROR CHANNEL FROM <service>
             # <external_id>` pulls a remote channel in and creates the local
-            # copy. Both lead with `<service>` (matching Discord/Stoat); the
-            # local id is always required on `TO` (an IRC DM has no "current
-            # channel"), so 1 arg is just the id (service defaults to `all`),
-            # 2 args are service then id.
+            # copy. Both lead with a required `<service>` (matching
+            # Discord/Stoat; `all` is a valid explicit value on `TO`, not the
+            # default on omission - issue #97). The local id is always required
+            # on `TO` (an IRC DM has no "current channel"), so `TO` always
+            # takes exactly 2 args: service then id.
             direction = args[0].upper() if args else ""
             rest = args[1:]
             # `CATEGORY:<id|name>` (issue #75) places the counterpart in a
@@ -180,11 +181,7 @@ class IrcAdminCommandsMixin:
                     "CATEGORY:<id|name> only applies to MIRROR CHANNEL TO <service> <local_id> (a single service).",
                 )
                 return
-            if direction == "TO" and len(rest) == 1:
-                coro = self._linker.mirror_channel_all(
-                    local_connector=self.connector_id, local_channel_id=rest[0], local_channel_name=rest[0]
-                )
-            elif direction == "TO" and len(rest) == 2 and rest[0].lower() == "all":
+            if direction == "TO" and len(rest) == 2 and rest[0].lower() == "all":
                 coro = self._linker.mirror_channel_all(
                     local_connector=self.connector_id, local_channel_id=rest[1], local_channel_name=rest[1]
                 )
@@ -204,7 +201,7 @@ class IrcAdminCommandsMixin:
             else:
                 self._notify(
                     nick,
-                    "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
+                    "Usage: MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
                     "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
                 )
                 return

@@ -182,7 +182,7 @@ async def test_mirror_category_all_dispatches_to_mirror_category_all():
     sender = _make_sender(FakeLinker(), category_linker=category_linker)
     interaction = FakeInteraction(category=SimpleNamespace(id=777, name="Team"))
 
-    await sender._handle_mirror_category(interaction, None, None)
+    await sender._handle_mirror_category(interaction, "all")
 
     assert category_linker.mirror_category_all_calls == [
         {"local_connector": "discord", "local_category_id": "777", "local_category": None}
@@ -195,7 +195,7 @@ async def test_mirror_category_to_a_named_local_category_and_one_destination():
     sender = _make_sender(FakeLinker(), category_linker=category_linker)
     interaction = FakeInteraction(category=None)
 
-    await sender._handle_mirror_category(interaction, "Team Chat", "stoat")
+    await sender._handle_mirror_category(interaction, "stoat", "Team Chat")
 
     assert category_linker.mirror_category_calls == [
         {
@@ -214,7 +214,7 @@ async def test_mirror_category_without_a_category_or_token_errors():
     sender = _make_sender(FakeLinker(), category_linker=category_linker)
     interaction = FakeInteraction(category=None)
 
-    await sender._handle_mirror_category(interaction, None, None)
+    await sender._handle_mirror_category(interaction, "all")
 
     assert interaction.sent == ["This channel isn't inside a Category."]
     assert category_linker.mirror_category_all_calls == []

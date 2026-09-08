@@ -52,48 +52,58 @@ class _MirrorOwner:
     async def _reply(self, ctx, text):
         self.replies.append(text)
 
-    async def _mirror_role(self, ctx, local_id=None, service=None, new_name=None):
-        self.mirror_role_calls.append((local_id, service, new_name))
+    async def _mirror_role(self, ctx, service, local_id=None, new_name=None):
+        self.mirror_role_calls.append((service, local_id, new_name))
 
-    async def _mirror_emote(self, ctx, local_id=None, service=None, new_name=None):
-        self.mirror_emote_calls.append((local_id, service, new_name))
+    async def _mirror_emote(self, ctx, service, local_id=None, new_name=None):
+        self.mirror_emote_calls.append((service, local_id, new_name))
 
-    async def _mirror_channel(self, ctx, local_id=None, service=None, new_name=None, category=None):
-        self.mirror_channel_calls.append((local_id, service, new_name, category))
+    async def _mirror_channel(self, ctx, service, local_id=None, new_name=None, category=None):
+        self.mirror_channel_calls.append((service, local_id, new_name, category))
 
     async def _mirror_channel_from(self, ctx, service, external_id, new_name=None, category=None):
         self.mirror_channel_from_calls.append((service, external_id, new_name, category))
 
 
-async def test_mirror_role_to_lone_arg_is_the_role_not_the_service():
+async def test_mirror_role_to_takes_service_then_role():
+    # issue #97: `<service|all>` is a required leading argument now - no
+    # lone-arg heuristic to resolve.
     owner = _MirrorOwner()
     bot = _bare_bot(owner)
     to = bot.all_commands["mirror"].all_commands["role"].all_commands["to"]
 
-    await to.callback(SimpleNamespace(), "Mods")
+    await to.callback(SimpleNamespace(), "all", "Mods")
     await to.callback(SimpleNamespace(), "stoat", "Mods")
     await to.callback(SimpleNamespace(), "stoat", "Mods", "Moderators")
 
     assert owner.mirror_role_calls == [
-        ("Mods", None, None),
-        ("Mods", "stoat", None),
-        ("Mods", "stoat", "Moderators"),
+        ("all", "Mods", None),
+        ("stoat", "Mods", None),
+        ("stoat", "Mods", "Moderators"),
     ]
 
 
-async def test_mirror_emote_to_lone_arg_is_the_emote_not_the_service():
+async def test_mirror_role_and_emote_to_declare_a_required_service():
+    # issue #97: a lone `to <role>` no longer silently fans out - `<service>`
+    # is a required positional, so stoat.py's framework reports it missing
+    # (surfaced as a Usage message by `on_command_error`, covered elsewhere).
+    bot = _bare_bot()
+    for noun in ("role", "emote"):
+        to = bot.all_commands["mirror"].all_commands[noun].all_commands["to"]
+        assert to.signature == "<service> <local_id> [new_name]"
+
+
+async def test_mirror_emote_to_takes_service_then_emote():
     owner = _MirrorOwner()
     bot = _bare_bot(owner)
     to = bot.all_commands["mirror"].all_commands["emote"].all_commands["to"]
 
-    await to.callback(SimpleNamespace(), "blob")
     await to.callback(SimpleNamespace(), "all", "blob")
     await to.callback(SimpleNamespace(), "stoat", "blob", "blobcat")
 
     assert owner.mirror_emote_calls == [
-        ("blob", None, None),
-        ("blob", "all", None),
-        ("blob", "stoat", "blobcat"),
+        ("all", "blob", None),
+        ("stoat", "blob", "blobcat"),
     ]
 
 
@@ -107,10 +117,33 @@ async def test_mirror_channel_to_pulls_a_category_kv_token_from_anywhere():
     await to.callback(SimpleNamespace(), "stoat", "category:Bot Config", "general", "lobby")
 
     assert owner.mirror_channel_calls == [
-        ("general", "stoat", None, None),
-        ("general", "stoat", None, "01ABC"),
-        ("general", "stoat", "lobby", "Bot Config"),
+        ("stoat", "general", None, None),
+        ("stoat", "general", None, "01ABC"),
+        ("stoat", "general", "lobby", "Bot Config"),
     ]
+
+
+async def test_mirror_channel_to_declares_a_required_service():
+    # issue #97: `<service>` is a required positional now - stoat.py's framework
+    # reports it missing when omitted entirely.
+    bot = _bare_bot()
+    to = bot.all_commands["mirror"].all_commands["channel"].all_commands["to"]
+
+    assert to.signature == "<service> [local_id] [new_name] [category]"
+
+
+async def test_mirror_channel_to_with_only_a_category_token_replies_usage():
+    # the one case the framework can't catch: `service` was bound but is really
+    # the `category:` kv token, leaving no positional tokens -> Usage, not a
+    # fan-out to every connector.
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands["channel"].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "category:01ABC")
+
+    assert owner.mirror_channel_calls == []
+    assert owner.replies == ["Usage: /mirror channel to <service|all> [local_id|name] [new_name] [category:<id|name>]"]
 
 
 async def test_mirror_channel_from_pulls_a_category_kv_token_and_validates_arity():

@@ -55,12 +55,12 @@ async def test_linked_emotes_lists_the_group():
     assert ctx.channel.sent[0]["content"].startswith("Linked emotes:")
 
 
-async def test_mirror_emote_to_all_by_default():
+async def test_mirror_emote_to_all_is_explicit():
     emote_linker = FakeEmoteLinker()
     sender = _make_sender(emote_linker=emote_linker)
     ctx = _make_ctx()
 
-    await sender._mirror_emote(ctx, "blob")
+    await sender._mirror_emote(ctx, "all", "blob")
 
     assert emote_linker.mirror_emote_all_calls == [{"local_connector": "stoat", "local_emote": "blob"}]
     assert ctx.channel.sent[0]["content"] == "emote mirrored to all ok"
@@ -71,7 +71,7 @@ async def test_mirror_emote_to_a_single_destination():
     sender = _make_sender(emote_linker=emote_linker)
     ctx = _make_ctx()
 
-    await sender._mirror_emote(ctx, "blob", "discord")
+    await sender._mirror_emote(ctx, "discord", "blob")
 
     assert emote_linker.mirror_emote_calls == [
         {"local_connector": "stoat", "local_emote": "blob", "destination": "discord", "new_name": None}
@@ -83,7 +83,7 @@ async def test_mirror_emote_to_forwards_a_new_name():
     sender = _make_sender(emote_linker=emote_linker)
     ctx = _make_ctx()
 
-    await sender._mirror_emote(ctx, "blob", "discord", "blobcat")
+    await sender._mirror_emote(ctx, "discord", "blob", "blobcat")
 
     assert emote_linker.mirror_emote_calls == [
         {"local_connector": "stoat", "local_emote": "blob", "destination": "discord", "new_name": "blobcat"}

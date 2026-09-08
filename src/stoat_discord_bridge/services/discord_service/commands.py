@@ -249,14 +249,14 @@ def build_command_tree(service) -> None:
         name="to", description="Ensure a linked counterpart of a local role exists on another connector"
     )
     @app_commands.describe(
-        service="Connector id to mirror to, or 'all' (default: all)",
+        service="Connector id to mirror to, or 'all'",
         local_id="Role id or name on this connector",
         new_name="Name for the counterpart role on the target connector (default: same as this one)",
     )
     @app_commands.autocomplete(service=role_service_autocomplete(include_all=True), local_id=role_local_ac)
     async def mirror_role_to_command(
         interaction: discord.Interaction,
-        service: str | None = None,
+        service: str,
         local_id: str | None = None,
         new_name: str | None = None,
     ) -> None:
@@ -326,7 +326,7 @@ def build_command_tree(service) -> None:
     )
     @app_commands.describe(
         local_id="Channel id or name on this connector (defaults to the current channel)",
-        service="Connector id to mirror to, or 'all' (default: all)",
+        service="Connector id to mirror to, or 'all'",
         new_name="Name for the counterpart channel on the target connector (default: same as this one)",
         category="Category id or name on the target connector to place the counterpart in - overrides linked Categories; requires a single service, not 'all'",
     )
@@ -337,7 +337,7 @@ def build_command_tree(service) -> None:
     )
     async def mirror_channel_to_command(
         interaction: discord.Interaction,
-        service: str | None = None,
+        service: str,
         local_id: str | None = None,
         new_name: str | None = None,
         category: str | None = None,
@@ -462,7 +462,7 @@ def build_command_tree(service) -> None:
     )
     @app_commands.describe(
         local_id="Category id or name on this connector (defaults to the current channel's Category)",
-        service="Connector id to mirror to, or 'all' (default: all)",
+        service="Connector id to mirror to, or 'all'",
         new_name="Title for the counterpart Category on the target connector (default: same as this one)",
     )
     @app_commands.autocomplete(
@@ -470,11 +470,11 @@ def build_command_tree(service) -> None:
     )
     async def mirror_category_to_command(
         interaction: discord.Interaction,
-        service: str | None = None,
+        service: str,
         local_id: str | None = None,
         new_name: str | None = None,
     ) -> None:
-        await self._handle_mirror_category(interaction, local_id, service, new_name)
+        await self._handle_mirror_category(interaction, service, local_id, new_name)
 
     @mirror_category_group.command(
         name="from", description="Create a local Category mirroring one from another connector, and link them"
@@ -539,14 +539,14 @@ def build_command_tree(service) -> None:
         name="to", description="Recreate a local custom emoji on another connector and link the two"
     )
     @app_commands.describe(
-        service="Connector id to mirror to, or 'all' (default: all)",
+        service="Connector id to mirror to, or 'all'",
         local_id="Emoji id or name on this connector",
         new_name="Name for the counterpart emoji on the target connector (default: same as this one)",
     )
     @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True), local_id=emote_local_ac)
     async def mirror_emote_to_command(
         interaction: discord.Interaction,
-        service: str | None = None,
+        service: str,
         local_id: str | None = None,
         new_name: str | None = None,
     ) -> None:

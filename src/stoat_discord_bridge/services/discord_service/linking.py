@@ -197,8 +197,8 @@ class DiscordLinkingMixin:
     async def _handle_mirror_category(
         self,
         interaction: discord.Interaction,
+        service: str,
         local_id: str | None = None,
-        service: str | None = None,
         new_name: str | None = None,
     ) -> None:
         if not await self._linker_configured(interaction, self._category_linker, "Category linking isn't configured."):
@@ -220,7 +220,7 @@ class DiscordLinkingMixin:
             local_category_id=self._invoking_category_id(interaction),
             local_category=local_id,
         )
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._category_linker.mirror_category_all(**kwargs)
         else:
             coro = self._category_linker.mirror_category(destination=service, new_name=new_name, **kwargs)
@@ -315,7 +315,7 @@ class DiscordLinkingMixin:
         self,
         interaction: discord.Interaction,
         local_id: str | None,
-        service: str | None,
+        service: str,
         new_name: str | None = None,
     ) -> None:
         if not await self._linker_configured(interaction, self._role_linker, "Role linking isn't configured."):
@@ -334,7 +334,7 @@ class DiscordLinkingMixin:
         # Creating/matching the role on the target connector is a network
         # round-trip that can outrun Discord's 3s deadline - defer + followup.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._role_linker.mirror_role_all(local_connector=self.connector_id, local_role=local_id)
         else:
             coro = self._role_linker.mirror_role(
@@ -426,7 +426,7 @@ class DiscordLinkingMixin:
         self,
         interaction: discord.Interaction,
         local_id: str | None,
-        service: str | None,
+        service: str,
         new_name: str | None = None,
     ) -> None:
         if not await self._linker_configured(interaction, self._emote_linker, "Linking isn't configured."):
@@ -444,7 +444,7 @@ class DiscordLinkingMixin:
         # Recreating the emoji on the target connector uploads its image -
         # comfortably past Discord's 3s deadline - so defer + followup.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._emote_linker.mirror_emote_all(local_connector=self.connector_id, local_emote=local_id)
         else:
             coro = self._emote_linker.mirror_emote(
@@ -511,14 +511,14 @@ class DiscordLinkingMixin:
     async def _handle_mirror_channel(
         self,
         interaction: discord.Interaction,
-        service: str | None,
+        service: str,
         local_id: str | None,
         new_name: str | None = None,
         category: str | None = None,
     ) -> None:
         if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
             return
-        if category and (service is None or service.lower() == "all"):
+        if category and service.lower() == "all":
             await interaction.response.send_message(
                 "A destination Category can only be set when mirroring to a single connector, not 'all'.",
                 ephemeral=True,
@@ -554,7 +554,7 @@ class DiscordLinkingMixin:
         # runs well past Discord's 3s interaction-response deadline - defer up
         # front and reply via followup so the token doesn't expire mid-run.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._linker.mirror_channel_all(
                 local_connector=self.connector_id,
                 local_channel_id=channel_id,
