@@ -24,7 +24,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     format_linked_listing,
 )
-from stoat_discord_bridge.channel_structure import thread_category_title
+from stoat_discord_bridge.channel_structure import clip_name, thread_category_title
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
@@ -243,6 +243,18 @@ class ChannelLinker:
         dest_info = self._connectors[destination]
         if dest_info.ensure_channel is None:
             return f"{dest_info.label}: doesn't support channel creation - link it manually with /link channel."
+
+        # Normalize (IRC's `#`-prefix + character sterilization; a no-op on
+        # every other connector) then clip to the destination's channel-name
+        # limit, so the name handed to `ensure_channel` - and the one
+        # `link_channel` goes on to store - can't be rejected or silently
+        # mangled by the destination's API for being too long (issue #99), and
+        # can't disagree with the id `ensure_channel` returns on length.
+        # Normalize before clip so sterilization can't push a clipped name back
+        # over the limit (issue #51's stored-name/id agreement concern).
+        target_name = self._normalize_name(destination, target_name)
+        if dest_info.channel_name_limit is not None:
+            target_name = clip_name(target_name, dest_info.channel_name_limit)
 
         category = local_channel_category
         category_parent_channel_id: str | None = None

@@ -28,6 +28,7 @@ from stoat_discord_bridge.services.irc_service.formatting import (
     _HISTORY_REPLAY_NOTICE_RE,
     _HISTORY_REPLAY_TIMEOUT,
     _PERMANENT_CHANNEL_MODE,
+    RFC_CHANNEL_NAME_LIMIT,
     _split_permanent_mode,
     _synthetic_message_id,
     normalize_channel_name,
@@ -86,6 +87,19 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
     @property
     def connection(self):
         return self._client.connection
+
+    def _channel_name_limit(self) -> int:
+        """The channel-name cap to enforce: the server's advertised CHANNELLEN
+        ISUPPORT token if we've seen one (some networks set it well below the
+        RFC's 50), else `RFC_CHANNEL_NAME_LIMIT`. Backstops `/mirror channel`'s
+        own clip to `ConnectorInfo.channel_name_limit` (a static conservative
+        default, since the live value isn't known when that's built) - issue #99.
+        """
+        features = getattr(self.connection, "features", None)
+        advertised = getattr(features, "channellen", None)
+        if isinstance(advertised, int) and advertised > 0:
+            return advertised
+        return RFC_CHANNEL_NAME_LIMIT
 
     def _handle_welcome(self, connection) -> None:
         self._health.mark_connected(self.connector_id)
@@ -326,8 +340,10 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         - see join_channel's `permanent`). From `metadata` (issue #32) only
         `description` is usable - it becomes the channel TOPIC, set only when
         this JOIN just created the channel (see join_channel); NSFW / icon
-        have no IRC equivalent and are ignored."""
-        channel = normalize_channel_name(name)
+        have no IRC equivalent and are ignored. The `#name` is truncated to the
+        server's CHANNELLEN (or the RFC default) as a backstop, since a name
+        can reach here from paths other than `/mirror` - issue #99."""
+        channel = normalize_channel_name(name, self._channel_name_limit())
         topic = metadata.description if metadata is not None else None
         await self.join_channel(channel, permanent=not is_thread_category, topic=topic)
         return channel
@@ -340,16 +356,18 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         Discord/Stoat's version this is not a name->id lookup - an IRC
         channel id *is* its name - it just normalizes the token (adds the
         `#`, strips characters IRC channel names can't hold; see
-        normalize_channel_name)."""
-        return normalize_channel_name(token)
+        normalize_channel_name), truncating to CHANNELLEN so it matches the id
+        `ensure_channel` produces (issue #99)."""
+        return normalize_channel_name(token, self._channel_name_limit())
 
     def normalize_channel_name(self, name: str) -> str:
         """Wired into `ConnectorInfo.normalize_channel_name` so a channel name
         carried over to this connector by `/mirror channel` is stored in the
         same `#name` shape `ensure_channel` gives the id (issue #51) - otherwise
         a channel mirrored as `danksquad` lands with id `#danksquad` but name
-        `danksquad`. Synchronous, unlike `resolve_channel_id_by_name`."""
-        return normalize_channel_name(name)
+        `danksquad`. Truncates to CHANNELLEN for the same reason (issue #99).
+        Synchronous, unlike `resolve_channel_id_by_name`."""
+        return normalize_channel_name(name, self._channel_name_limit())
 
     async def list_channels(self) -> list[tuple[str, str]]:
         """Autocomplete source for Discord's `/link channel` `external_id`

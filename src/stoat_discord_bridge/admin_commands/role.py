@@ -23,6 +23,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     format_linked_listing,
 )
+from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,12 @@ class RoleLinker:
         dest_info = self._connectors[destination]
         if dest_info.ensure_role is None:
             return f"{dest_info.label}: doesn't support role creation - link it manually with /link role."
+
+        # Clip to the destination's role-name limit so a name that fits the
+        # source platform isn't rejected/mangled by the destination's API
+        # (issue #99). `new_name` overrides ride the same `target_name`.
+        if dest_info.role_name_limit is not None:
+            target_name = clip_name(target_name, dest_info.role_name_limit)
 
         try:
             destination_role_id = await dest_info.ensure_role(target_name)

@@ -418,6 +418,43 @@ async def test_mirror_category_new_name_titles_the_counterpart_only(fake_db):
     assert ensure_channel_calls == [("general", "Team Chat")]
 
 
+async def test_mirror_category_clips_the_title_to_the_destination_limit(fake_db):
+    # issue #99: a Category title that fits the source is clipped to the
+    # destination's category_name_limit before ensure_category.
+    ensure_category, created = _ensure_category_fake()
+
+    async def channels_in_category(cid):
+        return []
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", category_name_limit=100, channels_in_category=channels_in_category
+        ),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", category_name_limit=32, ensure_category=ensure_category
+        ),
+    }
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+
+    await linker.mirror_category(
+        local_connector="discord",
+        local_category_id="d-cat",
+        local_category_name="T" * 40,
+        destination="stoat",
+    )
+    assert created == ["T" * 32]
+
+    # a name within the limit, and a new_name override, are both handled the same
+    await linker.mirror_category(
+        local_connector="discord",
+        local_category_id="d-cat2",
+        local_category_name="Team",
+        destination="stoat",
+        new_name="N" * 50,
+    )
+    assert created == ["T" * 32, "N" * 32]
+
+
 async def test_mirror_category_stores_the_name_not_the_id_when_the_cache_is_stale(fake_db):
     # issue #64: the connector's resolve_category_name can't see a
     # just-created Category yet (its cache is populated at connect and blind

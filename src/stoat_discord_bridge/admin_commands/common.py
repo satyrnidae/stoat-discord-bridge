@@ -73,12 +73,14 @@ def pop_kv_option(tokens: list[str], key: str) -> tuple[list[str], str | None]:
 def _clean_new_name(raw: str | None) -> str | None:
     """A `new_name` override off a `/mirror <noun> to|from` command, trimmed -
     or None if it was blank/absent, meaning "carry the source name over" (the
-    historical behavior). Never normalized here: each connector's `ensure_*`
-    hook destination-normalizes whatever name it's handed (IRC's `#channel`
-    sterilizing, Stoat's 32-char clip, an emoji-name reject, ...), so routing
-    the override through that hook is what makes it "destination-normalized",
-    and the same call still get-or-creates so a same-named existing entity is
-    matched rather than duplicated (issue #44)."""
+    historical behavior). Never normalized or length-checked here: the shared
+    linker clips it to the destination's `ConnectorInfo.<entity>_name_limit`
+    (issue #99), and each connector's `ensure_*` hook destination-normalizes
+    whatever name it's handed after that (IRC's `#channel` sterilizing, an
+    emoji-name reject, ...) - so routing the override through the linker + hook
+    is what makes it "destination-normalized", and the same call still
+    get-or-creates so a same-named existing entity is matched rather than
+    duplicated (issue #44)."""
     if raw is None:
         return None
     stripped = raw.strip()
@@ -223,6 +225,22 @@ def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterabl
 class ConnectorInfo:
     id: str
     label: str
+    # Maximum length this connector accepts for a channel / category / role
+    # name. `/mirror channel|category|role` (every direction, `new_name`
+    # override included) clips the name it hands the destination's `ensure_*`
+    # hook to the matching limit via `channel_structure.clip_name`, so a name
+    # that fits the source platform is trimmed cleanly by the bridge rather
+    # than rejected or silently mangled by the destination's API (issue #99).
+    # `None` means "no bridge-side clip" - leave length handling to the
+    # platform. One per entity kind so a future platform with asymmetric caps
+    # is expressible. Discord is 100 across the board; Stoat 32; IRC's
+    # `channel_name_limit` is a conservative RFC-derived default (its live
+    # server-advertised CHANNELLEN, tighter on some networks, is applied as a
+    # backstop in `IrcSenderService.ensure_channel`), and it has no category
+    # or role concept.
+    channel_name_limit: int | None = None
+    category_name_limit: int | None = None
+    role_name_limit: int | None = None
     # Best-effort native-channel-id -> display-name lookup for the *other*
     # side of a link (the side that isn't "the channel the command was run
     # in", whose name we don't otherwise know). None, an exception, or a

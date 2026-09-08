@@ -21,6 +21,19 @@ def test_clip_name_strips_then_truncates():
     assert clip_name("  " + "a" * 40 + "  ") == "a" * 32
 
 
+def test_clip_name_respects_a_passed_limit():
+    assert clip_name("a" * 40, 10) == "a" * 10
+    assert clip_name("  " + "a" * 40 + "  ", 10) == "a" * 10
+
+
+def test_clip_name_limit_defaults_to_32():
+    assert clip_name("a" * 40) == clip_name("a" * 40, 32) == "a" * 32
+
+
+def test_clip_name_shorter_than_limit_is_untouched():
+    assert clip_name("general", 100) == "general"
+
+
 def test_thread_category_title_prefixes_with_the_marker():
     assert thread_category_title("general") == "🧵 #general"
     assert thread_category_title("  general  ") == "🧵 #general"

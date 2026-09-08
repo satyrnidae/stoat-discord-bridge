@@ -23,6 +23,15 @@ def test_connector_info_capability_flags_follow_the_wired_hooks():
     assert full.supports_emotes
 
 
+def test_connector_info_name_limits_default_to_none():
+    # issue #99: `None` means "no bridge-side clip" - the /mirror linkers skip
+    # clipping entirely for such a connector.
+    bare = ConnectorInfo(id="x", label="X")
+    assert bare.channel_name_limit is None
+    assert bare.category_name_limit is None
+    assert bare.role_name_limit is None
+
+
 # ---------------------------------------------------------------- .connectors (Discord autocomplete)
 
 
