@@ -282,6 +282,15 @@ class ConnectorInfo:
     # automatic thread-create mirror does, rather than dropping the thread
     # into the parent's own linked Category (issue #72).
     resolve_thread_parent: Callable[[str], Awaitable[tuple[str, str] | None]] | None = None
+    # Best-effort "is this native channel id a Discord forum/media channel?"
+    # check -> True (it's a forum), False (it isn't), or None (can't tell -
+    # bad id, uncached, an error, or a connector kind with no forum concept).
+    # Only Discord wires this. `ChannelLinker.link_channel` / `mirror_channel`
+    # redirect a forum target into the Category flow (`CategoryLinker`) - a
+    # forum acts like a Category, its posts are threads each already mirrored
+    # as its own channel (issue #100). `CategoryLinker` also consults it to
+    # title a forum-sourced Category `💬 #<forum>` rather than `🧵 #<parent>`.
+    is_forum_channel: Callable[[str], Awaitable[bool | None]] | None = None
     # Best-effort "can the bridge bot actually see this channel?" check, keyed
     # by native channel id. Returns True (visible), False (the channel
     # resolves but the bot lacks the view permission on it), or None ("can't
@@ -538,6 +547,24 @@ async def _resolve_entity_title(
         logger.debug("couldn't resolve %s id %r on %s", kind, entity_id, connector, exc_info=True)
         return None
     return name or None
+
+
+async def _is_forum_channel(
+    connectors: "dict[str, ConnectorInfo]", connector_id: str, channel_id: str
+) -> bool:
+    """True only when `connector_id`'s `is_forum_channel` hook says, for
+    certain, that `channel_id` is a Discord forum/media channel. A missing
+    hook (every non-Discord connector), an error, or a None ("can't tell")
+    all return False - so a forum redirect only ever fires on a definite
+    yes (issue #100)."""
+    info = connectors.get(connector_id)
+    if info is None or info.is_forum_channel is None:
+        return False
+    try:
+        return await info.is_forum_channel(channel_id) is True
+    except Exception:
+        logger.debug("is_forum_channel(%s) failed on %s", channel_id, connector_id, exc_info=True)
+        return False
 
 
 def _require_known_connector(connectors: "dict[str, ConnectorInfo]", connector_id: str) -> None:

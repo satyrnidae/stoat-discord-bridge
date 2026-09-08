@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from tests.discord_service.conftest import FakeCategoryLinker, FakeLinker, _make_sender
-from tests.fakes.fake_discord import FakeGuild, FakeGuildChannel
+from tests.fakes.fake_discord import FakeForumChannel, FakeGuild, FakeGuildChannel
 
 
 # ---------------------------------------------------------------- _handle_channel_create
@@ -58,6 +58,28 @@ async def test_handle_channel_create_noop_for_a_channel_with_no_category():
     await sender._handle_channel_create(channel)
 
     assert category_linker.sync_new_channel_calls == []
+
+
+async def test_handle_channel_create_syncs_a_new_forum_channel_in_a_linked_category():
+    # A ForumChannel created inside a linked Category is auto-mirrored too
+    # (issue #100) - sync_new_channel -> ChannelLinker.mirror_channel then
+    # redirects it into the Category flow.
+    category_linker = FakeCategoryLinker()
+    sender = _make_sender(FakeLinker(), category_linker=category_linker)
+    guild = FakeGuild(id=123)
+    category = FakeGuildChannel(id=555, name="Team", guild=guild)
+    forum = FakeForumChannel(id=888, name="ttrpg-forum", guild=guild, category=category)
+
+    await sender._handle_channel_create(forum)
+
+    assert category_linker.sync_new_channel_calls == [
+        {
+            "local_connector": "discord",
+            "local_category_id": "555",
+            "channel_id": "888",
+            "channel_name": "ttrpg-forum",
+        }
+    ]
 
 
 async def test_handle_channel_create_noop_for_a_non_text_or_voice_channel():

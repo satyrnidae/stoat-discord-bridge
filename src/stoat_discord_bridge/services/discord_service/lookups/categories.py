@@ -33,7 +33,13 @@ class _CategoriesMixin:
 
     async def channels_in_category(self, category_id: str) -> list[tuple[str, str]]:
         """Every channel inside Category `category_id`, as (id, name) pairs -
-        this connector's `ConnectorInfo.channels_in_category`."""
+        this connector's `ConnectorInfo.channels_in_category`. A
+        `discord.ForumChannel` is treated as a Category too (issue #100): its
+        *active* threads (`forum.threads`) are the children. Archived posts
+        are deliberately excluded - they're numerous and low-value, and any
+        post still mirrors lazily via `_handle_thread_create` when it next
+        sees activity. Anything that's neither a `CategoryChannel` nor a
+        `ForumChannel` yields `[]`."""
         guild = self._guild_or_none()
         if guild is None:
             return []
@@ -41,6 +47,8 @@ class _CategoriesMixin:
             category = guild.get_channel(int(category_id))
         except ValueError:
             return []
+        if isinstance(category, discord.ForumChannel):
+            return [(str(t.id), t.name) for t in category.threads]
         if not isinstance(category, discord.CategoryChannel):
             return []
         return [(str(c.id), c.name) for c in category.channels]

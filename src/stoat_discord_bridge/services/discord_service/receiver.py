@@ -471,8 +471,13 @@ class DiscordReceiverService(ReceiverService):
         # to open a new thread (thread_name/thread_id), which the webhook API
         # enforces with a 400 (error 220001). The bridge has no mapping for
         # "which thread", so relaying into one is unsupported outright (issue
-        # #69). A *post within* a forum (a discord.Thread whose parent is the
-        # ForumChannel) is fine - that's the `thread is not None` path below.
+        # #69). Since issue #100 a forum is expected to be linked as a
+        # *Category* (`/link channel` / `/mirror channel` on a forum redirect
+        # there), its posts routed in individually - so a flat mapping that
+        # still points a forum id at a relay target is a leftover
+        # misconfiguration, and this guard is the backstop. A *post within* a
+        # forum (a discord.Thread whose parent is the ForumChannel) is fine -
+        # that's the `thread is not None` path below.
         if thread is None and isinstance(channel, discord.ForumChannel):
             raise UnsupportedRelayTargetError(
                 f"Discord channel {channel.id} is a forum/media channel - the bridge can't relay into one"

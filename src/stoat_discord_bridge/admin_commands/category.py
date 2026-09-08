@@ -18,6 +18,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _clean_new_name,
     _group_conflict_check,
     _guards_mirror,
+    _is_forum_channel,
     _kick_group_member,
     _mirror_all_other_connectors,
     _mirror_from_local,
@@ -29,7 +30,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     format_linked_listing,
 )
-from stoat_discord_bridge.channel_structure import clip_name
+from stoat_discord_bridge.channel_structure import clip_name, forum_category_title
 from stoat_discord_bridge.storage.category_mappings import (
     CategoryMapping,
     CategoryMappingRepository,
@@ -59,6 +60,9 @@ class CategoryLinker:
         self._category_mappings = category_mappings
         self._thread_categories = thread_categories
         self._channel_linker = channel_linker
+        # Back-reference so `/link channel` / `/mirror channel` on a Discord
+        # forum can redirect into this linker (issue #100).
+        channel_linker._category_linker = self
         self._connectors = connectors
         # Falls back to the ChannelLinker's guard so a bare
         # CategoryLinker(... channel_linker ...) in tests still shares one
@@ -249,6 +253,13 @@ class CategoryLinker:
             raise LinkError("this channel isn't inside a Category.")
         source_name = local_category_name or await self._resolve_name(local_connector, local_category_id)
         target_name = _clean_new_name(new_name) or source_name
+
+        # A Discord forum mirrored as a Category is titled `💬 #<forum>` so it
+        # reads differently from an ordinary Category or a `🧵 #` thread group
+        # (issue #100). The prefix is applied before the destination-limit clip
+        # below, same as the thread marker in `ChannelLinker.mirror_channel`.
+        if await _is_forum_channel(self._connectors, local_connector, local_category_id):
+            target_name = forum_category_title(target_name)
 
         dest_info = self._connectors[destination]
         dest_label = dest_info.label
@@ -458,6 +469,13 @@ class CategoryLinker:
         """Drop `parent_channel_id`'s binding on `connector_id` - its bound
         Category is gone from the server, so the next thread rebinds it."""
         await self._thread_categories.forget(connector_id, parent_channel_id)
+
+    async def is_category_linked(self, connector_id: str, category_id: str) -> bool:
+        """Whether `category_id` on `connector_id` belongs to a `/link
+        category` bridge group. `DiscordSenderService._handle_thread_create`
+        checks it against a forum channel's id so a forum linked as a
+        Category still routes its posts into that Category (issue #100)."""
+        return await self._category_mappings.get_bridge_group(connector_id, category_id) is not None
 
     async def is_thread_category(self, connector_id: str, category_id: str) -> bool:
         """Whether `category_id` on `connector_id` was auto-created for

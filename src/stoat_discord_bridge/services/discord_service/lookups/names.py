@@ -124,6 +124,21 @@ class _NamesMixin:
             return None
         return str(parent.id), getattr(parent, "name", str(parent.id))
 
+    async def is_forum_channel(self, channel_id: str) -> bool | None:
+        """Whether `channel_id` is a Discord forum/media channel (a
+        `discord.ForumChannel`, not a `discord.Thread` post under one) - this
+        connector's `ConnectorInfo.is_forum_channel`. `/link channel` /
+        `/mirror channel` on one redirects into the Category flow (issue #100).
+        None if the channel can't be resolved."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except Exception:
+            logger.debug("[discord:%s] couldn't resolve channel %s for forum check", self.connector_id, channel_id)
+            return None
+        if channel is None:
+            return None
+        return isinstance(channel, discord.ForumChannel)
+
     async def get_channel_category_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> Category-name lookup, used by
         `/mirror channel` to carry a channel's Category across to the

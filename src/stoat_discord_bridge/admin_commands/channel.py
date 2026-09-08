@@ -13,6 +13,7 @@ from stoat_discord_bridge.admin_commands.common import (
     MirrorGuard,
     _clean_new_name,
     _guards_mirror,
+    _is_forum_channel,
     _kick_group_member,
     _link_conflict_check,
     _mirror_all_other_connectors,
@@ -24,7 +25,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     format_linked_listing,
 )
-from stoat_discord_bridge.channel_structure import clip_name, thread_category_title
+from stoat_discord_bridge.channel_structure import clip_name, forum_category_title, thread_category_title
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
@@ -51,6 +52,11 @@ class ChannelLinker:
         # actually fires, so construction order doesn't matter.
         self._channel_mappings = channel_mappings
         self._connectors = connectors
+        # Set by CategoryLinker.__init__ (which is handed this ChannelLinker),
+        # so `/link channel` / `/mirror channel` on a Discord forum can hand
+        # off to the Category flow (issue #100). None in tests that construct a
+        # bare ChannelLinker - a forum then just flat-links as before.
+        self._category_linker: "CategoryLinker | None" = None
         # Only `mirror_channel_from` reads this - to resolve the source
         # channel's Category to its already-linked local counterpart. None in
         # tests that don't exercise that path.
@@ -75,23 +81,44 @@ class ChannelLinker:
         source: str,
         source_id: str,
         destination_id: str | None,
+        _skip_forum_redirect: bool = False,
     ) -> str:
         """Link `source`'s `source_id` channel to `destination_id` (or the
         invoking channel, if omitted) on `local_connector`. Returns a
         human-readable summary. Raises LinkError if `source` is unknown, the
         two channels are the same channel, or both are already linked to two
         *different* existing bridge groups (no auto-merge - the operator has
-        to unlink one side first)."""
+        to unlink one side first).
+
+        `_skip_forum_redirect` is set by `mirror_channel`'s own trailing
+        `link_channel` call, which has already decided (per the destination's
+        Category support) whether a Discord forum should be Category-linked -
+        so this doesn't second-guess it and reject a deliberate flat link."""
         _require_known_connector(self._connectors, source)
 
         source_id = await self._resolve_to_id(source, source_id)
 
-        if not destination_id or destination_id == local_channel_id:
+        explicit_destination = bool(destination_id and destination_id != local_channel_id)
+        if not explicit_destination:
             destination_channel_id = local_channel_id
             destination_name = local_channel_name
         else:
             destination_channel_id = await self._resolve_to_id(local_connector, destination_id)
             destination_name = await self._resolve_name(local_connector, destination_channel_id)
+
+        # A Discord forum channel is really a Category (issue #100) - hand a
+        # `/link channel` on one off to `/link category`, linking the forum to
+        # a Category on the other connector.
+        if not _skip_forum_redirect:
+            redirect = await self._forum_category_link_redirect(
+                source=source,
+                source_id=source_id,
+                local_connector=local_connector,
+                local_id=destination_channel_id,
+                explicit_destination=explicit_destination,
+            )
+            if redirect is not None:
+                return redirect
 
         source_group, destination_group = await _link_conflict_check(
             self._channel_mappings.get_bridge_group,
@@ -206,6 +233,29 @@ class ChannelLinker:
 
         local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
 
+        # A Discord forum channel is really a Category - its posts are threads,
+        # each already mirrored as its own channel - so `/mirror channel` on one
+        # behaves as `/mirror category`: create/link a Category on `destination`
+        # and let the forum's posts route into it (issue #100). Only on a plain
+        # top-level mirror, and only when `destination` can hold Categories
+        # (not IRC - it keeps a flat linked channel per forum post via the
+        # thread pipeline, which is the behavior this issue asks it to keep).
+        if (
+            self._category_linker is not None
+            and not is_thread_category
+            and category_from_channel_id is None
+            and destination_category is None
+            and self._connectors[destination].ensure_category is not None
+            and await _is_forum_channel(self._connectors, local_connector, local_channel_id)
+        ):
+            return await self._category_linker.mirror_category(
+                local_connector=local_connector,
+                local_category_id=local_channel_id,
+                local_category_name=local_channel_name,
+                destination=destination,
+                new_name=new_name,
+            )
+
         if await self._channel_is_hidden(local_connector, local_channel_id):
             raise LinkError(
                 f"the bridge bot can't see channel '{local_channel_id}' on "
@@ -291,7 +341,14 @@ class ChannelLinker:
         # same prefixed string and reuses the Category rather than nesting a
         # `🧵 #🧵 #<name>`. The mirrored *channel* name is left untouched.
         if is_thread_category and category is not None:
-            category = thread_category_title(category)
+            if category_from_channel_id is not None and await _is_forum_channel(
+                self._connectors, local_connector, category_from_channel_id
+            ):
+                # Posts of a Discord forum group under `💬 #<forum>` rather
+                # than the ordinary thread group's `🧵 #<parent>` (issue #100).
+                category = forum_category_title(category)
+            else:
+                category = thread_category_title(category)
 
         # Cosmetic metadata (description / maturity / icon) off the source
         # channel, so the mirrored channel isn't created blank (issue #32).
@@ -325,6 +382,7 @@ class ChannelLinker:
                 source=local_connector,
                 source_id=local_channel_id,
                 destination_id=None,
+                _skip_forum_redirect=True,
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
@@ -553,6 +611,48 @@ class ChannelLinker:
         parent channel already being bridged, rather than mirroring every
         thread created anywhere in the guild."""
         return await self._channel_mappings.get_bridge_group(connector_id, channel_id) is not None
+
+    async def _forum_category_link_redirect(
+        self,
+        *,
+        source: str,
+        source_id: str,
+        local_connector: str,
+        local_id: str,
+        explicit_destination: bool,
+    ) -> str | None:
+        """If either side of a `/link channel` resolves to a Discord forum
+        channel, link it as a Category via `CategoryLinker.link_category`
+        (issue #100) and return that summary; otherwise None. Requires an
+        explicit Category on the non-forum side - a forum can't be linked to
+        the bare invoking channel."""
+        if self._category_linker is None:
+            return None
+        source_is_forum = await _is_forum_channel(self._connectors, source, source_id)
+        local_is_forum = await _is_forum_channel(self._connectors, local_connector, local_id)
+        if not source_is_forum and not local_is_forum:
+            return None
+        if source_is_forum:
+            forum_connector, forum_id = source, source_id
+            other_connector, other_id = local_connector, local_id
+            other_is_explicit = explicit_destination
+        else:
+            forum_connector, forum_id = local_connector, local_id
+            other_connector, other_id = source, source_id
+            other_is_explicit = True  # the source side of /link channel is always given
+        if not other_is_explicit:
+            raise LinkError(
+                f"'{forum_id}' is a Discord forum channel - link it to a Category explicitly, "
+                f"e.g. `/link channel {forum_connector} {forum_id} <category>`."
+            )
+        return await self._category_linker.link_category(
+            local_connector=other_connector,
+            local_category_id=None,
+            local_category_name="",
+            source=forum_connector,
+            source_id=forum_id,
+            destination_id=other_id,
+        )
 
     async def _linked_channel(
         self, local_connector: str, channel_id: str, destination: str

@@ -27,6 +27,13 @@ _DEFAULT_NAME_LIMIT = 32
 # `#` on them already.
 THREAD_CATEGORY_PREFIX = "🧵 #"
 
+# A Discord *forum* channel mirrored as a Category (issue #100) is titled with
+# this marker instead - speech-balloon emoji + the same `#` - so a forum group
+# reads differently from an ordinary thread group (`🧵 #`). Same single
+# insertion point (`ChannelLinker.mirror_channel` / `CategoryLinker.mirror_category`);
+# `strip_thread_category_prefix` strips either marker.
+FORUM_CATEGORY_PREFIX = "💬 #"
+
 
 def clip_name(name: str, limit: int = _DEFAULT_NAME_LIMIT) -> str:
     """`name` stripped of surrounding whitespace and truncated to `limit`
@@ -41,11 +48,20 @@ def thread_category_title(name: str) -> str:
     return clip_name(f"{THREAD_CATEGORY_PREFIX}{name.strip()}")
 
 
+def forum_category_title(name: str) -> str:
+    """Title for a Category mirrored from a Discord forum channel (issue #100):
+    the forum name prefixed with `FORUM_CATEGORY_PREFIX` and clipped, exactly
+    like `thread_category_title` but with the forum marker."""
+    return clip_name(f"{FORUM_CATEGORY_PREFIX}{name.strip()}")
+
+
 def strip_thread_category_prefix(title: str) -> str:
-    """Inverse of `thread_category_title`'s prefixing: drop a leading
-    `THREAD_CATEGORY_PREFIX` from a Category title if present, so a legacy
-    thread Category titled `🧵 #general` still matches parent channel
-    `general`. A title without the prefix is returned unchanged."""
-    if title.startswith(THREAD_CATEGORY_PREFIX):
-        return title[len(THREAD_CATEGORY_PREFIX) :]
+    """Inverse of `thread_category_title` / `forum_category_title` prefixing:
+    drop a leading `THREAD_CATEGORY_PREFIX` or `FORUM_CATEGORY_PREFIX` from a
+    Category title if present, so a legacy thread Category titled `🧵 #general`
+    (or a forum Category `💬 #general`) still matches parent channel `general`.
+    A title without either prefix is returned unchanged."""
+    for prefix in (THREAD_CATEGORY_PREFIX, FORUM_CATEGORY_PREFIX):
+        if title.startswith(prefix):
+            return title[len(prefix) :]
     return title
