@@ -33,8 +33,8 @@ async def test_mirror_and_linked_and_unlink_role_route():
     sender = _make_sender(role_linker=role_linker)
     ctx = _make_ctx()
 
-    await sender._mirror_role(ctx, "Mods")
-    await sender._mirror_role(ctx, "Mods", "stoat")
+    await sender._mirror_role(ctx, "all", "Mods")
+    await sender._mirror_role(ctx, "stoat", "Mods")
     await sender._linked_roles(ctx)
     await sender._unlink_role(ctx, "Mods", "all")
 

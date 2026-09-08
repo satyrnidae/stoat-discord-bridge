@@ -337,10 +337,15 @@ commands `/link emote` / `/mirror emote to` / `/mirror emote from` /
 (Discord/Stoat only - IRC has no custom emoji)) and how to
 reach it on each connector is documented in
 `COMMANDS.md`, not duplicated here. `/mirror <noun>` is a two-way group:
-`to` pushes a local entity onto another connector (the historical
+`to <service> …` pushes a local entity onto another connector (the historical
 `/mirror <noun>` behavior), `from <service> <external_id>` pulls a remote
 entity in and creates the local copy - respecting already-linked entities
-(bridge/mapping groups are reused). `/mirror channel` in *either* direction
+(bridge/mapping groups are reused). Both directions require an explicit
+`<service>` (issue #97) - `all` stays a valid value on `to` (fans out to
+every other connector) but is no longer assumed when `service` is omitted;
+the omitted-service default is gone from all three front ends' command
+layers, not from the `admin_commands` linkers, which already required a
+`destination`. `/mirror channel` in *either* direction
 (and `all`) lands the counterpart in the destination's own copy of the source
 channel's linked Category when that Category is `/link category`-linked -
 resolved by `ChannelLinker._local_category_for_source_channel`, not by an

@@ -78,7 +78,7 @@ async def test_each_admin_command_rejects_a_non_admin():
     await sender._link_channel(ctx, "discord", "s1")
     await sender._link_emote(ctx, "discord", "s1", "l1")
     await sender._link_user(ctx, "discord", "u1", "l1")
-    await sender._mirror_channel(ctx)
+    await sender._mirror_channel(ctx, "all")
     await sender._unlink_channel(ctx)
     await sender._unlink_user(ctx)
     await sender._link_category(ctx, "discord", "s1")

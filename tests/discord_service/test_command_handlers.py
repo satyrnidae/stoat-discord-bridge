@@ -36,6 +36,19 @@ def test_normalize_channel_id(raw, expected):
     assert _normalize_channel_id(raw) == expected
 
 
+# ---------------------------------------------------------------- required `service`
+
+
+@pytest.mark.parametrize("noun", ["channel", "role", "category", "emote"])
+def test_mirror_noun_to_requires_an_explicit_service(noun):
+    # issue #97: `/mirror <noun> to` no longer defaults an omitted `service` to
+    # `all` - it's a required option on all four `to` subcommands.
+    sender = _make_sender(FakeLinker())
+    to = sender.tree.get_command("mirror", guild=sender._guild).get_command(noun).get_command("to")
+
+    assert to._params["service"].required is True
+
+
 # ---------------------------------------------------------------- _handle_mirror_channel
 
 

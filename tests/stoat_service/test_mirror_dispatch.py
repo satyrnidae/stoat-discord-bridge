@@ -19,7 +19,7 @@ async def test_mirror_channel_to_a_single_destination():
     sender = _make_sender(linker=linker)
     ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._mirror_channel(ctx, "general", "discord")
+    await sender._mirror_channel(ctx, "discord", "general")
 
     assert linker.mirror_channel_calls == [
         {
@@ -40,7 +40,7 @@ async def test_mirror_channel_to_forwards_a_new_name():
     sender = _make_sender(linker=linker)
     ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._mirror_channel(ctx, "general", "discord", "lobby")
+    await sender._mirror_channel(ctx, "discord", "general", "lobby")
 
     assert linker.mirror_channel_calls[0]["new_name"] == "lobby"
 
@@ -53,7 +53,7 @@ async def test_mirror_channel_resolves_and_forwards_the_channels_category():
     sender = _make_sender(linker=linker, client=client)
     ctx = _make_ctx(channel=channel)
 
-    await sender._mirror_channel(ctx, "c1", "discord")
+    await sender._mirror_channel(ctx, "discord", "c1")
 
     assert linker.mirror_channel_calls[0]["local_channel_category"] == "Team Alpha"
 
@@ -63,18 +63,18 @@ async def test_mirror_channel_to_all_is_case_insensitive():
     sender = _make_sender(linker=linker)
     ctx = _make_ctx()
 
-    await sender._mirror_channel(ctx, "general", "ALL")
+    await sender._mirror_channel(ctx, "ALL", "general")
 
     assert linker.mirror_channel_all_calls
     assert ctx.channel.sent[0]["content"] == "mirrored to all ok"
 
 
-async def test_mirror_channel_no_args_mirrors_the_current_channel_to_all():
+async def test_mirror_channel_all_mirrors_the_current_channel_when_no_local_id_given():
     linker = FakeLinker()
     sender = _make_sender(linker=linker)
     ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._mirror_channel(ctx)
+    await sender._mirror_channel(ctx, "all")
 
     assert linker.mirror_channel_all_calls[0]["local_channel_id"] == "c1"
 
@@ -84,7 +84,7 @@ async def test_mirror_channel_uses_an_explicit_channel_id_when_given():
     sender = _make_sender(linker=linker)
     ctx = _make_ctx()
 
-    await sender._mirror_channel(ctx, "explicit-id", "discord")
+    await sender._mirror_channel(ctx, "discord", "explicit-id")
 
     call = linker.mirror_channel_calls[0]
     assert call["local_channel_id"] == "explicit-id"
@@ -142,7 +142,7 @@ async def test_mirror_channel_forwards_the_destination_category():
     sender = _make_sender(linker=linker)
     ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._mirror_channel(ctx, "general", "discord", None, "Announcements")
+    await sender._mirror_channel(ctx, "discord", "general", None, "Announcements")
 
     assert linker.mirror_channel_calls[0]["destination_category"] == "Announcements"
 
@@ -152,7 +152,7 @@ async def test_mirror_channel_rejects_a_category_with_all():
     sender = _make_sender(linker=linker)
     ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
-    await sender._mirror_channel(ctx, "general", "all", None, "Announcements")
+    await sender._mirror_channel(ctx, "all", "general", None, "Announcements")
 
     assert linker.mirror_channel_calls == []
     assert linker.mirror_channel_all_calls == []

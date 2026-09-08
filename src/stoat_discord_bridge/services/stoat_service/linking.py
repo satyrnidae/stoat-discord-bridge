@@ -216,9 +216,9 @@ class StoatLinkingMixin:
         await self._reply(ctx, summary)
 
     async def _mirror_emote(
-        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+        self, ctx, service: str, local_id: str | None = None, new_name: str | None = None
     ) -> None:
-        """`/mirror emote to <local_id|name> [<service>|all] [new_name]`."""
+        """`/mirror emote to <service|all> <local_id|name> [new_name]`."""
         if not await self._require_admin(ctx):
             return
         if not await self._linker_configured(ctx, self._emote_linker, "Linking isn't configured."):
@@ -226,7 +226,7 @@ class StoatLinkingMixin:
         if not local_id:
             await self._reply(ctx, "Which emote? Pass an emoji id or name.")
             return
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._emote_linker.mirror_emote_all(local_connector=self.connector_id, local_emote=local_id)
         else:
             coro = self._emote_linker.mirror_emote(
@@ -278,18 +278,18 @@ class StoatLinkingMixin:
     async def _mirror_channel(
         self,
         ctx,
+        service: str,
         local_id: str | None = None,
-        service: str | None = None,
         new_name: str | None = None,
         category: str | None = None,
     ) -> None:
-        """`/mirror channel [local_id|name] [<service>|all] [new_name] [category:<id|name>]`:
-        local_id defaults to the invoking channel; service defaults to "all".
+        """`/mirror channel <service|all> [local_id|name] [new_name] [category:<id|name>]`:
+        local_id defaults to the invoking channel.
         `category` (a Category id/name on the target service) overrides linked
         Categories and needs a single service (issue #75)."""
         if not await self._require_admin(ctx):
             return
-        if category and (service is None or service.lower() == "all"):
+        if category and service.lower() == "all":
             await self._reply(
                 ctx, "A destination Category can only be set when mirroring to a single service, not 'all'."
             )
@@ -310,7 +310,7 @@ class StoatLinkingMixin:
             channel_id,
             service,
         )
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._linker.mirror_channel_all(
                 local_connector=self.connector_id,
                 local_channel_id=channel_id,
@@ -407,9 +407,9 @@ class StoatLinkingMixin:
         )
 
     async def _mirror_category(
-        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+        self, ctx, service: str, local_id: str | None = None, new_name: str | None = None
     ) -> None:
-        """`/mirror category [<local_id|name>] [<service>|all] [new_name]`."""
+        """`/mirror category <service|all> [local_id|name] [new_name]`."""
         if not await self._require_admin(ctx):
             return
         if not await self._linker_configured(ctx, self._category_linker, "Category linking isn't configured."):
@@ -424,7 +424,7 @@ class StoatLinkingMixin:
             local_category=local_id,
             local_category_name=category.title if category is not None else None,
         )
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._category_linker.mirror_category_all(**kwargs)
         else:
             coro = self._category_linker.mirror_category(destination=service, new_name=new_name, **kwargs)
@@ -521,9 +521,9 @@ class StoatLinkingMixin:
         await self._reply(ctx, summary)
 
     async def _mirror_role(
-        self, ctx, local_id: str | None = None, service: str | None = None, new_name: str | None = None
+        self, ctx, service: str, local_id: str | None = None, new_name: str | None = None
     ) -> None:
-        """`/mirror role to <local_id|name> [<service>|all] [new_name]`."""
+        """`/mirror role to <service|all> <local_id|name> [new_name]`."""
         if not await self._require_admin(ctx):
             return
         if not await self._linker_configured(ctx, self._role_linker, "Role linking isn't configured."):
@@ -531,7 +531,7 @@ class StoatLinkingMixin:
         if not local_id:
             await self._reply(ctx, "Which role? Pass a role id or name.")
             return
-        if service is None or service.lower() == "all":
+        if service.lower() == "all":
             coro = self._role_linker.mirror_role_all(local_connector=self.connector_id, local_role=local_id)
         else:
             coro = self._role_linker.mirror_role(

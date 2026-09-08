@@ -270,14 +270,22 @@ async def test_mirror_channel_to_all_is_case_insensitive():
     assert conn.notice_calls == [("alice", "mirrored to all ok")]
 
 
-async def test_mirror_channel_to_defaults_to_all_when_no_service_given():
+async def test_mirror_channel_to_without_a_service_sends_usage():
+    # issue #97: `TO` needs an explicit `<service|all>` now - a lone local id
+    # is a usage error, not a silent fan-out.
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
     await sender._handle_dm_command("alice", "MIRROR CHANNEL TO #general")
 
-    assert linker.mirror_channel_all_calls == [
-        {"local_connector": "irc", "local_channel_id": "#general", "local_channel_name": "#general"}
+    assert linker.mirror_channel_all_calls == []
+    assert linker.mirror_channel_calls == []
+    assert conn.notice_calls == [
+        (
+            "alice",
+            "Usage: MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
+            "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
+        )
     ]
 
 
@@ -341,7 +349,7 @@ async def test_mirror_channel_wrong_arg_count_sends_usage():
     assert conn.notice_calls == [
         (
             "alice",
-            "Usage: MIRROR CHANNEL TO [service|all] <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
+            "Usage: MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
             "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
         )
     ]
