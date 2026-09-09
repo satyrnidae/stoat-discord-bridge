@@ -237,11 +237,35 @@ class FakeForumChannel(discord.ForumChannel):
     webhook on the parent forum channel.
     """
 
-    def __init__(self, id: int, *, name: str = "forum", webhooks: list[FakeWebhook] | None = None) -> None:
+    def __init__(
+        self,
+        id: int,
+        *,
+        name: str = "forum",
+        webhooks: list[FakeWebhook] | None = None,
+        threads: list[Any] | None = None,
+        guild: "FakeGuild | None" = None,
+        category: Any = None,
+    ) -> None:
         self.id = id
         self.name = name
         self._webhooks = webhooks or []
         self.created_webhooks: list[FakeWebhook] = []
+        # `forum.threads` / `.category` are read-only properties on the real
+        # class - shadow them here (same pattern as FakeThread.parent).
+        self._threads = threads or []
+        self.guild = guild
+        self._category = category
+
+    @property
+    def threads(self) -> list[Any]:
+        # active (non-archived) posts - what channels_in_category enumerates
+        # for a forum-as-Category (issue #100).
+        return self._threads
+
+    @property
+    def category(self) -> Any:
+        return self._category
 
     async def webhooks(self) -> list[FakeWebhook]:
         return list(self._webhooks)

@@ -82,6 +82,15 @@ already linked, the existing bridge group is reused; if *both* are already
 linked to two *different* groups, the command fails rather than merging them
 (unlink one side first with `/unlink channel`).
 
+**Discord forum channels**: pointing `/link channel` (or `/mirror channel`) at
+a `ForumChannel`'s id behaves as `/link category` / `/mirror category` instead
+— a forum acts like a Category (its posts are threads, each already mirrored
+as its own channel), so it links/creates a **Stoat Category** (`💬 #<forum>`)
+and its posts route into it. `/link channel` on a forum needs an explicit
+Category target on the other side; `/mirror channel` toward IRC (no Category
+concept) falls back to a flat link. See CLAUDE.md's "Discord forum channels as
+Categories".
+
 - **Discord**: `/link channel` slash subcommand under the `/link` group
   (Manage Server). Discord lists required options first, so its option order
   is `service`, `external_id`, `local_id?`.

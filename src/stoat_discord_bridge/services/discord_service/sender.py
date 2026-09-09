@@ -381,7 +381,21 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         if self._linker is None or thread.guild.id != self._config.guild_id:
             return
         parent = thread.parent
-        if parent is None or not await self._linker.is_linked(self.connector_id, str(parent.id)):
+        if parent is None:
+            return
+        parent_bridged = await self._linker.is_linked(self.connector_id, str(parent.id))
+        if (
+            not parent_bridged
+            and self._category_linker is not None
+            and isinstance(parent, discord.ForumChannel)
+        ):
+            # A forum channel is linked as a *Category* (issue #100), not a
+            # flat channel, so `is_linked` (channel mappings) misses it - its
+            # posts still need mirroring, into that linked Category.
+            parent_bridged = await self._category_linker.is_category_linked(
+                self.connector_id, str(parent.id)
+            )
+        if not parent_bridged:
             return  # this thread's parent was never bridged - leave the thread alone
 
         self._pending_thread_starter[thread.id] = None

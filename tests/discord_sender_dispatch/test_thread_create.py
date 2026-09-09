@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import discord
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo
+from stoat_discord_bridge.admin_commands import CategoryLinker, ChannelLinker, ConnectorInfo
+from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
-from tests.fakes.fake_discord import FakeAsset, FakeChannel, FakeClient, FakeGuild, FakeThread, FakeUser
+from tests.fakes.fake_discord import (
+    FakeAsset,
+    FakeChannel,
+    FakeClient,
+    FakeForumChannel,
+    FakeGuild,
+    FakeThread,
+    FakeUser,
+)
 from tests.discord_sender_dispatch.conftest import _Recorder, _discord_message, _make_sender
 
 
@@ -286,6 +295,70 @@ async def test_handle_message_suppresses_the_raw_parent_thread_created_system_me
 
     # nothing relayed from _handle_message - the notice is _handle_thread_create's job
     assert recorder.messages == []
+
+
+async def test_handle_thread_create_routes_a_forum_post_into_the_linked_forum_category(fake_db):
+    # A forum channel is linked as a *Category* (issue #100), so its posts
+    # route into that Category - named `💬 #<forum>`, not `🧵 #<parent>`.
+    ensure_calls = []
+
+    async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        ensure_calls.append((name, category))
+        return f"stoat_{name}"
+
+    async def is_forum_channel(channel_id):
+        return channel_id == "500"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", is_forum_channel=is_forum_channel),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=stoat_ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    category_mappings = CategoryMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors, category_mappings)
+    category_linker = CategoryLinker(
+        category_mappings, ThreadCategoryRepository(fake_db), linker, connectors
+    )
+    # forum <-> a Stoat Category, linked
+    await category_linker.link_category(
+        local_connector="stoat", local_category_id="s-forum-cat", local_category_name="💬 #ttrpg-forum",
+        source="discord", source_id="500", destination_id=None,
+    )
+
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=9, display_name="Bridge"))
+    sender = _make_sender(recorder, client, linker=linker, category_linker=category_linker)
+    forum = FakeForumChannel(id=500, name="ttrpg-forum")
+    thread = FakeThread(id=777, parent=forum, name="Need a GM", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    assert ensure_calls == [("Need a GM", "💬 #ttrpg-forum")]
+    assert await channel_mappings.get_bridge_group("discord", "777") is not None
+
+
+async def test_handle_thread_create_skips_a_forum_post_when_the_forum_isnt_linked(fake_db):
+    async def is_forum_channel(channel_id):
+        return channel_id == "500"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", is_forum_channel=is_forum_channel),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat"),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    category_mappings = CategoryMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors, category_mappings)
+    category_linker = CategoryLinker(
+        category_mappings, ThreadCategoryRepository(fake_db), linker, connectors
+    )
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), linker=linker, category_linker=category_linker)
+    thread = FakeThread(id=777, parent=FakeForumChannel(id=500, name="ttrpg-forum"), name="Need a GM", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    assert recorder.messages == []
+    assert await channel_mappings.get_bridge_group("discord", "777") is None
 
 
 async def test_handle_thread_create_notice_links_to_the_mirrored_channel(fake_db):

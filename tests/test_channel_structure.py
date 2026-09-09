@@ -1,6 +1,8 @@
 from stoat_discord_bridge.channel_structure import (
+    FORUM_CATEGORY_PREFIX,
     THREAD_CATEGORY_PREFIX,
     clip_name,
+    forum_category_title,
     strip_thread_category_prefix,
     thread_category_title,
 )
@@ -45,8 +47,20 @@ def test_thread_category_title_clips_after_prefixing():
     assert clipped.startswith(THREAD_CATEGORY_PREFIX)
 
 
+def test_forum_category_title_prefixes_with_the_forum_marker():
+    assert forum_category_title("ttrpg-forum") == "💬 #ttrpg-forum"
+    assert forum_category_title("  ttrpg-forum  ") == "💬 #ttrpg-forum"
+
+
+def test_forum_category_title_clips_after_prefixing():
+    clipped = forum_category_title("a" * 50)
+    assert len(clipped) == 32
+    assert clipped.startswith(FORUM_CATEGORY_PREFIX)
+
+
 def test_strip_thread_category_prefix_round_trips():
     assert strip_thread_category_prefix(thread_category_title("general")) == "general"
+    assert strip_thread_category_prefix(forum_category_title("general")) == "general"
 
 
 def test_strip_thread_category_prefix_leaves_an_unprefixed_title_alone():

@@ -186,7 +186,12 @@ class DiscordSyncMixin:
         never linked - see that method's own no-op behavior."""
         if self._category_linker is None or channel.guild.id != self._config.guild_id:
             return
-        if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel)):
+        # A ForumChannel created inside a linked Category is auto-mirrored too
+        # (issue #100). `sync_new_channel` -> `ChannelLinker.mirror_channel`
+        # redirects it into the Category flow, so it lands as a *top-level*
+        # Stoat Category (Stoat Categories don't nest), not a child of the
+        # mirrored parent Category - an accepted limitation (see CLAUDE.md).
+        if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel)):
             return
         category = getattr(channel, "category", None)
         if category is None:

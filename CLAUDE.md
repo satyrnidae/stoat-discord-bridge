@@ -611,7 +611,9 @@ one is auto-mirrored (created + linked) into every other connector's own
 linked Category, via the same `ChannelLinker.mirror_channel` logic
 `/mirror channel` uses. `CategoryLinker.link_category` refuses to link a
 Category that `ThreadCategoryRepository` has marked as a thread category
-(see below) — those stay outside the bridge.
+(see below) — those stay outside the bridge. A Discord **forum channel** is
+linked as a Category too — `/link channel` / `/mirror channel` on a forum
+redirect here (see "Discord forum channels as Categories" below).
 
 ### Discord threads
 
@@ -651,8 +653,9 @@ IRC — falling back to `#<thread name>` (carried on the notice's
 `mentioned_channels`) if it still can't resolve. A thread with
 no real starter message (standalone thread / forum-post system row) skips the
 starter relay but keeps that row's author for the notice. Only
-fires when the thread's parent channel is itself already bridged; one-way
-(Discord → Stoat/IRC). The destination Category is bound to the destination's
+fires when the thread's parent channel is itself already bridged — a plain
+channel via the channel mappings, or a forum parent via
+`CategoryLinker.is_category_linked` (issue #100); one-way (Discord → Stoat/IRC). The destination Category is bound to the destination's
 own parent channel id via `CategoryLinker.bind_thread_category` (backed by
 `storage/category_mappings.py`'s `ThreadCategoryRepository`, keyed by
 `(connector, parent_channel_id)`), which `/link category` checks to refuse ever
@@ -692,6 +695,41 @@ webhook resolver raises `UnsupportedRelayTargetError` for one (issue #69), which
 message. Relaying into a forum *post* (a `Thread` whose parent is the
 ForumChannel) still works normally.
 
+### Discord forum channels as Categories
+
+A forum channel *acts* like a Category — its posts are threads, each already
+mirrored as its own channel — so `/link channel` / `/mirror channel` on a
+forum's own id **redirects into the Category flow** (issue #100):
+`ChannelLinker.link_channel` / `mirror_channel` detect the forum via the
+Discord-only `ConnectorInfo.is_forum_channel` hook and delegate to
+`CategoryLinker.link_category` / `mirror_category`, so the forum links/creates
+a **Stoat Category** up front rather than a flat channel. The mirrored Category
+is titled `💬 #<forum-name>` (`channel_structure.forum_category_title`) to read
+differently from an ordinary Category or a `🧵 #` thread group;
+`strip_thread_category_prefix` strips either marker.
+`CategoryLinker.mirror_category` enumerates a forum source's children via
+`channels_in_category`, which for a `ForumChannel` returns its **active**
+threads only (`forum.threads`) — archived posts are numerous and low-value and
+still mirror lazily via `_handle_thread_create`.
+
+Once the forum is Category-linked, `_handle_thread_create` fires for its posts
+even though the forum isn't in the channel mappings — its gate also checks
+`CategoryLinker.is_category_linked` against the forum id — and mirrors each
+post as a channel into that linked `💬 #<forum>` Category (matched by title,
+the same `mirror_channel_all` path ordinary threads take, forum-aware naming
+applied at the one `is_thread_category` insertion point). A forum created
+inside an already-linked Discord Category is auto-mirrored too
+(`_handle_channel_create`'s `isinstance` filter includes `ForumChannel`) — but
+because Stoat Categories don't nest, it becomes a **top-level** Stoat Category,
+not a child of the mirrored parent Category.
+
+**IRC keeps its current behavior**: it has no Category concept, so a
+`/mirror channel` / `/mirror channel all` on a forum toward IRC falls through
+to today's flat link, and each forum post becomes its own flat linked IRC
+channel via the thread pipeline. The `UnsupportedRelayTargetError` guard in
+`DiscordReceiverService` stays as the backstop for a leftover flat mapping
+that still points a forum id at a relay target.
+
 ## Layout
 
 ```
@@ -701,7 +739,7 @@ tests/                          # pytest suite - see README's Tests section
 src/stoat_discord_bridge/
   config.py                    # loads config.yaml, layering env vars over it per-field (see its docstring)
   models.py                    # StandardMessage - the platform-neutral message format
-  channel_structure.py         # clip_name(name, limit=32) clips a mirrored channel/category/role name to a destination's limit (#99); thread_category_title adds the 🧵 # thread-group marker (#98)
+  channel_structure.py         # clip_name(name, limit=32) clips a mirrored channel/category/role name to a destination's limit (#99); thread_category_title adds the 🧵 # thread-group marker (#98), forum_category_title the 💬 # forum marker (#100)
   admin_commands/               # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
     common.py                   # ConnectorInfo hook dataclass, LinkError/MirrorInProgressError, MirrorGuard, pop_kv_option, id/name-resolution + conflict-check helpers
     channel.py / category.py / emote.py / user.py / role.py # one linker class per module - category.py depends on channel.py (mirrors a linked Category's child channels); the rest are independent
