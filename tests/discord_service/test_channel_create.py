@@ -105,6 +105,7 @@ async def test_describe_channel_reads_topic_and_nsfw(monkeypatch):
     channel = FakeGuildChannel(id=888, name="general", guild=FakeGuild(id=123))
     channel.topic = "the topic"
     channel.nsfw = True
+    channel.slowmode_delay = 30
     client = _FakeDiscordClient()
     client.add_channel(channel)
     monkeypatch.setattr(sender, "_client", client)
@@ -114,6 +115,22 @@ async def test_describe_channel_reads_topic_and_nsfw(monkeypatch):
     assert meta.description == "the topic"
     assert meta.nsfw is True
     assert meta.icon_url is None  # Discord guild text channels have no icon
+    assert meta.slowmode_delay == 30
+
+
+async def test_describe_channel_normalizes_zero_slowmode_to_none(monkeypatch):
+    from tests.fakes.fake_discord import FakeClient as _FakeDiscordClient
+
+    sender = _make_sender(FakeLinker())
+    channel = FakeGuildChannel(id=888, name="general", guild=FakeGuild(id=123))
+    channel.slowmode_delay = 0
+    client = _FakeDiscordClient()
+    client.add_channel(channel)
+    monkeypatch.setattr(sender, "_client", client)
+
+    meta = await sender.describe_channel("888")
+
+    assert meta.slowmode_delay is None
 
 
 async def test_ensure_channel_creates_a_text_channel_with_the_source_metadata(monkeypatch):
@@ -124,13 +141,14 @@ async def test_ensure_channel_creates_a_text_channel_with_the_source_metadata(mo
     from stoat_discord_bridge.models import ChannelMetadata
 
     new_id = await sender.ensure_channel(
-        "general", "Team", metadata=ChannelMetadata(description="carried over", nsfw=True)
+        "general", "Team", metadata=ChannelMetadata(description="carried over", nsfw=True, slowmode_delay=30)
     )
 
     [created] = guild.created_text_channels
     assert created["name"] == "general"
     assert created["topic"] == "carried over"
     assert created["nsfw"] is True
+    assert created["slowmode_delay"] == 30
     assert guild.created_categories == ["Team"]
     assert new_id == str(guild.text_channels[0].id)
 
@@ -144,7 +162,10 @@ async def test_ensure_channel_matches_an_existing_channel_and_skips_metadata(mon
 
     from stoat_discord_bridge.models import ChannelMetadata
 
-    new_id = await sender.ensure_channel("general", metadata=ChannelMetadata(description="ignored"))
+    new_id = await sender.ensure_channel(
+        "general", metadata=ChannelMetadata(description="ignored", slowmode_delay=60)
+    )
 
     assert new_id == "888"
     assert guild.created_text_channels == []  # matched, nothing created
+    assert getattr(existing, "slowmode_delay", None) is None  # slowmode not applied to a matched channel

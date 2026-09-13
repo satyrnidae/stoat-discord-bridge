@@ -26,11 +26,12 @@ class _ChannelsMixin:
     """Channel get-or-create half of `DiscordLookupsMixin`."""
 
     async def describe_channel(self, channel_id: str) -> ChannelMetadata | None:
-        """Best-effort read of a channel's topic (as `description`) and NSFW
-        flag, this connector's `ConnectorInfo.describe_channel` - `/mirror
-        channel` carries it onto the mirrored copy (issue #32). Discord guild
-        text channels have no per-channel icon, so `icon_url` is always None
-        here. Returns None if the channel isn't resolvable."""
+        """Best-effort read of a channel's topic (as `description`), NSFW
+        flag, and slowmode delay, this connector's `ConnectorInfo.describe_channel`
+        - `/mirror channel` carries it onto the mirrored copy (issue #32,
+        #108). Discord guild text channels have no per-channel icon, so
+        `icon_url` is always None here. Returns None if the channel isn't
+        resolvable."""
         try:
             channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         except Exception:
@@ -38,10 +39,15 @@ class _ChannelsMixin:
             return None
         if channel is None:
             return None
+        # 0 is Discord's "no slowmode" - normalize to None so it's never
+        # force-applied over an unset destination default, same as `nsfw`
+        # only being passed through when truthy below.
+        slowmode_delay = getattr(channel, "slowmode_delay", 0) or None
         return ChannelMetadata(
             description=getattr(channel, "topic", None),
             nsfw=bool(getattr(channel, "nsfw", False)),
             icon_url=None,
+            slowmode_delay=slowmode_delay,
         )
 
     async def ensure_channel(
@@ -61,8 +67,9 @@ class _ChannelsMixin:
         `category_parent_channel_id` bind that Category as thread-only
         (`CategoryLinker.bind_thread_category`), same as the Stoat hook, so
         `/link category` later refuses it. `metadata`, when given, sets the
-        new channel's topic / NSFW flag - *only when this call creates the
-        channel* (issue #32); a matched channel is left as-is."""
+        new channel's topic / NSFW flag / slowmode delay - *only when this
+        call creates the channel* (issue #32, #108); a matched channel is
+        left as-is."""
         guild = self._guild_or_none()
         if guild is None:
             raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
@@ -85,6 +92,8 @@ class _ChannelsMixin:
                     create_kwargs["topic"] = metadata.description[:_TOPIC_LIMIT]
                 if metadata.nsfw:
                     create_kwargs["nsfw"] = True
+                if metadata.slowmode_delay:
+                    create_kwargs["slowmode_delay"] = metadata.slowmode_delay
             channel = await guild.create_text_channel(name, reason="bridge channel mirror", **create_kwargs)
         elif parent is not None and getattr(channel, "category_id", None) != parent.id:
             try:

@@ -157,6 +157,95 @@ async def test_describe_channel_reads_description_nsfw_and_icon():
     )
 
 
+async def test_describe_channel_reads_slowmode_via_a_raw_fetch():
+    server = FakeServer(id="s1")
+    channel = FakeChannel(id="c1", name="general", description="a channel", nsfw=True)
+    client = FakeClient()
+    client.add_channel(channel)
+    client.add_server(server)
+    client.set_channel_fetch_response("c1", {"slowmode": 30})
+    sender = _make_sender(client=client)
+
+    meta = await sender.describe_channel("c1")
+
+    assert meta.slowmode_delay == 30
+    assert client.http_calls == [("GET", "/channels/c1", None)]
+
+
+async def test_describe_channel_has_no_slowmode_when_the_raw_fetch_omits_it():
+    server = FakeServer(id="s1")
+    channel = FakeChannel(id="c1", name="general")
+    client = FakeClient()
+    client.add_channel(channel)
+    client.add_server(server)
+    client.set_channel_fetch_response("c1", {})
+    sender = _make_sender(client=client)
+
+    meta = await sender.describe_channel("c1")
+
+    assert meta.slowmode_delay is None
+
+
+async def test_describe_channel_slowmode_is_none_when_the_raw_fetch_fails():
+    server = FakeServer(id="s1")
+    channel = FakeChannel(id="c1", name="general")
+    client = FakeClient()
+    client.add_channel(channel)
+    client.add_server(server)
+    client.set_channel_fetch_response("c1", RuntimeError("boom"))
+    sender = _make_sender(client=client)
+
+    meta = await sender.describe_channel("c1")
+
+    assert meta.slowmode_delay is None
+
+
+async def test_ensure_channel_applies_slowmode_via_a_raw_patch_when_it_creates_the_channel():
+    server = FakeServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel(
+        "general", metadata=ChannelMetadata(slowmode_delay=30)
+    )
+
+    assert channel_id == "chan-general"
+    assert server.server_edits == [{"slowmode": 30}]
+
+
+async def test_ensure_channel_leaves_an_existing_channels_slowmode_alone():
+    server = FakeServer(id="s1")
+    server.channels.append(FakeChannel(id="chan-general", name="general"))
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel(
+        "general", metadata=ChannelMetadata(slowmode_delay=30)
+    )
+
+    assert channel_id == "chan-general"
+    assert server.server_edits == []  # matched, no PATCH issued
+
+
+async def test_ensure_channel_slowmode_patch_failure_does_not_block_channel_creation():
+    class ExplodingSlowmodeServer(FakeServer):
+        async def _http_request(self, compiled_route, *, json=None, **kwargs):
+            raise RuntimeError("PATCH failed")
+
+    server = ExplodingSlowmodeServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel(
+        "general", metadata=ChannelMetadata(slowmode_delay=30)
+    )
+
+    assert channel_id == "chan-general"  # channel creation itself still succeeded
+
+
 async def test_describe_channel_returns_none_for_an_unresolvable_channel():
     client = FakeClient()
     client.add_server(FakeServer(id="s1"))

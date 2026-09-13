@@ -311,6 +311,28 @@ class FakeClient:
         self._servers: dict[str, FakeServer] = {}
         self._fresh_servers: dict[str, FakeServer] = {}
         self._users: dict[str, Any] = {}
+        # channel_id -> raw JSON dict (or an exception to raise), for a raw
+        # GET /channels/{id} via `self.http` - StoatLookupsMixin's
+        # `_fetch_channel_slowmode` reads a channel's slowmode this way since
+        # stoat.py's typed Channel drops the field (issue #108).
+        self._channel_fetch_responses: dict[str, Any] = {}
+        self.http_calls: list[tuple[str, str, Any]] = []  # (method, path, json)
+        self.http = SimpleNamespace(request=self._http_request)
+
+    def set_channel_fetch_response(self, channel_id: str, response: Any) -> None:
+        self._channel_fetch_responses[channel_id] = response
+
+    async def _http_request(self, compiled_route, *, json: Any = None, **kwargs) -> Any:
+        method = compiled_route.route.method
+        path = compiled_route.build()
+        self.http_calls.append((method, path, json))
+        channel_id = path.rsplit("/", 1)[-1] if path.startswith("/channels/") else None
+        if method == "GET" and channel_id in self._channel_fetch_responses:
+            response = self._channel_fetch_responses[channel_id]
+            if isinstance(response, BaseException):
+                raise response
+            return response
+        raise RuntimeError(f"no fake http response configured for {method} {path}")
 
     def add_channel(self, channel: FakeChannel) -> FakeChannel:
         self._channels[channel.id] = channel

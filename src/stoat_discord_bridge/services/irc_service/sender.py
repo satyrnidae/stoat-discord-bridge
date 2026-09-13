@@ -339,8 +339,9 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         _PERMANENT_CHANNEL_MODE from a thread channel (threads are ephemeral
         - see join_channel's `permanent`). From `metadata` (issue #32) only
         `description` is usable - it becomes the channel TOPIC, set only when
-        this JOIN just created the channel (see join_channel); NSFW / icon
-        have no IRC equivalent and are ignored. The `#name` is truncated to the
+        this JOIN just created the channel (see join_channel); NSFW / icon /
+        slowmode_delay (issue #108) have no IRC equivalent and are ignored.
+        The `#name` is truncated to the
         server's CHANNELLEN (or the RFC default) as a backstop, since a name
         can reach here from paths other than `/mirror` - issue #99."""
         channel = normalize_channel_name(name, self._channel_name_limit())

@@ -168,7 +168,7 @@ async def test_mirror_channel_reads_source_metadata_and_forwards_it_to_ensure_ch
 
     async def describe_channel(channel_id):
         assert channel_id == "d1"
-        return ChannelMetadata(description="the source topic", nsfw=True)
+        return ChannelMetadata(description="the source topic", nsfw=True, slowmode_delay=30)
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, *, metadata=None):
         ensure_calls.append(metadata)
@@ -183,7 +183,7 @@ async def test_mirror_channel_reads_source_metadata_and_forwards_it_to_ensure_ch
     await linker.mirror_channel(
         local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
     )
-    assert ensure_calls == [ChannelMetadata(description="the source topic", nsfw=True)]
+    assert ensure_calls == [ChannelMetadata(description="the source topic", nsfw=True, slowmode_delay=30)]
 
 
 async def test_mirror_channel_omits_the_metadata_kwarg_when_the_source_has_no_describe_hook(fake_db):
