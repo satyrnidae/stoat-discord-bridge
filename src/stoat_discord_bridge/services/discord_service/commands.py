@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 _CHOICE_LIMIT = 25  # Discord's hard cap on autocomplete results
 
-# Every HELP_TOPICS key as a static /help choice - all 20 fit under Discord's
-# 25-choice cap, so every subtopic is discoverable in one dropdown rather
-# than needing a second dependent option (issue #117).
+# Every HELP_TOPICS key as a static /help choice - all of them fit under
+# Discord's 25-choice cap, so every subtopic is discoverable in one dropdown
+# rather than needing a second dependent option (issue #117).
 _HELP_CHOICES = [
     app_commands.Choice(name=f"{key} — {entry.summary}"[:100], value=key)
     for key, entry in HELP_TOPICS.items()
@@ -587,3 +587,72 @@ def build_command_tree(service) -> None:
         interaction: discord.Interaction, service: str, external_id: str, new_name: str | None = None
     ) -> None:
         await self._handle_mirror_emote_from(interaction, service, external_id, new_name)
+
+    # `/whitelist` / `/whitelisted` (issue #120) - flat commands, not part of
+    # the /link /unlink /linked /mirror groups since a bot whitelist entry
+    # isn't a cross-connector link.
+    async def whitelist_service_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        manager = self._bot_whitelist
+        connectors = manager.connectors if manager is not None else {}
+        current_l = current.lower()
+        choices: list[app_commands.Choice[str]] = []
+        if current_l in "local":
+            choices.append(app_commands.Choice(name="local (this connector)", value="local"))
+        choices.extend(_connector_autocomplete_choices(current, connectors))
+        return choices[:_CHOICE_LIMIT]
+
+    async def whitelist_bot_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        # Not filtered to bot accounts specifically - ConnectorInfo has no
+        # such hook, only the general list_users one - so this just offers
+        # every user on the target connector; a hand-typed id/name still
+        # works regardless (issue #80's "Use <text>" fallback).
+        manager = self._bot_whitelist
+        entities: list[tuple[str, str]] = []
+        if manager is not None:
+            service = getattr(interaction.namespace, "service", None) or "local"
+            target_connector = self.connector_id if service == "local" else service
+            info = manager.connectors.get(target_connector)
+            hook = getattr(info, "list_users", None) if info is not None else None
+            if hook is not None:
+                try:
+                    entities = await hook()
+                except Exception:
+                    logger.debug(
+                        "[discord:%s] /whitelist bot autocomplete lookup failed", self.connector_id, exc_info=True
+                    )
+        return _entity_autocomplete_choices(current, entities)
+
+    @self.tree.command(
+        name="whitelist",
+        description="Whitelist (or un-whitelist) a bot user's messages/edits/reactions",
+        guild=self._guild,
+    )
+    @app_commands.describe(
+        bot="Bot user id or name on the target connector",
+        action="add or remove (default: add)",
+        service="Connector the bot is on, or 'local' for this one (default: local)",
+    )
+    @app_commands.choices(
+        action=[app_commands.Choice(name="add", value="add"), app_commands.Choice(name="remove", value="remove")]
+    )
+    @app_commands.autocomplete(service=whitelist_service_autocomplete, bot=whitelist_bot_autocomplete)
+    @app_commands.default_permissions(manage_guild=True)
+    async def whitelist_command(
+        interaction: discord.Interaction,
+        bot: str,
+        action: app_commands.Choice[str] | None = None,
+        service: str = "local",
+    ) -> None:
+        await self._handle_whitelist(interaction, action.value if action else "add", service, bot)
+
+    @self.tree.command(
+        name="whitelisted", description="List whitelisted bot users on a connector", guild=self._guild
+    )
+    @app_commands.describe(service="Connector to list, or 'local' for this one (default: local)")
+    @app_commands.autocomplete(service=whitelist_service_autocomplete)
+    async def whitelisted_command(interaction: discord.Interaction, service: str = "local") -> None:
+        await self._handle_whitelisted(interaction, service)

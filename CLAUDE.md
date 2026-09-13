@@ -676,6 +676,49 @@ Category that `ThreadCategoryRepository` has marked as a thread category
 linked as a Category too — `/link channel` / `/mirror channel` on a forum
 redirect here (see "Discord forum channels as Categories" below).
 
+### Bot whitelisting
+
+A bot-authored message/edit/reaction is dropped by every sender by default —
+the loop-guard side effect of relaying via Discord webhook / Stoat masquerade
+means a bot-posted message looks the same as the bridge's own echo. Issue
+#120's `/whitelist` / `/whitelisted` commands (Discord/Stoat only — IRC has
+no bot concept and already relays every nick) manage a per-connector allowlist
+of bot user ids whose activity relays like a human's, checked by
+`BotWhitelistManager.is_whitelisted` (`admin_commands/bot_whitelist.py`),
+cached ~60s per `(connector_id, user_id)` off the hot path
+(`services/caching.AsyncTTLCache`, same pattern as pronoun resolution). Two
+sources merge at check time: a static `config.yaml` `whitelisted_bots:` seed
+(`"<source>:<id>"` pairs, parsed in `config.py`, never written to Mongo and
+not removable by `/whitelist remove`) and `storage/bot_whitelist.py`'s
+`BotWhitelistRepository` (runtime entries added/removed by the command).
+**Respects `/link user` links**: if the whitelisted bot's identity is linked
+across connectors, an event from *any* linked identity is treated as
+whitelisted too (checked through `UserMappingRepository.get_link_group` /
+`get_mapped_users`).
+
+Each sender's loop guard stays unconditional and runs *before* the whitelist
+check, so the linked-identity lookup can never re-admit the bridge's own
+output even if the bridge bot ends up in a link group by mistake: Discord's
+`message.webhook_id is not None` check (`_handle_message`) and
+`data.get("webhook_id")` (`_handle_raw_message_edit`); Stoat's
+`author_id == self._self_id` check in both `_handle_message` and
+`_handle_message_update`. Only the *other* half of each gate — "is this
+author a bot at all" — is relaxed by a whitelist hit. Reactions follow the
+same shape: Discord's `_handle_raw_reaction` already excluded other bots
+(`_is_other_bot`), now relaxed by the same check; Stoat's
+`_handle_message_react` previously forwarded every other bot's reaction
+unconditionally (an asymmetry with Discord) — it now excludes a non-
+whitelisted bot's reaction too, resolving the reactor via the cache-only
+`Client.get_user` (best-effort; a cache miss lets the reaction through, same
+stance as Discord's removal-path fallback). Custom-emoji-*create* sync is
+explicitly out of scope — a mirrored emoji's own creator is always the bridge
+bot, so that check is a same-bot loop guard, not a bot-authorship filter.
+
+`ConnectorInfo.self_user_id` (a lazy callable — the client may not be ready
+when `bridge.py` wires it) is a guardrail against whitelisting the bridge's
+own bot by id (`BotWhitelistManager.whitelist_bot` refuses it); the sender-
+side checks above are the actual loop protection, not this one.
+
 ### Discord threads
 
 Discord threads have no IRC/Stoat equivalent. `_handle_thread_create`

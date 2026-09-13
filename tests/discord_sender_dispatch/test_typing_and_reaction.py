@@ -11,6 +11,7 @@ from tests.fakes.fake_discord import (
     FakeUser,
 )
 from tests.discord_sender_dispatch.conftest import _Recorder, _make_sender
+from tests.discord_sender_dispatch.test_message_and_edit import _FakeBotWhitelist
 
 
 # ---------------------------------------------------------------- _handle_typing
@@ -110,6 +111,16 @@ async def test_handle_raw_reaction_drops_another_bots_reaction_via_member():
     await sender._handle_raw_reaction(_reaction_payload(member=FakeUser(id=5, bot=True)), added=True)
 
     assert recorder.reactions == []
+
+
+async def test_handle_raw_reaction_relays_a_whitelisted_bots_reaction():
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=1))
+    sender = _make_sender(recorder, client, bot_whitelist=_FakeBotWhitelist(("discord", "5")))
+
+    await sender._handle_raw_reaction(_reaction_payload(user_id=5, member=FakeUser(id=5, bot=True)), added=True)
+
+    assert len(recorder.reactions) == 1
 
 
 async def test_handle_raw_reaction_drops_another_bots_reaction_removal_via_user_cache():

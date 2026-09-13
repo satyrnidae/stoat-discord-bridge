@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from stoat_discord_bridge.admin_commands import ConnectorInfo
 from stoat_discord_bridge.services.discord_service import DiscordSenderService, _connector_autocomplete_choices
 from stoat_discord_bridge.status import HealthTracker
 from tests.discord_service.conftest import (
+    FakeBotWhitelistManager,
     FakeCategoryLinker,
     FakeInteraction,
     FakeLinker,
@@ -222,5 +225,74 @@ async def test_mirror_channel_from_source_autocomplete_excludes_all(sample_conne
     choices = await callback(FakeInteraction(), "")
 
     assert {c.value for c in choices} == {"discord", "stoat-public", "irc"}
+
+
+# ---------------------------------------------------------------- /whitelist, /whitelisted
+
+
+async def test_whitelist_service_autocomplete_offers_local_and_every_connector(sample_connectors):
+    sender = _make_sender(FakeLinker(), bot_whitelist=FakeBotWhitelistManager(sample_connectors))
+    callback = _autocomplete_callback(sender, "whitelist", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert {c.value for c in choices} == {"local", "discord", "stoat-public", "irc"}
+
+
+async def test_whitelist_service_autocomplete_filters_by_the_typed_text(sample_connectors):
+    sender = _make_sender(FakeLinker(), bot_whitelist=FakeBotWhitelistManager(sample_connectors))
+    callback = _autocomplete_callback(sender, "whitelist", "service")
+
+    choices = await callback(FakeInteraction(), "stoat")
+
+    assert {c.value for c in choices} == {"stoat-public"}
+
+
+async def test_whitelist_service_autocomplete_handles_no_configured_manager():
+    sender = _make_sender(FakeLinker(), bot_whitelist=None)
+    callback = _autocomplete_callback(sender, "whitelist", "service")
+
+    choices = await callback(FakeInteraction(), "")
+
+    assert [c.value for c in choices] == ["local"]
+
+
+async def test_whitelist_bot_autocomplete_reads_list_users_off_the_picked_service(sample_connectors):
+    async def list_users():
+        return [("bot1", "WebhookBot")]
+
+    connectors = dict(sample_connectors)
+    connectors["stoat-public"] = ConnectorInfo(
+        id="stoat-public", label="Stoat (public)", list_users=list_users
+    )
+    sender = _make_sender(FakeLinker(), bot_whitelist=FakeBotWhitelistManager(connectors))
+    callback = _autocomplete_callback(sender, "whitelist", "bot")
+    interaction = FakeInteraction(namespace=SimpleNamespace(service="stoat-public"))
+
+    choices = await callback(interaction, "")
+
+    assert [c.value for c in choices] == ["bot1"]
+
+
+async def test_whitelist_bot_autocomplete_defaults_to_the_local_connector(sample_connectors):
+    async def list_users():
+        return [("me", "BridgeBot")]
+
+    connectors = dict(sample_connectors)
+    connectors["discord"] = ConnectorInfo(id="discord", label="Discord", list_users=list_users)
+    sender = _make_sender(FakeLinker(), bot_whitelist=FakeBotWhitelistManager(connectors))
+    callback = _autocomplete_callback(sender, "whitelist", "bot")
+    interaction = FakeInteraction(namespace=SimpleNamespace())
+
+    choices = await callback(interaction, "")
+
+    assert [c.value for c in choices] == ["me"]
+
+
+async def test_whitelist_bot_autocomplete_handles_no_configured_manager():
+    sender = _make_sender(FakeLinker(), bot_whitelist=None)
+    callback = _autocomplete_callback(sender, "whitelist", "bot")
+
+    assert await callback(FakeInteraction(), "") == []
 
 

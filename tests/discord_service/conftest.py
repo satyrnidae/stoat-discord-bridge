@@ -15,6 +15,7 @@ from stoat_discord_bridge.status import HealthTracker
 __all__ = [
     "FakeLinker",
     "FakeCategoryLinker",
+    "FakeBotWhitelistManager",
     "FakeInteraction",
     "_discord_config",
     "_noop",
@@ -132,6 +133,26 @@ class FakeCategoryLinker:
         return "mirrored from ok"
 
 
+class FakeBotWhitelistManager:
+    def __init__(self, connectors: dict | None = None):
+        self.whitelist_bot_calls: list[dict] = []
+        self.remove_bot_calls: list[dict] = []
+        self.list_whitelisted_bots_calls: list[dict] = []
+        self.connectors = connectors or {}
+
+    async def whitelist_bot(self, **kwargs):
+        self.whitelist_bot_calls.append(kwargs)
+        return "Whitelisted bot 'bot1' on Discord."
+
+    async def remove_bot(self, **kwargs):
+        self.remove_bot_calls.append(kwargs)
+        return "Removed bot 'bot1' from the Discord whitelist."
+
+    async def list_whitelisted_bots(self, **kwargs):
+        self.list_whitelisted_bots_calls.append(kwargs)
+        return "bot1 (bot1)"
+
+
 class FakeInteraction:
     def __init__(
         self,
@@ -165,7 +186,13 @@ class FakeInteraction:
 
 
 def _make_sender(
-    linker: FakeLinker, *, emote_linker=None, user_linker=None, category_linker=None, role_linker=None
+    linker: FakeLinker,
+    *,
+    emote_linker=None,
+    user_linker=None,
+    category_linker=None,
+    role_linker=None,
+    bot_whitelist=None,
 ) -> DiscordSenderService:
     return DiscordSenderService(
         _discord_config(),
@@ -176,4 +203,5 @@ def _make_sender(
         user_linker=user_linker,
         category_linker=category_linker,
         role_linker=role_linker,
+        bot_whitelist=bot_whitelist,
     )

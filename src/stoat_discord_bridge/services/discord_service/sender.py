@@ -19,6 +19,7 @@ from dataclasses import replace
 import discord
 
 from stoat_discord_bridge.admin_commands import (
+    BotWhitelistManager,
     CategoryLinker,
     ChannelLinker,
     EmoteLinker,
@@ -86,6 +87,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         user_linker: "UserLinker | None" = None,
         category_linker: "CategoryLinker | None" = None,
         role_linker: "RoleLinker | None" = None,
+        bot_whitelist: "BotWhitelistManager | None" = None,
         on_member_roles_changed: "OnMemberRolesChanged | None" = None,
         on_role_renamed: "OnRoleRenamed | None" = None,
         on_role_deleted: "OnRoleDeleted | None" = None,
@@ -106,6 +108,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         self._user_linker = user_linker
         self._category_linker = category_linker
         self._role_linker = role_linker
+        self._bot_whitelist = bot_whitelist
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted
@@ -178,8 +181,23 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         self._health.mark_disconnected(self.connector_id)
         logger.warning("[discord:%s] disconnected", self.connector_id)
 
+    async def _bot_is_whitelisted(self, user_id: str) -> bool:
+        """Whether a bot-authored event from `user_id` should relay like a
+        human's, per `BotWhitelistManager.is_whitelisted` (issue #120). False
+        (today's behavior) when bot whitelisting isn't wired at all."""
+        if self._bot_whitelist is None:
+            return False
+        return await self._bot_whitelist.is_whitelisted(self.connector_id, user_id)
+
     async def _handle_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        if message.webhook_id is not None:
+            # Our own (or another integration's) webhook post - always
+            # dropped, unconditionally, regardless of the bot whitelist
+            # (issue #120). This is the actual loop guard; a webhook
+            # message's author also reports `bot=True`, but that half is
+            # relaxable per-bot below.
+            return
+        if message.author.bot and not await self._bot_is_whitelisted(str(message.author.id)):
             return
         if message.guild is None or message.guild.id != self._config.guild_id:
             return
@@ -312,8 +330,11 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             return
         if self._on_edit is None or not data.get("edited_timestamp") or "content" not in data:
             return
-        if data.get("webhook_id") or (data.get("author") or {}).get("bot"):
-            return  # our own relayed webhook copy being edited - echo
+        if data.get("webhook_id"):
+            return  # our own relayed webhook copy being edited - echo, always dropped
+        author = data.get("author") or {}
+        if author.get("bot") and not await self._bot_is_whitelisted(str(author.get("id") or "")):
+            return
         await self._on_edit(
             StandardEdit(
                 origin_connector_id=self.connector_id,

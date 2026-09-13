@@ -38,7 +38,7 @@ def test_registers_the_four_groups_with_discord_matching_subcommands():
     # every `/mirror <noun>` is itself a to/from group
     for noun in ("category", "channel", "emote", "role"):
         assert sorted(bot.all_commands["mirror"].all_commands[noun].all_commands) == ["from", "to"]
-    assert {"status", "bridge-help"} <= set(bot.all_commands)
+    assert {"status", "bridge-help", "whitelist", "whitelisted"} <= set(bot.all_commands)
 
 
 class _MirrorOwner:
@@ -343,3 +343,102 @@ async def test_recorded_command_message_is_not_relayed():
     await StoatSenderService._handle_message(owner, message)
 
     assert relayed == []
+
+
+# ---------------------------------------------------------------- /whitelist, /whitelisted
+
+
+class _WhitelistOwner:
+    connector_id = "stoat"
+
+    def __init__(self, connectors: dict | None = None):
+        self.replies = []
+        self.whitelist_calls = []
+        self.whitelisted_calls = []
+        self._bot_whitelist = SimpleNamespace(connectors=connectors or {})
+
+    async def _reply(self, ctx, text):
+        self.replies.append(text)
+
+    async def _whitelist(self, ctx, action, target, bot_ref):
+        self.whitelist_calls.append((action, target, bot_ref))
+
+    async def _whitelisted(self, ctx, target):
+        self.whitelisted_calls.append(target)
+
+
+async def test_whitelist_with_no_args_replies_usage():
+    owner = _WhitelistOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelist"].callback(SimpleNamespace())
+
+    assert owner.replies == ["Usage: /whitelist [add|remove] [local|<service>] <bot_id|name>"]
+    assert owner.whitelist_calls == []
+
+
+async def test_whitelist_defaults_to_add_and_local_with_only_a_bot_ref():
+    owner = _WhitelistOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelist"].callback(SimpleNamespace(), "bot1")
+
+    assert owner.whitelist_calls == [("add", "local", "bot1")]
+
+
+async def test_whitelist_parses_a_leading_action():
+    owner = _WhitelistOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelist"].callback(SimpleNamespace(), "remove", "bot1")
+
+    assert owner.whitelist_calls == [("remove", "local", "bot1")]
+
+
+async def test_whitelist_parses_a_known_connector_as_the_target():
+    owner = _WhitelistOwner({"discord": SimpleNamespace()})
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelist"].callback(SimpleNamespace(), "add", "discord", "bot1")
+
+    assert owner.whitelist_calls == [("add", "discord", "bot1")]
+
+
+async def test_whitelist_treats_an_unknown_token_as_part_of_the_bot_ref():
+    # "WebhookBot" isn't "local" or a known connector id, so it's not
+    # mistaken for the target - it (and any further tokens) become the
+    # bot_ref, joined with a space.
+    owner = _WhitelistOwner({"discord": SimpleNamespace()})
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelist"].callback(SimpleNamespace(), "Webhook", "Bot")
+
+    assert owner.whitelist_calls == [("add", "local", "Webhook Bot")]
+
+
+async def test_whitelist_action_and_target_but_no_bot_ref_replies_usage():
+    owner = _WhitelistOwner({"discord": SimpleNamespace()})
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelist"].callback(SimpleNamespace(), "add", "discord")
+
+    assert owner.replies == ["Usage: /whitelist [add|remove] [local|<service>] <bot_id|name>"]
+    assert owner.whitelist_calls == []
+
+
+async def test_whitelisted_defaults_to_local():
+    owner = _WhitelistOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelisted"].callback(SimpleNamespace())
+
+    assert owner.whitelisted_calls == ["local"]
+
+
+async def test_whitelisted_takes_an_explicit_service():
+    owner = _WhitelistOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["whitelisted"].callback(SimpleNamespace(), "discord")
+
+    assert owner.whitelisted_calls == ["discord"]

@@ -650,3 +650,32 @@ class DiscordLinkingMixin:
             self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=str(target.id), destination=service),
             log_context="/unlink user",
         )
+
+    async def _handle_whitelist(
+        self, interaction: discord.Interaction, action: str, service: str, bot: str
+    ) -> None:
+        if not await self._linker_configured(interaction, self._bot_whitelist, "Bot whitelisting isn't configured."):
+            return
+        target_connector = self.connector_id if service == "local" else service
+        logger.info(
+            "[discord:%s] %s ran /whitelist action=%s service=%s bot=%s",
+            self.connector_id,
+            interaction.user.id,
+            action,
+            target_connector,
+            bot,
+        )
+        if action == "remove":
+            coro = self._bot_whitelist.remove_bot(target_connector=target_connector, bot_ref=bot)
+        else:
+            coro = self._bot_whitelist.whitelist_bot(
+                target_connector=target_connector, bot_ref=bot, added_by=str(interaction.user.id)
+            )
+        await self._reply_linker_result(interaction, coro, log_context="/whitelist")
+
+    async def _handle_whitelisted(self, interaction: discord.Interaction, service: str) -> None:
+        if not await self._linker_configured(interaction, self._bot_whitelist, "Bot whitelisting isn't configured."):
+            return
+        target_connector = self.connector_id if service == "local" else service
+        summary = await self._bot_whitelist.list_whitelisted_bots(target_connector=target_connector)
+        await interaction.response.send_message(summary, ephemeral=True)

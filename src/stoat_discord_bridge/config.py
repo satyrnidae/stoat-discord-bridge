@@ -41,6 +41,7 @@ as `op --account`.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -177,6 +178,12 @@ class BridgeConfig:
     stoat: list[StoatConnectorConfig]
     irc: list[IrcConnectorConfig]
     mongo: MongoConfig
+    # A static, always-on overlay of (connector_id, bot_user_id) pairs whose
+    # messages/edits/reactions relay normally despite being bot-authored
+    # (issue #120) - merged with BotWhitelistManager's Mongo-backed runtime
+    # entries at check time, never written there, and not removable via
+    # `/whitelist remove` (config-pinned).
+    whitelisted_bots: tuple[tuple[str, str], ...] = ()
 
 
 class ConfigError(Exception):
@@ -459,10 +466,27 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
             raise ConfigError(f"duplicate connector id '{connector_id}' - every connector id must be unique")
         seen.add(connector_id)
 
+    whitelisted_bots_raw = raw.get("whitelisted_bots") or []
+    env_whitelisted_bots = _resolve_env("WHITELISTED_BOTS")
+    if env_whitelisted_bots is not None:
+        # Comma/whitespace-separated "<source>:<id>" tokens, replacing (not
+        # merging with) the YAML list when set.
+        whitelisted_bots_raw = [token for token in re.split(r"[,\s]+", env_whitelisted_bots) if token]
+    whitelisted_bots: list[tuple[str, str]] = []
+    for raw_entry in whitelisted_bots_raw:
+        source, sep, bot_id = str(raw_entry).partition(":")
+        if not sep or not source or not bot_id:
+            raise ConfigError(f"whitelisted_bots entry {raw_entry!r} must be '<source>:<id>'")
+        if source not in seen:
+            raise ConfigError(f"whitelisted_bots entry {raw_entry!r}: unknown connector id '{source}'")
+        whitelisted_bots.append((source, bot_id))
+
     mongo_raw = raw.get("mongo", {})
     mongo = MongoConfig(
         uri=_resolve_env(mongo_raw.get("uri_env", "MONGODB_URI")) or "mongodb://localhost:27017",
         db_name=mongo_raw.get("db_name", "stoat_discord_bridge"),
     )
 
-    return BridgeConfig(discord=discord, stoat=stoat, irc=irc, mongo=mongo)
+    return BridgeConfig(
+        discord=discord, stoat=stoat, irc=irc, mongo=mongo, whitelisted_bots=tuple(whitelisted_bots)
+    )

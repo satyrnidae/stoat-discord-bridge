@@ -484,3 +484,79 @@ def test_legacy_env_pointer_field_is_ignored(tmp_path, isolated_env, monkeypatch
     )
     config = load_config(path)
     assert config.irc[0].nick == "StoatDiscordBridge"  # nick_env is inert - falls through to the default
+
+
+# ---------------------------------------------------------------- whitelisted_bots (issue #120)
+
+
+def test_whitelisted_bots_parses_source_colon_id_pairs(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+        whitelisted_bots:
+          - "discord:12345"
+          - "discord:67890"
+        """,
+    )
+    config = load_config(path)
+    assert config.whitelisted_bots == (("discord", "12345"), ("discord", "67890"))
+
+
+def test_whitelisted_bots_defaults_to_empty(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+    config = load_config(path)
+    assert config.whitelisted_bots == ()
+
+
+def test_whitelisted_bots_unknown_source_raises(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+        whitelisted_bots:
+          - "not-a-connector:12345"
+        """,
+    )
+    with pytest.raises(ConfigError, match="unknown connector id"):
+        load_config(path)
+
+
+def test_whitelisted_bots_malformed_entry_raises(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+        whitelisted_bots:
+          - "no-colon-here"
+        """,
+    )
+    with pytest.raises(ConfigError, match="must be '<source>:<id>'"):
+        load_config(path)
+
+
+def test_whitelisted_bots_env_override_replaces_the_yaml_list(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    monkeypatch.setenv("WHITELISTED_BOTS", "discord:111, discord:222\ndiscord:333")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+        whitelisted_bots:
+          - "discord:999"
+        """,
+    )
+    config = load_config(path)
+    assert config.whitelisted_bots == (("discord", "111"), ("discord", "222"), ("discord", "333"))

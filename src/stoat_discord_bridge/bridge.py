@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.admin_commands import (
+    BotWhitelistManager,
     CategoryLinker,
     ChannelLinker,
     ConnectorInfo,
@@ -54,6 +55,7 @@ from stoat_discord_bridge.services.stoat_service import (
     StoatSenderService,
 )
 from stoat_discord_bridge.status import HealthTracker
+from stoat_discord_bridge.storage.bot_whitelist import BotWhitelistRepository
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import (
     ChannelMapping,
@@ -671,6 +673,8 @@ async def run(config: BridgeConfig) -> None:
     category_mappings = CategoryMappingRepository(mongo.db)
     thread_categories = ThreadCategoryRepository(mongo.db)
     role_mappings = RoleMappingRepository(mongo.db)
+    bot_whitelist_repo = BotWhitelistRepository(mongo.db)
+    await bot_whitelist_repo.ensure_indexes()
 
     all_connectors = (*config.discord, *config.stoat, *config.irc)
     logger.info(
@@ -696,6 +700,9 @@ async def run(config: BridgeConfig) -> None:
         category_mappings, thread_categories, linker, connector_infos, guard=mirror_guard
     )
     role_linker = RoleLinker(role_mappings, connector_infos, guard=mirror_guard)
+    bot_whitelist = BotWhitelistManager(
+        bot_whitelist_repo, user_mappings, connector_infos, seed=frozenset(config.whitelisted_bots)
+    )
     role_grants = RoleSyncCoordinator(
         role_mappings, user_mappings, connector_infos, channel_mappings, category_mappings
     )
@@ -719,6 +726,7 @@ async def run(config: BridgeConfig) -> None:
             user_linker=user_linker,
             category_linker=category_linker,
             role_linker=role_linker,
+            bot_whitelist=bot_whitelist,
             on_member_roles_changed=role_grants.handle,
             on_role_renamed=role_grants.handle_role_renamed,
             on_role_deleted=role_grants.handle_role_deleted,
@@ -776,6 +784,7 @@ async def run(config: BridgeConfig) -> None:
             list_roles=sender.list_roles,
             list_users=sender.list_users,
             list_emotes=sender.list_emotes,
+            self_user_id=lambda sender=sender: (str(sender.client.user.id) if sender.client.user else None),
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -796,6 +805,7 @@ async def run(config: BridgeConfig) -> None:
             user_linker=user_linker,
             category_linker=category_linker,
             role_linker=role_linker,
+            bot_whitelist=bot_whitelist,
             on_member_roles_changed=role_grants.handle,
             on_role_renamed=role_grants.handle_role_renamed,
             on_role_deleted=role_grants.handle_role_deleted,
@@ -854,6 +864,7 @@ async def run(config: BridgeConfig) -> None:
             # forces a full re-fetch first (issue #81). Discord/IRC keep their
             # caches live and leave this unset.
             refresh=sender.refresh,
+            self_user_id=lambda sender=sender: sender.self_id,
         )
         senders.append(sender)
         closables.append(sender)

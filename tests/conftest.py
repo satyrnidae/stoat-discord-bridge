@@ -66,16 +66,18 @@ class FakeCollection:
     def find(self, query: dict) -> FakeCursor:
         return FakeCursor(doc for doc in self.docs.values() if _matches(doc, query))
 
-    async def update_one(self, query: dict, update: dict, upsert: bool = False) -> None:
+    async def update_one(self, query: dict, update: dict, upsert: bool = False):
         for doc in self.docs.values():
             if _matches(doc, query):
-                _apply_update(doc, update)
-                return
+                _apply_update(doc, update, is_insert=False)
+                return type("UpdateResult", (), {"upserted_id": None, "matched_count": 1})()
         if upsert:
             new_doc = {k: v for k, v in query.items() if not isinstance(v, dict)}
-            _apply_update(new_doc, update)
+            _apply_update(new_doc, update, is_insert=True)
             new_doc["_id"] = ObjectId()
             self.docs[str(new_doc["_id"])] = new_doc
+            return type("UpdateResult", (), {"upserted_id": new_doc["_id"], "matched_count": 0})()
+        return type("UpdateResult", (), {"upserted_id": None, "matched_count": 0})()
 
     async def delete_one(self, query: dict):
         for key, doc in list(self.docs.items()):
@@ -127,9 +129,13 @@ def _dotted_get(doc: dict, path: str):
     return value
 
 
-def _apply_update(doc: dict, update: dict) -> None:
+def _apply_update(doc: dict, update: dict, *, is_insert: bool = False) -> None:
     if "$set" in update:
         doc.update(update["$set"])
+    if "$setOnInsert" in update and is_insert:
+        # Real MongoDB only applies $setOnInsert when the upsert actually
+        # inserts a new document, never when it matches an existing one.
+        doc.update(update["$setOnInsert"])
     if "$push" in update:
         for key, value in update["$push"].items():
             doc.setdefault(key, [])

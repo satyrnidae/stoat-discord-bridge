@@ -356,6 +356,38 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         },
         permission="Manage Server",
     ),
+    "whitelist": HelpTopic(
+        summary="Allow (or disallow) a bot's activity to relay (Discord/Stoat only)",
+        body=(
+            "Bot-authored messages/edits/reactions are dropped by every sender by default - "
+            "this manages a per-connector allowlist of bot users whose activity relays like a "
+            "human's. action defaults to add; service defaults to local (the connector the "
+            "command is run on) - pass an explicit connector id to whitelist a bot that lives "
+            "on another one. Also respects link user: whitelisting a bot on one connector "
+            "re-admits its linked identity's activity everywhere it's linked. Entries can also "
+            "come from a config.yaml whitelisted_bots: seed, which can't be removed here. Never "
+            "whitelist another bridge instance's own bot - its relayed copies would loop back."
+        ),
+        syntax={
+            "discord": "/whitelist [action] [service] <bot>",
+            "stoat": "{p}whitelist [add|remove] [local|<service>] <bot_id|name>",
+            "irc": None,
+        },
+        permission="Manage Server",
+    ),
+    "whitelisted": HelpTopic(
+        summary="List whitelisted bots on a connector, read-only (Discord/Stoat only)",
+        body=(
+            "Lists the bots whitelisted on the given connector (default: local, the one the "
+            "command is run on), config-seeded entries marked separately from runtime ones."
+        ),
+        syntax={
+            "discord": "/whitelisted [service]",
+            "stoat": "{p}whitelisted [local|<service>]",
+            "irc": None,
+        },
+        permission="read-only",
+    ),
 }
 
 # This connector's own help command, appended to the index - not itself a

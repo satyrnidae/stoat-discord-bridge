@@ -17,7 +17,14 @@ import pytest
 
 from stoat_discord_bridge.services.discord_service import DiscordSenderService, _normalize_channel_id
 from stoat_discord_bridge.status import HealthTracker
-from tests.discord_service.conftest import FakeInteraction, FakeLinker, _discord_config, _make_sender, _noop
+from tests.discord_service.conftest import (
+    FakeBotWhitelistManager,
+    FakeInteraction,
+    FakeLinker,
+    _discord_config,
+    _make_sender,
+    _noop,
+)
 
 
 # ---------------------------------------------------------------- _normalize_channel_id
@@ -426,5 +433,59 @@ async def test_unlink_user_without_a_configured_user_linker():
     await sender._handle_unlink_user(interaction, None, None)
 
     assert interaction.sent == ["User linking isn't configured."]
+
+
+# ---------------------------------------------------------------- _handle_whitelist / _handle_whitelisted
+
+
+async def test_whitelist_defaults_to_add_and_the_local_connector():
+    manager = FakeBotWhitelistManager()
+    sender = _make_sender(FakeLinker(), bot_whitelist=manager)
+    interaction = FakeInteraction(user_id=111)
+
+    await sender._handle_whitelist(interaction, "add", "local", "bot1")
+
+    assert manager.whitelist_bot_calls == [{"target_connector": "discord", "bot_ref": "bot1", "added_by": "111"}]
+    assert interaction.sent == ["Whitelisted bot 'bot1' on Discord."]
+
+
+async def test_whitelist_remove_action_targets_an_explicit_service():
+    manager = FakeBotWhitelistManager()
+    sender = _make_sender(FakeLinker(), bot_whitelist=manager)
+    interaction = FakeInteraction()
+
+    await sender._handle_whitelist(interaction, "remove", "stoat", "bot1")
+
+    assert manager.remove_bot_calls == [{"target_connector": "stoat", "bot_ref": "bot1"}]
+    assert interaction.sent == ["Removed bot 'bot1' from the Discord whitelist."]
+
+
+async def test_whitelist_without_a_configured_bot_whitelist():
+    sender = _make_sender(FakeLinker(), bot_whitelist=None)
+    interaction = FakeInteraction()
+
+    await sender._handle_whitelist(interaction, "add", "local", "bot1")
+
+    assert interaction.sent == ["Bot whitelisting isn't configured."]
+
+
+async def test_whitelisted_defaults_to_the_local_connector():
+    manager = FakeBotWhitelistManager()
+    sender = _make_sender(FakeLinker(), bot_whitelist=manager)
+    interaction = FakeInteraction()
+
+    await sender._handle_whitelisted(interaction, "local")
+
+    assert manager.list_whitelisted_bots_calls == [{"target_connector": "discord"}]
+    assert interaction.sent == ["bot1 (bot1)"]
+
+
+async def test_whitelisted_without_a_configured_bot_whitelist():
+    sender = _make_sender(FakeLinker(), bot_whitelist=None)
+    interaction = FakeInteraction()
+
+    await sender._handle_whitelisted(interaction, "local")
+
+    assert interaction.sent == ["Bot whitelisting isn't configured."]
 
 

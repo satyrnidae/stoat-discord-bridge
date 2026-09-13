@@ -18,6 +18,7 @@ from collections import deque
 import stoat
 
 from stoat_discord_bridge.admin_commands import (
+    BotWhitelistManager,
     CategoryLinker,
     ChannelLinker,
     EmoteLinker,
@@ -83,6 +84,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         user_linker: "UserLinker | None" = None,
         category_linker: "CategoryLinker | None" = None,
         role_linker: "RoleLinker | None" = None,
+        bot_whitelist: "BotWhitelistManager | None" = None,
         on_member_roles_changed: "OnMemberRolesChanged | None" = None,
         on_role_renamed: "OnRoleRenamed | None" = None,
         on_role_deleted: "OnRoleDeleted | None" = None,
@@ -104,6 +106,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         self._user_linker = user_linker
         self._category_linker = category_linker
         self._role_linker = role_linker
+        self._bot_whitelist = bot_whitelist
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted
@@ -146,7 +149,11 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
 
     async def _handle_message(self, message) -> None:
         if getattr(message.author, "bot", False):
-            return
+            author_id = str(getattr(message.author, "id", "")) or None
+            if author_id == self._self_id:
+                return  # our own masqueraded relay - never re-relay
+            if not await self._bot_is_whitelisted(author_id or ""):
+                return
         if str(message.id) in self._command_message_ids:
             # A `/link channel …` etc. already handled by the ext.commands
             # processor (which shares this MessageCreateEvent) - don't also
@@ -232,8 +239,11 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         if new_content is stoat.UNDEFINED or new_content is None:
             return  # this update didn't change the content
         author = getattr(after, "author", None)
-        if getattr(author, "bot", False):
-            return  # a masqueraded/bot message we posted - echo
+        author_id = str(getattr(author, "id", "")) or None
+        if author_id == self._self_id:
+            return  # a masqueraded message we posted - echo, always dropped
+        if getattr(author, "bot", False) and not await self._bot_is_whitelisted(author_id or ""):
+            return
         source = partial if partial is not None else after
         channel_id = getattr(source, "channel_id", None) or getattr(
             getattr(source, "channel", None), "id", None
@@ -388,6 +398,14 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         """The bridge bot's own Stoat user id (set once on_ready fires),
         exposed for the receiver's own-reaction idempotency check."""
         return self._self_id
+
+    async def _bot_is_whitelisted(self, user_id: str) -> bool:
+        """Whether a bot-authored event from `user_id` should relay like a
+        human's, per `BotWhitelistManager.is_whitelisted` (issue #120). False
+        (today's behavior) when bot whitelisting isn't wired at all."""
+        if self._bot_whitelist is None:
+            return False
+        return await self._bot_whitelist.is_whitelisted(self.connector_id, user_id)
 
     async def start(self) -> None:
         # Credentials (token, http_base) are set at construction time above;
