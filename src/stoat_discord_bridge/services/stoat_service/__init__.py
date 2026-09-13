@@ -7,7 +7,7 @@ each Stoat deployment needs its own client/session.
 Submodules:
   discovery.py  - deployment websocket/CDN URL discovery (setup)
   client.py     - the `stoat.ext.commands.Bot` subclass (event -> owner shim)
-  commands.py   - command parsing: the `/link` `/unlink` `/linked` `/mirror` tree + help text
+  commands.py   - command parsing: the `/link` `/unlink` `/linked` `/mirror` tree + `/bridge-help`
   linking.py    - the Mongo-backed `_link_*` / `_unlink_*` / `_linked_*` / `_mirror_*` handlers + admin gate
   lookups.py    - platform-resource lookups (id<->name, get-or-create, category placement)
   sync.py       - reaction / emoji / role / typing / channel sync event handlers + coordinator hooks
@@ -17,7 +17,6 @@ Submodules:
 """
 
 from stoat_discord_bridge.services.stoat_service.client import _StoatClient
-from stoat_discord_bridge.services.stoat_service.commands import _help_text
 from stoat_discord_bridge.services.stoat_service.discovery import (
     _discover_cdn_base,
     _discover_node_config,
@@ -36,7 +35,6 @@ __all__ = [
     "StoatSenderService",
     "StoatReceiverService",
     "_StoatClient",
-    "_help_text",
     "_discover_node_config",
     "_discover_websocket_base",
     "_discover_cdn_base",

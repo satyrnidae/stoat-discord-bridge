@@ -592,3 +592,16 @@ async def test_privmsg_help_needs_no_oper_status():
     sender._handle_privmsg(None, FakeIrcEvent(text="HELP", nick="alice"))
     assert conn.notice_calls
     assert "operator" not in conn.notice_calls[0][1].lower()
+
+
+async def test_privmsg_help_with_a_topic_and_noun_drills_down():
+    sender, conn = _make_sender()
+    sender._handle_privmsg(None, FakeIrcEvent(text="HELP MIRROR CHANNEL", nick="alice"))
+    assert conn.notice_calls[0][0] == "alice"
+    assert conn.notice_calls[0][1].startswith("MIRROR CHANNEL TO <service|all>")
+
+
+async def test_privmsg_help_with_an_unrecognized_topic_falls_back_to_the_index():
+    sender, conn = _make_sender()
+    sender._handle_privmsg(None, FakeIrcEvent(text="HELP BOGUS", nick="alice"))
+    assert conn.notice_calls[0] == ("alice", "Bridge commands (see COMMANDS.md for full detail):")

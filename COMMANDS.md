@@ -7,10 +7,10 @@ connector. Shared logic lives in `src/stoat_discord_bridge/admin_commands.py`
 connector's own `services/*.py` module just wires its native command syntax
 to that shared logic, so behavior is identical everywhere except where noted.
 
-Discord has native slash-command discoverability, so it has no dedicated
-help command. Stoat and IRC don't, hence `/bridge-help` (Stoat) and `HELP`
-(IRC) - both just print a compact copy of this file's per-connector command
-list.
+Every connector has a help command with the same `[topic] [noun]`
+drill-down, rendered from one shared table (`admin_commands/help.py`) so the
+three don't drift from each other or from this file - see the `HELP` /
+`/bridge-help` section below.
 
 A `<service>` argument below is a connector `id` from
 `config.yaml` (see its `id` field) — not a platform name, since there can be
@@ -500,12 +500,23 @@ whoever ran the command.
   (IRC-operator; both arguments optional, `local_id` defaults to the
   nick running the command)
 
-## `HELP` (IRC) / `/bridge-help` (Stoat)
+## `/help` (Discord) / `/bridge-help` (Stoat) / `HELP` (IRC)
 
-Prints a compact copy of this file's command list for that connector, since
-neither has Discord's native slash-command discoverability. Read-only, no
-permission gate.
+With no argument, prints an index of every command this connector offers -
+one line each, syntax plus a one-line summary. With a topic (and, on
+Stoat/IRC, a noun), drills into that one command's full syntax, a longer
+description, and its permission requirement. All three render from the same
+in-code table (`admin_commands/help.py`'s `HELP_TOPICS`), so this file, the
+three connectors' help output, and each other never drift out of sync.
+Read-only, no permission gate. An unrecognized topic, or one this connector
+doesn't offer at all (role/Category/emote topics on IRC), falls back to the
+index.
 
-- **Discord**: not needed - slash commands are self-documenting.
-- **Stoat**: `/bridge-help` message command.
-- **IRC**: `HELP`, sent as a DM to the bot.
+- **Discord**: `/help [topic]` slash command - `topic` is a single dropdown
+  listing every subtopic (e.g. "link channel", "mirror role") plus `status`,
+  so every command is discoverable without leaving the command box.
+- **Stoat**: `/bridge-help [topic] [noun]` message command. Stays under this
+  name rather than `/help` - a bare `/help` would collide with other bots'
+  command providers in a shared Stoat server.
+- **IRC**: `HELP [topic] [noun]`, sent as a DM to the bot (e.g. `HELP MIRROR
+  CHANNEL`).

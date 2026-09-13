@@ -336,7 +336,15 @@ commands `/link emote` / `/mirror emote to` / `/mirror emote from` /
 `/linked emotes` / `/unlink emote`
 (Discord/Stoat only - IRC has no custom emoji)) and how to
 reach it on each connector is documented in
-`COMMANDS.md`, not duplicated here. `/mirror <noun>` is a two-way group:
+`COMMANDS.md`, not duplicated here. Every connector also has a help command
+with the same `[topic] [noun]` drill-down - Discord's `/help [topic]`
+(a single dropdown of every subtopic), Stoat's `/bridge-help [topic] [noun]`
+(kept under that name rather than `/help` to avoid colliding with other
+bots' command providers in a shared server), and IRC's `HELP [topic]
+[noun]` - all three rendered from one shared `admin_commands/help.py` table
+(`HELP_TOPICS` + `render_help`/`resolve_help_key`) instead of each
+maintaining its own hand-written text blob that drifted from `COMMANDS.md`
+and from each other (issue #117). `/mirror <noun>` is a two-way group:
 `to <service> …` pushes a local entity onto another connector (the historical
 `/mirror <noun>` behavior), `from <service> <external_id>` pulls a remote
 entity in and creates the local copy - respecting already-linked entities
@@ -743,6 +751,7 @@ src/stoat_discord_bridge/
   admin_commands/               # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
     common.py                   # ConnectorInfo hook dataclass, LinkError/MirrorInProgressError, MirrorGuard, pop_kv_option, id/name-resolution + conflict-check helpers
     channel.py / category.py / emote.py / user.py / role.py # one linker class per module - category.py depends on channel.py (mirrors a linked Category's child channels); the rest are independent
+    help.py                     # HELP_TOPICS + render_help/resolve_help_key - shared help content for /help (Discord) / /bridge-help (Stoat) / HELP (IRC)
     __init__.py                 # re-exports every public name, so `from stoat_discord_bridge.admin_commands import <name>` still works unchanged
   bridge.py                    # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
   status.py                    # HealthTracker: per-connector sync target health, read by the /status commands

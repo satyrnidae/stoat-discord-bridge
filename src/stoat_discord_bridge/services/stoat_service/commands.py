@@ -6,50 +6,24 @@ Stoat's admin commands are real `stoat.ext.commands` groups (`/link channel
 groups and their subcommands (plus flat `/status`, `/bridge-help`) on a
 `_StoatClient`; every callback forwards to the matching
 `StoatSenderService._<verb>_<noun>` method in `linking.py`.
+
+`/bridge-help` stays under that name rather than `/help` - a bare `/help`
+would collide with other bots' command providers in a shared Stoat server -
+but renders from the same `admin_commands.help.HELP_TOPICS` table Discord's
+`/help` and IRC's `HELP` do (issue #117), rather than its own hand-maintained
+text blob.
 """
 
 from __future__ import annotations
 
 import typing
 
-from stoat_discord_bridge.admin_commands import pop_kv_option
+from stoat_discord_bridge.admin_commands import pop_kv_option, render_help, resolve_help_key
 from stoat_discord_bridge.services.stoat_service._compat import apply_stoat_command_patches
 
 # stoat.py 1.2.1's command framework raises `TypeError` on any `Optional[...]`
 # parameter (issue #40); patch that before the tree below is declared/invoked.
 apply_stoat_command_patches()
-
-# Discord has native slash-command discoverability; Stoat's commands are
-# plain chat messages with no such affordance, hence /bridge-help. See
-# COMMANDS.md for full per-command detail - this is a compact pointer to it.
-# `{p}` is filled with the connector's configured command prefix
-# (`StoatConnectorConfig.command_prefix`, "/" by default) - see `_help_text`.
-_HELP_TEXT_TEMPLATE = """Bridge commands (see COMMANDS.md for full detail):
-  {p}status - sync target health, read-only
-  {p}linked channels [local_id|name] - channels bridged to a channel (default: this one), read-only
-  {p}linked users [local_id|name] - cross-connector user links, read-only
-  {p}linked roles [local_id|name] - roles linked across the bridge, read-only
-  {p}linked categories [local_id|name] - Categories bridged to this channel's Category, read-only
-  {p}linked emotes [local_id|name] - custom emoji linked across the bridge, read-only
-  {p}link channel [local_id|name] <service> <external_id|name> - bridge a channel (Manage Server)
-  {p}link user <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (Manage Server)
-  {p}link emote <service> <external_id|name> <local_id|name> - link a custom emoji (Manage Server)
-  {p}link role <local_id|name> <service> <external_id|name> - link a role across connectors (Manage Server)
-  {p}link category <service> <external_id|name> [local_id|name] - bridge a Category; new channels in either sync automatically (Manage Server)
-  {p}mirror channel to <service|all> [local_id|name] [new_name] [category:<id|name>] | from <service> <external_id|name> [new_name] [category:<id|name>] - create+link a matching channel; category:<> overrides linked Categories (Manage Server)
-  {p}mirror role to <service|all> <local_id|name> [new_name] | from <service> <external_id|name> [new_name] - create+link a matching role (Manage Server)
-  {p}mirror emote to <service|all> <local_id|name> [new_name] | from <service> <external_id|name> [new_name] - recreate+link a custom emoji (Manage Server)
-  {p}mirror category to <service|all> [local_id|name] [new_name] | from <service> <external_id|name> [new_name] - create+link a Category and mirror its channels (Manage Server)
-  {p}unlink channel [local_id|name] [service|all] - unlink a channel (default: this one) from one connector, or the whole group (Manage Server)
-  {p}unlink user [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (Manage Server)
-  {p}unlink role <local_id|name> [service|all] - unlink a role from one connector, or the whole group (Manage Server)
-  {p}unlink emote <local_id|name> [service|all] - unlink a custom emoji from one connector, or the whole group (Manage Server)
-  {p}unlink category [local_id|name] [service|all] - unlink a Category (default: this channel's) from one connector, or the whole group (Manage Server)
-  {p}bridge-help - this message"""
-
-
-def _help_text(prefix: str) -> str:
-    return _HELP_TEXT_TEMPLATE.format(p=prefix)
 
 
 def build_command_tree(bot, owner, prefix: str) -> None:
@@ -243,5 +217,7 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         await owner._reply(ctx, owner._health.render())
 
     @bot.command(name="bridge-help")
-    async def bridge_help(ctx):
-        await owner._reply(ctx, _help_text(p))
+    async def bridge_help(
+        ctx, topic: typing.Optional[str] = None, noun: typing.Optional[str] = None
+    ):
+        await owner._reply(ctx, render_help(resolve_help_key(topic, noun), connector="stoat", prefix=p))

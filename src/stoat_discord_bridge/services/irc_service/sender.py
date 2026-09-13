@@ -13,7 +13,7 @@ import logging
 import time
 from collections.abc import Awaitable
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, UserLinker
+from stoat_discord_bridge.admin_commands import ChannelLinker, UserLinker, render_help, resolve_help_key
 from stoat_discord_bridge.config import IrcConnectorConfig
 from stoat_discord_bridge.models import ChannelMetadata, StandardMessage
 from stoat_discord_bridge.services.base import OnMessage, SenderService
@@ -21,7 +21,6 @@ from stoat_discord_bridge.services.irc_service.client import _IrcClient
 from stoat_discord_bridge.services.irc_service.commands import (
     _ADMIN_DM_CHANNEL_VERBS,
     _ADMIN_DM_TWO_WORD_NOUNS,
-    _HELP_TEXT,
     IrcAdminCommandsMixin,
 )
 from stoat_discord_bridge.services.irc_service.formatting import (
@@ -164,7 +163,7 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
             self.connection.join(channel)
 
     def _handle_privmsg(self, connection, event) -> None:
-        # DM to the bot. `STATUS`/`LINKED CHANNELS`/`LINKED USERS` are
+        # DM to the bot. `STATUS`/`HELP`/`LINKED CHANNELS`/`LINKED USERS` are
         # read-only, no permission gate. `LINK CHANNEL`/`MIRROR CHANNEL`/
         # `UNLINK CHANNEL`/`LINK USER`/`UNLINK USER` (two-token) are oper-gated
         # admin commands, dispatched to _handle_dm_command.
@@ -173,11 +172,14 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
             for line in self._health.render().splitlines():
                 connection.notice(event.source.nick, line)
             return
-        if content.strip().upper() == "HELP":
-            self._notify(event.source.nick, _HELP_TEXT)
-            return
         words = content.split()
         if not words:
+            return
+        if words[0].upper() == "HELP":
+            # `HELP [topic] [noun]` - e.g. `HELP MIRROR CHANNEL` (issue #117).
+            topic = words[1] if len(words) > 1 else None
+            noun = words[2] if len(words) > 2 else None
+            self._notify(event.source.nick, render_help(resolve_help_key(topic, noun), connector="irc"))
             return
         two = f"{words[0].upper()} {words[1].upper()}" if len(words) > 1 else ""
         if two == "LINKED CHANNELS":
