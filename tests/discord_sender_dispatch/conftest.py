@@ -80,10 +80,10 @@ def _make_sender(
 
 def _discord_message(
     *, channel, guild, author, content="hi", id=1, attachments=None, type=discord.MessageType.default, thread=None,
-    mentions=None, role_mentions=None, channel_mentions=None, reference=None,
+    mentions=None, role_mentions=None, channel_mentions=None, reference=None, embeds=None,
 ):
     return SimpleNamespace(
         channel=channel, guild=guild, author=author, content=content, id=id, attachments=attachments or [],
         type=type, thread=thread, mentions=mentions or [], role_mentions=role_mentions or [],
-        channel_mentions=channel_mentions or [], reference=reference,
+        channel_mentions=channel_mentions or [], reference=reference, embeds=embeds or [],
     )

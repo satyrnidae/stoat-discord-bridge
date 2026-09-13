@@ -128,6 +128,24 @@ so it's never lost. IRC has no native attachments, so
 `IrcReceiverService.receive` still inlines every attachment URL as its own
 line.
 
+A Discord GIF picked via Discord's built-in picker (Tenor, then Klipy after
+Tenor's API was killed) is **not** a native attachment — Discord posts the
+picker page's URL as message content, which auto-unfurls into a
+`discord.Embed`. `discord_service/formatting._gif_embeds` recognizes one
+(`embed.type` of `gifv`/`image`, or a `tenor.com`/`klipy.co`/`klipy.com`
+`embed.url` as a fallback) and `_to_standard_message` turns it into a regular
+`Attachment` pointing at the actual asset (`embed.video.url`, preferred since
+a `gifv` embed's real media is usually an `.mp4`, then `embed.image.url` /
+`embed.thumbnail.url`), stripping the matched webpage link out of
+`content_markdown` so it isn't relayed both as a dead link and a re-uploaded
+file — from there it rides the same re-upload path as a normal attachment
+(issue #102). Discord → Stoat only, since IRC inlines the (still-present) raw
+link like any other URL and has no image rendering to lose. **Unverified
+against a live server**: whether the picker's embed is present on the
+message's initial payload (vs. arriving later via a `MESSAGE_UPDATE` the
+sender otherwise ignores as an auto-embed unfurl) and whether Stoat renders a
+re-uploaded `.mp4` inline the same way it does a `.gif`.
+
 `config.py` loads `config.yaml` and layers env vars over it per-field: an
 `{SECTION}__{index}__{FIELD}` env var (Azure App Configuration/ASP.NET
 Core-style hierarchical binding — `index` is the connector's 0-based
