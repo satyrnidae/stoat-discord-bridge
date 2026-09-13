@@ -108,6 +108,140 @@ async def test_handle_message_with_no_reference_has_no_reply_target():
     assert message.reply_to_message_id is None
 
 
+# ---------------------------------------------------------------- GIF-picker embeds (issue #102)
+
+
+def _gif_embed(*, type="gifv", url="https://tenor.com/view/cat-dance-123", video=None, image=None, thumbnail=None):
+    data = {"type": type, "url": url}
+    if video:
+        data["video"] = {"url": video}
+    if image:
+        data["image"] = {"url": image}
+    if thumbnail:
+        data["thumbnail"] = {"url": thumbnail}
+    return discord.Embed.from_dict(data)
+
+
+async def test_handle_message_converts_a_gifv_embed_to_a_reuploaded_attachment_and_strips_the_link():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    embed = _gif_embed(video="https://c.tenor.com/abc/tenor.mp4", image="https://c.tenor.com/abc/still.png")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author,
+            content="https://tenor.com/view/cat-dance-123", embeds=[embed],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == ""
+    [attachment] = message.attachments
+    assert attachment.url == "https://c.tenor.com/abc/tenor.mp4"  # video preferred over the still image
+    assert attachment.filename == "gif.mp4"
+    assert attachment.content_type == "video/mp4"
+
+
+async def test_handle_message_falls_back_to_a_still_image_with_no_video():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    embed = _gif_embed(type="image", image="https://c.klipy.co/abc/still.gif")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author,
+            content="https://klipy.co/view/abc", embeds=[embed],
+        )
+    )
+
+    [message] = recorder.messages
+    [attachment] = message.attachments
+    assert attachment.url == "https://c.klipy.co/abc/still.gif"
+    assert attachment.filename == "gif.gif"
+    assert attachment.content_type == "image/gif"
+
+
+async def test_handle_message_recognizes_a_klipy_host_even_with_an_unrecognized_embed_type():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    embed = _gif_embed(type="link", url="https://klipy.com/view/xyz", video="https://c.klipy.com/xyz/klipy.mp4")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author,
+            content="https://klipy.com/view/xyz", embeds=[embed],
+        )
+    )
+
+    [message] = recorder.messages
+    assert len(message.attachments) == 1
+    assert message.attachments[0].url == "https://c.klipy.com/xyz/klipy.mp4"
+
+
+async def test_handle_message_preserves_surrounding_text_around_a_stripped_gif_link():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    embed = _gif_embed(video="https://c.tenor.com/abc/tenor.mp4")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author,
+            content="look at this https://tenor.com/view/cat-dance-123", embeds=[embed],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == "look at this"
+
+
+async def test_handle_message_with_a_non_gif_embed_is_unaffected():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    embed = _gif_embed(type="article", url="https://example.com/some-article")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author,
+            content="https://example.com/some-article", embeds=[embed],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == "https://example.com/some-article"
+    assert message.attachments == []
+
+
+async def test_handle_message_with_no_embeds_is_unaffected():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+
+    await sender._handle_message(
+        _discord_message(channel=channel, guild=guild, author=author, content="just text")
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == "just text"
+    assert message.attachments == []
+
+
 async def test_handle_message_maps_role_mentions():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
