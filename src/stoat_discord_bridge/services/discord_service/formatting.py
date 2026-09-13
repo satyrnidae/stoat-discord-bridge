@@ -102,6 +102,27 @@ def _map_mentioned_channels(message: object) -> dict[str, str]:
     }
 
 
+def _forwarded_content(message: discord.Message) -> str:
+    """Discord's native "Forward" feature puts the forwarder's own caption (if
+    any) in `message.content`/`.attachments` and the actual forwarded text in
+    a separate `message.message_snapshots` field - `content`/`.attachments`
+    alone silently drop it (issue #125). Combines the caption with the first
+    snapshot's content as a Markdown blockquote (Discord only ever forwards
+    one message at a time today; iterating defensively in case that changes),
+    so relaying no longer loses the forwarded text. Embeds aren't modeled by
+    `StandardMessage` at all (a separate, pre-existing gap), so a forwarded
+    embed is still dropped - just no worse than before."""
+    caption = message.content
+    quoted = "\n".join(
+        f"> {line}" if line else ">"
+        for snapshot in message.message_snapshots
+        for line in (snapshot.content or "").splitlines()
+    )
+    if not quoted:
+        return caption
+    return f"{caption}\n\n{quoted}" if caption else quoted
+
+
 def _to_standard_message(
     message: discord.Message,
     connector_id: str,
@@ -111,10 +132,13 @@ def _to_standard_message(
     sender_color: str | None = None,
 ) -> StandardMessage:
     gif_embeds = _gif_embeds(message)
-    content = message.content
+    content = _forwarded_content(message)
     for embed in gif_embeds:
         if embed.url and embed.url in content:
             content = content.replace(embed.url, "").strip()
+    attachments = list(message.attachments)
+    for snapshot in message.message_snapshots:
+        attachments.extend(snapshot.attachments)
     return StandardMessage(
         origin_connector_id=connector_id,
         origin_channel_id=str(message.channel.id),
@@ -129,7 +153,7 @@ def _to_standard_message(
         sender_color=sender_color,
         attachments=[
             Attachment(url=a.url, filename=a.filename, content_type=a.content_type, size_bytes=a.size)
-            for a in message.attachments
+            for a in attachments
         ]
         + _gif_embed_attachments(gif_embeds),
         mentioned_users=_map_mentioned_users(message),
