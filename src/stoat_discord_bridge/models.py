@@ -116,11 +116,19 @@ class ChannelMetadata:
     `icon_url` is only ever populated for a Stoat source - Discord guild
     text channels have no per-channel icon - and only Stoat's
     `ensure_channel` consumes it; IRC ignores the whole struct.
+
+    `slowmode_delay` is in seconds (Discord's and Stoat's native units agree,
+    so no conversion is needed) - populated for a Discord source from
+    `TextChannel.slowmode_delay`, for a Stoat source via a raw channel fetch
+    (stoat.py's typed client doesn't model the field), and `None` when the
+    source had no slowmode or it couldn't be read. IRC has no slowmode
+    concept and ignores it (issue #108).
     """
 
     description: str | None = None
     nsfw: bool = False
     icon_url: str | None = None
+    slowmode_delay: int | None = None
 
 
 @dataclass(frozen=True)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 import stoat
+from stoat import routes as stoat_routes
 
 from stoat_discord_bridge.models import ChannelMetadata
 from stoat_discord_bridge.services.stoat_service.formatting import _download
@@ -65,10 +66,11 @@ class _ChannelsMixin:
         rename). See DiscordSenderService._handle_thread_create.
 
         `metadata`, when given, is the source channel's description / NSFW
-        flag / icon - applied *only when this call creates the channel*
-        (issue #32); a mirror that matched an existing channel leaves its
-        metadata untouched. The icon is a best-effort download-and-set that
-        never blocks the create from succeeding."""
+        flag / icon / slowmode delay - applied *only when this call creates
+        the channel* (issue #32, #108); a mirror that matched an existing
+        channel leaves its metadata untouched. The icon and slowmode are
+        each a best-effort follow-up that never blocks the create from
+        succeeding."""
         # Fetch the server fresh rather than trust the cache. Beyond needing a
         # full Server (`.categories` / `.channels`) instead of a BaseServer,
         # the channel-name dedupe below and `_ensure_channel_in_category`'s
@@ -99,6 +101,8 @@ class _ChannelsMixin:
             channel_id = channel.id
             if metadata is not None and metadata.icon_url:
                 await self._apply_channel_icon(channel, metadata.icon_url)
+            if metadata is not None and metadata.slowmode_delay:
+                await self._apply_channel_slowmode(server, channel_id, metadata.slowmode_delay)
         if category is not None:
             await self._ensure_channel_in_category(
                 server, channel_id, category, is_thread_category, category_parent_channel_id
@@ -123,10 +127,14 @@ class _ChannelsMixin:
 
     async def describe_channel(self, channel_id: str) -> ChannelMetadata | None:
         """Best-effort read of a channel's description / NSFW flag / icon URL
-        as a `ChannelMetadata`, this connector's `ConnectorInfo.describe_channel`
-        - `/mirror channel` reads it off the source channel so the mirrored
-        copy isn't left blank (issue #32). Cache-only (same `partial=False`
-        pattern as `get_channel_name`); None if the channel isn't resolvable."""
+        / slowmode delay as a `ChannelMetadata`, this connector's
+        `ConnectorInfo.describe_channel` - `/mirror channel` reads it off the
+        source channel so the mirrored copy isn't left blank (issue #32,
+        #108). description/NSFW/icon are cache-only (same `partial=False`
+        pattern as `get_channel_name`); None if the channel isn't resolvable.
+        Slowmode isn't on the cached object at all (stoat.py's typed client
+        drops the field), so it's read via a separate best-effort raw fetch -
+        see `_fetch_channel_slowmode`."""
         try:
             channel = self._client.get_channel(channel_id, partial=False)
         except Exception:
@@ -144,4 +152,43 @@ class _ChannelsMixin:
             description=getattr(channel, "description", None),
             nsfw=bool(getattr(channel, "nsfw", False)),
             icon_url=icon_url,
+            slowmode_delay=await self._fetch_channel_slowmode(channel_id),
         )
+
+    async def _fetch_channel_slowmode(self, channel_id: str) -> int | None:
+        """Best-effort raw fetch of a channel's slowmode delay, in seconds -
+        stoat.py 1.2.1's typed `Channel` doesn't model the field (it drops
+        unknown payload keys), so `describe_channel`'s cached object never
+        carries it (issue #108). `describe_channel` isn't a hot path (admin
+        commands + Discord thread mirroring only), so an extra round-trip
+        here is acceptable - same rationale `ensure_channel`'s fresh-server-
+        fetch already uses. None on any failure, or when the channel has no
+        slowmode set."""
+        try:
+            data = await self._client.http.request(
+                stoat_routes.CHANNELS_CHANNEL_FETCH.compile(channel_id=channel_id)
+            )
+        except Exception:
+            return None
+        return data.get("slowmode") or None
+
+    async def _apply_channel_slowmode(self, server, channel_id: str, slowmode_delay: int) -> None:
+        """Best-effort: PATCH the newly-created channel's slowmode via a raw
+        HTTP call - stoat.py's typed client has no method for it (issue
+        #108), same raw-HTTP-fallback pattern `_place_via_server_edit` uses
+        for Category placement. Only reached from `ensure_channel`'s create
+        path; never raises - a mirrored channel with no slowmode set is
+        still a working channel."""
+        try:
+            await server.state.http.request(
+                stoat_routes.CHANNELS_CHANNEL_EDIT.compile(channel_id=channel_id),
+                json={"slowmode": slowmode_delay},
+            )
+        except Exception:
+            logger.warning(
+                "[stoat:%s] couldn't set mirrored channel %s slowmode to %s",
+                self.connector_id,
+                channel_id,
+                slowmode_delay,
+                exc_info=True,
+            )
