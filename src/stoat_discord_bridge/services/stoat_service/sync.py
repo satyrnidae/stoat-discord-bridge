@@ -94,6 +94,9 @@ class StoatSyncMixin:
         an optional `.message` (state before the event, when cached)."""
         if self._on_reaction is None or str(event.user_id) == self._self_id:
             return  # the bridge's own mirrored reaction landing back here - drop it, don't re-relay
+        reactor = self._client.get_user(event.user_id)  # cache-only, best-effort
+        if getattr(reactor, "bot", False) and not await self._bot_is_whitelisted(str(event.user_id)):
+            return  # another bot's reaction - dropped unless whitelisted (issue #120)
         emoji = _parse_stoat_emoji(event.emoji)
         if emoji is None:
             logger.debug(

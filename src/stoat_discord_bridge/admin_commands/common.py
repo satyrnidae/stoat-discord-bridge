@@ -247,6 +247,14 @@ class ConnectorInfo:
     channel_name_limit: int | None = None
     category_name_limit: int | None = None
     role_name_limit: int | None = None
+    # This connector's own bridge-bot user id, if known - wired lazily (a
+    # lambda) in bridge.py since the underlying client may not be connected
+    # yet when connectors are wired. Used only by
+    # `BotWhitelistManager.whitelist_bot` as a guardrail against whitelisting
+    # the bridge's own bot (issue #120); the sender-side `webhook_id` /
+    # `self._self_id` echo checks are the real loop protection, and run
+    # unconditionally before any whitelist check regardless of this field.
+    self_user_id: Callable[[], str | None] | None = None
     # Best-effort native-channel-id -> display-name lookup for the *other*
     # side of a link (the side that isn't "the channel the command was run
     # in", whose name we don't otherwise know). None, an exception, or a

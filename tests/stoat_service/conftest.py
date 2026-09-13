@@ -25,6 +25,7 @@ __all__ = [
     "FakeEmoteLinker",
     "FakeCategoryLinker",
     "FakeRoleLinker",
+    "FakeBotWhitelistManager",
     "_make_sender",
     "_admin_message",
     "_Ctx",
@@ -165,6 +166,26 @@ class FakeRoleLinker:
         return "role mirrored from ok"
 
 
+class FakeBotWhitelistManager:
+    def __init__(self, connectors: dict | None = None):
+        self.whitelist_bot_calls: list[dict] = []
+        self.remove_bot_calls: list[dict] = []
+        self.list_whitelisted_bots_calls: list[dict] = []
+        self.connectors = connectors or {}
+
+    async def whitelist_bot(self, **kwargs):
+        self.whitelist_bot_calls.append(kwargs)
+        return "Whitelisted bot 'bot1' on Stoat."
+
+    async def remove_bot(self, **kwargs):
+        self.remove_bot_calls.append(kwargs)
+        return "Removed bot 'bot1' from the Stoat whitelist."
+
+    async def list_whitelisted_bots(self, **kwargs):
+        self.list_whitelisted_bots_calls.append(kwargs)
+        return "bot1 (bot1)"
+
+
 def _make_sender(
     *,
     linker: FakeLinker | None = None,
@@ -172,6 +193,7 @@ def _make_sender(
     user_linker: FakeUserLinker | None = None,
     category_linker: FakeCategoryLinker | None = None,
     role_linker: "FakeRoleLinker | None" = None,
+    bot_whitelist: "FakeBotWhitelistManager | None" = None,
     client: FakeClient | None = None,
     server_id: str | None = "s1",
 ) -> StoatSenderService:
@@ -182,6 +204,7 @@ def _make_sender(
     sender._user_linker = user_linker
     sender._category_linker = category_linker
     sender._role_linker = role_linker
+    sender._bot_whitelist = bot_whitelist
     sender.server_id = server_id
     sender._command_message_ids = deque(maxlen=512)
     if client is not None:

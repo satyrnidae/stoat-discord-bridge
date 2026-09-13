@@ -556,6 +556,35 @@ class StoatLinkingMixin:
             log_context="/mirror role from",
         )
 
+    async def _whitelist(self, ctx, action: str, target: str, bot_ref: str) -> None:
+        if not await self._require_admin(ctx):
+            return
+        if not await self._linker_configured(ctx, self._bot_whitelist, "Bot whitelisting isn't configured."):
+            return
+        target_connector = self.connector_id if target == "local" else target
+        logger.info(
+            "[stoat:%s] %s ran /whitelist action=%s service=%s bot=%s",
+            self.connector_id,
+            ctx.author_id,
+            action,
+            target_connector,
+            bot_ref,
+        )
+        if action == "remove":
+            coro = self._bot_whitelist.remove_bot(target_connector=target_connector, bot_ref=bot_ref)
+        else:
+            coro = self._bot_whitelist.whitelist_bot(
+                target_connector=target_connector, bot_ref=bot_ref, added_by=str(ctx.author_id)
+            )
+        await self._reply_linker_result(ctx, coro, log_context="/whitelist")
+
+    async def _whitelisted(self, ctx, target: str) -> None:
+        if not await self._linker_configured(ctx, self._bot_whitelist, "Bot whitelisting isn't configured."):
+            return
+        target_connector = self.connector_id if target == "local" else target
+        summary = await self._bot_whitelist.list_whitelisted_bots(target_connector=target_connector)
+        await self._reply(ctx, summary)
+
     def _is_admin(self, message) -> bool:
         """True if the command author has Stoat's Manage Server permission
         (mirrors the ``manage_guild`` default on Discord's command tree).

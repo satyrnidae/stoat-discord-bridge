@@ -211,7 +211,7 @@ class DiscordSyncMixin:
             return
         if payload.user_id == getattr(self._client.user, "id", None):
             return  # the bridge's own mirrored reaction landing back here - drop it, don't re-relay
-        if self._is_other_bot(payload):
+        if self._is_other_bot(payload) and not await self._bot_is_whitelisted(str(payload.user_id)):
             return
         count = await self._reactor_count(payload)
         await self._on_reaction(_to_standard_reaction(payload, self.connector_id, added=added, reactor_count=count))

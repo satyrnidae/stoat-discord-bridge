@@ -55,6 +55,17 @@ class _Recorder:
         self.emoji_deleted.append(deleted)
 
 
+class _FakeBotWhitelist:
+    """Minimal `BotWhitelistManager` stand-in - a fixed set of
+    (connector_id, user_id) pairs that are whitelisted."""
+
+    def __init__(self, *entries: tuple[str, str]) -> None:
+        self._entries = set(entries)
+
+    async def is_whitelisted(self, connector_id: str, user_id: str) -> bool:
+        return (connector_id, user_id) in self._entries
+
+
 def _make_sender(
     recorder: _Recorder,
     client: FakeClient,
@@ -62,6 +73,7 @@ def _make_sender(
     self_id: str | None = "bridge-bot-id",
     with_reactions: bool = True,
     with_emoji: bool = True,
+    bot_whitelist=None,
 ) -> StoatSenderService:
     sender = object.__new__(StoatSenderService)
     sender.connector_id = "stoat"
@@ -72,6 +84,7 @@ def _make_sender(
     sender._health = HealthTracker({"stoat": "Stoat"})
     sender._linker = None
     sender._user_linker = None
+    sender._bot_whitelist = bot_whitelist
     sender._self_id = self_id
     sender._command_message_ids = deque(maxlen=512)
     sender._on_message = recorder.on_message
@@ -100,6 +113,38 @@ async def test_handle_message_ignores_a_bot_author():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     author = FakeAuthor(id="u1", bot=True)
+
+    await sender._handle_message(_stoat_message(channel=FakeChannel(id="42"), author=author))
+
+    assert recorder.messages == []
+
+
+async def test_handle_message_relays_a_whitelisted_bot_author():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), bot_whitelist=_FakeBotWhitelist(("stoat", "u1")))
+    author = FakeAuthor(id="u1", bot=True)
+
+    await sender._handle_message(_stoat_message(channel=FakeChannel(id="42"), author=author))
+
+    assert len(recorder.messages) == 1
+
+
+async def test_handle_message_still_ignores_a_non_whitelisted_bot_author():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), bot_whitelist=_FakeBotWhitelist(("stoat", "other-bot")))
+    author = FakeAuthor(id="u1", bot=True)
+
+    await sender._handle_message(_stoat_message(channel=FakeChannel(id="42"), author=author))
+
+    assert recorder.messages == []
+
+
+async def test_handle_message_ignores_the_bridges_own_masquerade_even_if_whitelisted():
+    recorder = _Recorder()
+    sender = _make_sender(
+        recorder, FakeClient(), self_id="bridge-bot-id", bot_whitelist=_FakeBotWhitelist(("stoat", "bridge-bot-id"))
+    )
+    author = FakeAuthor(id="bridge-bot-id", bot=True)
 
     await sender._handle_message(_stoat_message(channel=FakeChannel(id="42"), author=author))
 
@@ -414,6 +459,28 @@ async def test_handle_message_react_drops_the_bridges_own_echoed_reaction():
     assert recorder.reactions == []
 
 
+async def test_handle_message_react_drops_another_bots_reaction():
+    recorder = _Recorder()
+    client = FakeClient()
+    client.add_user("bot-user", FakeAuthor(id="bot-user", bot=True))
+    sender = _make_sender(recorder, client)
+
+    await sender._handle_message_react(_react_event(user_id="bot-user"), added=True)
+
+    assert recorder.reactions == []
+
+
+async def test_handle_message_react_relays_a_whitelisted_bots_reaction():
+    recorder = _Recorder()
+    client = FakeClient()
+    client.add_user("bot-user", FakeAuthor(id="bot-user", bot=True))
+    sender = _make_sender(recorder, client, bot_whitelist=_FakeBotWhitelist(("stoat", "bot-user")))
+
+    await sender._handle_message_react(_react_event(user_id="bot-user"), added=True)
+
+    assert len(recorder.reactions) == 1
+
+
 async def test_handle_message_react_is_a_noop_when_reactions_arent_wired_up():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient(), with_reactions=False)
@@ -545,6 +612,16 @@ async def test_handle_message_update_drops_a_bot_authored_edit_echo():
     await sender._handle_message_update(_update_event(message=_partial(content="x"), after=after))
 
     assert recorder.edits == []
+
+
+async def test_handle_message_update_relays_a_whitelisted_bot_authored_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), bot_whitelist=_FakeBotWhitelist(("stoat", "bot")))
+    after = SimpleNamespace(author=FakeAuthor(id="bot", bot=True), mentions=[])
+
+    await sender._handle_message_update(_update_event(message=_partial(content="fixed"), after=after))
+
+    assert [e.new_content_markdown for e in recorder.edits] == ["fixed"]
 
 
 async def test_handle_message_update_ignores_an_update_that_didnt_change_content():

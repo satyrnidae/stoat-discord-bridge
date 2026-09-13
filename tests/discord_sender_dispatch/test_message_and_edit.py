@@ -8,6 +8,17 @@ from tests.fakes.fake_discord import FakeAsset, FakeAttachment, FakeChannel, Fak
 from tests.discord_sender_dispatch.conftest import _Recorder, _discord_message, _make_sender
 
 
+class _FakeBotWhitelist:
+    """Minimal `BotWhitelistManager` stand-in - a fixed set of
+    (connector_id, user_id) pairs that are whitelisted."""
+
+    def __init__(self, *entries: tuple[str, str]) -> None:
+        self._entries = set(entries)
+
+    async def is_whitelisted(self, connector_id: str, user_id: str) -> bool:
+        return (connector_id, user_id) in self._entries
+
+
 # ---------------------------------------------------------------- _handle_message
 
 
@@ -20,6 +31,47 @@ async def test_handle_message_ignores_a_bot_author():
     author = FakeUser(id=1, bot=True)
 
     await sender._handle_message(_discord_message(channel=channel, guild=guild, author=author))
+
+    assert recorder.messages == []
+
+
+async def test_handle_message_relays_a_whitelisted_bot_author():
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client, bot_whitelist=_FakeBotWhitelist(("discord", "1")))
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42)
+    author = FakeUser(id=1, bot=True)
+
+    await sender._handle_message(_discord_message(channel=channel, guild=guild, author=author))
+
+    assert len(recorder.messages) == 1
+
+
+async def test_handle_message_still_ignores_a_non_whitelisted_bot_author():
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client, bot_whitelist=_FakeBotWhitelist(("discord", "other-bot")))
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42)
+    author = FakeUser(id=1, bot=True)
+
+    await sender._handle_message(_discord_message(channel=channel, guild=guild, author=author))
+
+    assert recorder.messages == []
+
+
+async def test_handle_message_drops_a_webhook_post_even_when_the_author_is_whitelisted():
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client, bot_whitelist=_FakeBotWhitelist(("discord", "1")))
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42)
+    author = FakeUser(id=1, bot=True)
+
+    await sender._handle_message(
+        _discord_message(channel=channel, guild=guild, author=author, webhook_id=999)
+    )
 
     assert recorder.messages == []
 
@@ -396,5 +448,39 @@ async def test_handle_raw_message_edit_drops_our_own_webhook_copy_being_edited()
     )
 
     assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_ignores_a_non_whitelisted_bot_authored_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(
+        _edit_payload(
+            data={
+                "content": "x",
+                "edited_timestamp": "2026-09-03T00:00:00+00:00",
+                "author": {"id": "5", "bot": True},
+            }
+        )
+    )
+
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_relays_a_whitelisted_bot_authored_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), bot_whitelist=_FakeBotWhitelist(("discord", "5")))
+
+    await sender._handle_raw_message_edit(
+        _edit_payload(
+            data={
+                "content": "fixed typo",
+                "edited_timestamp": "2026-09-03T00:00:00+00:00",
+                "author": {"id": "5", "bot": True},
+            }
+        )
+    )
+
+    assert [e.new_content_markdown for e in recorder.edits] == ["fixed typo"]
 
 

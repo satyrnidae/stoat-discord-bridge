@@ -363,6 +363,11 @@ class FakeClient:
             return channel
         return FakePartialMessageable(channel_id) if partial else None
 
+    def get_user(self, user_id: str, *, partial: bool = False):
+        # Matches stoat.py 1.2.1's Client.get_user: a cache-only lookup that
+        # returns None on a miss and never does I/O.
+        return self._users.get(user_id)
+
     def get_server(self, server_id: str, *, partial: bool = False) -> FakeServer:
         server = self._servers.get(server_id)
         if server is None:

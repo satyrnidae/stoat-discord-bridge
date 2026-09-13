@@ -500,6 +500,41 @@ whoever ran the command.
   (IRC-operator; both arguments optional, `local_id` defaults to the
   nick running the command)
 
+## Bots: `/whitelist`, `/whitelisted`
+
+**Discord and Stoat only** (IRC has no bot concept and already relays every
+nick). Bot-authored messages, edits and reactions are dropped by every sender
+by default (the loop-guard side effect of relaying via webhook/masquerade) -
+these two commands manage a per-connector allowlist of bot users whose
+activity relays normally instead. An entry also carries through a
+`/link user` link: whitelisting a bot on one connector re-admits its linked
+identity's activity on every connector it's linked to. Entries also come from
+a `whitelisted_bots:` list in `config.yaml` (`"<source>:<id>"` pairs) - those
+are config-pinned and can't be removed with `/whitelist remove` (edit
+`config.yaml` instead).
+
+**Cross-bridge loop warning**: never whitelist another bridge instance's own
+bot account - its relayed copies would then be re-relayed back through this
+bridge, and the other bridge would do the same in reverse.
+
+### `/whitelist [add|remove] [local|<service>] <bot_id|name>`
+
+`action` defaults to `add`; `<service>` defaults to `local` (the connector
+the command is run on) - pass an explicit connector id to whitelist a bot
+that lives on another one. Manage Server.
+
+### `/whitelisted [local|<service>]`
+
+Read-only. Lists the bots whitelisted on `<service>` (default: `local`),
+config-seeded entries marked separately from runtime ones.
+
+- **Discord**: `/whitelist` / `/whitelisted` flat slash commands (`action`
+  and `bot` autocompleted; Manage Server on `/whitelist`).
+- **Stoat**: `/whitelist [add|remove] [local|<service>] <bot_id|name>` /
+  `/whitelisted [local|<service>]` message commands (Manage Server on
+  `/whitelist`).
+- **IRC**: not available - no bot concept.
+
 ## `/help` (Discord) / `/bridge-help` (Stoat) / `HELP` (IRC)
 
 With no argument, prints an index of every command this connector offers -

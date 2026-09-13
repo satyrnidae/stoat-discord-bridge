@@ -216,6 +216,28 @@ def build_command_tree(bot, owner, prefix: str) -> None:
     async def status(ctx):
         await owner._reply(ctx, owner._health.render())
 
+    @bot.command(name="whitelist")
+    async def whitelist(ctx, *args: str):
+        if not args:
+            await owner._reply(ctx, f"Usage: {p}whitelist [add|remove] [local|<service>] <bot_id|name>")
+            return
+        tokens = list(args)
+        action = "add"
+        if tokens[0].lower() in ("add", "remove"):
+            action = tokens.pop(0).lower()
+        target = "local"
+        known_connectors = owner._bot_whitelist.connectors if owner._bot_whitelist is not None else {}
+        if tokens and (tokens[0].lower() == "local" or tokens[0] in known_connectors):
+            target = tokens.pop(0)
+        if not tokens:
+            await owner._reply(ctx, f"Usage: {p}whitelist [add|remove] [local|<service>] <bot_id|name>")
+            return
+        await owner._whitelist(ctx, action, target, " ".join(tokens))
+
+    @bot.command(name="whitelisted")
+    async def whitelisted(ctx, service: typing.Optional[str] = None):
+        await owner._whitelisted(ctx, service or "local")
+
     @bot.command(name="bridge-help")
     async def bridge_help(
         ctx, topic: typing.Optional[str] = None, noun: typing.Optional[str] = None

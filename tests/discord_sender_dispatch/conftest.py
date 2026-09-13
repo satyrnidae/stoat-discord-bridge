@@ -59,7 +59,13 @@ class _Recorder:
 
 
 def _make_sender(
-    recorder: _Recorder, client: FakeClient, *, linker=None, category_linker=None, **config_overrides
+    recorder: _Recorder,
+    client: FakeClient,
+    *,
+    linker=None,
+    category_linker=None,
+    bot_whitelist=None,
+    **config_overrides,
 ) -> DiscordSenderService:
     sender = DiscordSenderService(
         _discord_config(**config_overrides),
@@ -73,6 +79,7 @@ def _make_sender(
         on_edit=recorder.on_edit,
         linker=linker,
         category_linker=category_linker,
+        bot_whitelist=bot_whitelist,
     )
     sender._client = client
     return sender
@@ -80,10 +87,10 @@ def _make_sender(
 
 def _discord_message(
     *, channel, guild, author, content="hi", id=1, attachments=None, type=discord.MessageType.default, thread=None,
-    mentions=None, role_mentions=None, channel_mentions=None, reference=None, embeds=None,
+    mentions=None, role_mentions=None, channel_mentions=None, reference=None, embeds=None, webhook_id=None,
 ):
     return SimpleNamespace(
         channel=channel, guild=guild, author=author, content=content, id=id, attachments=attachments or [],
         type=type, thread=thread, mentions=mentions or [], role_mentions=role_mentions or [],
-        channel_mentions=channel_mentions or [], reference=reference, embeds=embeds or [],
+        channel_mentions=channel_mentions or [], reference=reference, embeds=embeds or [], webhook_id=webhook_id,
     )

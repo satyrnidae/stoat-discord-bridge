@@ -155,3 +155,17 @@ irc:
     # relayed inbound message shows the origin sender's pronouns in the
     # "<nick, Discord, she/her>" line tag. Defaults to true.
     pronoun_forwarding: true
+
+# Bot-authored messages/edits/reactions are dropped by every sender by
+# default (issue #120) - this top-level list seeds a static, always-on
+# allowlist of bot user ids whose activity relays like a human's. Each entry
+# is "<source>:<id>", where <source> is a connector id from one of the lists
+# above. Runtime entries can also be added/removed via /whitelist without
+# touching this file; entries listed here are config-pinned and can't be
+# removed by that command. Env override: WHITELISTED_BOTS (comma/whitespace-
+# separated, same "<source>:<id>" entry form), which replaces this list
+# entirely when set.
+#
+# whitelisted_bots:
+#   - "discord:123456789012345678"
+#   - "stoat:01ARZ3NDEKTSV4RRFFQ69G5FAV"
