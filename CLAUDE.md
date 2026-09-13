@@ -664,26 +664,43 @@ Discord threads have no IRC/Stoat equivalent. `_handle_thread_create`
 (`services/discord_service.py`) treats a Discord thread/forum-post as a new
 Stoat/IRC channel rather than trying to map it onto their flat channel model:
 it auto-mirrors (creates + links) the channel on every other connector via
-`ChannelLinker.mirror_channel_all`, placed under a Category named after the
-thread's **parent channel** (so every thread under one parent groups together
-on the destination) — using each destination's *own* linked name for that
-parent channel (`mirror_channel`'s `category_from_channel_id`), not the Discord
+`ChannelLinker.mirror_channel_all_for_thread`, placed under a Category named
+after the thread's **parent channel** (so every thread under one parent
+groups together on the destination) — using each destination's *own* linked
+name for that parent channel (`category_from_channel_id`), not the Discord
 name, and falling back to the Discord name only where the parent isn't linked
 there. That Category's title is prefixed with a `🧵 #` thread marker
 (`channel_structure.thread_category_title`, applied at the single
-`ChannelLinker.mirror_channel` insertion point every thread mirror funnels
-through, clipped to the same 32-char limit afterward) so a bridge-generated
-thread group stands out from an ordinary same-named Category — issue #98; the
-mirrored thread *channel* names are left unprefixed (Stoat renders a
-client-side leading `#` on them already). It then relays the thread's own starter message into it as
-the originating user. On Stoat, if `group_parent_channel_with_threads` is set
+`ChannelLinker.mirror_channel`/`mirror_channel_for_thread` insertion point
+every thread mirror funnels through, clipped to the same 32-char limit
+afterward) so a bridge-generated thread group stands out from an ordinary
+same-named Category — issue #98; the mirrored thread *channel* names are left
+unprefixed (Stoat renders a client-side leading `#` on them already). It then
+relays the thread's own starter message into it as the originating user, and
+pins that relayed copy on every destination (`ReceiverService.set_pinned`,
+via a synthetic `StandardPin` fed through `self._on_pin` /
+`BridgeCoordinator.handle_pin`) — issue #124.
+
+`mirror_channel_all_for_thread` (and its per-destination counterpart
+`mirror_channel_for_thread`) exist specifically so that relay+pin happens
+**before** the mirrored channel is placed into its thread Category, not
+after: unlike `mirror_channel`/`mirror_channel_all` (still used by ordinary
+`/mirror channel`, where ordering doesn't matter), they split each
+destination's `ensure_channel` call in two — first with no `category` (just
+create-or-match + link), then a second, deferred call (the returned `finish`
+callback) that actually places the channel in its Category. `ensure_channel`
+otherwise bundles create and categorize into one call; on Stoat that
+categorize step is often a slow whole-server-PATCH (`_ensure_channel_in_category`),
+so without this split the starter message would always land in an
+already-organized channel instead of being the first thing posted there
+(issue #124). On Stoat, if `group_parent_channel_with_threads` is set
 (default on, per-connector), the parent channel itself is also moved into that
-Category at the top — done once up front by `ensure_channel` when it creates
-the thread Category (issue #94 — the relay-path check below reads the
-cache-only Category list, which never carries a Category `ensure_channel`
-just made over raw HTTP until a reconnect/`refresh()` repopulates it, so
-`/mirror channel` on a thread would otherwise finish without grouping the
-parent), then re-checked on every relayed message
+Category at the top — done once, when the deferred category-placement call
+first creates the thread Category (issue #94 — the relay-path check below
+reads the cache-only Category list, which never carries a Category
+`ensure_channel` just made over raw HTTP until a reconnect/`refresh()`
+repopulates it, so `/mirror channel` on a thread would otherwise finish
+without grouping the parent), then re-checked on every relayed message
 (`StoatSenderService.group_parent_channel_with_threads`, called from the
 receiver) so enabling it mid-deployment takes effect without a restart. Discord's own "<user> started a thread" system message in
 the parent channel is suppressed (`_handle_message`); `_handle_thread_create`

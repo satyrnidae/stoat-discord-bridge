@@ -23,7 +23,7 @@ import functools
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
@@ -174,9 +174,12 @@ class MirrorGuard:
                 self._held.pop(d, None)
 
 
+_MirrorResult = TypeVar("_MirrorResult")
+
+
 def _guards_mirror(
     destinations: Callable[[object, dict[str, object]], Iterable[str]],
-) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+) -> Callable[[Callable[..., Awaitable[_MirrorResult]]], Callable[..., Awaitable[_MirrorResult]]]:
     """Decorator for the linker `mirror_*` entry points: hold a `self._guard`
     reservation on the destination connector(s) for the whole call, so a
     second concurrent `/mirror` into the same service is rejected up front
@@ -187,11 +190,14 @@ def _guards_mirror(
     The `... all` fan-outs reserve *every* destination up front
     (`_mirror_all_other_connectors`), so if any one is busy the whole
     operation is rejected before it starts rather than silently dropping that
-    connector - the error names which one."""
+    connector - the error names which one. Most decorated methods return a
+    plain summary `str`; `ChannelLinker.mirror_channel_all_for_thread` (issue
+    #124) instead returns `(str, list[finish-callback])`, hence the generic
+    `_MirrorResult` rather than a hardcoded `str`."""
 
-    def deco(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+    def deco(fn: Callable[..., Awaitable[_MirrorResult]]) -> Callable[..., Awaitable[_MirrorResult]]:
         @functools.wraps(fn)
-        async def wrapper(*args: object, **kwargs: object) -> str:
+        async def wrapper(*args: object, **kwargs: object) -> _MirrorResult:
             self = args[0]
             guard: MirrorGuard = self._guard  # type: ignore[attr-defined]
             connectors = self._connectors  # type: ignore[attr-defined]

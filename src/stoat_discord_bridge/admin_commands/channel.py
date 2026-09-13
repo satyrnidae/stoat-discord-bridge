@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
@@ -417,6 +418,174 @@ class ChannelLinker:
             if destination != local_connector
         ]
         return "\n".join(results) if results else "no other connectors configured."
+
+    async def mirror_channel_for_thread(
+        self,
+        *,
+        local_connector: str,
+        local_channel_id: str,
+        local_channel_name: str,
+        destination: str,
+        local_channel_category: str | None,
+        category_from_channel_id: str,
+    ) -> tuple[str, Callable[[], Awaitable[None]] | None]:
+        """Discord thread/forum-post auto-mirror's per-destination
+        counterpart to `mirror_channel` (issue #124): creates+links the
+        destination channel *without* placing it in its thread Category yet,
+        so the caller (`DiscordSenderService._handle_thread_create`) can
+        relay+pin the thread's starter message before the channel is
+        categorized. `ensure_channel`'s contract otherwise bundles create and
+        categorize into one call - on Stoat that means a (often slow,
+        whole-server-PATCH) category placement always finishes before
+        anything gets a chance to post into the new channel, so the starter
+        message ends up looking like it was posted into an already-organized
+        channel rather than the first thing that happened there.
+
+        Always `is_thread_category=True` and always takes a
+        `category_from_channel_id` (the thread's parent channel id) - unlike
+        `mirror_channel`, there's no plain non-thread use of this method, so
+        the destination-Category-override / linked-Category-lookup /
+        thread-parent-auto-detect branches `mirror_channel` needs for its
+        general case don't apply here.
+
+        Returns `(summary, finish)` - `summary` matches `mirror_channel`'s
+        report-not-raise convention (skip/error still just produce a line of
+        text) for a *destination-side* problem - `finish`, present only when
+        the channel was actually created-or-matched and linked, is a
+        coroutine that completes the deferred category placement (a second
+        `ensure_channel` call - a no-op on creation, since the channel now
+        already exists by name, so it just runs the category-placement
+        branch). Like `mirror_channel`, still *raises* LinkError for an
+        unknown `destination` or `destination == local_connector` - a
+        caller/programmer error, not something `mirror_channel_all_for_thread`'s
+        fan-out (which only ever iterates known, non-local connectors) can
+        actually hit."""
+        _require_known_connector(self._connectors, destination)
+        if destination == local_connector:
+            raise LinkError("can't mirror a channel to its own connector.")
+
+        await _refresh_connectors(self._connectors, local_connector, destination)
+
+        target_name = local_channel_name
+        local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
+
+        if await self._channel_is_hidden(local_connector, local_channel_id):
+            return (
+                f"the bridge bot can't see channel '{local_channel_id}' on "
+                f"{self._connectors[local_connector].label} - give it access to that channel first.",
+                None,
+            )
+
+        bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
+        if bridge_group is not None:
+            existing = await self._channel_mappings.get_mapped_channels(bridge_group)
+            if any(m.connector_id == destination for m in existing):
+                return f"{self._connectors[destination].label}: already synced - skipped.", None
+
+        dest_info = self._connectors[destination]
+        if dest_info.ensure_channel is None:
+            return (
+                f"{dest_info.label}: doesn't support channel creation - link it manually with /link channel.",
+                None,
+            )
+
+        target_name = self._normalize_name(destination, target_name)
+        if dest_info.channel_name_limit is not None:
+            target_name = clip_name(target_name, dest_info.channel_name_limit)
+
+        category = local_channel_category
+        category_parent_channel_id: str | None = None
+        linked_parent = await self._linked_channel(local_connector, category_from_channel_id, destination)
+        if linked_parent is not None:
+            category_parent_channel_id = linked_parent.channel_id
+            if linked_parent.channel_name:
+                category = linked_parent.channel_name
+
+        if category is not None:
+            if await _is_forum_channel(self._connectors, local_connector, category_from_channel_id):
+                category = forum_category_title(category)
+            else:
+                category = thread_category_title(category)
+
+        src_info = self._connectors.get(local_connector)
+        metadata = None
+        if src_info is not None and src_info.describe_channel is not None:
+            try:
+                metadata = await src_info.describe_channel(local_channel_id)
+            except Exception as exc:
+                logger.warning(
+                    "mirror channel: %s.describe_channel(%r) failed: %s", local_connector, local_channel_id, exc
+                )
+        extra = {"metadata": metadata} if metadata is not None else {}
+
+        try:
+            destination_channel_id = await dest_info.ensure_channel(target_name, None, True, None, **extra)
+        except Exception as exc:
+            logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
+            return f"{dest_info.label}: failed to create/find a channel: {exc}", None
+
+        try:
+            summary = await self.link_channel(
+                local_connector=destination,
+                local_channel_id=destination_channel_id,
+                local_channel_name=target_name,
+                source=local_connector,
+                source_id=local_channel_id,
+                destination_id=None,
+                _skip_forum_redirect=True,
+            )
+        except LinkError as exc:
+            return f"{dest_info.label}: {exc}", None
+
+        async def finish_category_placement() -> None:
+            try:
+                await dest_info.ensure_channel(
+                    target_name, category, True, category_parent_channel_id, **extra
+                )
+            except Exception as exc:
+                logger.warning(
+                    "mirror channel: %s.ensure_channel(%r) category placement failed: %s",
+                    destination,
+                    target_name,
+                    exc,
+                )
+
+        return summary, finish_category_placement
+
+    @_guards_mirror(_mirror_all_other_connectors)
+    async def mirror_channel_all_for_thread(
+        self,
+        *,
+        local_connector: str,
+        local_channel_id: str,
+        local_channel_name: str,
+        local_channel_category: str | None = None,
+        category_from_channel_id: str,
+    ) -> tuple[str, list[Callable[[], Awaitable[None]]]]:
+        """`mirror_channel_for_thread` fanned out to every other configured
+        connector - the thread-auto-mirror counterpart to `mirror_channel_all`
+        (issue #124). Returns the combined summary plus every destination's
+        `finish` callback (skipping destinations that failed/were skipped, so
+        `finish is None`) for the caller to await once the starter message has
+        been relayed to all of them."""
+        results: list[str] = []
+        finishers: list[Callable[[], Awaitable[None]]] = []
+        for destination in self._connectors:
+            if destination == local_connector:
+                continue
+            summary, finish = await self.mirror_channel_for_thread(
+                local_connector=local_connector,
+                local_channel_id=local_channel_id,
+                local_channel_name=local_channel_name,
+                destination=destination,
+                local_channel_category=local_channel_category,
+                category_from_channel_id=category_from_channel_id,
+            )
+            results.append(summary)
+            if finish is not None:
+                finishers.append(finish)
+        combined = "\n".join(results) if results else "no other connectors configured."
+        return combined, finishers
 
     @_guards_mirror(_mirror_from_local)
     async def mirror_channel_from(
