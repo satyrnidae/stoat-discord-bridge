@@ -91,7 +91,19 @@ class DiscordReceiverService(ReceiverService):
         self._typing_until: dict[str, float] = {}
         self._typing_tasks: dict[str, asyncio.Task] = {}
 
-    async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
+    async def receive(
+        self,
+        message: StandardMessage,
+        *,
+        target_channel_id: str,
+        reply_to_target_message_id: str | None = None,
+    ) -> list[str]:
+        # A relay posts through the channel's webhook (Execute Webhook), whose
+        # API has no `message_reference` field - a webhook message can't be a
+        # native Discord reply, so this is accepted for interface
+        # compatibility and ignored (issue #101). `supports_replies` stays
+        # False, so the coordinator never resolves a value for this anyway.
+        del reply_to_target_message_id
         webhook, thread = await self._get_or_create_webhook(target_channel_id)
         sender_name = message.sender_name
         avatar_url = message.sender_avatar_url

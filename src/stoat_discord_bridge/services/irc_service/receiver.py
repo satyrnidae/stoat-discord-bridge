@@ -51,7 +51,16 @@ class IrcReceiverService(ReceiverService):
         self._source_forwarding = source_forwarding
         self._pronoun_forwarding = pronoun_forwarding
 
-    async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
+    async def receive(
+        self,
+        message: StandardMessage,
+        *,
+        target_channel_id: str,
+        reply_to_target_message_id: str | None = None,
+    ) -> list[str]:
+        # IRC has no reply/threading concept - the parameter is accepted for
+        # interface compatibility and ignored (issue #101).
+        del reply_to_target_message_id
         # IRC has no markup - reduce Discord/Stoat Markdown to plain text
         # before anything else, while the content is still just the message
         # body (doing it after the attachment URLs are inlined would risk an

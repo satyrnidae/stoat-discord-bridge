@@ -63,6 +63,51 @@ async def test_handle_message_dispatches_a_standard_message():
     assert [a.url for a in message.attachments] == ["https://cdn.example/f.png"]
 
 
+async def test_handle_message_carries_the_replied_to_message_id():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    reference = SimpleNamespace(type=discord.MessageReferenceType.default, message_id=77)
+
+    await sender._handle_message(
+        _discord_message(channel=channel, guild=guild, author=author, content="ok", reference=reference)
+    )
+
+    [message] = recorder.messages
+    assert message.reply_to_message_id == "77"
+
+
+async def test_handle_message_ignores_a_forward_reference():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    reference = SimpleNamespace(type=discord.MessageReferenceType.forward, message_id=77)
+
+    await sender._handle_message(
+        _discord_message(channel=channel, guild=guild, author=author, content="ok", reference=reference)
+    )
+
+    [message] = recorder.messages
+    assert message.reply_to_message_id is None
+
+
+async def test_handle_message_with_no_reference_has_no_reply_target():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+
+    await sender._handle_message(_discord_message(channel=channel, guild=guild, author=author, content="ok"))
+
+    [message] = recorder.messages
+    assert message.reply_to_message_id is None
+
+
 async def test_handle_message_maps_role_mentions():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())

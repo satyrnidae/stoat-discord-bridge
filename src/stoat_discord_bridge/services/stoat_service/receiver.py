@@ -62,6 +62,7 @@ class StoatReceiverService(ReceiverService):
     supports_pins = True
     supports_typing = True
     supports_edits = True
+    supports_replies = True
 
     # How long a single relayed typing indicator lingers before it's ended,
     # unless `trigger_typing` is called again first. Stoat/Revolt keeps a
@@ -96,7 +97,13 @@ class StoatReceiverService(ReceiverService):
         self._typing_until: dict[str, float] = {}
         self._typing_tasks: dict[str, asyncio.Task] = {}
 
-    async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
+    async def receive(
+        self,
+        message: StandardMessage,
+        *,
+        target_channel_id: str,
+        reply_to_target_message_id: str | None = None,
+    ) -> list[str]:
         channel = self._sender.get_channel(target_channel_id, partial=True)
         sender_name = message.sender_name
         avatar_url = message.sender_avatar_url
@@ -150,39 +157,62 @@ class StoatReceiverService(ReceiverService):
         for index, chunk in enumerate(chunks):
             attach = files if files and index == len(chunks) - 1 else None
             attach_kw = {"attachments": list(attach)} if attach else {}
+            # Only the first post of a split relay carries the reply - a
+            # multi-chunk message shouldn't reply N times (issue #101).
+            # mention=False so a relayed reply doesn't re-ping the original
+            # author on every bridge hop; fail_if_not_exists=False so a
+            # since-deleted counterpart doesn't fail the send outright (the
+            # except block below still retries without it as a backstop).
+            reply_kw = (
+                {"replies": [stoat.Reply(reply_to_target_message_id, mention=False, fail_if_not_exists=False)]}
+                if reply_to_target_message_id and index == 0
+                else {}
+            )
             logger.debug(
-                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r, color=%r, files=%d): %r",
+                "[stoat:%s] sending masqueraded message to channel %s as %r (avatar=%r, color=%r, "
+                "files=%d, reply_to=%r): %r",
                 self.connector_id,
                 target_channel_id,
                 masquerade.name,
                 masquerade.avatar,
                 masquerade.color,
                 len(attach) if attach else 0,
+                reply_to_target_message_id if reply_kw else None,
                 chunk,
             )
             try:
-                sent = await channel.send(chunk, masquerade=masquerade, **attach_kw)
+                sent = await channel.send(chunk, masquerade=masquerade, **attach_kw, **reply_kw)
             except Exception as exc:
-                if masquerade.color is None:
-                    raise PartialRelayError(ids, exc) from exc
-                # The color is the only part of the masquerade that needs an
-                # elevated permission (`manage_roles`); if a send failed with
-                # one set, retry without it before giving up so a bot lacking
-                # that permission still relays (uncolored, this chunk and the
-                # rest of the split) instead of dropping every message. A
-                # failure that wasn't about the color just resurfaces from
-                # the retry, carrying the original error.
-                masquerade = stoat.MessageMasquerade(name=masquerade.name, avatar=masquerade.avatar)
-                try:
-                    sent = await channel.send(chunk, masquerade=masquerade, **attach_kw)
-                except Exception:
-                    raise PartialRelayError(ids, exc) from exc
-                logger.warning(
-                    "[stoat:%s] masqueraded send into %s succeeded only after dropping the name "
-                    "color - the bot likely lacks manage_roles there",
-                    self.connector_id,
-                    target_channel_id,
-                )
+                sent = None
+                if reply_kw:
+                    # A rejected reply shouldn't sink the whole relay - retry
+                    # without it before falling through to the color-retry/
+                    # give-up path below.
+                    try:
+                        sent = await channel.send(chunk, masquerade=masquerade, **attach_kw)
+                    except Exception:
+                        sent = None
+                if sent is None:
+                    if masquerade.color is None:
+                        raise PartialRelayError(ids, exc) from exc
+                    # The color is the only part of the masquerade that needs an
+                    # elevated permission (`manage_roles`); if a send failed with
+                    # one set, retry without it before giving up so a bot lacking
+                    # that permission still relays (uncolored, this chunk and the
+                    # rest of the split) instead of dropping every message. A
+                    # failure that wasn't about the color just resurfaces from
+                    # the retry, carrying the original error.
+                    masquerade = stoat.MessageMasquerade(name=masquerade.name, avatar=masquerade.avatar)
+                    try:
+                        sent = await channel.send(chunk, masquerade=masquerade, **attach_kw)
+                    except Exception:
+                        raise PartialRelayError(ids, exc) from exc
+                    logger.warning(
+                        "[stoat:%s] masqueraded send into %s succeeded only after dropping the name "
+                        "color - the bot likely lacks manage_roles there",
+                        self.connector_id,
+                        target_channel_id,
+                    )
             logger.debug("[stoat:%s] masqueraded message sent, id=%s", self.connector_id, sent.id)
             ids.append(str(sent.id))
         # Best-effort, never fatal to the relay: keep a thread Category's

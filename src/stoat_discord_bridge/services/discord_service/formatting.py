@@ -120,7 +120,26 @@ def _to_standard_message(
         mentioned_users=_map_mentioned_users(message),
         mentioned_roles=_map_mentioned_roles(message),
         mentioned_channels=_map_mentioned_channels(message),
+        reply_to_message_id=_reply_to_message_id(message),
     )
+
+
+def _reply_to_message_id(message: discord.Message) -> str | None:
+    """The id of the message `message` replies to, or None if it isn't a
+    reply (no reference, or a forward/other non-reply reference type -
+    issue #101). `getattr` throughout since a message that isn't a reply may
+    have no `reference` attribute at all (real discord.py messages always do,
+    but this stays defensive the same way the mention-mapping helpers are)."""
+    reference = getattr(message, "reference", None)
+    if reference is None:
+        return None
+    ref_type = getattr(reference, "type", discord.MessageReferenceType.default)
+    if ref_type not in (discord.MessageReferenceType.default, discord.MessageReferenceType.reply):
+        return None
+    message_id = getattr(reference, "message_id", None)
+    if message_id is None:
+        return None
+    return str(message_id)
 
 
 def _to_standard_reaction(

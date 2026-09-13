@@ -102,6 +102,13 @@ class StandardMessage:
     # relaying the bare id (issue #87, the emoji counterpart of #56/#4/#84).
     # Best-effort: an id a sender can't name just leaves the entry absent.
     mentioned_emoji: dict[str, str] = field(default_factory=dict)
+    # The origin connector's native id of the message THIS message is a reply
+    # to, unresolved to any target yet - the coordinator resolves it to each
+    # target's own counterpart (via MessageSyncRepository) before calling a
+    # receiver's `receive()`. None when the message isn't a reply, or the
+    # origin platform's reply reference couldn't be read (issue #101).
+    # Currently populated by the Discord sender only.
+    reply_to_message_id: str | None = None
 
 
 @dataclass(frozen=True)
