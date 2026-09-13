@@ -508,3 +508,174 @@ async def test_mirror_channel_all_with_no_other_connectors(fake_db):
         local_connector="discord", local_channel_id="d1", local_channel_name="general"
     )
     assert summary == "no other connectors configured."
+
+
+# -------------------------------------------- ChannelLinker.mirror_channel_for_thread / mirror_channel_all_for_thread
+
+
+async def test_mirror_channel_for_thread_creates_uncategorized_then_defers_placement(fake_db):
+    # issue #124: the create+link call must NOT carry a category - that's
+    # deferred to the returned `finish` callback, so the caller can relay
+    # (and pin) the thread's starter message into an uncategorized channel
+    # first.
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category, is_thread_category, category_parent_channel_id))
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    summary, finish = await linker.mirror_channel_for_thread(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="Test Thread",
+        destination="stoat",
+        local_channel_category="Announcements",
+        category_from_channel_id="d-parent",
+    )
+
+    assert "Linked Discord channel 'd1'" in summary
+    assert calls == [("Test Thread", None, True, None)]
+    assert await channel_mappings.get_bridge_group("stoat", "stoat_Test Thread") is not None
+
+    assert finish is not None
+    await finish()
+    assert calls == [
+        ("Test Thread", None, True, None),
+        ("Test Thread", "🧵 #Announcements", True, None),
+    ]
+
+
+async def test_mirror_channel_for_thread_uses_the_destinations_linked_parent_name(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((category, category_parent_channel_id))
+        return f"stoat_{name}"
+
+    async def resolve_channel_name(channel_id):
+        return {"stoat_parent": "Bot Config"}.get(channel_id)
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", ensure_channel=ensure_channel, resolve_channel_name=resolve_channel_name
+        ),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="d-parent", local_channel_name="general",
+        source="stoat", source_id="stoat_parent", destination_id=None,
+    )
+
+    _, finish = await linker.mirror_channel_for_thread(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="Test Thread",
+        destination="stoat",
+        local_channel_category="Announcements",
+        category_from_channel_id="d-parent",
+    )
+    await finish()
+
+    # first call (create+link) carries no category; the deferred finish()
+    # call carries the destination's own name for the linked parent channel
+    # ("Bot Config", not the Discord parent's "Announcements"), prefixed with
+    # the thread marker (issue #98), plus the parent's Stoat channel id.
+    assert calls == [(None, None), ("🧵 #Bot Config", "stoat_parent")]
+
+
+async def test_mirror_channel_for_thread_unknown_destination_raises(fake_db, connectors):
+    with pytest.raises(LinkError, match="isn't a known connector"):
+        await ChannelLinker(ChannelMappingRepository(fake_db), connectors).mirror_channel_for_thread(
+            local_connector="discord",
+            local_channel_id="d1",
+            local_channel_name="Test Thread",
+            destination="nope",
+            local_channel_category=None,
+            category_from_channel_id="d-parent",
+        )
+
+
+async def test_mirror_channel_for_thread_to_own_connector_raises(fake_db, connectors):
+    with pytest.raises(LinkError, match="own connector"):
+        await ChannelLinker(ChannelMappingRepository(fake_db), connectors).mirror_channel_for_thread(
+            local_connector="discord",
+            local_channel_id="d1",
+            local_channel_name="Test Thread",
+            destination="discord",
+            local_channel_category=None,
+            category_from_channel_id="d-parent",
+        )
+
+
+async def test_mirror_channel_for_thread_skips_if_already_synced(fake_db):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="Test Thread",
+        source="stoat", source_id="stoat_existing", destination_id=None,
+    )
+
+    summary, finish = await linker.mirror_channel_for_thread(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="Test Thread",
+        destination="stoat",
+        local_channel_category=None,
+        category_from_channel_id="d-parent",
+    )
+    assert "already synced" in summary
+    assert finish is None
+
+
+async def test_mirror_channel_all_for_thread_skips_local_connector_and_collects_finishers(fake_db):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+        "irc": ConnectorInfo(id="irc", label="IRC"),  # no ensure_channel - reports unsupported, no finisher
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    summary, finishers = await linker.mirror_channel_all_for_thread(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="Test Thread",
+        local_channel_category="Announcements",
+        category_from_channel_id="d-parent",
+    )
+    lines = summary.splitlines()
+    assert len(lines) == 2  # stoat + irc, not discord (skipped as local_connector)
+    assert any("Linked" in line for line in lines)
+    assert any("doesn't support channel creation" in line for line in lines)
+    assert len(finishers) == 1  # only stoat's mirror actually created/linked a channel
+
+    await finishers[0]()  # must not raise
+
+
+async def test_mirror_channel_all_for_thread_with_no_other_connectors(fake_db):
+    connectors = {"discord": ConnectorInfo(id="discord", label="Discord")}
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    summary, finishers = await linker.mirror_channel_all_for_thread(
+        local_connector="discord", local_channel_id="d1", local_channel_name="Test Thread",
+        category_from_channel_id="d-parent",
+    )
+    assert summary == "no other connectors configured."
+    assert finishers == []

@@ -377,6 +377,14 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         otherwise follows. The Category takes each destination's *own* name
         for the parent channel (via `category_from_channel_id`), falling back
         to the Discord name only where the parent isn't linked there.
+
+        Uses `mirror_channel_all_for_thread` rather than `mirror_channel_all`
+        (issue #124): each destination's category placement is deferred until
+        *after* the starter message is relayed (and pinned) below, so a
+        connector whose `ensure_channel` bundles create+categorize into one
+        (often slow) call - Stoat's, a whole-server-PATCH - doesn't finish
+        organizing the channel before anything has had a chance to post into
+        it.
         """
         if self._linker is None or thread.guild.id != self._config.guild_id:
             return
@@ -400,12 +408,11 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
 
         self._pending_thread_starter[thread.id] = None
         try:
-            result = await self._linker.mirror_channel_all(
+            result, finish_category_placements = await self._linker.mirror_channel_all_for_thread(
                 local_connector=self.connector_id,
                 local_channel_id=str(thread.id),
                 local_channel_name=clip_name(thread.name),
                 local_channel_category=clip_name(parent.name),
-                is_thread_category=True,
                 category_from_channel_id=str(parent.id),
             )
         except MirrorInProgressError as exc:
@@ -461,7 +468,29 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 sender_pronouns=await self._resolve_sender_pronouns(starter.author.id),
                 sender_color=self._resolve_sender_color(starter.author),
             )
+            # Relay the starter message - and pin it on every destination it
+            # landed on - *before* the mirrored channel is placed into its
+            # thread Category below (issue #124): Stoat's ensure_channel does
+            # a (often slow, whole-server-PATCH) category placement, and
+            # posting first makes the starter message look like the first
+            # thing that happened in the channel rather than something
+            # dropped into an already-organized one.
             await self._on_message(replace(msg, origin_channel_id=str(thread.id), channel_name=thread.name))
+            if self._on_pin is not None:
+                await self._on_pin(
+                    StandardPin(
+                        origin_connector_id=self.connector_id,
+                        origin_channel_id=str(thread.id),
+                        origin_message_id=str(starter.id),
+                        pinned=True,
+                    )
+                )
+
+        # Deferred from mirror_channel_all_for_thread above - completes each
+        # destination's category placement now that the starter message (if
+        # any) has already landed in an uncategorized channel.
+        for finish in finish_category_placements:
+            await finish()
 
         await self._relay_thread_created_notice(thread, starter_author)
 

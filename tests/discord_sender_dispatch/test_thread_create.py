@@ -76,6 +76,96 @@ async def test_handle_thread_create_mirrors_and_relays_the_starter_message_as_th
     assert notice.content_markdown == "isabel started a thread: <#777>"
 
 
+async def test_handle_thread_create_pins_the_relayed_starter_message(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _linked_connectors())
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+    recorder = _Recorder()
+    client = FakeClient(user=FakeUser(id=9, display_name="Bridge", display_avatar=FakeAsset("https://cdn.example/bot.png")))
+    sender = _make_sender(recorder, client, linker=linker)
+    parent = FakeChannel(id=42)
+    author = FakeUser(id=1, display_name="isabel")
+    guild = FakeGuild(id=123)
+    thread = FakeThread(id=777, parent=parent, name="Test Thread", guild=guild)
+    thread._starter_message = _discord_message(channel=thread, guild=guild, author=author, content="first!", id=555)
+
+    await sender._handle_thread_create(thread)
+
+    # issue #124: the thread starter message is automatically pinned on
+    # every destination it was relayed to.
+    [pin] = recorder.pins
+    assert (pin.origin_connector_id, pin.origin_channel_id, pin.origin_message_id, pin.pinned) == (
+        "discord", "777", "555", True,
+    )
+
+
+async def test_handle_thread_create_doesnt_pin_when_there_is_no_starter_message(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _linked_connectors())
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient(), linker=linker)
+    thread = FakeThread(id=777, parent=FakeChannel(id=42, name="general"), name="Test Thread", guild=FakeGuild(id=123))
+
+    await sender._handle_thread_create(thread)
+
+    assert recorder.pins == []
+
+
+async def test_handle_thread_create_relays_and_pins_the_starter_before_categorizing(fake_db):
+    # issue #124: the starter message must land in the destination channel
+    # (and be pinned there) *before* that channel is placed into its thread
+    # Category - not after, which is what a single bundled ensure_channel
+    # call used to do.
+    events = []
+
+    async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        if category is not None:
+            events.append("categorize")
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=stoat_ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="discord", local_channel_id="42", local_channel_name="general",
+        source="stoat", source_id="s-general", destination_id=None,
+    )
+
+    class _OrderRecorder(_Recorder):
+        async def on_message(self, message) -> None:
+            events.append("relay")
+            await super().on_message(message)
+
+        async def on_pin(self, pin) -> None:
+            events.append("pin")
+            await super().on_pin(pin)
+
+    recorder = _OrderRecorder()
+    client = FakeClient(user=FakeUser(id=9, display_name="Bridge"))
+    sender = _make_sender(recorder, client, linker=linker)
+    parent = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="isabel")
+    guild = FakeGuild(id=123)
+    thread = FakeThread(id=777, parent=parent, name="Test Thread", guild=guild)
+    thread._starter_message = _discord_message(channel=thread, guild=guild, author=author, content="first!", id=555)
+
+    await sender._handle_thread_create(thread)
+
+    # "relay" is the starter message and "pin" pins it - both before the
+    # deferred categorize call; the parent-channel bot notice relays last.
+    assert events == ["relay", "pin", "categorize", "relay"]
+
+
 async def test_handle_thread_create_marks_ready_when_the_starter_message_hasnt_arrived(fake_db):
     channel_mappings = ChannelMappingRepository(fake_db)
     linker = ChannelLinker(channel_mappings, _linked_connectors())
@@ -129,11 +219,17 @@ async def test_handle_thread_create_names_category_after_the_destinations_linked
 
     await sender._handle_thread_create(thread)
 
-    # category = Stoat's own name for the linked parent channel, not the
+    # ensure_channel is now called twice (issue #124): first to create+link
+    # the channel with no category yet (so the starter message can be
+    # relayed into an uncategorized channel), then again to place it into
+    # its Category - Stoat's own name for the linked parent channel, not the
     # Discord parent's name ("Announcements"), prefixed with the thread marker
     # (issue #98); Stoat's own channel id for the parent is forwarded too, to
     # key the persistent thread-Category binding.
-    assert calls == [("Test Thread", "🧵 #Bot Config", "s-general")]
+    assert calls == [
+        ("Test Thread", None, None),
+        ("Test Thread", "🧵 #Bot Config", "s-general"),
+    ]
 
 
 async def test_handle_thread_create_marks_destination_category_as_thread_category(fake_db):
@@ -163,8 +259,10 @@ async def test_handle_thread_create_marks_destination_category_as_thread_categor
 
     # is_thread_category=True flows all the way from the thread-mirroring
     # call site through to ensure_channel, so the destination Category gets
-    # marked as thread-only and /link-category will later refuse to link it.
-    assert calls == [True]
+    # marked as thread-only and /link-category will later refuse to link it -
+    # on both the create-only call and the deferred category-placement call
+    # (issue #124).
+    assert calls == [True, True]
 
 
 async def test_handle_thread_create_skips_when_parent_isnt_bridged(fake_db):
@@ -333,7 +431,8 @@ async def test_handle_thread_create_routes_a_forum_post_into_the_linked_forum_ca
 
     await sender._handle_thread_create(thread)
 
-    assert ensure_calls == [("Need a GM", "💬 #ttrpg-forum")]
+    # create-only, then the deferred category-placement call (issue #124).
+    assert ensure_calls == [("Need a GM", None), ("Need a GM", "💬 #ttrpg-forum")]
     assert await channel_mappings.get_bridge_group("discord", "777") is not None
 
 
