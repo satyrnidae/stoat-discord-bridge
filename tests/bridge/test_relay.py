@@ -23,8 +23,8 @@ async def test_relays_to_every_other_mapped_connector_and_records_sync(coordinat
     message = _message()
     await coordinator.handle_incoming(message)
 
-    assert stoat_receiver.received == [(message, "200")]
-    assert irc_receiver.received == [(message, "300")]
+    assert stoat_receiver.received == [(message, "200", None)]
+    assert irc_receiver.received == [(message, "300", None)]
     assert health.snapshot()["stoat"] == HealthState.HEALTHY
     assert health.snapshot()["irc"] == HealthState.HEALTHY
 
@@ -104,6 +104,99 @@ async def test_a_failing_target_is_dropped_while_others_still_relay(coordinator_
     assert {(r.connector_id, r.message_id) for r in group} == {("discord", "m1"), ("irc", "i1")}
     assert health.snapshot()["stoat"] == HealthState.DEGRADED
     assert health.snapshot()["irc"] == HealthState.HEALTHY
+
+
+# ---------------------------------------------------------------- reply resolution (issue #101)
+
+
+async def test_reply_resolves_to_each_targets_own_counterpart_message_id(coordinator_parts):
+    coordinator, channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    await _link(channel_mappings, "general", "irc", "300")
+    # A prior message, already synced across all three connectors.
+    await message_sync.record(
+        "general",
+        _ref("discord", "100", "original-discord"),
+        [_ref("stoat", "200", "original-stoat"), _ref("irc", "300", "original-irc")],
+    )
+
+    stoat_receiver = FakeReceiver("stoat", native_ids=["s1"])
+    irc_receiver = FakeReceiver("irc", native_ids=["i1"])
+    coordinator.register_receiver(stoat_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    reply = _message(reply_to_message_id="original-discord")
+    await coordinator.handle_incoming(reply)
+
+    assert stoat_receiver.received == [(reply, "200", "original-stoat")]
+    assert irc_receiver.received == [(reply, "300", "original-irc")]
+
+
+async def test_reply_resolves_when_the_replied_to_message_was_itself_a_relayed_copy(coordinator_parts):
+    coordinator, channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    # The original message originated on Stoat and was relayed to Discord;
+    # find_group must resolve starting from either side of that sync group.
+    await message_sync.record(
+        "general", _ref("stoat", "200", "original-stoat"), [_ref("discord", "100", "original-discord")]
+    )
+
+    stoat_receiver = FakeReceiver("stoat", native_ids=["s1"])
+    coordinator.register_receiver(stoat_receiver)
+
+    reply = _message(reply_to_message_id="original-discord")  # replying to the bridge's own Discord copy
+    await coordinator.handle_incoming(reply)
+
+    assert stoat_receiver.received == [(reply, "200", "original-stoat")]
+
+
+async def test_reply_to_a_never_relayed_message_leaves_reply_target_unset(coordinator_parts):
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+
+    stoat_receiver = FakeReceiver("stoat", native_ids=["s1"])
+    coordinator.register_receiver(stoat_receiver)
+
+    reply = _message(reply_to_message_id="never-synced")
+    await coordinator.handle_incoming(reply)
+
+    assert stoat_receiver.received == [(reply, "200", None)]
+
+
+async def test_reply_to_a_message_not_relayed_to_this_particular_target_leaves_it_unset(coordinator_parts):
+    coordinator, channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    await _link(channel_mappings, "general", "irc", "300")
+    # Synced to stoat only (e.g. irc wasn't linked in yet at the time).
+    await message_sync.record("general", _ref("discord", "100", "original-discord"), [_ref("stoat", "200", "original-stoat")])
+
+    stoat_receiver = FakeReceiver("stoat", native_ids=["s1"])
+    irc_receiver = FakeReceiver("irc", native_ids=["i1"])
+    coordinator.register_receiver(stoat_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    reply = _message(reply_to_message_id="original-discord")
+    await coordinator.handle_incoming(reply)
+
+    assert stoat_receiver.received == [(reply, "200", "original-stoat")]
+    assert irc_receiver.received == [(reply, "300", None)]
+
+
+async def test_non_reply_message_passes_no_reply_target(coordinator_parts):
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+
+    stoat_receiver = FakeReceiver("stoat", native_ids=["s1"])
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_incoming(_message())
+
+    assert stoat_receiver.received[0][2] is None
 
 
 # ---------------------------------------------------------------- handle_reaction

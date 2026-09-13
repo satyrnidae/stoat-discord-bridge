@@ -92,12 +92,28 @@ class ReceiverService(ABC):
     supports_pins: bool = False
     supports_typing: bool = False
     supports_edits: bool = False
+    supports_replies: bool = False
 
     @abstractmethod
-    async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
+    async def receive(
+        self,
+        message: StandardMessage,
+        *,
+        target_channel_id: str,
+        reply_to_target_message_id: str | None = None,
+    ) -> list[str]:
         """Post `message` into `target_channel_id` on this connector, splitting
         it into multiple platform posts if it exceeds that platform's
         per-message length limit.
+
+        `reply_to_target_message_id`, when given, is *this connector's own*
+        native id of the message `message` is replying to - already resolved
+        by `BridgeCoordinator` from `message.reply_to_message_id` via
+        `MessageSyncRepository`. Only meaningful when `supports_replies` is
+        set; a receiver that doesn't support replies can ignore the
+        parameter (it's defaulted so existing overrides need no change).
+        A receiver that does support it posts the *first* platform post as a
+        native reply to that id (a split relay shouldn't reply N times).
 
         Returns the native message ID of every post made, in order, for sync
         tracking. Raises `PartialRelayError` (rather than losing them) if some

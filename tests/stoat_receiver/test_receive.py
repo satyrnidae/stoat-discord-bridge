@@ -181,6 +181,59 @@ async def test_receive_retries_uncolored_when_a_colored_send_is_rejected(monkeyp
     assert ids == ["1", "2"]
 
 
+async def test_receive_passes_a_reply_on_the_first_chunk_only(monkeypatch):
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+    monkeypatch.setattr("stoat_discord_bridge.services.stoat_service._CONTENT_LIMIT", 5)
+
+    ids = await receiver.receive(
+        _message(content_markdown="abcdefghij"), target_channel_id="42", reply_to_target_message_id="original-1"
+    )
+
+    assert len(channel.sent) == 2
+    [reply] = channel.sent[0]["replies"]
+    assert reply.id == "original-1"
+    assert reply.mention is False
+    assert reply.fail_if_not_exists is False
+    assert "replies" not in channel.sent[1]
+    assert ids == ["1", "2"]
+
+
+async def test_receive_with_no_reply_target_sends_no_reply():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(_message(), target_channel_id="42")
+
+    assert "replies" not in channel.sent[0]
+
+
+async def test_receive_retries_without_the_reply_when_a_replied_send_is_rejected():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    real_send = channel.send
+    seen: list = []
+
+    async def picky_send(content, *, masquerade=None, attachments=None, replies=None):
+        seen.append(replies)
+        if replies:
+            raise RuntimeError("unknown reply target")
+        return await real_send(content, masquerade=masquerade)
+
+    channel.send = picky_send
+
+    ids = await receiver.receive(_message(), target_channel_id="42", reply_to_target_message_id="deleted-msg")
+
+    assert len(seen) == 2  # rejected with the reply, retried without it
+    assert seen[0] is not None
+    assert seen[1] is None
+    assert ids == ["1"]
+
+
 async def test_receive_splits_long_content_into_multiple_sends(monkeypatch):
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))

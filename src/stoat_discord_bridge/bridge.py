@@ -139,8 +139,13 @@ class BridgeCoordinator:
         if receiver is None:
             logger.warning("no receiver registered for %s, dropping relay", target.connector_id)
             return []
+        reply_to_target_message_id = await self._resolve_reply_target(message, target)
         try:
-            native_ids = await receiver.receive(message, target_channel_id=target.channel_id)
+            native_ids = await receiver.receive(
+                message,
+                target_channel_id=target.channel_id,
+                reply_to_target_message_id=reply_to_target_message_id,
+            )
         except PartialRelayError as exc:
             logger.warning(
                 "relay from %s to %s partially failed: %s",
@@ -180,6 +185,25 @@ class BridgeCoordinator:
             MessageRef(connector_id=target.connector_id, channel_id=target.channel_id, message_id=native_id)
             for native_id in native_ids
         ]
+
+    async def _resolve_reply_target(self, message: StandardMessage, target: ChannelMapping) -> str | None:
+        """Resolve `message.reply_to_message_id` (the origin connector's own
+        id of the replied-to message) to `target`'s counterpart id, via
+        `MessageSyncRepository`. None if the message isn't a reply, or the
+        replied-to message was never relayed to `target` (not bridged at the
+        time, sent before the bridge existed, or itself still unsynced) -
+        both expected, not errors (issue #101)."""
+        if message.reply_to_message_id is None:
+            return None
+        group = await self._message_sync.find_group(
+            message.origin_connector_id, message.origin_channel_id, message.reply_to_message_id
+        )
+        if group is None:
+            return None
+        for ref in group:
+            if ref.connector_id == target.connector_id and ref.channel_id == target.channel_id:
+                return ref.message_id
+        return None
 
     async def handle_typing(self, typing: StandardTyping) -> None:
         """Relay a "someone is typing" / "stopped typing" indicator onto every

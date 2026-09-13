@@ -258,6 +258,38 @@ end sends `end_typing`, clearing the indicator at once; Discord has no
 clear-typing API, so there the loop just stops re-arming and Discord's own
 ~10s timeout lapses it.
 
+### Message reply sync
+
+Replying to a message in a bridged channel is mirrored as a native reply onto
+the target's own copy of the replied-to message, where the target platform
+supports it (`ReceiverService.supports_replies`, resolved via the same
+`MessageSyncRepository` pin/edit/typing sync use — issue #101). Every sender
+stamps `StandardMessage.reply_to_message_id` with the *origin* connector's own
+id of the message being replied to (`None` if it isn't a reply); unlike pin/
+edit sync this needs no echo guard or `_recent_*` bookkeeping, since it's an
+attribute read off a message already flowing one way, not a follow-up event.
+`BridgeCoordinator._resolve_reply_target` looks that id up via `find_group`
+and, for each relay target, resolves it to *that target's own* counterpart id
+before calling `ReceiverService.receive(..., reply_to_target_message_id=...)`
+— silently `None` if the replied-to message was never relayed there (not
+bridged at the time, sent before the bridge existed, or itself still
+unsynced), the same silent-skip the other sync features use.
+
+**Discord → Stoat only.** Discord → Stoat is native: discord.py exposes the
+replied-to id at `Message.reference.message_id` (guarded on
+`reference.type` so a forwarded message, not a real reply, doesn't carry one),
+and Stoat's `channel.send(..., replies=[Reply(id, mention=False,
+fail_if_not_exists=False)])` accepts it directly — passed only on the first
+post of a split relay so a multi-chunk message doesn't reply N times,
+`mention=False` so it doesn't re-ping the original author on every bridge
+hop, `fail_if_not_exists=False` plus a same-spirit retry-without-it (mirroring
+the color-retry) so a since-deleted counterpart doesn't sink the whole send.
+**Stoat → Discord is not feasible**: a relay posts through the channel's
+webhook (Execute Webhook), whose API has no `message_reference` field — a
+webhook message can't be a native Discord reply, so `DiscordReceiverService`
+leaves `supports_replies` unset and ignores the parameter. **IRC has no
+reply/threading concept** — `supports_replies` stays `False` there too.
+
 ### Source, pronoun & name-color forwarding
 
 Every `StandardMessage` carries `source_label` — the origin connector's

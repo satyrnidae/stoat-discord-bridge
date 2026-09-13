@@ -33,6 +33,7 @@ class FakeReceiver(ReceiverService):
         supports_pins: bool = False,
         supports_typing: bool = False,
         supports_edits: bool = False,
+        supports_replies: bool = False,
         native_ids: list[str] | None = None,
         raises: BaseException | None = None,
         created_emoji: CustomEmoji | None = None,
@@ -43,6 +44,7 @@ class FakeReceiver(ReceiverService):
         self.supports_pins = supports_pins
         self.supports_typing = supports_typing
         self.supports_edits = supports_edits
+        self.supports_replies = supports_replies
         self._native_ids = native_ids if native_ids is not None else ["native-1"]
         self._raises = raises
         self._created_emoji = created_emoji
@@ -54,8 +56,14 @@ class FakeReceiver(ReceiverService):
         self.typing_stopped: list[str] = []
         self.edits: list[tuple] = []
 
-    async def receive(self, message: StandardMessage, *, target_channel_id: str) -> list[str]:
-        self.received.append((message, target_channel_id))
+    async def receive(
+        self,
+        message: StandardMessage,
+        *,
+        target_channel_id: str,
+        reply_to_target_message_id: str | None = None,
+    ) -> list[str]:
+        self.received.append((message, target_channel_id, reply_to_target_message_id))
         if self._raises is not None:
             raise self._raises
         return self._native_ids
