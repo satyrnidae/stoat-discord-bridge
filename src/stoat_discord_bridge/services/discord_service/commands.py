@@ -19,11 +19,19 @@ from collections.abc import Callable
 import discord
 from discord import app_commands
 
-from stoat_discord_bridge.admin_commands import ConnectorInfo
+from stoat_discord_bridge.admin_commands import HELP_TOPICS, ConnectorInfo, render_help
 
 logger = logging.getLogger(__name__)
 
 _CHOICE_LIMIT = 25  # Discord's hard cap on autocomplete results
+
+# Every HELP_TOPICS key as a static /help choice - all 20 fit under Discord's
+# 25-choice cap, so every subtopic is discoverable in one dropdown rather
+# than needing a second dependent option (issue #117).
+_HELP_CHOICES = [
+    app_commands.Choice(name=f"{key} — {entry.summary}"[:100], value=key)
+    for key, entry in HELP_TOPICS.items()
+]
 
 
 def _connector_autocomplete_choices(
@@ -102,6 +110,20 @@ def build_command_tree(service) -> None:
     )
     async def status_command(interaction: discord.Interaction) -> None:
         await interaction.response.send_message(self._health.render(), ephemeral=True)
+
+    @self.tree.command(
+        name="help", description="Show bridge command help", guild=self._guild
+    )
+    @app_commands.describe(topic="Drill into one command's full syntax and detail")
+    @app_commands.choices(topic=_HELP_CHOICES)
+    async def help_command(
+        interaction: discord.Interaction, topic: app_commands.Choice[str] | None = None
+    ) -> None:
+        # No permission gate - read-only, same as /status.
+        await interaction.response.send_message(
+            render_help(topic.value if topic is not None else None, connector="discord"),
+            ephemeral=True,
+        )
 
     # Channels, roles, users, Categories and emotes all use the `/link
     # <noun>`, `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>`

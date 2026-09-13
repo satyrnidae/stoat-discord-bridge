@@ -25,20 +25,6 @@ _ADMIN_DM_CHANNEL_VERBS = frozenset({"LINK", "MIRROR", "UNLINK"})
 # Second tokens accepted after a verb in _ADMIN_DM_CHANNEL_VERBS.
 _ADMIN_DM_TWO_WORD_NOUNS = frozenset({"CHANNEL", "USER"})
 
-# IRC has no slash-command discoverability at all, hence HELP. See
-# COMMANDS.md for full per-command detail - this is a compact pointer to it.
-_HELP_TEXT = """Commands (DM me, bare and uppercase - see COMMANDS.md for full detail):
-  STATUS - sync target health, read-only
-  LINKED CHANNELS <local_id> - channels bridged to <local_id>, read-only
-  LINKED USERS [local_id|name] - cross-connector user links, read-only
-  LINK CHANNEL <local_id> <service> <external_id> - bridge a channel (IRC-operator)
-  LINK USER <service> <external_id|name> <local_id|name> - link a user for mentions/masquerading (IRC-operator)
-  MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] - create+link a matching channel elsewhere; CATEGORY:<> (single service) overrides linked Categories (IRC-operator)
-  MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>] - create+link a local channel mirroring a remote one (IRC-operator)
-  UNLINK CHANNEL <local_id> [service|all] - unlink a channel from one connector, or the whole group (IRC-operator)
-  UNLINK USER [service|all] [local_id|name] - unlink a user (default: yourself) from one connector, or the whole group (IRC-operator)
-  HELP - this message"""
-
 
 class IrcAdminCommandsMixin:
     """Command parsing/dispatch half of `IrcSenderService`. Relies on the

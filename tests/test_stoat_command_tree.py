@@ -295,6 +295,24 @@ async def test_group_usage_and_help_honor_a_custom_prefix():
     assert "/status" not in owner.replies[1]
 
 
+async def test_bridge_help_with_a_topic_and_noun_drills_down():
+    owner = _ReplyOwner()
+    bot = _bare_bot(owner, prefix="!")
+
+    await bot.all_commands["bridge-help"].callback(SimpleNamespace(), "mirror", "channel")
+
+    assert owner.replies[0].startswith("!mirror channel to")
+
+
+async def test_bridge_help_with_an_unrecognized_topic_falls_back_to_the_index():
+    owner = _ReplyOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["bridge-help"].callback(SimpleNamespace(), "not-a-real-topic")
+
+    assert owner.replies[0].startswith("Bridge commands (see COMMANDS.md for full detail):")
+
+
 async def test_on_command_error_ignores_command_not_found():
     owner = _ReplyOwner()
     bot = _bare_bot(owner)
