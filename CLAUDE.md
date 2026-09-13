@@ -146,6 +146,19 @@ message's initial payload (vs. arriving later via a `MESSAGE_UPDATE` the
 sender otherwise ignores as an auto-embed unfurl) and whether Stoat renders a
 re-uploaded `.mp4` inline the same way it does a `.gif`.
 
+A Discord **forwarded message** carries its actual content in a separate
+`Message.message_snapshots` field, not in `.content`/`.attachments` — those
+hold only the forwarder's own caption, if any (discord.py 2.7.1's
+`MessageSnapshot`, confirmed against the installed package). Discord's
+`_to_standard_message` (`services/discord_service/formatting.py`) combines
+the caption with every snapshot's content as a Markdown blockquote (`>
+<line>`, each line prefixed individually) and appends every snapshot's
+attachments to the message's own — issue #125; without this, a forward with
+no caption relayed nothing, and one with a caption relayed only the caption,
+in both cases silently dropping the forwarded content itself. Embeds aren't
+modeled by `StandardMessage` at all (a separate, pre-existing gap), so a
+forwarded embed is still dropped.
+
 `config.py` loads `config.yaml` and layers env vars over it per-field: an
 `{SECTION}__{index}__{FIELD}` env var (Azure App Configuration/ASP.NET
 Core-style hierarchical binding — `index` is the connector's 0-based

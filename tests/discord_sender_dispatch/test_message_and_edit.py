@@ -294,6 +294,112 @@ async def test_handle_message_with_no_embeds_is_unaffected():
     assert message.attachments == []
 
 
+# ---------------------------------------------------------------- Discord forwarded messages (issue #125)
+
+
+class _FakeMessageSnapshot:
+    def __init__(self, content="", attachments=None):
+        self.content = content
+        self.attachments = attachments or []
+
+
+async def test_handle_message_relays_a_forward_with_no_caption():
+    # issue #125: a forward with no caption has an empty message.content -
+    # the forwarded text lives only in message_snapshots, and must not be
+    # dropped.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author, content="", id=99,
+            message_snapshots=[_FakeMessageSnapshot(content="the original message")],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == "> the original message"
+
+
+async def test_handle_message_relays_a_forward_with_a_caption():
+    # issue #125: a caption alongside a forward must not eclipse the
+    # forwarded content - both need to reach the destination.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author, content="check this out", id=99,
+            message_snapshots=[_FakeMessageSnapshot(content="the original message")],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == "check this out\n\n> the original message"
+
+
+async def test_handle_message_forward_quotes_every_line_of_multiline_content():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author, content="", id=99,
+            message_snapshots=[_FakeMessageSnapshot(content="line one\n\nline three")],
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == "> line one\n>\n> line three"
+
+
+async def test_handle_message_forward_carries_over_the_snapshots_attachments():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    own_attachment = FakeAttachment(url="https://cdn.example/caption.png", filename="caption.png")
+    snapshot_attachment = FakeAttachment(url="https://cdn.example/forwarded.png", filename="forwarded.png")
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author, content="", id=99, attachments=[own_attachment],
+            message_snapshots=[_FakeMessageSnapshot(content="a photo", attachments=[snapshot_attachment])],
+        )
+    )
+
+    [message] = recorder.messages
+    assert [a.url for a in message.attachments] == [
+        "https://cdn.example/caption.png",
+        "https://cdn.example/forwarded.png",
+    ]
+
+
+async def test_handle_message_non_forward_is_unaffected_by_empty_snapshots():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+
+    await sender._handle_message(
+        _discord_message(channel=channel, guild=guild, author=author, content="just a normal message", id=99)
+    )
+
+    [message] = recorder.messages
+    assert message.content_markdown == "just a normal message"
+
+
 async def test_handle_message_maps_role_mentions():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
