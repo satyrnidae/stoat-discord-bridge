@@ -47,12 +47,21 @@ def make_connector(
 
 
 class FakeVoiceTransport(VoiceTransport):
-    """Records whether/how it was closed; never actually connects to
-    anything."""
+    """Records whether/how it was closed, plus every `start`/`set_output`
+    call (issue #113 Phase 3 - the coordinator's `_wire_audio` calls both on
+    every real join); never actually connects to anything."""
 
     def __init__(self, connector_id: str) -> None:
         self.connector_id = connector_id
         self.closed = False
+        self.start_calls: list = []
+        self.set_output_calls: list = []
+
+    async def start(self, on_speaker_frame) -> None:
+        self.start_calls.append(on_speaker_frame)
+
+    def set_output(self, source) -> None:
+        self.set_output_calls.append(source)
 
     async def close(self) -> None:
         self.closed = True

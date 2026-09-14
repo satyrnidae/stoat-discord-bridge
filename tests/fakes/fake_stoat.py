@@ -170,16 +170,40 @@ class FakeChannel:
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
 
 
+class FakeLocalParticipant:
+    """Stands in for livekit.rtc.LocalParticipant - just `identity` (for the
+    echo-guard identity check) and `publish_track` (issue #113 Phase 3)."""
+
+    def __init__(self, identity: str = "bridge") -> None:
+        self.identity = identity
+        self.publish_track_calls: list = []
+
+    async def publish_track(self, track, options=None):
+        self.publish_track_calls.append(track)
+        return None
+
+
 class FakeStoatRoom:
     """Stands in for the livekit.rtc.Room `VoiceChannel.connect()` returns -
-    just enough for `StoatVoiceTransport.close()` (issue #113 Phase 2) to
-    exercise its disconnect call."""
+    `disconnect` (issue #113 Phase 2) plus `on`/`local_participant` (Phase
+    3's send/receive wiring). `.on(event, callback)` just records the
+    callback under its event name - `trigger(event, *args)` invokes it,
+    standing in for LiveKit actually firing the event."""
 
     def __init__(self) -> None:
         self.disconnect_calls = 0
+        self.local_participant = FakeLocalParticipant()
+        self._listeners: dict[str, object] = {}
 
     async def disconnect(self) -> None:
         self.disconnect_calls += 1
+
+    def on(self, event: str, callback=None):
+        self._listeners[event] = callback
+        return callback
+
+    def trigger(self, event: str, *args) -> None:
+        self._listeners[event](*args)
 
 
 class FakeVoiceChannel(stoat.VoiceChannel):

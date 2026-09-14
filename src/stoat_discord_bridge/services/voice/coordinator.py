@@ -46,6 +46,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
+from stoat_discord_bridge.services.voice import pipeline
 from stoat_discord_bridge.services.voice.base import VoiceJoinError
 
 if TYPE_CHECKING:
@@ -93,6 +94,11 @@ class VoiceBridgeCoordinator:
         self._active_connectors: set[str] = set()
         # connector_id -> its live VoiceTransport, for the active session only.
         self._transports: dict[str, "VoiceTransport"] = {}
+        # The active session's shared audio pipeline (issue #113 Phase 3) -
+        # created on the first real join of a session, torn down as a whole
+        # in _close_session. None whenever no session is live, or when every
+        # joined connector so far is a Phase 1 fallback (no real transport).
+        self._mixer_clock: "pipeline.MixerClock | None" = None
         self._refresh_task: "asyncio.Task | None" = None
         # bridge_group -> was it eligible (>= 2 populated connectors) as of
         # the last _reevaluate() - see _reevaluate's docstring for why the
@@ -345,6 +351,11 @@ class VoiceBridgeCoordinator:
             for transport in joined.values():
                 if transport is not None:
                     await self._safe_close(transport)
+            # A rolled-back attempt leaves no session - don't leave its
+            # mixer clock's tick loop running with nothing to feed.
+            if self._mixer_clock is not None:
+                await self._mixer_clock.close()
+                self._mixer_clock = None
             return False
 
         self._active_group = group
@@ -383,6 +394,9 @@ class VoiceBridgeCoordinator:
         transports, self._transports = self._transports, {}
         for transport in transports.values():
             await self._safe_close(transport)
+        if self._mixer_clock is not None:
+            await self._mixer_clock.close()
+            self._mixer_clock = None
 
     async def connector_disconnected(self, connector_id: str) -> None:
         """`connector_id`'s sender went offline (gateway dropped). Clears its
@@ -437,12 +451,40 @@ class VoiceBridgeCoordinator:
             )
             return False, None
         try:
-            return True, await connector.join(channel_id)
+            transport = await connector.join(channel_id)
         except VoiceJoinError:
             logger.exception("[voice] failed to join connector %s for group %r", connector_id, group)
             return False, None
+        await self._wire_audio(connector_id, transport)
+        return True, transport
+
+    async def _wire_audio(self, connector_id: str, transport: "VoiceTransport") -> None:
+        """Attach the session's shared audio pipeline to a freshly-joined
+        transport (issue #113 Phase 3): the mixer clock is created lazily on
+        a session's first real join and shared by every connector joined
+        into it afterward (`_reconcile_membership`'s mid-session joins
+        included) - `_close_session`/`_open_session`'s rollback are what
+        tear it down as a whole."""
+        if self._mixer_clock is None:
+            self._mixer_clock = pipeline.MixerClock()
+            await self._mixer_clock.start()
+        holder = self._mixer_clock.add_connector(connector_id)
+        transport.set_output(holder)
+        await transport.start(self._on_speaker_frame)
+
+    async def _on_speaker_frame(self, connector_id: str, user_id: str, frame: bytes) -> None:
+        """The callback every joined transport's `start()` is wired to -
+        just routes a received speaker frame into the session's shared
+        `SpeakerRegistry`. `_mixer_clock` should never actually be `None`
+        here (a transport can't be receiving without having gone through
+        `_wire_audio` first), but the guard costs nothing and avoids a crash
+        racing a session teardown against an in-flight frame."""
+        if self._mixer_clock is not None:
+            self._mixer_clock.registry.push_frame(connector_id, user_id, frame)
 
     async def _safe_close(self, transport: "VoiceTransport") -> None:
+        if self._mixer_clock is not None:
+            self._mixer_clock.remove_connector(transport.connector_id)
         try:
             await transport.close()
         except Exception:
