@@ -87,6 +87,47 @@ class StoatSyncMixin:
             )
         )
 
+    def _is_bot_user(self, user_id: str) -> bool:
+        """Cache-only, best-effort "is this user a bot" check (same stance as
+        `_handle_message_react`'s reactor check) - used by the voice-presence
+        handlers below (issue #113) to exclude bot occupants."""
+        try:
+            user = self._client.get_user(user_id)
+        except Exception:
+            user = None
+        return bool(getattr(user, "bot", False))
+
+    async def _handle_voice_channel_join(self, event) -> None:
+        """`stoat.events.VoiceChannelJoinEvent`: `.channel_id`, `.state`
+        (a `UserVoiceState` carrying `.user_id`). Pushed straight to
+        `VoiceBridgeCoordinator.on_voice_presence`."""
+        if self._on_voice_presence is None:
+            return
+        user_id = str(event.state.user_id)
+        await self._on_voice_presence(
+            self.connector_id, str(event.channel_id), user_id, present=True, is_bot=self._is_bot_user(user_id)
+        )
+
+    async def _handle_voice_channel_leave(self, event) -> None:
+        """`stoat.events.VoiceChannelLeaveEvent`: `.channel_id`, `.user_id`."""
+        if self._on_voice_presence is None:
+            return
+        user_id = str(event.user_id)
+        await self._on_voice_presence(
+            self.connector_id, str(event.channel_id), user_id, present=False, is_bot=self._is_bot_user(user_id)
+        )
+
+    async def _handle_voice_channel_move(self, event) -> None:
+        """`stoat.events.VoiceChannelMoveEvent`: `.user_id`, `.from_`, `.to`.
+        Reported as a leave of the old channel followed by a join of the
+        new one, matching Discord's move handling."""
+        if self._on_voice_presence is None:
+            return
+        user_id = str(event.user_id)
+        is_bot = self._is_bot_user(user_id)
+        await self._on_voice_presence(self.connector_id, str(event.from_), user_id, present=False, is_bot=is_bot)
+        await self._on_voice_presence(self.connector_id, str(event.to), user_id, present=True, is_bot=is_bot)
+
     async def _handle_message_react(self, event, *, added: bool) -> None:
         """`stoat.events.MessageReactEvent` / `MessageUnreactEvent`: someone
         added/removed a reaction. `event` carries `.channel_id`, `.message_id`,

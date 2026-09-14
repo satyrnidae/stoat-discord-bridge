@@ -194,6 +194,7 @@ def _make_sender(
     category_linker: FakeCategoryLinker | None = None,
     role_linker: "FakeRoleLinker | None" = None,
     bot_whitelist: "FakeBotWhitelistManager | None" = None,
+    on_voice_presence=None,
     client: FakeClient | None = None,
     server_id: str | None = "s1",
 ) -> StoatSenderService:
@@ -205,6 +206,7 @@ def _make_sender(
     sender._category_linker = category_linker
     sender._role_linker = role_linker
     sender._bot_whitelist = bot_whitelist
+    sender._on_voice_presence = on_voice_presence
     sender.server_id = server_id
     sender._command_message_ids = deque(maxlen=512)
     if client is not None:

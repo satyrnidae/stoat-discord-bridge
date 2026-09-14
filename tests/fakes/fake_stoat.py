@@ -14,6 +14,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import stoat
+
 
 class FakeAsset:
     def __init__(self, url: str) -> None:
@@ -166,6 +168,32 @@ class FakeChannel:
         if self._raises is not None:
             raise self._raises
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
+
+
+class FakeVoiceChannel(stoat.VoiceChannel):
+    """Stands in for stoat.VoiceChannel - needed for the
+    isinstance(channel, stoat.VoiceChannel) check `channel_is_voice`
+    (issue #113) uses. Skips the real (attrs-generated) __init__, same
+    pattern as fake_discord.py's discord.py subclass fakes; `.voice_states`
+    is shadowed with a bare participants dict since the real property reads
+    a gateway-fed cache this fake has none of."""
+
+    def __init__(
+        self,
+        id: str,
+        *,
+        name: str = "voice",
+        server_id: str | None = None,
+        participants: "dict[str, Any] | None" = None,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.server_id = server_id
+        self._participants = participants or {}
+
+    @property
+    def voice_states(self) -> SimpleNamespace:
+        return SimpleNamespace(participants=self._participants)
 
 
 class FakePartialMessageable:
