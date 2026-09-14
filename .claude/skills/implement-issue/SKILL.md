@@ -98,6 +98,10 @@ whole branch is coherent, not just each phase in isolation.
 - Summarize the phases as the PR's bullet points, framed around *why* each
   one exists (matching this repo's own commit/PR style), not a mechanical
   diff recap.
+- Write the PR body's prose as unwrapped paragraphs - don't insert manual
+  line breaks partway through a sentence or paragraph to keep lines short.
+  Let the rendering client wrap it; a hard-wrapped body reads as jagged,
+  broken lines on GitHub instead of flowing paragraphs.
 - Once the PR is open, swap the issue's work-state label: `gh issue edit <n>
   --remove-label "in development" --add-label "merge pending"`. Development
   is done at this point (an open PR is what "merge pending" means) even
