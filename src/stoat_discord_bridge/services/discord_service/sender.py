@@ -240,6 +240,56 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             )
         )
 
+    async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
+        """`ConnectorInfo.fetch_history` for Discord (issue #122): the
+        oldest-first history of `channel_id`, converted via the same
+        `_to_standard_message` the live relay path uses. `limit=None` fetches
+        the entire channel history (archive mode's `limit:all`).
+
+        Filters out what `_handle_message` would already drop from a live
+        feed - a channel outside this connector's configured guild, our own
+        (or another integration's) webhook posts, a non-whitelisted bot's
+        messages, and non-content system messages (pin/thread-created rows) -
+        so a backfill doesn't relay noise a live listener never would have.
+        Best-effort: an unresolvable/wrong-guild channel yields no messages;
+        a fetch that raises partway through the walk yields whatever it
+        managed to convert before that rather than discarding a long
+        backfill's progress over one bad message."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except Exception:
+            logger.warning("[discord:%s] fetch_history: couldn't resolve channel %s", self.connector_id, channel_id)
+            return []
+        guild = getattr(channel, "guild", None)
+        if guild is None or guild.id != self._config.guild_id:
+            logger.warning(
+                "[discord:%s] fetch_history: channel %s isn't in this connector's guild", self.connector_id, channel_id
+            )
+            return []
+        messages: list[StandardMessage] = []
+        try:
+            async for message in channel.history(limit=limit, oldest_first=True):
+                if message.webhook_id is not None:
+                    continue
+                if message.author.bot and not await self._bot_is_whitelisted(str(message.author.id)):
+                    continue
+                if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+                    continue
+                messages.append(
+                    _to_standard_message(
+                        message,
+                        self.connector_id,
+                        source_label=self._config.label,
+                        sender_pronouns=await self._resolve_sender_pronouns(message.author.id),
+                        sender_color=self._resolve_sender_color(message.author),
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "[discord:%s] fetch_history: fetching channel %s failed", self.connector_id, channel_id, exc_info=True
+            )
+        return messages
+
     def _resolve_sender_color(self, author: object) -> str | None:
         """The sender's displayed name color, for a receiver that can tint a
         relayed name (Stoat's masquerade, issue #74). Network-free - reads the

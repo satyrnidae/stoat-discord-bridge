@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
+    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, StandardMessage
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
@@ -361,6 +361,19 @@ class ConnectorInfo:
     # `/mirror channel` when the source channel had any - the hook applies
     # it only when it actually creates the channel, never onto a reused one.
     ensure_channel: Callable[..., Awaitable[str]] | None = None
+    # Best-effort oldest-first channel-history fetch, already converted to
+    # `StandardMessage`, for `/mirror channel with history` (issue #122):
+    # `fetch_history(channel_id, limit)` - `limit=None` means "the entire
+    # channel history" (archive mode's `limit:all`), otherwise the `limit`
+    # most recent messages. Only Discord and Stoat wire this - IRC is a
+    # live-only protocol with no history to fetch, so it can never be a
+    # history *source* (it can still be a history *destination*, same as any
+    # other `/mirror channel` target, via the ordinary `ensure_channel` +
+    # receiver `receive()` path `BridgeCoordinator.backfill_history` uses).
+    # Best-effort in the same sense as the other hooks: an unresolvable
+    # channel or a raising fetch is the caller's problem to report, not
+    # something this hook itself needs to swallow.
+    fetch_history: Callable[[str, "int | None"], Awaitable[list["StandardMessage"]]] | None = None
     # Best-effort native-user-id -> display-name lookup, for `/linked-users`
     # to show real names instead of raw ids. None, an exception, or a falsy
     # return all fall back to the raw id, same as resolve_channel_name.
