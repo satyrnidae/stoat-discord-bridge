@@ -1,6 +1,6 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, LinkError
+from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, LinkedMember, LinkError
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
 
@@ -334,5 +334,53 @@ async def test_unlink_channel_defaults_to_all(fake_db, connectors):
     )
 
     await linker.unlink_channel(local_connector="stoat", local_channel_id="s1", destination=None)
-
     assert await channel_mappings.get_bridge_group("discord", "d1") is None
+
+
+# ---------------------------------------------------------------- ChannelLinker.describe_group
+
+
+async def test_describe_group_returns_none_for_an_unlinked_channel(fake_db, connectors):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    assert await linker.describe_group(local_connector="stoat", local_id="s1") is None
+
+
+async def test_describe_group_returns_the_group_id_and_members(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    result = await linker.describe_group(local_connector="stoat", local_id="s1")
+
+    assert result is not None
+    group_id, members = result
+    assert group_id == await channel_mappings.get_bridge_group("stoat", "s1")
+    assert members == [
+        LinkedMember(connector_id="discord", label="Discord", entity_id="d1", name="d1"),
+        LinkedMember(connector_id="stoat", label="Stoat", entity_id="s1", name="general"),
+    ]
+
+
+async def test_describe_group_resolves_a_bare_name_for_local_id(fake_db):
+    channel_mappings = ChannelMappingRepository(fake_db)
+
+    async def resolve_id_by_name(name):
+        return "s1" if name == "general" else None
+
+    connectors = {
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", resolve_channel_id_by_name=resolve_id_by_name),
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+    }
+    linker = ChannelLinker(channel_mappings, connectors)
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="s1", local_channel_name="general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+
+    result = await linker.describe_group(local_connector="stoat", local_id="general")
+    assert result is not None
+    _group_id, members = result
+    assert {m.connector_id for m in members} == {"discord", "stoat"}

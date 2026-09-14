@@ -8,6 +8,7 @@ import uuid
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
+    LinkedMember,
     LinkError,
     MirrorGuard,
     _clean_new_name,
@@ -21,6 +22,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    collect_linked_members,
     format_linked_listing,
 )
 from stoat_discord_bridge.channel_structure import clip_name
@@ -195,6 +197,21 @@ class RoleLinker:
         return await self.mirror_role(
             local_connector=source, local_role=source_role, destination=local_connector, new_name=new_name
         )
+
+    async def describe_group(
+        self, *, local_connector: str, local_id: str
+    ) -> "tuple[str, list[LinkedMember]] | None":
+        """The structured counterpart of `list_linked_roles` - the bridge
+        group id and every member as a `LinkedMember`, or None if
+        `local_id` (an id or bare name, on `local_connector`) isn't linked.
+        Used by the Discord in-line link editor (issue #115)."""
+        local_id = await self._resolve_to_id(local_connector, local_id)
+        bridge_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
+        if bridge_group is None:
+            return None
+        mapped = await self._role_mappings.get_mapped_roles(bridge_group)
+        members = await collect_linked_members(mapped, self._connectors, "role_id", resolve_name=self._resolve_name)
+        return bridge_group, members
 
     async def list_linked_roles(
         self, *, local_connector: str, local_role: str | None = None, service: str | None = None

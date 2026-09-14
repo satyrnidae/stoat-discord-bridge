@@ -1,6 +1,6 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkError, RoleLinker
+from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkedMember, LinkError, RoleLinker
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 
 
@@ -315,3 +315,26 @@ async def test_unlink_role_kick_that_strands_a_lone_survivor_dissolves(fake_db):
 async def test_unlink_role_not_linked_raises(fake_db):
     with pytest.raises(LinkError, match="isn't linked"):
         await _linker(fake_db).unlink_role(local_connector="stoat", local_role="s1", destination=None)
+
+
+# ---- describe_group
+
+
+async def test_describe_group_returns_none_for_an_unlinked_role(fake_db):
+    linker = _linker(fake_db)
+    assert await linker.describe_group(local_connector="stoat", local_id="s1") is None
+
+
+async def test_describe_group_returns_the_group_id_and_members(fake_db):
+    linker = _linker(fake_db)
+    await linker.link_role(local_connector="stoat", local_role="s1", source="discord", source_role="d1")
+
+    result = await linker.describe_group(local_connector="stoat", local_id="s1")
+
+    assert result is not None
+    group_id, members = result
+    assert group_id == await RoleMappingRepository(fake_db).get_bridge_group("stoat", "s1")
+    assert members == [
+        LinkedMember(connector_id="discord", label="Discord", entity_id="d1", name="d1"),
+        LinkedMember(connector_id="stoat", label="Stoat", entity_id="s1", name="s1"),
+    ]

@@ -648,6 +648,50 @@ async def _link_conflict_check(
     )
 
 
+@dataclass(frozen=True)
+class LinkedMember:
+    """One connector's side of a bridge/link/mapping group - the structured
+    counterpart of the `"{label}: {name} ({id})"` strings `format_linked_listing`
+    renders, for a caller (the Discord in-line link editor - issue #115) that
+    needs to build UI components off a group's membership rather than just
+    print it. `connector_id` is the raw config id (`ChannelMapping.connector_id`
+    etc.); `label` is that connector's display label, already resolved so a
+    caller never has to re-look it up."""
+
+    connector_id: str
+    label: str
+    entity_id: str
+    name: str
+
+
+async def collect_linked_members(
+    mappings: "Iterable[object]",
+    connectors: "dict[str, ConnectorInfo]",
+    id_attr: str,
+    name_attr: str | None = None,
+    *,
+    resolve_name: Callable[[str, str], Awaitable[str]] | None = None,
+) -> list[LinkedMember]:
+    """The mapping-to-member gather step shared by every `list_linked_*`
+    method and (issue #115) `describe_group`: one `LinkedMember` per mapping,
+    sorted by `(connector_id, <id_attr>)`. `format_linked_listing` is just
+    this plus the display-string join.
+
+    `name_attr` reads the display name straight off the stored mapping
+    (ChannelLinker/CategoryLinker, which stash the name at link time);
+    `resolve_name(connector_id, entity_id)` instead resolves it live off the
+    connector (EmoteLinker/UserLinker/RoleLinker, whose resolve hook can
+    reflect a rename since linking)."""
+    members = []
+    for mapping in sorted(mappings, key=lambda m: (m.connector_id, getattr(m, id_attr))):  # type: ignore[attr-defined]
+        info = connectors.get(mapping.connector_id)
+        label = info.label if info else mapping.connector_id
+        entity_id = getattr(mapping, id_attr)
+        name = await resolve_name(mapping.connector_id, entity_id) if resolve_name else getattr(mapping, name_attr)
+        members.append(LinkedMember(connector_id=mapping.connector_id, label=label, entity_id=entity_id, name=name))
+    return members
+
+
 async def format_linked_listing(
     mappings: "Iterable[object]",
     connectors: "dict[str, ConnectorInfo]",
@@ -660,31 +704,24 @@ async def format_linked_listing(
 ) -> list[str]:
     """The line-per-member formatting shared by every `list_linked_*`
     method: one `"{label}: {name} ({id})"` line per mapping, sorted by
-    `(connector_id, <id_attr>)`.
-
-    `name_attr` reads the display name straight off the stored mapping
-    (ChannelLinker/CategoryLinker, which stash the name at link time);
-    `resolve_name(connector_id, entity_id)` instead resolves it live off the
-    connector (EmoteLinker/UserLinker/RoleLinker, whose resolve hook can
-    reflect a rename since linking) - in which case the id is dropped from a
-    line whenever it's identical to the resolved name (e.g. IRC, whose
-    user_id already IS the display name).
+    `(connector_id, <id_attr>)` (via `collect_linked_members`).
 
     `marker_for`, a `(connector_id, id)` pair, appends `marker_text` to that
     one line - the "(this channel)"/"(this Category)" flag `/linked
     channels`/`/linked categories` put on the invoking entity. Unset for the
-    live-resolved linkers, which have no such "this one" context."""
+    live-resolved linkers, which have no such "this one" context. The id is
+    dropped from a line whenever it's identical to the resolved name (e.g.
+    IRC, whose user_id already IS the display name) - only reachable when
+    `marker_for` is unset, since every `marker_for` caller's `id_attr` is a
+    real native id, never equal to its own name."""
+    members = await collect_linked_members(mappings, connectors, id_attr, name_attr, resolve_name=resolve_name)
     lines = []
-    for mapping in sorted(mappings, key=lambda m: (m.connector_id, getattr(m, id_attr))):  # type: ignore[attr-defined]
-        info = connectors.get(mapping.connector_id)
-        label = info.label if info else mapping.connector_id
-        entity_id = getattr(mapping, id_attr)
-        name = await resolve_name(mapping.connector_id, entity_id) if resolve_name else getattr(mapping, name_attr)
+    for m in members:
         if marker_for is not None:
-            marker = marker_text if (mapping.connector_id, entity_id) == marker_for else ""
-            lines.append(f"{label}: {name} ({entity_id}){marker}")
+            marker = marker_text if (m.connector_id, m.entity_id) == marker_for else ""
+            lines.append(f"{m.label}: {m.name} ({m.entity_id}){marker}")
         else:
-            lines.append(f"{label}: {name}" if name == entity_id else f"{label}: {name} ({entity_id})")
+            lines.append(f"{m.label}: {m.name}" if m.name == m.entity_id else f"{m.label}: {m.name} ({m.entity_id})")
     return lines
 
 
