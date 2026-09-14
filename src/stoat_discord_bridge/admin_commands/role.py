@@ -12,8 +12,10 @@ from stoat_discord_bridge.admin_commands.common import (
     MirrorGuard,
     _clean_new_name,
     _guards_mirror,
+    _is_all_token,
     _kick_group_member,
     _link_conflict_check,
+    _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
     _mirror_to_destination,
@@ -21,6 +23,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    _run_bulk_mirror,
     format_linked_listing,
 )
 from stoat_discord_bridge.channel_structure import clip_name
@@ -120,12 +123,36 @@ class RoleLinker:
         shouldn't have one bad destination abort the rest.
 
         `new_name`, if given, is the name to create/find the counterpart role
-        under on `destination` instead of the source role's name (issue #44)."""
+        under on `destination` instead of the source role's name (issue #44).
+
+        `local_role == "all"` (case-insensitive, and only that literal token)
+        mirrors every role `local_connector` can enumerate via its
+        `list_roles` hook to `destination` instead of just one (issue #123) -
+        one line of summary/skip/error per role, paced and capped the same as
+        the other bulk helpers in `common.py`. Raises LinkError up front if
+        `local_connector` isn't a known connector, has no `list_roles` hook
+        (nothing to enumerate with - e.g. IRC, which has no role concept at
+        all), if it can't be listed, if there are too many roles to mirror at
+        once, or if `new_name` is also given (one name can't apply to every
+        mirrored role)."""
         _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a role to its own connector.")
 
         await _refresh_connectors(self._connectors, local_connector, destination)
+
+        if _is_all_token(local_role):
+            if _clean_new_name(new_name) is not None:
+                raise LinkError("can't use 'all' together with a new name - it would collide across every role.")
+            _require_known_connector(self._connectors, local_connector)
+            info = self._connectors[local_connector]
+            entities = await _list_entities_for_all(self._connectors, local_connector, info.list_roles, kind="role")
+            return await _run_bulk_mirror(
+                entities,
+                lambda rid, rname: self.mirror_role(
+                    local_connector=local_connector, local_role=rid, destination=destination
+                ),
+            )
 
         local_id = await self._resolve_to_id(local_connector, local_role)
         local_name = await self._resolve_name(local_connector, local_id)
