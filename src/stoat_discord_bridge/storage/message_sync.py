@@ -1,9 +1,8 @@
 """Cross-connector message ID references, keyed by bridge group + origin message.
 
-Lets reaction / pin / edit sync look up "this Discord message ID corresponds
-to these Stoat/IRC message IDs" (and vice versa) via `find_group`, and leaves
-room for a future delete-sync feature. `BridgeCoordinator` records each relay
-here as it happens.
+Lets reaction / pin / edit / delete sync look up "this Discord message ID
+corresponds to these Stoat/IRC message IDs" (and vice versa) via
+`find_group`. `BridgeCoordinator` records each relay here as it happens.
 
 The Mongo field is still named "platform" (pre-dating the move to free-form
 connector ids) for the same backward-compatibility reason noted in

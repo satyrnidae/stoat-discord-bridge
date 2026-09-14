@@ -46,6 +46,32 @@ async def test_edit_message_blanks_posts_a_shortened_edit_no_longer_fills():
     assert (await channel.fetch_message("8")).edits == ["​"]
 
 
+# ---------------------------------------------------------------- delete_message()
+
+
+async def test_delete_message_deletes_every_relayed_masqueraded_post():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.delete_message(target_channel_id="42", target_message_ids=["7", "8"])
+
+    assert (await channel.fetch_message("7")).deleted is True
+    assert (await channel.fetch_message("8")).deleted is True
+
+
+async def test_delete_message_swallows_an_already_gone_post_and_continues():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+    gone = await channel.fetch_message("7")
+    gone.raises_on_delete = RuntimeError("Unknown Message")
+
+    await receiver.delete_message(target_channel_id="42", target_message_ids=["7", "8"])  # must not raise
+
+    assert (await channel.fetch_message("8")).deleted is True
+
+
 # ---------------------------------------------------------------- receive()
 
 
