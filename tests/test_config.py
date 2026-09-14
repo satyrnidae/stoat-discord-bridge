@@ -560,3 +560,84 @@ def test_whitelisted_bots_env_override_replaces_the_yaml_list(tmp_path, isolated
     )
     config = load_config(path)
     assert config.whitelisted_bots == (("discord", "111"), ("discord", "222"), ("discord", "333"))
+
+
+def test_voice_defaults_on_and_not_following_on_empty(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+    config = load_config(path)
+    assert config.voice.enabled is True
+    assert config.voice.follow_on_empty is False
+
+
+def test_voice_block_read_from_yaml(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+        voice:
+          enabled: false
+          follow_on_empty: true
+        """,
+    )
+    config = load_config(path)
+    assert config.voice.enabled is False
+    assert config.voice.follow_on_empty is True
+
+
+def test_voice_block_env_overrides(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    monkeypatch.setenv("VOICE__ENABLED", "false")
+    monkeypatch.setenv("VOICE__FOLLOW_ON_EMPTY", "true")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+    config = load_config(path)
+    assert config.voice.enabled is False
+    assert config.voice.follow_on_empty is True
+
+
+def test_per_connector_voice_bridging_defaults_on(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    monkeypatch.setenv("STOAT__0__TOKEN", "t")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+        stoat:
+          - id: stoat
+            server_id: s1
+            api_url: https://example.test
+        """,
+    )
+    config = load_config(path)
+    assert config.discord[0].voice_bridging is True
+    assert config.stoat[0].voice_bridging is True
+    assert config.stoat[0].voice_node is None
+
+
+def test_per_connector_voice_bridging_can_be_disabled(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    monkeypatch.setenv("STOAT__0__TOKEN", "t")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+            voice_bridging: false
+        stoat:
+          - id: stoat
+            server_id: s1
+            api_url: https://example.test
+            voice_bridging: false
+            voice_node: my-node
+        """,
+    )
+    config = load_config(path)
+    assert config.discord[0].voice_bridging is False
+    assert config.stoat[0].voice_bridging is False
+    assert config.stoat[0].voice_node == "my-node"

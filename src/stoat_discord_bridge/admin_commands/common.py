@@ -305,6 +305,26 @@ class ConnectorInfo:
     # as its own channel (issue #100). `CategoryLinker` also consults it to
     # title a forum-sourced Category `💬 #<forum>` rather than `🧵 #<parent>`.
     is_forum_channel: Callable[[str], Awaitable[bool | None]] | None = None
+    # Best-effort "is this native channel id a voice channel?" check -> True,
+    # False, or None (can't tell - bad id, uncached, an error, or a connector
+    # kind with no voice concept). Discord/Stoat implement it; IRC leaves it
+    # unset (no voice channels), as does a Discord/Stoat connector with
+    # `voice_bridging: false` in config.yaml (issue #113) - either way, a
+    # channel this hook can't answer for never counts toward a bridge group's
+    # voice-bridgeable membership. Used by `services/voice/coordinator.py`'s
+    # `VoiceBridgeCoordinator` to classify which linked channel groups are
+    # voice-bridgeable (>= 2 voice channels on voice-capable connectors).
+    channel_is_voice: Callable[[str], Awaitable[bool | None]] | None = None
+    # Best-effort snapshot of the non-bot user ids currently present in voice
+    # channel `channel_id`, or None if it can't be determined right now (bad
+    # id, uncached, an error) - callers should leave whatever presence they
+    # already had for this connector/channel alone on a None rather than
+    # treat it as "now empty". Only meaningful alongside `channel_is_voice`;
+    # IRC and a non-voice-bridging connector leave this unset too. Used by
+    # `VoiceBridgeCoordinator.refresh_groups` for startup seeding and to
+    # self-heal drift between the coordinator's presence table (fed live by
+    # each sender's voice-state events) and the platform's own state.
+    voice_occupants: Callable[[str], Awaitable["set[str] | None"]] | None = None
     # Best-effort "can the bridge bot actually see this channel?" check, keyed
     # by native channel id. Returns True (visible), False (the channel
     # resolves but the bot lacks the view permission on it), or None ("can't
