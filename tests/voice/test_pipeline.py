@@ -63,39 +63,6 @@ def test_pad_or_trim_exact_length_is_unchanged():
     assert pipeline.pad_or_trim(exact) == exact
 
 
-# ---------------------------------------------------------------- resample_to_bridge
-
-
-def test_resample_to_bridge_upmixes_mono_to_stereo():
-    mono = struct.pack("<3h", 1000, 2000, 3000)
-    out = pipeline.resample_to_bridge(mono, sample_rate=48000, num_channels=1)
-    assert len(out) == pipeline.FRAME_BYTES
-    # Each mono sample duplicated onto both channels (audioop.tostereo, factor 1/1).
-    assert out[:12] == struct.pack("<6h", 1000, 1000, 2000, 2000, 3000, 3000)
-
-
-def test_resample_to_bridge_resamples_rate():
-    # 24kHz mono input, one 20ms frame = 480 samples -> upsampled to 48kHz
-    # stereo should land on the standard FRAME_BYTES length.
-    samples = [1000] * 480
-    pcm = struct.pack(f"<{len(samples)}h", *samples)
-    out = pipeline.resample_to_bridge(pcm, sample_rate=24000, num_channels=1)
-    assert len(out) == pipeline.FRAME_BYTES
-
-
-def test_resample_to_bridge_stereo_48k_is_pad_or_trim_only():
-    frame = _frame(500)
-    out = pipeline.resample_to_bridge(frame, sample_rate=48000, num_channels=2)
-    assert out == frame
-
-
-def test_resample_to_bridge_rejects_unsupported_channel_count():
-    import pytest
-
-    with pytest.raises(ValueError):
-        pipeline.resample_to_bridge(b"\x00" * 100, sample_rate=48000, num_channels=3)
-
-
 # ---------------------------------------------------------------- JitterBuffer
 
 

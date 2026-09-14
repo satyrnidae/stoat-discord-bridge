@@ -73,6 +73,11 @@ class StoatVoiceTransport(VoiceTransport):
         self._room = room
         self._on_speaker_frame = None
         self._consume_tasks: "dict[str, asyncio.Task]" = {}
+        # Consume tasks cancelled by a track_subscribed refire (see
+        # _on_track_subscribed) but not yet awaited - close() must still
+        # wait on these, since they're no longer reachable via
+        # _consume_tasks once that dict entry is overwritten by the new task.
+        self._retiring_tasks: "list[asyncio.Task]" = []
         self._publish_task: "asyncio.Task | None" = None
 
     async def start(self, on_speaker_frame) -> None:
@@ -104,10 +109,16 @@ class StoatVoiceTransport(VoiceTransport):
         # consumed (a republish/reconnect) - cancel the stale task first
         # rather than just overwriting the dict entry, which would orphan
         # it: still running, its AudioStream never closed, and no longer
-        # reachable from close() once this line replaces it.
+        # reachable from close() once this line replaces it. Cancelling
+        # alone isn't enough either - close()'s cleanup loops only iterate
+        # _consume_tasks, so a cancelled-but-unawaited task would still let
+        # close() return before that task's own `finally: await
+        # stream.aclose()` has actually run; parking it on _retiring_tasks
+        # is what makes close() wait for it too.
         existing = self._consume_tasks.get(participant.identity)
         if existing is not None:
             existing.cancel()
+            self._retiring_tasks.append(existing)
         self._consume_tasks[participant.identity] = asyncio.create_task(self._consume_track(track, participant))
 
     async def _consume_track(self, track: "rtc.Track", participant: "rtc.RemoteParticipant") -> None:
@@ -154,12 +165,14 @@ class StoatVoiceTransport(VoiceTransport):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._publish_task
             self._publish_task = None
-        for task in self._consume_tasks.values():
+        all_tasks = [*self._consume_tasks.values(), *self._retiring_tasks]
+        for task in all_tasks:
             task.cancel()
-        for task in self._consume_tasks.values():
+        for task in all_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._consume_tasks.clear()
+        self._retiring_tasks.clear()
         await self._room.disconnect()
 
 

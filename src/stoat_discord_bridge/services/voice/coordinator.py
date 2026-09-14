@@ -483,9 +483,17 @@ class VoiceBridgeCoordinator:
             self._mixer_clock.registry.push_frame(connector_id, user_id, frame)
 
     async def _safe_close(self, transport: "VoiceTransport") -> None:
-        if self._mixer_clock is not None:
-            self._mixer_clock.remove_connector(transport.connector_id)
+        """Close `transport`, then drop it from the mixer clock - in that
+        order. Removing it first would let any speaker frame still in
+        flight (e.g. mid-`_on_speaker_frame` when cancellation is issued)
+        call `SpeakerRegistry.push_frame`, which get-or-creates a buffer for
+        this connector - one `remove_connector` already ran and will never
+        run again for it, leaking a stale registry entry for the rest of
+        the session. `transport.close()` stops frame production first, so
+        there's nothing left to race the removal."""
         try:
             await transport.close()
         except Exception:
             logger.exception("[voice] error closing voice transport for connector %s", transport.connector_id)
+        if self._mixer_clock is not None:
+            self._mixer_clock.remove_connector(transport.connector_id)

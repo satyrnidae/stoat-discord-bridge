@@ -57,6 +57,37 @@ async def test_closing_session_tears_down_the_mixer_clock(fake_db):
     assert coord._mixer_clock is None
 
 
+async def test_safe_close_closes_transport_before_removing_from_mixer_clock(fake_db, monkeypatch):
+    """A frame still in flight when cancellation is issued calls
+    SpeakerRegistry.push_frame, which get-or-creates a buffer - if
+    remove_connector ran first, that buffer would never be cleaned up again
+    for the rest of the session. transport.close() (which stops frame
+    production) must run first."""
+    coord, _, voice_connectors = await _two_connector_group(fake_db)
+    await coord.refresh_groups()
+    transport_d = voice_connectors["discord"].transports[0]
+    order: list[str] = []
+
+    orig_close = transport_d.close
+
+    async def tracking_close():
+        order.append("transport_close")
+        await orig_close()
+
+    transport_d.close = tracking_close
+    orig_remove = coord._mixer_clock.remove_connector
+
+    def tracking_remove(connector_id):
+        order.append("remove_connector")
+        return orig_remove(connector_id)
+
+    monkeypatch.setattr(coord._mixer_clock, "remove_connector", tracking_remove)
+
+    await coord._safe_close(transport_d)
+
+    assert order == ["transport_close", "remove_connector"]
+
+
 async def test_third_connector_joining_mid_session_shares_the_same_mixer_clock(fake_db):
     from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
     from tests.voice.conftest import FakeVoiceConnector, make_connector

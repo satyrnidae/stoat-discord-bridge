@@ -283,3 +283,32 @@ async def test_close_cancels_consume_and_publish_tasks(monkeypatch):
     assert publish_task.done()
     assert transport._consume_tasks == {}
     assert room.disconnect_calls == 1
+
+
+async def test_close_awaits_retired_tasks_from_a_track_subscribed_refire(monkeypatch):
+    """close() must not return while a task retired by a track_subscribed
+    refire (test_on_track_subscribed_refiring_for_same_identity_cancels_the_
+    stale_task, above) is still mid-cancellation - both streams should be
+    fully closed by the time close() returns, and _retiring_tasks emptied."""
+    import stoat_discord_bridge.services.stoat_service.voice as voice_mod
+
+    first_stream = _FakeAudioStream([])
+    second_stream = _FakeAudioStream([])
+    streams = [first_stream, second_stream]
+    monkeypatch.setattr(voice_mod, "_open_audio_stream", lambda track: streams.pop(0))
+
+    transport, room = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+    track = SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO)
+    participant = SimpleNamespace(identity="remote-user")
+
+    room.trigger("track_subscribed", track, None, participant)
+    await asyncio.sleep(0)
+    room.trigger("track_subscribed", track, None, participant)
+    await asyncio.sleep(0)
+
+    await transport.close()
+
+    assert first_stream.closed is True
+    assert second_stream.closed is True
+    assert transport._retiring_tasks == []

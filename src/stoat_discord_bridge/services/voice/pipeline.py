@@ -26,9 +26,13 @@ each other's mix.
 
 Frame shape is pinned to Discord's own PCM format (20ms / 48kHz / stereo /
 16-bit signed, little-endian) since Discord's send/receive path uses it with
-no conversion of its own; `resample_to_bridge` converts any other source
-(a LiveKit track at a different rate/channel count) into this same shape
-before it ever reaches a `JitterBuffer`.
+no conversion of its own. A LiveKit track is configured to already emit
+this same shape (`rtc.AudioStream(..., sample_rate=48000, num_channels=2,
+frame_size_ms=20)`, `stoat_service/voice.py`'s `_open_audio_stream`) rather
+than resampled after the fact here - `pad_or_trim` below is still applied to
+every incoming frame as a defensive length normalization, since neither
+transport is guaranteed to hand back an exact-length chunk on every single
+callback.
 """
 
 from __future__ import annotations
@@ -59,27 +63,6 @@ def pad_or_trim(frame: bytes) -> bytes:
     if len(frame) > FRAME_BYTES:
         return frame[:FRAME_BYTES]
     return frame + b"\x00" * (FRAME_BYTES - len(frame))
-
-
-def resample_to_bridge(pcm: bytes, *, sample_rate: int, num_channels: int) -> bytes:
-    """Convert a one-shot PCM frame (16-bit signed) at `sample_rate`/
-    `num_channels` into the bridge's standard shape - 48kHz/stereo, padded
-    or trimmed to exactly one `FRAME_BYTES` frame. Mono is upmixed to stereo
-    (`audioop.tostereo`, both channels get the same sample); any channel
-    count besides 1 or 2 isn't a real speaker feed and is rejected outright
-    rather than silently mangled.
-
-    No streaming resample state is kept across calls - each Discord/LiveKit
-    callback hands over one independent 20ms frame, and `audioop.ratecv`'s
-    edge artifacts from resetting state every call are inaudible at this
-    frame size."""
-    if num_channels == 1:
-        pcm = audioop.tostereo(pcm, SAMPLE_WIDTH, 1, 1)
-    elif num_channels != 2:
-        raise ValueError(f"resample_to_bridge: unsupported channel count {num_channels!r} (expected 1 or 2)")
-    if sample_rate != SAMPLE_RATE:
-        pcm, _state = audioop.ratecv(pcm, SAMPLE_WIDTH, CHANNELS, sample_rate, SAMPLE_RATE, None)
-    return pad_or_trim(pcm)
 
 
 class JitterBuffer:
