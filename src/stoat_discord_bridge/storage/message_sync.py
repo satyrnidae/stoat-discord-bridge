@@ -3,7 +3,10 @@
 Lets reaction / pin / edit sync look up "this Discord message ID corresponds
 to these Stoat/IRC message IDs" (and vice versa) via `find_group`, and leaves
 room for a future delete-sync feature. `BridgeCoordinator` records each relay
-here as it happens.
+here as it happens. `find_group_if_origin` is the same lookup restricted to
+the *origin* side only - pin sync is one-way (a pin/unpin on a relayed copy
+stays local to that platform), so `handle_pin` uses it instead of
+`find_group`; reaction and edit sync stay on `find_group`.
 
 The Mongo field is still named "platform" (pre-dating the move to free-form
 connector ids) for the same backward-compatibility reason noted in
