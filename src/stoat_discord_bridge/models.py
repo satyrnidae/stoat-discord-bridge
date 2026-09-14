@@ -209,6 +209,22 @@ class StandardEdit:
 
 
 @dataclass(frozen=True)
+class StandardDelete:
+    """A message deletion on `origin_connector_id`, in the platform-neutral
+    shape senders/receivers pass around. Carries only identity - no content
+    is needed to delete something. Relayed onto every other connector's copy
+    of the same message (tracked via MessageSyncRepository) for connectors
+    that advertise `ReceiverService.supports_deletes` — Discord ⇄ Stoat only,
+    IRC has no delete-in-place. Unlike edit/pin sync, this must NOT cascade
+    from a relayed copy - only a delete reported for the sync group's
+    recorded *origin* fans out; see BridgeCoordinator.handle_delete."""
+
+    origin_connector_id: ConnectorId
+    origin_channel_id: str
+    origin_message_id: str  # the message being deleted, native id on the origin platform
+
+
+@dataclass(frozen=True)
 class StandardTyping:
     """A "user started typing" event, in the platform-neutral shape senders/
     receivers pass around. Relayed only onto connectors that advertise

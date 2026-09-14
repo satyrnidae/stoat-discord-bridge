@@ -27,6 +27,7 @@ from collections.abc import Awaitable, Callable
 
 from stoat_discord_bridge.models import (
     CustomEmoji,
+    StandardDelete,
     StandardEdit,
     StandardEmojiCreated,
     StandardEmojiDeleted,
@@ -39,6 +40,7 @@ from stoat_discord_bridge.models import (
 OnMessage = Callable[[StandardMessage], Awaitable[None]]
 OnReaction = Callable[[StandardReaction], Awaitable[None]]
 OnEdit = Callable[[StandardEdit], Awaitable[None]]
+OnDelete = Callable[[StandardDelete], Awaitable[None]]
 OnPin = Callable[[StandardPin], Awaitable[None]]
 OnTyping = Callable[[StandardTyping], Awaitable[None]]
 OnEmojiCreated = Callable[[StandardEmojiCreated], Awaitable[None]]
@@ -69,6 +71,7 @@ class SenderService(ABC):
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
         on_edit: OnEdit | None = None,
+        on_delete: OnDelete | None = None,
     ) -> None:
         self._on_message = on_message
         self._on_reaction = on_reaction
@@ -77,6 +80,7 @@ class SenderService(ABC):
         self._on_pin = on_pin
         self._on_typing = on_typing
         self._on_edit = on_edit
+        self._on_delete = on_delete
 
     @abstractmethod
     async def start(self) -> None:
@@ -93,6 +97,7 @@ class ReceiverService(ABC):
     supports_typing: bool = False
     supports_edits: bool = False
     supports_replies: bool = False
+    supports_deletes: bool = False
 
     @abstractmethod
     async def receive(
@@ -144,6 +149,14 @@ class ReceiverService(ABC):
         (a long message may have been split across several). Only called when
         `supports_edits`. Best-effort and silent — a post that's since been
         deleted, or one the platform won't let the bridge edit, is skipped."""
+        raise NotImplementedError
+
+    async def delete_message(self, *, target_channel_id: str, target_message_ids: list[str]) -> None:
+        """Delete the bridge's relayed copy/copies of a message whose source
+        was deleted. `target_message_ids` is every native post the original
+        relay produced in this channel (a long message may have been split).
+        Only called when `supports_deletes`. Idempotent and best-effort — a
+        post that's already gone is skipped, not an error."""
         raise NotImplementedError
 
     async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:

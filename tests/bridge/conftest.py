@@ -34,6 +34,7 @@ class FakeReceiver(ReceiverService):
         supports_typing: bool = False,
         supports_edits: bool = False,
         supports_replies: bool = False,
+        supports_deletes: bool = False,
         native_ids: list[str] | None = None,
         raises: BaseException | None = None,
         created_emoji: CustomEmoji | None = None,
@@ -45,6 +46,7 @@ class FakeReceiver(ReceiverService):
         self.supports_typing = supports_typing
         self.supports_edits = supports_edits
         self.supports_replies = supports_replies
+        self.supports_deletes = supports_deletes
         self._native_ids = native_ids if native_ids is not None else ["native-1"]
         self._raises = raises
         self._created_emoji = created_emoji
@@ -55,6 +57,7 @@ class FakeReceiver(ReceiverService):
         self.typing: list[str] = []
         self.typing_stopped: list[str] = []
         self.edits: list[tuple] = []
+        self.deletes: list[tuple] = []
 
     async def receive(
         self,
@@ -93,6 +96,11 @@ class FakeReceiver(ReceiverService):
         if self._raises is not None:
             raise self._raises
         self.edits.append((target_channel_id, tuple(target_message_ids), edit.new_content_markdown))
+
+    async def delete_message(self, *, target_channel_id, target_message_ids) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.deletes.append((target_channel_id, tuple(target_message_ids)))
 
     async def trigger_typing(self, *, target_channel_id) -> None:
         if self._raises is not None:

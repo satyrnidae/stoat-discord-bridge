@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from stoat_discord_bridge.models import StandardEdit, StandardPin, StandardTyping
+from stoat_discord_bridge.models import StandardDelete, StandardEdit, StandardPin, StandardTyping
 from tests.bridge.conftest import FakeReceiver, _link, _ref
 
 
@@ -171,6 +171,113 @@ async def test_edit_relay_that_raises_is_swallowed(coordinator_parts):
     )  # must not raise
 
     assert working.edits == [("300", ("i1",), "x")]
+
+
+# -------------------------------------------------------------- handle_delete
+
+
+async def test_delete_of_origin_forwards_only_to_connectors_that_support_it(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    stoat_receiver = FakeReceiver("stoat", supports_deletes=True)
+    irc_receiver = FakeReceiver("irc", supports_deletes=False)
+    coordinator.register_receiver(stoat_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    await coordinator.handle_delete(
+        StandardDelete(origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1")
+    )
+
+    assert stoat_receiver.deletes == [("200", ("s1",))]
+    assert irc_receiver.deletes == []
+
+
+async def test_delete_passes_every_split_post_for_a_channel(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("stoat", "200", "s2")]
+    )
+    stoat_receiver = FakeReceiver("stoat", supports_deletes=True)
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_delete(
+        StandardDelete(origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1")
+    )
+
+    assert stoat_receiver.deletes == [("200", ("s1", "s2"))]
+
+
+async def test_delete_of_a_relayed_copy_does_not_cascade(coordinator_parts):
+    """A delete reported for a non-origin (relayed) ref must be a no-op - a
+    moderator can delete any message in a channel, including a bridge's own
+    relayed copy, and that must not delete the source or other mirrors."""
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    discord_receiver = FakeReceiver("discord", supports_deletes=True)
+    irc_receiver = FakeReceiver("irc", supports_deletes=True)
+    coordinator.register_receiver(discord_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    await coordinator.handle_delete(
+        StandardDelete(origin_connector_id="stoat", origin_channel_id="200", origin_message_id="s1")
+    )
+
+    assert discord_receiver.deletes == []
+    assert irc_receiver.deletes == []
+
+
+async def test_delete_is_a_noop_for_an_untracked_message(coordinator_parts):
+    coordinator, _channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    receiver = FakeReceiver("stoat", supports_deletes=True)
+    coordinator.register_receiver(receiver)
+
+    await coordinator.handle_delete(
+        StandardDelete(origin_connector_id="discord", origin_channel_id="100", origin_message_id="nope")
+    )
+
+    assert receiver.deletes == []
+
+
+async def test_delete_echo_from_our_own_write_is_dropped(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record("general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1")])
+    stoat_receiver = FakeReceiver("stoat", supports_deletes=True)
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_delete(
+        StandardDelete(origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1")
+    )
+    assert stoat_receiver.deletes == [("200", ("s1",))]
+    # the resulting delete on stoat's side echoes back but is suppressed - and
+    # since it's a relayed (non-origin) ref anyway, this also verifies the
+    # cascade guard doesn't even need the TTL guard to hold here, but the TTL
+    # guard must still not raise / double-delete.
+    stoat_receiver.deletes.clear()
+    await coordinator.handle_delete(
+        StandardDelete(origin_connector_id="stoat", origin_channel_id="200", origin_message_id="s1")
+    )
+    assert stoat_receiver.deletes == []
+
+
+async def test_delete_relay_that_raises_is_swallowed(coordinator_parts):
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    failing = FakeReceiver("stoat", supports_deletes=True, raises=RuntimeError("boom"))
+    working = FakeReceiver("irc", supports_deletes=True)
+    coordinator.register_receiver(failing)
+    coordinator.register_receiver(working)
+
+    await coordinator.handle_delete(
+        StandardDelete(origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1")
+    )  # must not raise
+
+    assert working.deletes == [("300", ("i1",))]
 
 
 # ---------------------------------------------------------------- handle_typing

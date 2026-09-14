@@ -28,6 +28,7 @@ from stoat_discord_bridge.config import BridgeConfig
 from stoat_discord_bridge.health_server import start_health_server
 from stoat_discord_bridge.models import (
     CustomEmoji,
+    StandardDelete,
     StandardEdit,
     StandardEmojiCreated,
     StandardEmojiDeleted,
@@ -74,6 +75,7 @@ logger = logging.getLogger(__name__)
 
 _PIN_SUPPRESS_TTL = 10.0
 _EDIT_SUPPRESS_TTL = 10.0
+_DELETE_SUPPRESS_TTL = _EDIT_SUPPRESS_TTL
 
 
 class BridgeCoordinator:
@@ -105,6 +107,12 @@ class BridgeCoordinator:
         # filter in each sender's edit handler is the first layer, this the
         # backstop for when the echoed event arrives without a resolvable author.
         self._recent_edits: dict[tuple[str, str, str], float] = {}
+        # A ~10s record of delete writes we just issued, keyed
+        # (connector_id, channel_id, message_id), so the resulting delete
+        # event echoing back from that connector is dropped rather than
+        # (harmlessly, but noisily) re-processed. Same two-layer loop guard
+        # as edit/pin sync.
+        self._recent_deletes: dict[tuple[str, str, str], float] = {}
 
     def register_receiver(self, receiver: ReceiverService) -> None:
         """Every bridged connector's receiver must be registered before any
@@ -361,6 +369,58 @@ class BridgeCoordinator:
                 )
             except Exception:
                 logger.exception("edit relay from %s to %s failed", edit.origin_connector_id, connector_id)
+
+    async def handle_delete(self, delete: StandardDelete) -> None:
+        """Relay a message deletion onto every other connector's copy of the
+        same message, but ONLY when `delete` was reported for the sync
+        group's recorded *origin* - a delete of a relayed copy (e.g. a
+        moderator deleting the bridge's own post) must not cascade back to
+        the source or other mirrors. Silently does nothing if the message was
+        never bridged, or a target connector doesn't advertise
+        `supports_deletes` (IRC) - both are expected, not errors. Loop-safe:
+        a `delete_message` we issued is recorded briefly so the resulting
+        delete echo is dropped here."""
+        now = time.monotonic()
+        self._recent_deletes = {k: v for k, v in self._recent_deletes.items() if now - v < _DELETE_SUPPRESS_TTL}
+        if (
+            self._recent_deletes.pop(
+                (delete.origin_connector_id, delete.origin_channel_id, delete.origin_message_id), None
+            )
+            is not None
+        ):
+            return  # our own delete echoing back
+
+        group = await self._message_sync.find_group(
+            delete.origin_connector_id, delete.origin_channel_id, delete.origin_message_id
+        )
+        if group is None:
+            return  # this message isn't tracked as bridged
+
+        if group[0] != MessageRef(delete.origin_connector_id, delete.origin_channel_id, delete.origin_message_id):
+            # this delete was reported for a *relayed copy*, not the true
+            # origin - do not cascade back to the source or other mirrors
+            return
+
+        # A relay may have been split into several native posts in one channel;
+        # collect them per (connector, channel) in the order they were posted.
+        by_channel: dict[tuple[str, str], list[str]] = {}
+        for ref in group[1:]:  # skip the origin itself
+            by_channel.setdefault((ref.connector_id, ref.channel_id), []).append(ref.message_id)
+
+        for (connector_id, channel_id), message_ids in by_channel.items():
+            receiver = self._receivers.get(connector_id)
+            if receiver is None or not receiver.supports_deletes:
+                continue
+            for message_id in message_ids:
+                self._recent_deletes[(connector_id, channel_id, message_id)] = time.monotonic()
+            try:
+                await receiver.delete_message(target_channel_id=channel_id, target_message_ids=message_ids)
+            except UnsupportedRelayTargetError as exc:
+                logger.warning(
+                    "delete relay from %s to %s dropped: %s", delete.origin_connector_id, connector_id, exc
+                )
+            except Exception:
+                logger.exception("delete relay from %s to %s failed", delete.origin_connector_id, connector_id)
 
     async def _translate_emoji(
         self, origin_connector_id: str, emoji: str | CustomEmoji, target_connector_id: str
@@ -721,6 +781,7 @@ async def run(config: BridgeConfig) -> None:
             on_pin=coordinator.handle_pin,
             on_typing=coordinator.handle_typing,
             on_edit=coordinator.handle_edit,
+            on_delete=coordinator.handle_delete,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -800,6 +861,7 @@ async def run(config: BridgeConfig) -> None:
             on_pin=coordinator.handle_pin,
             on_typing=coordinator.handle_typing,
             on_edit=coordinator.handle_edit,
+            on_delete=coordinator.handle_delete,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,

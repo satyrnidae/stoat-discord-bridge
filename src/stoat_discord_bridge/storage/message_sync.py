@@ -38,7 +38,13 @@ class MessageSyncRepository:
         )
 
     async def find_group(self, connector_id: str, channel_id: str, message_id: str) -> list[MessageRef] | None:
-        """Given any one connector's message ID, find every ref (origin + relayed) in its sync group."""
+        """Given any one connector's message ID, find every ref (origin + relayed) in its sync group.
+
+        The returned list always puts the origin ref first, followed by the
+        relayed refs in the order `record` was given them. This ordering is
+        load-bearing for `BridgeCoordinator.handle_delete`, which relies on
+        `group[0]` being the true origin to tell a delete of the origin apart
+        from a delete of a relayed copy (the latter must not cascade)."""
         doc = await self._collection.find_one(
             {
                 "$or": [
