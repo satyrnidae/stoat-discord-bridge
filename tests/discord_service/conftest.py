@@ -56,6 +56,10 @@ class FakeLinker:
         self.unlink_channel_calls: list[dict] = []
         self.unlink_user_calls: list[dict] = []
         self.connectors = connectors or {}
+        # Settable by a test before the call, to exercise the link-editor
+        # wiring's describe_group path (issue #115) - a (group_id, members)
+        # tuple, or None (the default) for "not linked".
+        self.describe_group_result = None
 
     async def link_user(self, **kwargs):
         self.link_user_calls.append(kwargs)
@@ -93,6 +97,12 @@ class FakeLinker:
         self.unlink_user_calls.append(kwargs)
         return "user unlinked ok"
 
+    async def describe_group(self, **kwargs):
+        # None (unlinked) by default - the in-line link editor's own
+        # behavior is covered by tests/discord_service/test_link_editor.py;
+        # these tests only need the wiring call to not blow up.
+        return self.describe_group_result
+
 
 class FakeCategoryLinker:
     def __init__(self, connectors: dict | None = None):
@@ -104,6 +114,7 @@ class FakeCategoryLinker:
         self.mirror_category_all_calls: list[dict] = []
         self.mirror_category_from_calls: list[dict] = []
         self.connectors = connectors or {}
+        self.describe_group_result = None
 
     async def link_category(self, **kwargs):
         self.link_category_calls.append(kwargs)
@@ -131,6 +142,9 @@ class FakeCategoryLinker:
     async def mirror_category_from(self, **kwargs):
         self.mirror_category_from_calls.append(kwargs)
         return "mirrored from ok"
+
+    async def describe_group(self, **kwargs):
+        return self.describe_group_result
 
 
 class FakeBotWhitelistManager:
@@ -174,12 +188,35 @@ class FakeInteraction:
         # `external_id` autocomplete reads `.service` off it.
         self.namespace = namespace if namespace is not None else SimpleNamespace()
         self.sent: list[str] = []
-        self.response = SimpleNamespace(send_message=self._send_message, defer=self._defer)
-        self.followup = SimpleNamespace(send=self._send_message)
+        # The `view=` a reply attached (issue #115's in-line link editor),
+        # parallel to `sent` - None for a reply with no editor view.
+        self.sent_views: list[object] = []
+        self._sent_message = SimpleNamespace(edit=self._noop_edit)
+        self.response = SimpleNamespace(send_message=self._send_response_message, defer=self._defer)
+        self.followup = SimpleNamespace(send=self._send_followup_message)
+        # A real discord.Interaction exposes this directly on itself, not
+        # under `.response` - fetches the message `response.send_message`
+        # just posted (which returns None).
+        self.original_response = self._original_response
         self.deferred = False
 
-    async def _send_message(self, content, ephemeral=False):
+    async def _send_response_message(self, content, ephemeral=False, view=None):
+        # Real discord.py's response.send_message always returns None - the
+        # sent message has to be fetched back via original_response().
         self.sent.append(content)
+        self.sent_views.append(view)
+        return None
+
+    async def _send_followup_message(self, content, ephemeral=False, view=None):
+        self.sent.append(content)
+        self.sent_views.append(view)
+        return self._sent_message
+
+    async def _original_response(self):
+        return self._sent_message
+
+    async def _noop_edit(self, **kwargs):
+        pass
 
     async def _defer(self, ephemeral=False, thinking=False):
         self.deferred = True
