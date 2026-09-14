@@ -653,15 +653,26 @@ class ChannelLinker:
         `destination` in this swapped call *is* `local_connector`).
 
         `new_name`, if given, names the freshly-created local channel instead
-        of carrying the source channel's name over (issue #44)."""
+        of carrying the source channel's name over (issue #44).
+
+        `source_id == "all"` (case-insensitive) mirrors every channel
+        `source` can enumerate instead of just one, via `mirror_channel`'s
+        own entity-`all` handling (issue #123) - the literal token is passed
+        through unresolved rather than run through `_resolve_to_id`/
+        `_resolve_name`, so a source connector that happens to have a real
+        channel literally named "all" doesn't narrow the fan-out to just
+        that one channel."""
         _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror a channel from a connector to itself.")
 
         await _refresh_connectors(self._connectors, source, local_connector)
 
-        source_id = await self._resolve_to_id(source, source_id)
-        source_name = await self._resolve_name(source, source_id)
+        if _is_all_token(source_id):
+            source_name = source_id
+        else:
+            source_id = await self._resolve_to_id(source, source_id)
+            source_name = await self._resolve_name(source, source_id)
 
         return await self.mirror_channel(
             local_connector=source,

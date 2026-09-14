@@ -87,6 +87,37 @@ async def test_mirror_channel_from_unknown_source_raises(fake_db, connectors):
 # ---------------------------------------------------------------- entity-level `all` (issue #123)
 
 
+async def test_mirror_channel_from_all_is_never_resolved_as_a_literal_channel_name(fake_db):
+    # A source connector wiring resolve_channel_id_by_name must not have the
+    # entity-all token "all" looked up through it - if the source genuinely
+    # has a channel literally named "all", mirror_channel_from must still
+    # fan out over every channel (issue #123), not narrow to that one match.
+    async def resolve_channel_id_by_name(name):
+        return "s-literal-all" if name.lower() == "all" else None
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"discord_{name}"
+
+    async def list_channels():
+        return [("s1", "general"), ("s2", "random")]
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
+        "stoat": ConnectorInfo(
+            id="stoat",
+            label="Stoat",
+            list_channels=list_channels,
+            resolve_channel_id_by_name=resolve_channel_id_by_name,
+        ),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    summary = await linker.mirror_channel_from(local_connector="discord", source="stoat", source_id="all")
+    lines = summary.splitlines()
+    assert len(lines) == 2
+    assert all("Linked Stoat channel" in line for line in lines)
+
+
 async def test_mirror_channel_from_all_pulls_in_every_source_channel(fake_db):
     ensure_calls: list = []
 
