@@ -58,6 +58,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
 from stoat_discord_bridge.services.stoat_service.sync import StoatSyncMixin
+from stoat_discord_bridge.services.voice.base import OnVoicePresence
 from stoat_discord_bridge.status import HealthTracker
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
         on_edit: OnEdit | None = None,
+        on_voice_presence: "OnVoicePresence | None" = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -107,6 +109,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         self._category_linker = category_linker
         self._role_linker = role_linker
         self._bot_whitelist = bot_whitelist
+        self._on_voice_presence = on_voice_presence
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted

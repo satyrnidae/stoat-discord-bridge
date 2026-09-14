@@ -278,6 +278,79 @@ async def test_mirror_role_from_unknown_source_raises(fake_db):
         await _linker(fake_db).mirror_role_from(local_connector="discord", source="nope", source_role="x")
 
 
+# ---- entity-level `all` (issue #123)
+
+
+async def test_mirror_role_to_all_mirrors_every_local_role(fake_db):
+    created = []
+
+    async def ensure_role(name):
+        created.append(name)
+        return f"stoat_{name}"
+
+    async def list_roles():
+        return [("d1", "Mods"), ("d2", "VIPs")]
+
+    async def d_name(role_id):
+        return {"d1": "Mods", "d2": "VIPs"}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", list_roles=list_roles, resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=ensure_role),
+    )
+    linker = _linker(fake_db, connectors)
+
+    summary = await linker.mirror_role(local_connector="discord", local_role="all", destination="stoat")
+
+    assert created == ["Mods", "VIPs"]
+    assert "Linked Discord role 'Mods'" in summary
+    assert "Linked Discord role 'VIPs'" in summary
+
+
+async def test_mirror_role_to_all_without_list_roles_raises(fake_db):
+    with pytest.raises(LinkError, match="doesn't support listing roles"):
+        await _linker(fake_db).mirror_role(local_connector="irc", local_role="all", destination="stoat")
+
+
+async def test_mirror_role_to_all_rejects_a_new_name(fake_db):
+    async def list_roles():
+        return [("d1", "Mods")]
+
+    connectors = _connectors(discord=ConnectorInfo(id="discord", label="Discord", list_roles=list_roles))
+    linker = _linker(fake_db, connectors)
+
+    with pytest.raises(LinkError, match="all.*together with a new name"):
+        await linker.mirror_role(
+            local_connector="discord", local_role="ALL", destination="stoat", new_name="Renamed"
+        )
+
+
+async def test_mirror_role_from_all_pulls_in_every_source_role(fake_db):
+    created = []
+
+    async def ensure_role(name):
+        created.append(name)
+        return f"discord_{name}"
+
+    async def list_roles():
+        return [("s1", "Mods"), ("s2", "VIPs")]
+
+    async def s_name(role_id):
+        return {"s1": "Mods", "s2": "VIPs"}.get(role_id)
+
+    connectors = _connectors(
+        stoat=ConnectorInfo(id="stoat", label="Stoat", list_roles=list_roles, resolve_role_name=s_name),
+        discord=ConnectorInfo(id="discord", label="Discord", ensure_role=ensure_role),
+    )
+    linker = _linker(fake_db, connectors)
+
+    summary = await linker.mirror_role_from(local_connector="discord", source="stoat", source_role="all")
+
+    assert created == ["Mods", "VIPs"]
+    assert "Linked Stoat role 'Mods'" in summary
+    assert "Linked Stoat role 'VIPs'" in summary
+
+
 # ---- list_linked_roles / unlink_role
 
 

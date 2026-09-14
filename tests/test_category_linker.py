@@ -622,3 +622,86 @@ async def test_describe_group_returns_the_group_id_and_members(fake_db, connecto
         LinkedMember(connector_id="discord", label="Discord", entity_id="d-cat", name="d-cat"),
         LinkedMember(connector_id="stoat", label="Stoat", entity_id="s-cat", name="Team"),
     ]
+
+
+# ---------------------------------------------------------------- entity-level `all` (issue #123)
+
+
+async def test_mirror_category_to_all_mirrors_every_local_category(fake_db):
+    ensure_category, created = _ensure_category_fake()
+
+    async def list_categories():
+        return [("s-cat-1", "Team A"), ("s-cat-2", "Team B")]
+
+    async def channels_in_category(cid):
+        return []
+
+    connectors = {
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", list_categories=list_categories, channels_in_category=channels_in_category
+        ),
+        "discord": ConnectorInfo(id="discord", label="Discord", ensure_category=ensure_category),
+    }
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category="all", local_category_name="ignored", destination="discord"
+    )
+
+    assert created == ["Team A", "Team B"]
+    assert "Linked" in summary
+    assert await category_mappings.get_bridge_group("discord", "dest-Team A") is not None
+    assert await category_mappings.get_bridge_group("discord", "dest-Team B") is not None
+
+
+async def test_mirror_category_to_all_without_list_categories_raises(fake_db, connectors):
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+    with pytest.raises(LinkError, match="doesn't support listing categorys"):
+        await linker.mirror_category(
+            local_connector="irc", local_category="all", local_category_name="ignored", destination="discord"
+        )
+
+
+async def test_mirror_category_to_all_rejects_a_new_name(fake_db):
+    async def list_categories():
+        return [("s-cat-1", "Team A")]
+
+    connectors = {
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", list_categories=list_categories),
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+    }
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+
+    with pytest.raises(LinkError, match="all.*together with a new name"):
+        await linker.mirror_category(
+            local_connector="stoat",
+            local_category="ALL",
+            local_category_name="ignored",
+            destination="discord",
+            new_name="Renamed",
+        )
+
+
+async def test_mirror_category_from_all_pulls_in_every_source_category(fake_db):
+    ensure_category, created = _ensure_category_fake()
+
+    async def list_categories():
+        return [("d-cat-1", "Team A"), ("d-cat-2", "Team B")]
+
+    async def channels_in_category(cid):
+        return []
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", list_categories=list_categories, channels_in_category=channels_in_category
+        ),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_category=ensure_category),
+    }
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+
+    summary = await linker.mirror_category_from(local_connector="stoat", source="discord", source_id="all")
+
+    assert created == ["Team A", "Team B"]
+    assert "Linked" in summary
+    assert await category_mappings.get_bridge_group("stoat", "dest-Team A") is not None
+    assert await category_mappings.get_bridge_group("stoat", "dest-Team B") is not None

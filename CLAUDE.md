@@ -211,14 +211,19 @@ itself drops only once every connector's copy has been deleted.
 
 Pinning/unpinning a message in a bridged channel is mirrored onto every other
 connector's copy of that message (`BridgeCoordinator.handle_pin` →
-`ReceiverService.set_pinned`, gated by `supports_pins` and keyed off the same
-`MessageSyncRepository` group reaction sync uses). Discord ⇄ Stoat only —
-**IRC has no message-pin concept** (`supports_pins` stays `False`), so a pin
-never routes to it. Best-effort and silent (an untracked message, a missing
-`set_pinned` hook, or a raising one are all skipped); loop-safe the same two
-ways as role sync — `set_pinned` is idempotent (no-op if already in that
-state) and the coordinator keeps a ~10s record of writes it issued so the echo
-event is dropped.
+`ReceiverService.set_pinned`, gated by `supports_pins`). **One-way**: only a
+pin/unpin performed on the sync group's recorded *origin* message propagates —
+`handle_pin` looks the group up via `MessageSyncRepository.find_group_if_origin`
+(unlike reaction/edit sync, which stay on the any-side `find_group`), so a
+pin/unpin performed directly on a *relayed copy* stays local to that platform
+and is not mirrored back to the origin or across to other copies (issue #134).
+Discord ⇄ Stoat only — **IRC has no message-pin concept** (`supports_pins`
+stays `False`), so a pin never routes to it. Best-effort and silent (an
+untracked message, a pin on a relayed copy, a missing `set_pinned` hook, or a
+raising one are all skipped); loop-safe the same two ways as role sync —
+`set_pinned` is idempotent (no-op if already in that state) and the
+coordinator keeps a ~10s record of writes it issued so the echo event is
+dropped.
 
 Each platform's pin action produces a *system message* that used to be relayed
 as a blank message: Discord's `MessageType.pins_add` (suppressed in

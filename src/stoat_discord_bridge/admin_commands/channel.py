@@ -15,9 +15,11 @@ from stoat_discord_bridge.admin_commands.common import (
     MirrorGuard,
     _clean_new_name,
     _guards_mirror,
+    _is_all_token,
     _is_forum_channel,
     _kick_group_member,
     _link_conflict_check,
+    _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
     _mirror_to_destination,
@@ -25,6 +27,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    _run_bulk_mirror,
     collect_linked_members,
     format_linked_listing,
 )
@@ -225,12 +228,46 @@ class ChannelLinker:
         `new_name`, if given, is the name to create/find the counterpart under
         on `destination` instead of carrying `local_channel_name` over -
         destination-normalized by `ensure_channel` and matched the same way
-        (issue #44)."""
+        (issue #44).
+
+        `local_channel_id == "all"` (case-insensitive, and only that literal
+        token - never inferred from an omitted argument) mirrors every
+        channel `local_connector` can enumerate via its `list_channels` hook
+        to `destination` instead of just one (issue #123) - one line of
+        summary/skip/error per channel, paced and capped the same as the
+        other bulk helpers in `common.py`. Raises LinkError up front if
+        `local_connector` isn't a known connector, has no `list_channels`
+        hook (nothing to enumerate with - e.g. IRC), if it can't be listed,
+        if there are too many channels to mirror at once, or if `new_name` is
+        also given (one name can't apply to every mirrored channel).
+        `local_channel_category` / `is_thread_category` /
+        `category_from_channel_id` describe a *single* source channel's own
+        Category context (set only by the thread-mirror caller, which never
+        passes `local_channel_id="all"`), so they're dropped rather than
+        forwarded to every enumerated channel; `destination_category`, an
+        explicit destination-side override, still applies to all of them."""
         _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
 
         await _refresh_connectors(self._connectors, local_connector, destination)
+
+        if _is_all_token(local_channel_id):
+            if _clean_new_name(new_name) is not None:
+                raise LinkError("can't use 'all' together with a new name - it would collide across every channel.")
+            _require_known_connector(self._connectors, local_connector)
+            info = self._connectors[local_connector]
+            entities = await _list_entities_for_all(self._connectors, local_connector, info.list_channels, kind="channel")
+            return await _run_bulk_mirror(
+                entities,
+                lambda cid, cname: self.mirror_channel(
+                    local_connector=local_connector,
+                    local_channel_id=cid,
+                    local_channel_name=cname,
+                    destination=destination,
+                    destination_category=destination_category,
+                ),
+            )
 
         target_name = _clean_new_name(new_name) or local_channel_name
 
@@ -618,15 +655,26 @@ class ChannelLinker:
         `destination` in this swapped call *is* `local_connector`).
 
         `new_name`, if given, names the freshly-created local channel instead
-        of carrying the source channel's name over (issue #44)."""
+        of carrying the source channel's name over (issue #44).
+
+        `source_id == "all"` (case-insensitive) mirrors every channel
+        `source` can enumerate instead of just one, via `mirror_channel`'s
+        own entity-`all` handling (issue #123) - the literal token is passed
+        through unresolved rather than run through `_resolve_to_id`/
+        `_resolve_name`, so a source connector that happens to have a real
+        channel literally named "all" doesn't narrow the fan-out to just
+        that one channel."""
         _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror a channel from a connector to itself.")
 
         await _refresh_connectors(self._connectors, source, local_connector)
 
-        source_id = await self._resolve_to_id(source, source_id)
-        source_name = await self._resolve_name(source, source_id)
+        if _is_all_token(source_id):
+            source_name = source_id
+        else:
+            source_id = await self._resolve_to_id(source, source_id)
+            source_name = await self._resolve_name(source, source_id)
 
         return await self.mirror_channel(
             local_connector=source,
