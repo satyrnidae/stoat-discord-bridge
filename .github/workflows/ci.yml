@@ -27,10 +27,20 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Install system voice libs
+        run: sudo apt-get update && sudo apt-get install -y libopus0
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          pip install -e ".[test,voice]"
+
+      - name: Voice extra import smoke test
+        run: |
+          python -c "
+          import discord.opus, discord.ext.voice_recv, livekit.rtc
+          assert discord.opus.is_loaded(), 'libopus not found by discord.py - is libopus0 installed?'
+          "
 
       - name: Run tests
         run: pytest -q

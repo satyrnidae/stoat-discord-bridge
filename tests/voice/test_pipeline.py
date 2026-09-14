@@ -305,5 +305,18 @@ def test_mixer_clock_add_connector_twice_returns_the_same_holder():
 async def test_mixer_clock_run_stops_cleanly_on_close():
     clock = pipeline.MixerClock(interval=0.001)
     clock.add_connector("discord")
-    clock.start()
+    await clock.start()
     await clock.close()  # must not raise or hang
+
+
+async def test_mixer_clock_restart_awaits_the_old_loop_before_starting_a_new_one():
+    # A bare .cancel() only schedules cancellation for the next await point -
+    # calling start() twice back to back must not let the old and new _run()
+    # loops both tick (each pop-and-discards a frame per speaker), which
+    # would corrupt the mix for that stretch.
+    clock = pipeline.MixerClock(interval=0.001)
+    await clock.start()
+    first_task = clock._task
+    await clock.start()
+    assert first_task.done()
+    await clock.close()

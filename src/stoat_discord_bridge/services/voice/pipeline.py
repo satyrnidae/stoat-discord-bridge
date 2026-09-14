@@ -227,12 +227,15 @@ class MixerClock:
         for mix_source, holder in self._connectors.values():
             holder.set(mix_source.mix(snapshot))
 
-    def start(self) -> None:
+    async def start(self) -> None:
         """Start the periodic tick loop. Safe to call again - any previously
-        running loop is cancelled first rather than leaked alongside a new
-        one, matching `VoiceBridgeCoordinator.start`'s own restart pattern."""
-        if self._task is not None:
-            self._task.cancel()
+        running loop is cancelled and *awaited* first, not just cancelled,
+        matching `VoiceBridgeCoordinator.start`'s own restart pattern. A
+        bare `.cancel()` only schedules cancellation for the next await
+        point - without awaiting it here first, the old and new `_run()`
+        loops could both tick briefly, each popping-and-discarding a frame
+        from every speaker's buffer, corrupting the mix for that stretch."""
+        await self._cancel_task()
         self._task = asyncio.create_task(self._run())
 
     async def _run(self) -> None:
@@ -240,10 +243,13 @@ class MixerClock:
             await asyncio.sleep(self._interval)
             self.tick_once()
 
-    async def close(self) -> None:
+    async def _cancel_task(self) -> None:
         if self._task is None:
             return
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self._task
         self._task = None
+
+    async def close(self) -> None:
+        await self._cancel_task()

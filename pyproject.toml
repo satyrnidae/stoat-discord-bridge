@@ -27,6 +27,20 @@ test = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
 ]
+# N-way voice bridging (issue #113 Phase 3). Both discord-ext-voice-recv and
+# livekit are pinned exactly:
+#  - discord-ext-voice-recv hooks discord.py's undocumented voice internals
+#    and has never left pre-release - an unpinned range could silently pull
+#    a build that no longer matches the discord.py version above. A pin
+#    without `>=`/`<` still installs cleanly without `--pre`.
+#  - livekit's Python API isn't yet at 1.0 stability guarantees either.
+# Bumping either happens deliberately, re-verifying voice still works, not
+# as a side effect of a routine dependency update.
+voice = [
+    "discord.py[voice]>=2.5",
+    "discord-ext-voice-recv==0.5.2a179",
+    "livekit==1.1.18",
+]
 
 [project.scripts]
 stoat-discord-bridge = "stoat_discord_bridge.__main__:main"
