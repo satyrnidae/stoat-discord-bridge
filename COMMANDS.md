@@ -264,7 +264,27 @@ must be quoted there (`category:"Off Topic"`); an unresolvable value shaped like
 an id (all digits, or a 26-char ULID) is rejected rather than used as a new
 Category's name.
 
-### `/mirror channel to <service|all> [<local_id>] [<new_name>] [category:<id|name>]`
+`/mirror channel` (both directions) also takes an optional **`with history`**
+backfill of the source channel's message history into the freshly-linked
+counterpart (issue #122) — **Discord ⇄ Stoat only**; IRC has no history
+concept and is rejected outright as either side. It only runs after a *fresh*
+link succeeds — a repeat `/mirror ... with history` on an already-linked pair
+hits the existing "already synced" no-op and never re-backfills. History is
+relayed in order onto the one new destination only, never fanned out to any
+other pre-existing bridge member of the source channel, and isn't recorded for
+edit/reaction/pin sync (a known v1 limitation, not an oversight). It also
+needs a single `<service>`, not `all`. An optional history limit controls how
+much: a number (clamped to 1000) backfills that many of the most recent
+messages, the literal `all` backfills the entire channel history (no cap —
+this can be slow and, for a very long archive relayed through a Discord slash
+command, risks the interaction's 15-minute followup-token window, a known v1
+limitation), and omitting it defaults to 50. On Discord it's the native
+`with_history` (boolean) and `history_limit` options; on Stoat — like
+`category`, the first parameters that can't be positional — it's a bare
+`history` token (default limit) or `history:<n|all>` key/value token, placed
+anywhere in the argument list.
+
+### `/mirror channel to <service|all> [<local_id>] [<new_name>] [category:<id|name>] [history:<n|all>]`
 
 Ensures a linked counterpart of `<local_id>` (or the invoking channel, if
 omitted) exists on `<service>` — or every other configured connector, if
@@ -290,7 +310,7 @@ into a stub named after the platform's hidden-channel placeholder — grant the
 bot access to the channel first. (The check is best-effort: only a definite
 "the bot lacks view permission here" blocks it.)
 
-### `/mirror channel from <service> <external_id> [<new_name>] [category:<id|name>]`
+### `/mirror channel from <service> <external_id> [<new_name>] [category:<id|name>] [history:<n|all>]`
 
 The inbound direction: `<service>`'s `<external_id>` channel already exists,
 so a linked counterpart is created **on the connector the command is run on**
@@ -309,10 +329,12 @@ can't see on `<service>` is refused rather than mirrored.
 - **Discord**: `/mirror channel to` / `/mirror channel from` subcommands
   under the `/mirror channel` group (Manage Server; `to`'s `service`
   autocomplete includes the literal `all` choice, `from`'s doesn't), each
-  with an optional `new_name` and an optional `category` option (autocompleted
-  — from the target `service`'s Categories on `to`, from this guild's on `from`)
-- **Stoat**: `/mirror channel to <service|all> [<local_id|name>] [<new_name>] [category:<id|name>]` /
-  `/mirror channel from <service> <external_id|name> [<new_name>] [category:<id|name>]`
+  with an optional `new_name`, an optional `category` option (autocompleted
+  — from the target `service`'s Categories on `to`, from this guild's on `from`),
+  and optional `with_history` (boolean) / `history_limit` options (a number or
+  `all`; issue #122)
+- **Stoat**: `/mirror channel to <service|all> [<local_id|name>] [<new_name>] [category:<id|name>] [history:<n|all>]` /
+  `/mirror channel from <service> <external_id|name> [<new_name>] [category:<id|name>] [history:<n|all>]`
   message commands (Manage Server)
 - **IRC**: `MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>]` /
   `MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]`, DM
@@ -320,7 +342,8 @@ can't see on `<service>` is refused rather than mirrored.
   "current channel" to default to, and `<service>` is required (issue #97);
   `AS <new_name>` is honored for a single-destination `TO` and for
   `FROM`; `CATEGORY:<id|name>` only for a single-destination `TO` — IRC, the
-  local side of `FROM`, has no Categories)
+  local side of `FROM`, has no Categories; no `with history` support either
+  way — IRC has no history concept)
 
 ## Categories: `/link category`, `/mirror category`, `/linked categories`, `/unlink category`
 

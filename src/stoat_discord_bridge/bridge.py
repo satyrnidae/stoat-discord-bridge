@@ -777,7 +777,13 @@ async def run(config: BridgeConfig) -> None:
     # One guard shared by every linker so concurrent `/mirror` runs into the
     # same destination connector (of any entity kind) are serialized (issue #79).
     mirror_guard = MirrorGuard()
-    linker = ChannelLinker(channel_mappings, connector_infos, category_mappings, guard=mirror_guard)
+    linker = ChannelLinker(
+        channel_mappings,
+        connector_infos,
+        category_mappings,
+        guard=mirror_guard,
+        backfill_history=coordinator.backfill_history,
+    )
     emote_linker = EmoteLinker(emoji_mappings, connector_infos, guard=mirror_guard)
     user_linker = UserLinker(user_mappings, connector_infos)
     category_linker = CategoryLinker(

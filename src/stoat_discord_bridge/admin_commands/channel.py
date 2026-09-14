@@ -7,6 +7,7 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
@@ -30,6 +31,9 @@ from stoat_discord_bridge.channel_structure import clip_name, forum_category_tit
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
+if TYPE_CHECKING:
+    from stoat_discord_bridge.models import StandardMessage
+
 logger = logging.getLogger(__name__)
 
 # A token shaped like a native entity id rather than a human-chosen name: an
@@ -39,6 +43,44 @@ logger = logging.getLogger(__name__)
 # ChannelLinker._resolve_destination_category_name.
 _BARE_ID_RE = re.compile(r"\A(?:\d{15,}|[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})\Z")
 
+# `/mirror channel with history` (issue #122): the type of the callback
+# ChannelLinker hands off to once its own create/link logic has produced a
+# concrete destination channel id - bound to `BridgeCoordinator.backfill_history`
+# by bridge.py's run(), since the linker itself has no reference to receivers,
+# only ConnectorInfo hooks.
+BackfillHistoryHook = Callable[..., Awaitable[str]]
+
+# `with_history`'s default `history_limit` (a bounded, quick sanity-check
+# size for the common case of seeding a freshly-linked channel with recent
+# context) and the hard ceiling a plain numeric limit is clamped to - only
+# the explicit literal `"all"` bypasses this cap for a full-archive backfill
+# (issue #122's point 5: `all` must be requested explicitly, never implied
+# by an unusually large number).
+_DEFAULT_HISTORY_LIMIT = 50
+_MAX_HISTORY_LIMIT = 1000
+
+
+def _resolve_history_limit(raw: int | str | None) -> int | None:
+    """`with_history`'s `history_limit` argument, resolved to what
+    `ConnectorInfo.fetch_history` expects: `None` (the option wasn't given)
+    defaults to `_DEFAULT_HISTORY_LIMIT`; the literal `"all"`
+    (case-insensitive) means archive mode - the entire channel history, no
+    cap (`fetch_history`'s own `limit=None`); anything else is parsed as a
+    positive integer and clamped to `_MAX_HISTORY_LIMIT` as a sanity
+    backstop. Raises LinkError for anything that isn't one of those three
+    shapes, rather than guessing."""
+    if raw is None:
+        return _DEFAULT_HISTORY_LIMIT
+    if isinstance(raw, str) and raw.strip().lower() == "all":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise LinkError(f"invalid history limit {raw!r} - use a positive number, or 'all' for the entire history.")
+    if value <= 0:
+        raise LinkError("history limit must be a positive number, or 'all' for the entire history.")
+    return min(value, _MAX_HISTORY_LIMIT)
+
 
 class ChannelLinker:
     def __init__(
@@ -47,6 +89,7 @@ class ChannelLinker:
         connectors: dict[str, ConnectorInfo],
         category_mappings: CategoryMappingRepository | None = None,
         guard: MirrorGuard | None = None,
+        backfill_history: BackfillHistoryHook | None = None,
     ) -> None:
         # `connectors` is populated in place by bridge.run() as each sender/
         # receiver is constructed - read lazily here, only once a command
@@ -65,6 +108,11 @@ class ChannelLinker:
         # Shared across every linker by bridge.run(); a lone instance here
         # keeps direct-construction (tests) working - see MirrorGuard.
         self._guard = guard or MirrorGuard()
+        # `/mirror channel with history` (issue #122): bound to
+        # BridgeCoordinator.backfill_history by bridge.run(). None in tests
+        # that don't exercise `with_history` - and mirror_channel raises
+        # LinkError if `with_history=True` is requested without it wired.
+        self._backfill_history = backfill_history
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -171,6 +219,8 @@ class ChannelLinker:
         category_from_channel_id: str | None = None,
         destination_category: str | None = None,
         new_name: str | None = None,
+        with_history: bool = False,
+        history_limit: int | str | None = None,
     ) -> str:
         """Ensure `local_channel_id` (on `local_connector`) has a linked
         counterpart on `destination`: reuses an existing same-name channel
@@ -223,10 +273,44 @@ class ChannelLinker:
         `new_name`, if given, is the name to create/find the counterpart under
         on `destination` instead of carrying `local_channel_name` over -
         destination-normalized by `ensure_channel` and matched the same way
-        (issue #44)."""
+        (issue #44).
+
+        `with_history`, if set, backfills the newly-linked destination
+        channel with the source channel's message history after a *fresh*
+        link succeeds (issue #122) - never on the "already synced - skipped"
+        early-return path, so a repeat `/mirror ... with history` on an
+        already-linked pair is a natural no-op rather than a duplicate
+        backfill. Requires both `local_connector` and `destination` to
+        support history (`ConnectorInfo.supports_history` - Discord/Stoat
+        only; IRC has no history concept as either a source or a
+        destination) and requires a `backfill_history` hook to have been
+        wired at construction - raises LinkError otherwise, since silently
+        skipping a requested backfill would be surprising. `history_limit` is
+        resolved by `_resolve_history_limit` - `None` defaults to
+        `_DEFAULT_HISTORY_LIMIT`, the literal `"all"` means the entire
+        history, anything else is a positive integer clamped to
+        `_MAX_HISTORY_LIMIT`."""
         _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
+
+        if with_history:
+            if self._backfill_history is None:
+                raise LinkError("this bridge instance doesn't support 'with history' backfills.")
+            local_info = self._connectors[local_connector]
+            dest_info = self._connectors[destination]
+            unsupported = [
+                info.label for info in (local_info, dest_info) if not info.supports_history
+            ]
+            if unsupported:
+                raise LinkError(
+                    "'with history' is only supported between Discord and Stoat channels - "
+                    f"{' and '.join(unsupported)} doesn't support it."
+                )
+            # Resolve+validate up front, before any create/link side effects,
+            # so an invalid history_limit fails fast rather than after a
+            # channel's already been created.
+            resolved_history_limit = _resolve_history_limit(history_limit)
 
         await _refresh_connectors(self._connectors, local_connector, destination)
 
@@ -249,6 +333,14 @@ class ChannelLinker:
             and self._connectors[destination].ensure_category is not None
             and await _is_forum_channel(self._connectors, local_connector, local_channel_id)
         ):
+            if with_history:
+                # A forum redirects to CategoryLinker.mirror_category - there's
+                # no single channel here for backfill_history to fetch/relay
+                # into, so silently dropping the request would be misleading.
+                raise LinkError(
+                    "'with history' isn't supported when mirroring a Discord forum channel "
+                    "(it's mirrored as a Category, not a single channel)."
+                )
             return await self._category_linker.mirror_category(
                 local_connector=local_connector,
                 local_category_id=local_channel_id,
@@ -376,7 +468,7 @@ class ChannelLinker:
             return f"{dest_info.label}: failed to create/find a channel: {exc}"
 
         try:
-            return await self.link_channel(
+            summary = await self.link_channel(
                 local_connector=destination,
                 local_channel_id=destination_channel_id,
                 local_channel_name=target_name,
@@ -387,6 +479,27 @@ class ChannelLinker:
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
+
+        if with_history:
+            assert self._backfill_history is not None  # checked above
+            try:
+                backfill_summary = await self._backfill_history(
+                    fetch_history=local_info.fetch_history,
+                    source_channel_id=local_channel_id,
+                    destination_connector=destination,
+                    destination_channel_id=destination_channel_id,
+                    limit=resolved_history_limit,
+                )
+            except Exception as exc:
+                # mirror_channel reports rather than raises for every other
+                # failure past this point (ensure_channel, link_channel) - the
+                # channel was already successfully created and linked here, so
+                # a raising backfill_history shouldn't blow up the whole call.
+                logger.warning("mirror channel: with_history backfill failed: %s", exc, exc_info=True)
+                backfill_summary = f"history backfill failed unexpectedly: {exc}"
+            summary = f"{summary} {backfill_summary}"
+
+        return summary
 
     @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_channel_all(
@@ -596,6 +709,8 @@ class ChannelLinker:
         source_id: str,
         new_name: str | None = None,
         local_category: str | None = None,
+        with_history: bool = False,
+        history_limit: int | str | None = None,
     ) -> str:
         """`/mirror channel from <source> <source_id>` - the inbound
         direction: `source`'s `source_id` channel already exists, so create a
@@ -616,7 +731,10 @@ class ChannelLinker:
         `destination` in this swapped call *is* `local_connector`).
 
         `new_name`, if given, names the freshly-created local channel instead
-        of carrying the source channel's name over (issue #44)."""
+        of carrying the source channel's name over (issue #44).
+
+        `with_history`/`history_limit` are forwarded as-is to `mirror_channel`
+        - see its docstring (issue #122)."""
         _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror a channel from a connector to itself.")
@@ -633,6 +751,8 @@ class ChannelLinker:
             destination=local_connector,
             destination_category=local_category,
             new_name=new_name,
+            with_history=with_history,
+            history_limit=history_limit,
         )
 
     async def _resolve_destination_category_name(self, connector: str, token: str) -> str:
