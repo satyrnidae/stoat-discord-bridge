@@ -48,4 +48,7 @@ filterwarnings = [
     # the voice-playback path the bridge never touches). Deprecated on 3.11-3.12; on 3.13
     # discord.py pulls the `audioop-lts` backport instead. Not ours to fix. See issue #22.
     "ignore:'audioop' is deprecated:DeprecationWarning:discord.player",
+    # Our own voice mixing pipeline (issue #113 Phase 3) uses audioop directly for
+    # resample/mix - same audioop/audioop-lts split as above, same non-fix.
+    "ignore:'audioop' is deprecated:DeprecationWarning:stoat_discord_bridge.services.voice.pipeline",
 ]
