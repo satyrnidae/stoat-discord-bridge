@@ -242,3 +242,111 @@ async def test_mirror_emote_from_own_connector_raises(fake_db, emote_connectors)
     linker = EmoteLinker(EmojiMappingRepository(fake_db), emote_connectors)
     with pytest.raises(LinkError, match="from a connector to itself"):
         await linker.mirror_emote_from(local_connector="discord", source="discord", source_emote="dsrc")
+
+
+# ---------------------------------------------------------------- entity-level `all` (issue #123)
+
+
+def _all_emote_connectors():
+    created: list[CustomEmoji] = []
+
+    async def resolve_emoji(emoji_id):
+        return {
+            "d1": CustomEmoji(native_id="d1", name="blob", image_url="http://x/blob.png", animated=False),
+            "d2": CustomEmoji(native_id="d2", name="party", image_url="http://x/party.png", animated=False),
+        }.get(emoji_id)
+
+    async def ensure_emoji(emoji):
+        new = CustomEmoji(
+            native_id=f"stoat_{emoji.name}", name=emoji.name, image_url=emoji.image_url, animated=emoji.animated
+        )
+        created.append(new)
+        return new
+
+    async def list_emotes():
+        return [("d1", "blob"), ("d2", "party")]
+
+    async def resolve_emoji_name(emoji_id):
+        return {"d1": "blob", "d2": "party"}.get(emoji_id)
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord",
+            label="Discord",
+            resolve_emoji=resolve_emoji,
+            resolve_emoji_name=resolve_emoji_name,
+            list_emotes=list_emotes,
+        ),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_emoji=ensure_emoji),
+    }
+    return connectors, created
+
+
+async def test_mirror_emote_to_all_mirrors_every_local_emote(fake_db):
+    connectors, created = _all_emote_connectors()
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="all", destination="stoat")
+
+    assert [e.name for e in created] == ["blob", "party"]
+    lines = summary.splitlines()
+    assert len(lines) == 2
+    assert all("Linked" in line for line in lines)
+
+
+async def test_mirror_emote_to_all_without_list_emotes_raises(fake_db, connectors):
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+    with pytest.raises(LinkError, match="doesn't support listing emotes"):
+        await linker.mirror_emote(local_connector="irc", local_emote="all", destination="stoat")
+
+
+async def test_mirror_emote_to_all_rejects_a_new_name(fake_db):
+    connectors, _created = _all_emote_connectors()
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+
+    with pytest.raises(LinkError, match="all.*together with a new name"):
+        await linker.mirror_emote(
+            local_connector="discord", local_emote="ALL", destination="stoat", new_name="Renamed"
+        )
+
+
+async def test_mirror_emote_from_all_pulls_in_every_source_emote(fake_db):
+    created: list[CustomEmoji] = []
+
+    async def resolve_emoji(emoji_id):
+        return {
+            "s1": CustomEmoji(native_id="s1", name="blob", image_url="http://x/blob.png", animated=False),
+            "s2": CustomEmoji(native_id="s2", name="party", image_url="http://x/party.png", animated=False),
+        }.get(emoji_id)
+
+    async def ensure_emoji(emoji):
+        new = CustomEmoji(
+            native_id=f"discord_{emoji.name}", name=emoji.name, image_url=emoji.image_url, animated=emoji.animated
+        )
+        created.append(new)
+        return new
+
+    async def list_emotes():
+        return [("s1", "blob"), ("s2", "party")]
+
+    async def resolve_emoji_name(emoji_id):
+        return {"s1": "blob", "s2": "party"}.get(emoji_id)
+
+    connectors = {
+        "stoat": ConnectorInfo(
+            id="stoat",
+            label="Stoat",
+            resolve_emoji=resolve_emoji,
+            resolve_emoji_name=resolve_emoji_name,
+            list_emotes=list_emotes,
+        ),
+        "discord": ConnectorInfo(id="discord", label="Discord", ensure_emoji=ensure_emoji),
+    }
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+
+    summary = await linker.mirror_emote_from(local_connector="discord", source="stoat", source_emote="all")
+
+    assert [e.name for e in created] == ["blob", "party"]
+    lines = summary.splitlines()
+    assert len(lines) == 2
+    assert all("Linked" in line for line in lines)

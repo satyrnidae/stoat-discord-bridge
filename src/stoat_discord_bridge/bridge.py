@@ -55,6 +55,7 @@ from stoat_discord_bridge.services.stoat_service import (
     StoatReceiverService,
     StoatSenderService,
 )
+from stoat_discord_bridge.services.voice import VoiceBridgeCoordinator
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.bot_whitelist import BotWhitelistRepository
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
@@ -288,10 +289,14 @@ class BridgeCoordinator:
 
     async def handle_pin(self, pin: StandardPin) -> None:
         """Relay a pin/unpin onto every other connector's copy of the same
-        message. Silently does nothing if the message was never bridged, or a
-        target connector doesn't advertise `supports_pins` (IRC) - both are
-        expected, not errors. Loop-safe: a `set_pinned` we issued is recorded
-        briefly so the resulting echo event is dropped here."""
+        message - but only when it was performed on the sync group's
+        recorded *origin*; a pin/unpin on a relayed copy stays local to that
+        platform and isn't mirrored back to the origin or across to other
+        copies (issue #134). Silently does nothing if the message was never
+        bridged, was itself a relayed copy, or a target connector doesn't
+        advertise `supports_pins` (IRC) - all expected, not errors.
+        Loop-safe: a `set_pinned` we issued is recorded briefly so the
+        resulting echo event is dropped here."""
         now = time.monotonic()
         self._recent_pins = {k: v for k, v in self._recent_pins.items() if now - v < _PIN_SUPPRESS_TTL}
         if (
@@ -302,11 +307,11 @@ class BridgeCoordinator:
         ):
             return  # our own write echoing back
 
-        group = await self._message_sync.find_group(
+        group = await self._message_sync.find_group_if_origin(
             pin.origin_connector_id, pin.origin_channel_id, pin.origin_message_id
         )
         if group is None:
-            return  # this message isn't tracked as bridged
+            return  # untracked, or this was a relayed copy rather than the origin
 
         for ref in group:
             if ref.connector_id == pin.origin_connector_id:
@@ -372,14 +377,14 @@ class BridgeCoordinator:
 
     async def handle_delete(self, delete: StandardDelete) -> None:
         """Relay a message deletion onto every other connector's copy of the
-        same message, but ONLY when `delete` was reported for the sync
-        group's recorded *origin* - a delete of a relayed copy (e.g. a
-        moderator deleting the bridge's own post) must not cascade back to
-        the source or other mirrors. Silently does nothing if the message was
-        never bridged, or a target connector doesn't advertise
-        `supports_deletes` (IRC) - both are expected, not errors. Loop-safe:
-        a `delete_message` we issued is recorded briefly so the resulting
-        delete echo is dropped here."""
+        same message - but only when it was reported for the sync group's
+        recorded *origin*; a delete of a relayed copy (e.g. a moderator
+        deleting the bridge's own post) must not cascade back to the source
+        or other mirrors. Silently does nothing if the message was never
+        bridged, was itself a relayed copy, or a target connector doesn't
+        advertise `supports_deletes` (IRC) - all expected, not errors.
+        Loop-safe: a `delete_message` we issued is recorded briefly so the
+        resulting delete echo is dropped here."""
         now = time.monotonic()
         self._recent_deletes = {k: v for k, v in self._recent_deletes.items() if now - v < _DELETE_SUPPRESS_TTL}
         if (
@@ -390,16 +395,11 @@ class BridgeCoordinator:
         ):
             return  # our own delete echoing back
 
-        group = await self._message_sync.find_group(
+        group = await self._message_sync.find_group_if_origin(
             delete.origin_connector_id, delete.origin_channel_id, delete.origin_message_id
         )
         if group is None:
-            return  # this message isn't tracked as bridged
-
-        if group[0] != MessageRef(delete.origin_connector_id, delete.origin_channel_id, delete.origin_message_id):
-            # this delete was reported for a *relayed copy*, not the true
-            # origin - do not cascade back to the source or other mirrors
-            return
+            return  # untracked, or this was a relayed copy rather than the origin
 
         # A relay may have been split into several native posts in one channel;
         # collect them per (connector, channel) in the order they were posted.
@@ -766,6 +766,12 @@ async def run(config: BridgeConfig) -> None:
     role_grants = RoleSyncCoordinator(
         role_mappings, user_mappings, connector_infos, channel_mappings, category_mappings
     )
+    # N-way voice bridging (issue #113) - always constructed so per-connector
+    # wiring below doesn't need to special-case it, but only started (and
+    # only fed presence pushes) when config.voice.enabled.
+    voice_coordinator = VoiceBridgeCoordinator(
+        channel_mappings, connector_infos, follow_on_empty=config.voice.follow_on_empty
+    )
 
     senders: list = []
     closables: list = []
@@ -782,6 +788,7 @@ async def run(config: BridgeConfig) -> None:
             on_typing=coordinator.handle_typing,
             on_edit=coordinator.handle_edit,
             on_delete=coordinator.handle_delete,
+            on_voice_presence=voice_coordinator.on_voice_presence if config.voice.enabled else None,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -806,6 +813,10 @@ async def run(config: BridgeConfig) -> None:
             pronoun_forwarding=dc.pronoun_forwarding,
         )
         coordinator.register_receiver(receiver)
+        # A connector counts toward voice-bridging eligibility only if both
+        # the bridge-wide switch and this connector's own opt-out allow it
+        # (issue #113) - otherwise its channels are never reported as voice.
+        discord_voice_capable = config.voice.enabled and dc.voice_bridging
         connector_infos[dc.id] = ConnectorInfo(
             id=dc.id,
             label=dc.label,
@@ -846,6 +857,8 @@ async def run(config: BridgeConfig) -> None:
             list_users=sender.list_users,
             list_emotes=sender.list_emotes,
             self_user_id=lambda sender=sender: (str(sender.client.user.id) if sender.client.user else None),
+            channel_is_voice=sender.channel_is_voice if discord_voice_capable else None,
+            voice_occupants=sender.voice_occupants if discord_voice_capable else None,
         )
         senders.append(sender)
         closables.extend([receiver, sender])
@@ -862,6 +875,7 @@ async def run(config: BridgeConfig) -> None:
             on_typing=coordinator.handle_typing,
             on_edit=coordinator.handle_edit,
             on_delete=coordinator.handle_delete,
+            on_voice_presence=voice_coordinator.on_voice_presence if config.voice.enabled else None,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -884,6 +898,7 @@ async def run(config: BridgeConfig) -> None:
             color_forwarding=sc.color_forwarding,
         )
         coordinator.register_receiver(receiver)
+        stoat_voice_capable = config.voice.enabled and sc.voice_bridging
         connector_infos[sc.id] = ConnectorInfo(
             id=sc.id,
             label=sc.label,
@@ -927,6 +942,8 @@ async def run(config: BridgeConfig) -> None:
             # caches live and leave this unset.
             refresh=sender.refresh,
             self_user_id=lambda sender=sender: sender.self_id,
+            channel_is_voice=sender.channel_is_voice if stoat_voice_capable else None,
+            voice_occupants=sender.voice_occupants if stoat_voice_capable else None,
         )
         senders.append(sender)
         closables.append(sender)
@@ -972,6 +989,10 @@ async def run(config: BridgeConfig) -> None:
         closables.append(sender)
 
     health_runner = await start_health_server(health)
+
+    if config.voice.enabled:
+        await voice_coordinator.start()
+        closables.append(voice_coordinator)
 
     try:
         await asyncio.gather(*(sender.start() for sender in senders))

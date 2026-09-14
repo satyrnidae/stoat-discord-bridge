@@ -36,6 +36,7 @@ class _Recorder:
         self.typing: list = []
         self.edits: list = []
         self.deletes: list = []
+        self.voice_presence: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
@@ -61,6 +62,9 @@ class _Recorder:
     async def on_emoji_deleted(self, deleted) -> None:
         self.emoji_deleted.append(deleted)
 
+    async def on_voice_presence(self, connector_id, channel_id, user_id, *, present, is_bot) -> None:
+        self.voice_presence.append((connector_id, channel_id, user_id, present, is_bot))
+
 
 def _make_sender(
     recorder: _Recorder,
@@ -82,6 +86,7 @@ def _make_sender(
         on_typing=recorder.on_typing,
         on_edit=recorder.on_edit,
         on_delete=recorder.on_delete,
+        on_voice_presence=recorder.on_voice_presence,
         linker=linker,
         category_linker=category_linker,
         bot_whitelist=bot_whitelist,

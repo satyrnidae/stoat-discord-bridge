@@ -133,6 +133,29 @@ async def test_reply_resolves_to_each_targets_own_counterpart_message_id(coordin
     assert irc_receiver.received == [(reply, "300", "original-irc")]
 
 
+# ---------------------------------------------------------------- find_group_if_origin (issue #134)
+
+
+async def test_find_group_if_origin_matches_from_the_origin_side(coordinator_parts):
+    _coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record("general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1")])
+
+    group = await message_sync.find_group_if_origin("discord", "100", "m1")
+
+    assert group is not None
+    assert {(r.connector_id, r.channel_id, r.message_id) for r in group} == {
+        ("discord", "100", "m1"),
+        ("stoat", "200", "s1"),
+    }
+
+
+async def test_find_group_if_origin_is_none_when_called_from_a_relayed_copy(coordinator_parts):
+    _coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record("general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1")])
+
+    assert await message_sync.find_group_if_origin("stoat", "200", "s1") is None
+
+
 async def test_reply_resolves_when_the_replied_to_message_was_itself_a_relayed_copy(coordinator_parts):
     coordinator, channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
     await _link(channel_mappings, "general", "discord", "100")

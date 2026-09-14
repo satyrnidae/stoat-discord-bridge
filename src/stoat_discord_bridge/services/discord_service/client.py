@@ -81,6 +81,11 @@ class _DiscordClient(discord.Client):
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
         await self._owner._handle_raw_reaction(payload, added=False)
 
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        await self._owner._handle_voice_state_update(member, before, after)
+
     async def on_guild_emojis_update(
         self, guild: discord.Guild, before: "list[discord.Emoji]", after: "list[discord.Emoji]"
     ) -> None:

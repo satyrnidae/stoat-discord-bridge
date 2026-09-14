@@ -174,8 +174,11 @@ class StandardEmojiDeleted:
 class StandardPin:
     """A message pin/unpin event, in the platform-neutral shape senders/
     receivers pass around. Relayed only onto connectors that advertise
-    `ReceiverService.supports_pins` and only for a message the bridge
-    previously relayed (tracked via MessageSyncRepository) — see
+    `ReceiverService.supports_pins` and only when `origin_connector_id`/
+    `origin_channel_id`/`origin_message_id` is the sync group's recorded
+    *origin* (tracked via MessageSyncRepository) — one-way: a pin/unpin
+    performed directly on a relayed copy stays local to that platform and
+    isn't mirrored back to the origin or across to other copies. See
     BridgeCoordinator.handle_pin."""
 
     origin_connector_id: ConnectorId

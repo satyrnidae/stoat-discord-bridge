@@ -211,14 +211,19 @@ itself drops only once every connector's copy has been deleted.
 
 Pinning/unpinning a message in a bridged channel is mirrored onto every other
 connector's copy of that message (`BridgeCoordinator.handle_pin` →
-`ReceiverService.set_pinned`, gated by `supports_pins` and keyed off the same
-`MessageSyncRepository` group reaction sync uses). Discord ⇄ Stoat only —
-**IRC has no message-pin concept** (`supports_pins` stays `False`), so a pin
-never routes to it. Best-effort and silent (an untracked message, a missing
-`set_pinned` hook, or a raising one are all skipped); loop-safe the same two
-ways as role sync — `set_pinned` is idempotent (no-op if already in that
-state) and the coordinator keeps a ~10s record of writes it issued so the echo
-event is dropped.
+`ReceiverService.set_pinned`, gated by `supports_pins`). **One-way**: only a
+pin/unpin performed on the sync group's recorded *origin* message propagates —
+`handle_pin` looks the group up via `MessageSyncRepository.find_group_if_origin`
+(unlike reaction/edit sync, which stay on the any-side `find_group`), so a
+pin/unpin performed directly on a *relayed copy* stays local to that platform
+and is not mirrored back to the origin or across to other copies (issue #134).
+Discord ⇄ Stoat only — **IRC has no message-pin concept** (`supports_pins`
+stays `False`), so a pin never routes to it. Best-effort and silent (an
+untracked message, a pin on a relayed copy, a missing `set_pinned` hook, or a
+raising one are all skipped); loop-safe the same two ways as role sync —
+`set_pinned` is idempotent (no-op if already in that state) and the
+coordinator keeps a ~10s record of writes it issued so the echo event is
+dropped.
 
 Each platform's pin action produces a *system message* that used to be relayed
 as a blank message: Discord's `MessageType.pins_add` (suppressed in
@@ -270,16 +275,15 @@ the same `MessageSyncRepository` group reaction/pin/edit sync use). Discord ⇄
 Stoat only — **IRC has no delete-in-place concept** (`supports_deletes` stays
 `False`), so a delete never routes to it (issue #133).
 
-Unlike pin/edit sync's symmetric cascade (safe there because only the
-original author can practically edit/pin their own message, and the bridge
-bot owns every relayed copy), deletion doesn't have that property: a
-moderator with `manage_messages` can delete *any* message in a channel,
-including the bridge's own relayed copies. `handle_delete` therefore checks
-whether the deleted ref is the sync group's recorded **origin**
-(`MessageSyncRepository.find_group`'s returned list always puts the origin
-first — a documented, load-bearing invariant) before fanning out; a delete
-reported for a non-origin (relayed) ref is a no-op rather than cascading back
-to the source or other mirrors.
+Unlike edit sync's symmetric cascade (safe there because the bridge bot owns
+every relayed copy, so only a real edit of the origin's own content ever
+arrives), deletion doesn't have that property: a moderator with
+`manage_messages` can delete *any* message in a channel, including the
+bridge's own relayed copies. `handle_delete` therefore looks the group up via
+`MessageSyncRepository.find_group_if_origin` (the same one-way lookup pin
+sync uses, issue #134) rather than the any-side `find_group`, so a delete
+reported for a relayed copy is a no-op rather than cascading back to the
+source or other mirrors.
 
 Each sender emits a `StandardDelete` (identity only — no content is needed to
 delete something): Discord from `on_raw_message_delete` /
@@ -292,9 +296,10 @@ list — Discord via `webhook.delete_message`, Stoat via `Message.delete` (the
 bot owns its masqueraded messages) — best-effort per id, so one post that's
 already gone doesn't stop the rest of the batch.
 
-Best-effort and silent (an untracked message, a non-origin ref, an
-unsupported target, or a raising hook are all skipped). Loop-safe two ways,
-like pin/edit sync: each sender drops its own relayed copy being deleted where
+Best-effort and silent (an untracked message, a delete reported for a
+relayed copy rather than the origin, an unsupported target, or a raising hook
+are all skipped). Loop-safe two ways, like pin/edit sync: each sender drops
+its own relayed copy being deleted where
 it can tell — Discord's `RAW_MESSAGE_DELETE` payload carries no `webhook_id`
 (unlike `MESSAGE_UPDATE`), so this is only a best-effort `cached_message`
 check there; Stoat checks the cached `event.message`'s author against the

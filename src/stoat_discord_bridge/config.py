@@ -44,7 +44,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -83,6 +83,12 @@ class DiscordConnectorConfig:
     # false to relay without a color. Discord's own webhook receiver can't
     # tint a relayed name, so here this only governs the outbound value.
     color_forwarding: bool = True
+    # Whether this connector's voice channels can join the N-way voice bridge
+    # (issue #113) - a bridge group whose linked channels include >= 2 voice
+    # channels on voice-capable connectors is voice-bridgeable, no separate
+    # link command. Defaults on; set false to keep this connector's voice
+    # channels text-only (e.g. no PyNaCl/voice extras installed here).
+    voice_bridging: bool = True
 
 
 @dataclass(frozen=True)
@@ -128,6 +134,16 @@ class StoatConnectorConfig:
     # "/". Only affects how commands are typed - the command names are
     # unchanged.
     command_prefix: str = "/"
+    # The Discord-side voice_bridging counterpart (issue #113). Stoat voice
+    # additionally needs a LiveKit-backed instance (`Instance.features.voice.is_livekit`)
+    # and the `livekit` package - a non-LiveKit instance or missing deps just
+    # means this connector never reports a channel as voice-capable, checked
+    # at the actual join, not here.
+    voice_bridging: bool = True
+    # Which LiveKit SFU node this connector's `VoiceChannel.connect(node=...)`
+    # should use - None lets stoat.py/the server pick. Only meaningful
+    # alongside `voice_bridging`.
+    voice_node: str | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +189,23 @@ class MongoConfig:
 
 
 @dataclass(frozen=True)
+class VoiceConfig:
+    """The top-level `voice:` block (issue #113) - bridge-wide voice
+    settings; which connectors can actually participate is per-connector
+    (`voice_bridging` on `DiscordConnectorConfig`/`StoatConnectorConfig`)."""
+
+    # Master switch for the whole feature. False means `VoiceBridgeCoordinator`
+    # never opens a session even if a bridge group otherwise qualifies -
+    # e.g. no voice deps installed on this deployment at all.
+    enabled: bool = True
+    # When the active voice-bridgeable group's session drops below 2
+    # populated connectors and closes, whether to immediately open a session
+    # for another group that already qualifies, rather than just leaving
+    # idle until a fresh join re-qualifies one. Defaults off.
+    follow_on_empty: bool = False
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     discord: list[DiscordConnectorConfig]
     stoat: list[StoatConnectorConfig]
@@ -184,6 +217,7 @@ class BridgeConfig:
     # entries at check time, never written there, and not removable via
     # `/whitelist remove` (config-pinned).
     whitelisted_bots: tuple[tuple[str, str], ...] = ()
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
 
 
 class ConfigError(Exception):
@@ -354,6 +388,10 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                     _resolve(entry, section="discord", index=index, field="color_forwarding"),
                     default=True,
                 ),
+                voice_bridging=_as_bool(
+                    _resolve(entry, section="discord", index=index, field="voice_bridging"),
+                    default=True,
+                ),
             )
         )
 
@@ -411,6 +449,11 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
                 command_prefix=(
                     (_resolve(entry, section="stoat", index=index, field="command_prefix") or "/").strip() or "/"
                 ),
+                voice_bridging=_as_bool(
+                    _resolve(entry, section="stoat", index=index, field="voice_bridging"),
+                    default=True,
+                ),
+                voice_node=_resolve(entry, section="stoat", index=index, field="voice_node"),
             )
         )
 
@@ -487,6 +530,23 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
         db_name=mongo_raw.get("db_name", "stoat_discord_bridge"),
     )
 
+    voice_raw = raw.get("voice") or {}
+    voice_enabled_env = _resolve_env("VOICE__ENABLED")
+    voice_follow_env = _resolve_env("VOICE__FOLLOW_ON_EMPTY")
+    voice = VoiceConfig(
+        enabled=_as_bool(
+            voice_enabled_env if voice_enabled_env is not None else voice_raw.get("enabled"), default=True
+        ),
+        follow_on_empty=_as_bool(
+            voice_follow_env if voice_follow_env is not None else voice_raw.get("follow_on_empty"), default=False
+        ),
+    )
+
     return BridgeConfig(
-        discord=discord, stoat=stoat, irc=irc, mongo=mongo, whitelisted_bots=tuple(whitelisted_bots)
+        discord=discord,
+        stoat=stoat,
+        irc=irc,
+        mongo=mongo,
+        whitelisted_bots=tuple(whitelisted_bots),
+        voice=voice,
     )

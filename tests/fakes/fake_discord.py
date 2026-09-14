@@ -312,6 +312,31 @@ class FakeGuildChannel(discord.TextChannel):
         return self._category
 
 
+class FakeVoiceChannel(discord.VoiceChannel):
+    """Stands in for discord.VoiceChannel - needed for the
+    isinstance(channel, discord.VoiceChannel) check `channel_is_voice`
+    (issue #113) uses. Skips the real __init__ (same pattern as
+    FakeGuildChannel); `.members` is shadowed since the real property reads
+    the guild's voice-state cache, which this fake has none of."""
+
+    def __init__(
+        self,
+        id: int,
+        *,
+        name: str = "voice",
+        guild: FakeGuild | None = None,
+        members: "list[FakeUser] | None" = None,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.guild = guild
+        self._members = members or []
+
+    @property
+    def members(self) -> "list[FakeUser]":
+        return self._members
+
+
 class FakeEmoji:
     def __init__(self, id: int, name: str, *, url: str = "https://cdn.example/emoji.png", animated: bool = False) -> None:
         self.id = id

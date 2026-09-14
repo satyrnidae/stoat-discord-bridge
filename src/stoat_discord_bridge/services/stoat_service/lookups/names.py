@@ -9,11 +9,42 @@ from __future__ import annotations
 
 import logging
 
+import stoat
+
 logger = logging.getLogger(__name__)
 
 
 class _NamesMixin:
     """Id <-> name resolution half of `StoatLookupsMixin`."""
+
+    async def channel_is_voice(self, channel_id: str) -> bool | None:
+        """Whether `channel_id` is a Stoat voice channel - this connector's
+        `ConnectorInfo.channel_is_voice` (issue #113), used by
+        `VoiceBridgeCoordinator` to classify voice-bridgeable bridge groups.
+        None if the channel isn't cached. Classification only - whether this
+        instance can actually *join* one (LiveKit + deps) is a later phase's
+        concern."""
+        channel = self._client.get_channel(channel_id, partial=False)
+        if channel is None:
+            return None
+        return isinstance(channel, stoat.VoiceChannel)
+
+    async def voice_occupants(self, channel_id: str) -> "set[str] | None":
+        """The non-bot user ids currently connected to voice channel
+        `channel_id` - this connector's `ConnectorInfo.voice_occupants`
+        (issue #113), read off `VoiceChannel.voice_states.participants`
+        (never None - an uncached channel's container is just empty).
+        None only if `channel_id` isn't a (cached) voice channel at all -
+        `VoiceBridgeCoordinator` treats that differently from "empty"."""
+        channel = self._client.get_channel(channel_id, partial=False)
+        if channel is None or not isinstance(channel, stoat.VoiceChannel):
+            return None
+        occupants: set[str] = set()
+        for user_id in channel.voice_states.participants:
+            user = self._client.get_user(user_id)  # cache-only, best-effort
+            if not getattr(user, "bot", False):
+                occupants.add(str(user_id))
+        return occupants
 
     def get_channel(self, channel_id: str, *, partial: bool = False):
         """Cache-only channel lookup (no network). Verified against stoat.py
