@@ -79,6 +79,22 @@ async def test_multiple_voice_channels_on_one_connector_keeps_lowest_id(fake_db)
     assert coord.voice_bridgeable_groups() == {"g": {"discord": "d-vc-1", "stoat": "s-vc"}}
 
 
+async def test_multiple_voice_channels_lowest_id_is_numeric_not_lexicographic(fake_db):
+    """Discord's decimal snowflake ids sort numerically, not as plain
+    strings - "9" must beat "10" here even though "10" < "9" lexicographically."""
+    mappings = ChannelMappingRepository(fake_db)
+    await _link(mappings, "g", "discord", "10")
+    await _link(mappings, "g", "discord", "9")
+    await _link(mappings, "g", "stoat", "s-vc")
+    connectors = {
+        "discord": make_connector("discord", voice_channels={"9", "10"}),
+        "stoat": make_connector("stoat", voice_channels={"s-vc"}),
+    }
+    coord = VoiceBridgeCoordinator(mappings, connectors)
+    await coord.refresh_groups()
+    assert coord.voice_bridgeable_groups() == {"g": {"discord": "9", "stoat": "s-vc"}}
+
+
 async def test_seeding_reads_current_occupants_on_refresh(fake_db):
     mappings = ChannelMappingRepository(fake_db)
     await _link(mappings, "g", "discord", "d-vc")

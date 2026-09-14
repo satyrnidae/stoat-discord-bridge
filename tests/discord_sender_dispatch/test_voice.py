@@ -108,3 +108,22 @@ async def test_voice_state_update_no_change_reports_nothing():
     )
 
     assert recorder.voice_presence == []
+
+
+# ---------------------------------------------------------------- _handle_disconnect
+
+
+async def test_handle_disconnect_reports_voice_connector_lost():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_disconnect()
+
+    assert recorder.voice_connector_lost == ["discord"]
+
+
+async def test_handle_disconnect_is_a_noop_when_voice_connector_lost_unwired():
+    sender = _make_sender(_Recorder(), FakeClient())
+    sender._on_voice_connector_lost = None
+
+    await sender._handle_disconnect()  # must not raise

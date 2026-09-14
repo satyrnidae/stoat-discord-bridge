@@ -197,6 +197,7 @@ def _make_sender(
     on_voice_presence=None,
     client: FakeClient | None = None,
     server_id: str | None = "s1",
+    self_id: str | None = None,
 ) -> StoatSenderService:
     sender = object.__new__(StoatSenderService)
     sender.connector_id = "stoat"
@@ -208,6 +209,7 @@ def _make_sender(
     sender._bot_whitelist = bot_whitelist
     sender._on_voice_presence = on_voice_presence
     sender.server_id = server_id
+    sender._self_id = self_id
     sender._command_message_ids = deque(maxlen=512)
     if client is not None:
         sender._client = client

@@ -35,15 +35,26 @@ class _NamesMixin:
         (issue #113), read off `VoiceChannel.voice_states.participants`
         (never None - an uncached channel's container is just empty).
         None only if `channel_id` isn't a (cached) voice channel at all -
-        `VoiceBridgeCoordinator` treats that differently from "empty"."""
+        `VoiceBridgeCoordinator` treats that differently from "empty".
+
+        The bridge's own user id is always excluded, in addition to the
+        `bot` flag - once Phase 2 makes the bridge actually join a voice
+        channel, its own presence there must never be miscounted as a
+        genuine occupant, and a `get_user` cache miss on the bridge's own
+        (very likely already-cached, but not guaranteed) user object can't
+        be trusted to still resolve `.bot=True` the way any other bot's
+        can."""
         channel = self._client.get_channel(channel_id, partial=False)
         if channel is None or not isinstance(channel, stoat.VoiceChannel):
             return None
         occupants: set[str] = set()
-        for user_id in channel.voice_states.participants:
-            user = self._client.get_user(user_id)  # cache-only, best-effort
+        for raw_user_id in channel.voice_states.participants:
+            user_id = str(raw_user_id)
+            if user_id == self._self_id:
+                continue
+            user = self._client.get_user(raw_user_id)  # cache-only, best-effort
             if not getattr(user, "bot", False):
-                occupants.add(str(user_id))
+                occupants.add(user_id)
         return occupants
 
     def get_channel(self, channel_id: str, *, partial: bool = False):

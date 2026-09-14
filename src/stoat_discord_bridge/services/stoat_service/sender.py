@@ -539,6 +539,14 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         exposed for the receiver's own-reaction idempotency check."""
         return self._self_id
 
+    @property
+    def client(self) -> "_StoatClient":
+        """The underlying stoat.py client, for `StoatVoiceConnector`
+        (issue #113 Phase 2) to resolve channels/join voice from outside
+        this service - the Discord sender's own `.client` property is the
+        same pattern."""
+        return self._client
+
     async def _bot_is_whitelisted(self, user_id: str) -> bool:
         """Whether a bot-authored event from `user_id` should relay like a
         human's, per `BotWhitelistManager.is_whitelisted` (issue #120). False

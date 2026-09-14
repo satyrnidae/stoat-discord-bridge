@@ -345,12 +345,34 @@ class FakeGuildChannel(discord.TextChannel):
         return self._category
 
 
+class FakeDiscordVoiceClient:
+    """Stands in for the discord.VoiceClient `VoiceChannel.connect()`
+    returns - just enough for `DiscordVoiceTransport.close()` (issue #113
+    Phase 2) to exercise its is_connected/disconnect pair."""
+
+    def __init__(self) -> None:
+        self.connected = True
+        self.disconnect_calls: list[bool] = []
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def disconnect(self, *, force: bool = False) -> None:
+        self.disconnect_calls.append(force)
+        self.connected = False
+
+
 class FakeVoiceChannel(discord.VoiceChannel):
     """Stands in for discord.VoiceChannel - needed for the
     isinstance(channel, discord.VoiceChannel) check `channel_is_voice`
     (issue #113) uses. Skips the real __init__ (same pattern as
     FakeGuildChannel); `.members` is shadowed since the real property reads
-    the guild's voice-state cache, which this fake has none of."""
+    the guild's voice-state cache, which this fake has none of.
+
+    `connect_result`/`connect_error` (issue #113 Phase 2) drive
+    `DiscordVoiceConnector.join`'s test double: a channel either hands back
+    a `FakeDiscordVoiceClient` from `connect()` or raises `connect_error` -
+    `connect_calls` records every `cls=` kwarg `connect()` was called with."""
 
     def __init__(
         self,
@@ -359,15 +381,26 @@ class FakeVoiceChannel(discord.VoiceChannel):
         name: str = "voice",
         guild: FakeGuild | None = None,
         members: "list[FakeUser] | None" = None,
+        connect_result: "FakeDiscordVoiceClient | None" = None,
+        connect_error: Exception | None = None,
     ) -> None:
         self.id = id
         self.name = name
         self.guild = guild
         self._members = members or []
+        self._connect_result = connect_result
+        self._connect_error = connect_error
+        self.connect_calls: list[object] = []
 
     @property
     def members(self) -> "list[FakeUser]":
         return self._members
+
+    async def connect(self, *, cls=None, **kwargs):
+        self.connect_calls.append(cls)
+        if self._connect_error is not None:
+            raise self._connect_error
+        return self._connect_result or FakeDiscordVoiceClient()
 
 
 class FakeEmoji:
