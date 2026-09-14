@@ -58,11 +58,17 @@ class _MirrorOwner:
     async def _mirror_emote(self, ctx, service, local_id=None, new_name=None):
         self.mirror_emote_calls.append((service, local_id, new_name))
 
-    async def _mirror_channel(self, ctx, service, local_id=None, new_name=None, category=None):
-        self.mirror_channel_calls.append((service, local_id, new_name, category))
+    async def _mirror_channel(
+        self, ctx, service, local_id=None, new_name=None, category=None, with_history=False, history_limit=None
+    ):
+        self.mirror_channel_calls.append((service, local_id, new_name, category, with_history, history_limit))
 
-    async def _mirror_channel_from(self, ctx, service, external_id, new_name=None, category=None):
-        self.mirror_channel_from_calls.append((service, external_id, new_name, category))
+    async def _mirror_channel_from(
+        self, ctx, service, external_id, new_name=None, category=None, with_history=False, history_limit=None
+    ):
+        self.mirror_channel_from_calls.append(
+            (service, external_id, new_name, category, with_history, history_limit)
+        )
 
 
 async def test_mirror_role_to_takes_service_then_role():
@@ -117,9 +123,9 @@ async def test_mirror_channel_to_pulls_a_category_kv_token_from_anywhere():
     await to.callback(SimpleNamespace(), "stoat", "category:Bot Config", "general", "lobby")
 
     assert owner.mirror_channel_calls == [
-        ("stoat", "general", None, None),
-        ("stoat", "general", None, "01ABC"),
-        ("stoat", "general", "lobby", "Bot Config"),
+        ("stoat", "general", None, None, False, None),
+        ("stoat", "general", None, "01ABC", False, None),
+        ("stoat", "general", "lobby", "Bot Config", False, None),
     ]
 
 
@@ -129,7 +135,7 @@ async def test_mirror_channel_to_declares_a_required_service():
     bot = _bare_bot()
     to = bot.all_commands["mirror"].all_commands["channel"].all_commands["to"]
 
-    assert to.signature == "<service> [local_id] [new_name] [category]"
+    assert to.signature == "<service> [local_id] [new_name] [category] [history]"
 
 
 async def test_mirror_channel_to_with_only_a_category_token_replies_usage():
@@ -143,7 +149,10 @@ async def test_mirror_channel_to_with_only_a_category_token_replies_usage():
     await to.callback(SimpleNamespace(), "category:01ABC")
 
     assert owner.mirror_channel_calls == []
-    assert owner.replies == ["Usage: /mirror channel to <service|all> [local_id|name] [new_name] [category:<id|name>]"]
+    assert owner.replies == [
+        "Usage: /mirror channel to <service|all> [local_id|name] [new_name] "
+        "[category:<id|name>] [history:<n|all>]"
+    ]
 
 
 async def test_mirror_channel_from_pulls_a_category_kv_token_and_validates_arity():
@@ -154,8 +163,34 @@ async def test_mirror_channel_from_pulls_a_category_kv_token_and_validates_arity
     await frm.callback(SimpleNamespace(), "discord", "d1", "category:Team Beta")
     await frm.callback(SimpleNamespace(), "discord")
 
-    assert owner.mirror_channel_from_calls == [("discord", "d1", None, "Team Beta")]
+    assert owner.mirror_channel_from_calls == [("discord", "d1", None, "Team Beta", False, None)]
     assert owner.replies and "Usage:" in owner.replies[-1]
+
+
+async def test_mirror_channel_to_pulls_a_history_kv_token_from_anywhere():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands["channel"].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "stoat", "general", "history:100")
+    await to.callback(SimpleNamespace(), "stoat", "general", "history:all")
+    await to.callback(SimpleNamespace(), "stoat", "general", "history")
+
+    assert owner.mirror_channel_calls == [
+        ("stoat", "general", None, None, True, "100"),
+        ("stoat", "general", None, None, True, "all"),
+        ("stoat", "general", None, None, True, None),
+    ]
+
+
+async def test_mirror_channel_from_forwards_a_history_kv_token():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    frm = bot.all_commands["mirror"].all_commands["channel"].all_commands["from"]
+
+    await frm.callback(SimpleNamespace(), "discord", "d1", "history:25")
+
+    assert owner.mirror_channel_from_calls == [("discord", "d1", None, None, True, "25")]
 
 
 class _FakeShard:

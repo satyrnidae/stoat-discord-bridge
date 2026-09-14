@@ -26,6 +26,16 @@ from stoat_discord_bridge.services.stoat_service._compat import apply_stoat_comm
 apply_stoat_command_patches()
 
 
+def _normalize_bare_history_token(tokens: list[str]) -> list[str]:
+    """`/mirror channel with history` (issue #122): a bare `history` token
+    (no `:value`) means "backfill with the default limit" - rewritten to
+    `history:` here so `pop_kv_option("history")` still picks it up (it only
+    matches a `key:value`/`key=value` shape), yielding an empty-string value
+    that `_mirror_channel`/`_mirror_channel_from` treat the same as
+    `history_limit` being omitted."""
+    return ["history:" if t.lower() == "history" else t for t in tokens]
+
+
 def build_command_tree(bot, owner, prefix: str) -> None:
     """Declares the `/link`, `/unlink`, `/linked`, `/mirror` groups (+ their
     subcommands) and the flat `/status`, `/bridge-help` commands on `bot`,
@@ -131,22 +141,26 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         local_id: typing.Optional[str] = None,
         new_name: typing.Optional[str] = None,
         category: typing.Optional[str] = None,
+        history: typing.Optional[str] = None,
     ):
-        tokens, category_value = pop_kv_option(
-            [t for t in (service, local_id, new_name, category) if t is not None], "category"
-        )
+        tokens = [t for t in (service, local_id, new_name, category, history) if t is not None]
+        tokens, category_value = pop_kv_option(tokens, "category")
+        tokens, history_value = pop_kv_option(_normalize_bare_history_token(tokens), "history")
         if not tokens:
-            # `service` was consumed as the `category:` kv token - it's the
-            # only positional, and issue #97 makes it required.
+            # `service` was consumed as a kv token - it's the only
+            # positional, and issue #97 makes it required.
             await owner._reply(
                 ctx,
-                f"Usage: {p}mirror channel to <service|all> [local_id|name] [new_name] [category:<id|name>]",
+                f"Usage: {p}mirror channel to <service|all> [local_id|name] [new_name] "
+                "[category:<id|name>] [history:<n|all>]",
             )
             return
         service = tokens[0]
         local_id = tokens[1] if len(tokens) > 1 else None
         new_name = tokens[2] if len(tokens) > 2 else None
-        await owner._mirror_channel(ctx, service, local_id, new_name, category_value)
+        await owner._mirror_channel(
+            ctx, service, local_id, new_name, category_value, history_value is not None, history_value or None
+        )
 
     @mirror_channel.command(name="from")
     async def mirror_channel_from(
@@ -155,18 +169,28 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         external_id: typing.Optional[str] = None,
         new_name: typing.Optional[str] = None,
         category: typing.Optional[str] = None,
+        history: typing.Optional[str] = None,
     ):
-        tokens, category_value = pop_kv_option(
-            [t for t in (service, external_id, new_name, category) if t is not None], "category"
-        )
+        tokens = [t for t in (service, external_id, new_name, category, history) if t is not None]
+        tokens, category_value = pop_kv_option(tokens, "category")
+        tokens, history_value = pop_kv_option(_normalize_bare_history_token(tokens), "history")
         if len(tokens) < 2:
             await owner._reply(
                 ctx,
-                f"Usage: {p}mirror channel from <service> <external_id|name> [new_name] [category:<local_id|name>]",
+                f"Usage: {p}mirror channel from <service> <external_id|name> [new_name] "
+                "[category:<local_id|name>] [history:<n|all>]",
             )
             return
         new_name = tokens[2] if len(tokens) > 2 else None
-        await owner._mirror_channel_from(ctx, tokens[0], tokens[1], new_name, category_value)
+        await owner._mirror_channel_from(
+            ctx,
+            tokens[0],
+            tokens[1],
+            new_name,
+            category_value,
+            history_value is not None,
+            history_value or None,
+        )
 
     @mirror.group(name="role", invoke_without_command=True)
     async def mirror_role(ctx):

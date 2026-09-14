@@ -30,6 +30,8 @@ async def test_mirror_channel_to_a_single_destination():
             "local_channel_category": None,
             "destination_category": None,
             "new_name": None,
+            "with_history": False,
+            "history_limit": None,
         }
     ]
     assert ctx.channel.sent[0]["content"] == "mirrored ok"
@@ -114,6 +116,8 @@ async def test_mirror_channel_from_routes_to_the_linker():
             "source_id": "d1",
             "new_name": None,
             "local_category": None,
+            "with_history": False,
+            "history_limit": None,
         }
     ]
     assert ctx.channel.sent[0]["content"] == "mirrored from ok"
@@ -133,6 +137,8 @@ async def test_mirror_channel_from_forwards_a_new_name():
             "source_id": "d1",
             "new_name": "lobby",
             "local_category": None,
+            "with_history": False,
+            "history_limit": None,
         }
     ]
 
@@ -153,6 +159,30 @@ async def test_mirror_channel_rejects_a_category_with_all():
     ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
 
     await sender._mirror_channel(ctx, "all", "general", None, "Announcements")
+
+    assert linker.mirror_channel_calls == []
+    assert linker.mirror_channel_all_calls == []
+    assert "single service" in ctx.channel.sent[0]["content"]
+
+
+async def test_mirror_channel_forwards_with_history():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._mirror_channel(ctx, "discord", "general", None, None, True, "all")
+
+    call = linker.mirror_channel_calls[0]
+    assert call["with_history"] is True
+    assert call["history_limit"] == "all"
+
+
+async def test_mirror_channel_rejects_history_with_all():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._mirror_channel(ctx, "all", "general", None, None, True)
 
     assert linker.mirror_channel_calls == []
     assert linker.mirror_channel_all_calls == []

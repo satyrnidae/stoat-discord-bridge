@@ -515,12 +515,20 @@ class DiscordLinkingMixin:
         local_id: str | None,
         new_name: str | None = None,
         category: str | None = None,
+        with_history: bool = False,
+        history_limit: str | None = None,
     ) -> None:
         if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
             return
         if category and service.lower() == "all":
             await interaction.response.send_message(
                 "A destination Category can only be set when mirroring to a single connector, not 'all'.",
+                ephemeral=True,
+            )
+            return
+        if with_history and service.lower() == "all":
+            await interaction.response.send_message(
+                "'with history' can only be used when mirroring to a single connector, not 'all'.",
                 ephemeral=True,
             )
             return
@@ -570,6 +578,8 @@ class DiscordLinkingMixin:
                 local_channel_category=channel_category,
                 destination_category=category,
                 new_name=new_name,
+                with_history=with_history,
+                history_limit=history_limit,
             )
         await self._reply_linker_result(
             interaction, coro, log_context="/mirror channel", deferred=True, empty_fallback="Nothing to mirror."
@@ -582,6 +592,8 @@ class DiscordLinkingMixin:
         external_id: str,
         new_name: str | None = None,
         category: str | None = None,
+        with_history: bool = False,
+        history_limit: str | None = None,
     ) -> None:
         """`/mirror channel from <service> <external_id>`: create a local
         channel mirroring `service`'s `external_id` and link them, placing it
@@ -607,6 +619,8 @@ class DiscordLinkingMixin:
                 source_id=external_id,
                 new_name=new_name,
                 local_category=category,
+                with_history=with_history,
+                history_limit=history_limit,
             ),
             log_context="/mirror channel from",
             deferred=True,

@@ -282,16 +282,26 @@ class StoatLinkingMixin:
         local_id: str | None = None,
         new_name: str | None = None,
         category: str | None = None,
+        with_history: bool = False,
+        history_limit: str | None = None,
     ) -> None:
-        """`/mirror channel <service|all> [local_id|name] [new_name] [category:<id|name>]`:
+        """`/mirror channel <service|all> [local_id|name] [new_name] [category:<id|name>] [history:<n|all>]`:
         local_id defaults to the invoking channel.
         `category` (a Category id/name on the target service) overrides linked
-        Categories and needs a single service (issue #75)."""
+        Categories and needs a single service (issue #75).
+        `history:<n|all>` backfills the newly-linked channel with the source
+        channel's message history (issue #122) - Discord/Stoat only, and also
+        needs a single service, not `all`."""
         if not await self._require_admin(ctx):
             return
         if category and service.lower() == "all":
             await self._reply(
                 ctx, "A destination Category can only be set when mirroring to a single service, not 'all'."
+            )
+            return
+        if with_history and service.lower() == "all":
+            await self._reply(
+                ctx, "'history:' can only be used when mirroring to a single service, not 'all'."
             )
             return
         if local_id:
@@ -326,17 +336,27 @@ class StoatLinkingMixin:
                 local_channel_category=channel_category,
                 destination_category=category,
                 new_name=new_name,
+                with_history=with_history,
+                history_limit=history_limit,
             )
         await self._reply_linker_result(ctx, coro, log_context="/mirror channel")
 
     async def _mirror_channel_from(
-        self, ctx, service: str, external_id: str, new_name: str | None = None, category: str | None = None
+        self,
+        ctx,
+        service: str,
+        external_id: str,
+        new_name: str | None = None,
+        category: str | None = None,
+        with_history: bool = False,
+        history_limit: str | None = None,
     ) -> None:
-        """`/mirror channel from <service> <external_id|name> [new_name] [category:<id|name>]`:
+        """`/mirror channel from <service> <external_id|name> [new_name] [category:<id|name>] [history:<n|all>]`:
         create a local channel mirroring `service`'s and link them, landing it in
         the local counterpart of the source channel's linked Category - or in
         `category` (a local Category id/name), if given, which overrides that
-        (issue #75)."""
+        (issue #75). `history:<n|all>` backfills the new channel with the
+        source channel's message history (issue #122)."""
         if not await self._require_admin(ctx):
             return
         if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
@@ -349,6 +369,8 @@ class StoatLinkingMixin:
                 source_id=external_id,
                 new_name=new_name,
                 local_category=category,
+                with_history=with_history,
+                history_limit=history_limit,
             ),
             log_context="/mirror channel from",
         )
