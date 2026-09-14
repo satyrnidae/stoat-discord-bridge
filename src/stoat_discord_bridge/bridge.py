@@ -68,12 +68,18 @@ from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingR
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
 
 _PIN_SUPPRESS_TTL = 10.0
 _EDIT_SUPPRESS_TTL = 10.0
+# Pause between each history-backfill relay (issue #122), on top of (not
+# instead of) each connector's own HTTP-level rate-limit handling - keeps a
+# large backfill from front-loading a burst of create-message calls.
+_HISTORY_BACKFILL_PACING = 0.35
 
 
 class BridgeCoordinator:
@@ -206,6 +212,84 @@ class BridgeCoordinator:
             if ref.connector_id == target.connector_id and ref.channel_id == target.channel_id:
                 return ref.message_id
         return None
+
+    async def backfill_history(
+        self,
+        *,
+        fetch_history: Callable[[str, int | None], Awaitable[list[StandardMessage]]],
+        source_channel_id: str,
+        destination_connector: str,
+        destination_channel_id: str,
+        limit: int | None,
+    ) -> str:
+        """`/mirror channel with history`'s (issue #122) orchestration step:
+        fetch `source_channel_id`'s history via `fetch_history` (already
+        oldest-first `StandardMessage`s) and relay each one, in order, onto
+        `destination_channel_id` on `destination_connector` -
+        `ChannelLinker.mirror_channel` calls this once its own create/link
+        logic has already run, since the linker itself has no reference to
+        receivers, only `ConnectorInfo` hooks.
+
+        Deliberately never `handle_incoming`: that fans a message out to
+        every member of a bridge group, but a history replay for a
+        freshly-linked pair must land on the *one new* destination only - if
+        the source channel already had other bridge members before this
+        `with history` mirror ran, fanning out would re-post the whole
+        backfill into those pre-existing links too. Sequential (not
+        `asyncio.gather`), with a small pacing delay between sends on top of
+        (not instead of) each connector's own HTTP-level rate-limit handling,
+        so a large backfill doesn't front-load a burst of requests. Backfilled
+        messages aren't recorded in `MessageSyncRepository`, so an edit/
+        reaction/pin on one of them won't sync forward - a known v1
+        limitation (issue #122), not an oversight.
+
+        Best-effort per message: a `PartialRelayError` (some posts of a split
+        message got through) or any other raising `receive()` just counts as
+        skipped, matching `_relay_to`'s own tolerance for one bad message.
+        Stops early on `UnsupportedRelayTargetError` - a structurally broken
+        target (e.g. a Discord forum channel) fails identically on every
+        remaining message, so there's no point retrying the rest one at a
+        time - and reports how much got through before that."""
+        receiver = self._receivers.get(destination_connector)
+        if receiver is None:
+            logger.warning("history backfill: no receiver registered for %s", destination_connector)
+            return f"no receiver registered for {destination_connector} - nothing backfilled."
+        try:
+            messages = await fetch_history(source_channel_id, limit)
+        except Exception:
+            logger.exception("history backfill: fetching channel %s failed", source_channel_id)
+            return "history backfill failed while fetching the source channel's history."
+        if not messages:
+            return "history backfill: nothing to backfill."
+        relayed = 0
+        partial = 0
+        skipped = 0
+        for index, message in enumerate(messages):
+            if index:
+                await asyncio.sleep(_HISTORY_BACKFILL_PACING)
+            try:
+                await receiver.receive(message, target_channel_id=destination_channel_id)
+            except PartialRelayError:
+                # Some (not all) of a split message's posts got through -
+                # counted separately from a full success, not folded into it.
+                partial += 1
+            except UnsupportedRelayTargetError as exc:
+                logger.warning("history backfill to %s dropped: %s", destination_connector, exc)
+                return (
+                    f"history backfill stopped after {relayed} message(s): "
+                    f"{destination_connector} can't receive relays there."
+                )
+            except Exception:
+                logger.exception("history backfill: relaying a message to %s failed", destination_connector)
+                skipped += 1
+            else:
+                relayed += 1
+        summary = f"history backfill: relayed {relayed} message(s)"
+        if partial:
+            summary += f", {partial} partially relayed"
+        if skipped:
+            summary += f", {skipped} skipped"
+        return summary + "."
 
     async def handle_typing(self, typing: StandardTyping) -> None:
         """Relay a "someone is typing" / "stopped typing" indicator onto every
