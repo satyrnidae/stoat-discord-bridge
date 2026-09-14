@@ -13,8 +13,10 @@ from stoat_discord_bridge.admin_commands.common import (
     MirrorGuard,
     _clean_new_name,
     _guards_mirror,
+    _is_all_token,
     _kick_group_member,
     _link_conflict_check,
+    _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
     _mirror_to_destination,
@@ -22,6 +24,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    _run_bulk_mirror,
     format_linked_listing,
 )
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
@@ -132,12 +135,36 @@ class EmoteLinker:
 
         `new_name`, if given, is the name the counterpart emoji is
         created/matched under on `destination` instead of the source emoji's
-        name (issue #44)."""
+        name (issue #44).
+
+        `local_emote == "all"` (case-insensitive, and only that literal
+        token) mirrors every emote `local_connector` can enumerate via its
+        `list_emotes` hook to `destination` instead of just one (issue #123)
+        - one line of summary/skip/error per emote, paced and capped the
+        same as the other bulk helpers in `common.py`. Raises LinkError up
+        front if `local_connector` isn't a known connector, has no
+        `list_emotes` hook (nothing to enumerate with - e.g. IRC, which has
+        no custom-emoji concept at all), if it can't be listed, if there are
+        too many emotes to mirror at once, or if `new_name` is also given
+        (one name can't apply to every mirrored emote)."""
         _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror an emote to its own connector.")
 
         await _refresh_connectors(self._connectors, local_connector, destination)
+
+        if _is_all_token(local_emote):
+            if _clean_new_name(new_name) is not None:
+                raise LinkError("can't use 'all' together with a new name - it would collide across every emote.")
+            _require_known_connector(self._connectors, local_connector)
+            info = self._connectors[local_connector]
+            entities = await _list_entities_for_all(self._connectors, local_connector, info.list_emotes, kind="emote")
+            return await _run_bulk_mirror(
+                entities,
+                lambda eid, ename: self.mirror_emote(
+                    local_connector=local_connector, local_emote=eid, destination=destination
+                ),
+            )
 
         source_id = await self._resolve_to_id(local_connector, local_emote)
         source_name = await self._resolve_name(local_connector, source_id)
