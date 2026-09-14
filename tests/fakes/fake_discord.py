@@ -165,15 +165,48 @@ class FakeWebhook:
         self.deleted.append(message_id)
 
 
+class FakeHistoryIterator:
+    """Stands in for discord.py's `HistoryIterator` (the return value of
+    `TextChannel.history()`) - just enough to support `async for message in
+    channel.history(...)` (issue #122's fetch_history). `_history_messages`
+    is always stored oldest-first; `oldest_first=False` (discord.py's own
+    default) reverses it, and `limit` truncates from the requested end -
+    matching discord.py's own semantics closely enough for these fakes."""
+
+    def __init__(self, messages: list[Any], *, limit: int | None, oldest_first: bool) -> None:
+        ordered = list(messages) if oldest_first else list(reversed(messages))
+        self._messages = ordered if limit is None else ordered[:limit]
+
+    def __aiter__(self):
+        return self._generator()
+
+    async def _generator(self):
+        for message in self._messages:
+            yield message
+
+
 class FakeChannel:
-    def __init__(self, id: int, *, name: str = "general", webhooks: list[FakeWebhook] | None = None) -> None:
+    def __init__(
+        self, id: int, *, name: str = "general", webhooks: list[FakeWebhook] | None = None,
+        history_messages: list[Any] | None = None, guild: Any = None,
+    ) -> None:
         self.id = id
         self.name = name
+        self.guild = guild
         self._webhooks = webhooks or []
         self.created_webhooks: list[FakeWebhook] = []
         self.partial_messages: dict[int, FakePartialMessage] = {}
         self.full_messages: dict[int, FakeFullMessage] = {}
         self.typing_calls = 0
+        # Oldest-first, regardless of what order the test hands in - see
+        # FakeHistoryIterator.
+        self._history_messages = history_messages or []
+
+    def set_history(self, messages: list[Any]) -> None:
+        self._history_messages = messages
+
+    def history(self, *, limit: int | None = None, oldest_first: bool = False, **_kwargs: Any) -> FakeHistoryIterator:
+        return FakeHistoryIterator(self._history_messages, limit=limit, oldest_first=oldest_first)
 
     async def typing(self) -> None:
         self.typing_calls += 1

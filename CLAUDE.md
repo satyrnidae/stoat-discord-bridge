@@ -368,6 +368,56 @@ webhook message can't be a native Discord reply, so `DiscordReceiverService`
 leaves `supports_replies` unset and ignores the parameter. **IRC has no
 reply/threading concept** — `supports_replies` stays `False` there too.
 
+### Channel history backfill
+
+`/mirror channel with history` (issue #122) optionally backfills a
+freshly-linked channel with the source channel's message history, so linking
+two channels doesn't start every reader at a blank slate. **Discord ⇄ Stoat
+only** — gated by `ConnectorInfo.supports_history` (true only when
+`fetch_history` is wired), checked symmetrically on both the source *and*
+destination in `ChannelLinker.mirror_channel`, so IRC is excluded as either
+one (it has no history concept to fetch from, and no way to distinguish a
+backfilled message from a live one on relay back out). Each connector's
+`fetch_history(channel_id, limit)` (`services/discord_service/sender.py` /
+`services/stoat_service/sender.py`) returns `StandardMessage`s oldest-first
+regardless of fetch direction — Discord's is a single `channel.history()` call
+(reversed when `limit` is bounded, since bounded means "the most recent N",
+fetched newest-first); Stoat's is hand-paginated (`≤100`/page, stoat.py's own
+cap) since it has no single unbounded-history call, walking backward
+(`sort=latest, before=cursor`) when bounded or forward (`sort=oldest,
+after=cursor`) for the unbounded `all` case, reversing only the bounded
+result. Both drop the bridge's own messages, non-whitelisted bots, and
+system-event rows the same way their live `_handle_message` does.
+
+`BridgeCoordinator.backfill_history` is the orchestration step `mirror_channel`
+calls once a fresh link succeeds (never on the "already synced - skipped"
+early return, so a repeat `with history` mirror on an already-linked pair is
+a natural no-op rather than a duplicate backfill) — `ChannelLinker` itself
+has no receiver reference, only `ConnectorInfo` hooks, so this is injected as
+a `backfill_history` callback (bound to the coordinator in `bridge.py`'s
+`run()`). It deliberately never uses `handle_incoming`'s fan-out: a history
+replay must land on the *one new* destination only, not on every other
+pre-existing bridge member of the source channel. Sequential (not
+`asyncio.gather`), with a small pacing delay between sends on top of each
+connector's own rate-limit handling. Best-effort per message — a
+`PartialRelayError` or any other raising `receive()` counts as skipped;
+`UnsupportedRelayTargetError` stops the whole backfill early, since a
+structurally broken target fails identically on every remaining message.
+
+`history_limit` (`admin_commands/channel.py`'s `_resolve_history_limit`)
+defaults to 50 messages when omitted, accepts a positive integer clamped to
+1000, or the literal `all` for the entire channel history with no cap — `all`
+must be requested explicitly, never inferred from an unusually large number.
+Backfilled messages are **not** recorded in `MessageSyncRepository`, so an
+edit/reaction/pin on one of them won't sync forward, and a very long `all`
+backfill relayed through a Discord slash command risks outliving the
+interaction's 15-minute followup-token window — both known v1 limitations,
+not oversights (tracked for a future pass rather than blocking this issue).
+`with_history` also can't be combined with issue #123's entity-level
+`local_id`/`source_id` `all` fan-out — `ChannelLinker.mirror_channel` rejects
+the combination outright, since one backfill request has no sensible way to
+apply across every enumerated channel at once.
+
 ### Source, pronoun & name-color forwarding
 
 Every `StandardMessage` carries `source_label` — the origin connector's

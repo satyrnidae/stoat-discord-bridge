@@ -351,6 +351,8 @@ def build_command_tree(service) -> None:
         service="Connector id to mirror to, or 'all'",
         new_name="Name for the counterpart channel on the target connector (default: same as this one)",
         category="Category id or name on the target connector to place the counterpart in - overrides linked Categories; requires a single service, not 'all'",
+        with_history="Backfill the new channel with the source channel's message history (Discord <-> Stoat only)",
+        history_limit="How many messages to backfill, or 'all' for the entire history (default: 50)",
     )
     @app_commands.autocomplete(
         service=channel_service_autocomplete(include_all=True),
@@ -363,8 +365,12 @@ def build_command_tree(service) -> None:
         local_id: str | None = None,
         new_name: str | None = None,
         category: str | None = None,
+        with_history: bool = False,
+        history_limit: str | None = None,
     ) -> None:
-        await self._handle_mirror_channel(interaction, service, local_id, new_name, category)
+        await self._handle_mirror_channel(
+            interaction, service, local_id, new_name, category, with_history, history_limit
+        )
 
     @mirror_channel_group.command(
         name="from", description="Create a local channel mirroring one from another connector, and link them"
@@ -374,6 +380,8 @@ def build_command_tree(service) -> None:
         external_id="Channel id or name on that connector",
         new_name="Name for the new local channel (default: same as the source)",
         category="Local Category id or name to place the new channel in - overrides the source channel's linked Category",
+        with_history="Backfill the new channel with the source channel's message history (Discord <-> Stoat only)",
+        history_limit="How many messages to backfill, or 'all' for the entire history (default: 50)",
     )
     @app_commands.autocomplete(
         service=channel_service_autocomplete(include_all=False),
@@ -386,8 +394,12 @@ def build_command_tree(service) -> None:
         external_id: str,
         new_name: str | None = None,
         category: str | None = None,
+        with_history: bool = False,
+        history_limit: str | None = None,
     ) -> None:
-        await self._handle_mirror_channel_from(interaction, service, external_id, new_name, category)
+        await self._handle_mirror_channel_from(
+            interaction, service, external_id, new_name, category, with_history, history_limit
+        )
 
     @link_group.command(
         name="user",

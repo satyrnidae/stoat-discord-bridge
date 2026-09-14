@@ -253,6 +253,71 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             )
         )
 
+    async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
+        """`ConnectorInfo.fetch_history` for Discord (issue #122): `channel_id`'s
+        history, converted via the same `_to_standard_message` the live relay
+        path uses, always returned oldest-first so relaying it in list order
+        reproduces the original chronology. `limit=None` fetches the entire
+        channel history, oldest message first (archive mode's `limit:all`);
+        a numeric `limit` instead fetches the `limit` *most recent* raw
+        messages (discord.py's own newest-first `history()` default) and
+        reverses them into oldest-first order - so a bounded backfill seeds
+        the freshly-linked channel with recent context, not its oldest
+        messages. A message this connector's own filtering below drops still
+        counts against that raw `limit`, so a very noisy tail of skipped
+        messages can leave fewer than `limit` converted ones - the same
+        approximate-count tradeoff `ensure_channel`'s other best-effort hooks
+        already make elsewhere in this file.
+
+        Filters out what `_handle_message` would already drop from a live
+        feed - a channel outside this connector's configured guild, our own
+        (or another integration's) webhook posts, a non-whitelisted bot's
+        messages, and non-content system messages (pin/thread-created rows) -
+        so a backfill doesn't relay noise a live listener never would have.
+        Best-effort: an unresolvable/wrong-guild channel yields no messages;
+        a fetch that raises partway through the walk yields whatever it
+        managed to convert before that rather than discarding a long
+        backfill's progress over one bad message."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except Exception:
+            logger.warning("[discord:%s] fetch_history: couldn't resolve channel %s", self.connector_id, channel_id)
+            return []
+        guild = getattr(channel, "guild", None)
+        if guild is None or guild.id != self._config.guild_id:
+            logger.warning(
+                "[discord:%s] fetch_history: channel %s isn't in this connector's guild", self.connector_id, channel_id
+            )
+            return []
+        messages: list[StandardMessage] = []
+        try:
+            async for message in channel.history(limit=limit, oldest_first=limit is None):
+                if message.webhook_id is not None:
+                    continue
+                if message.author.bot and not await self._bot_is_whitelisted(str(message.author.id)):
+                    continue
+                if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+                    continue
+                messages.append(
+                    _to_standard_message(
+                        message,
+                        self.connector_id,
+                        source_label=self._config.label,
+                        sender_pronouns=await self._resolve_sender_pronouns(message.author.id),
+                        sender_color=self._resolve_sender_color(message.author),
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "[discord:%s] fetch_history: fetching channel %s failed", self.connector_id, channel_id, exc_info=True
+            )
+        if limit is not None:
+            # `oldest_first=False` (above) walked newest-first so `limit` caps
+            # the *most recent* messages - reverse back into oldest-first
+            # relay order.
+            messages.reverse()
+        return messages
+
     def _resolve_sender_color(self, author: object) -> str | None:
         """The sender's displayed name color, for a receiver that can tint a
         relayed name (Stoat's masquerade, issue #74). Network-free - reads the

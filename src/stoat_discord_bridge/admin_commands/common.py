@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji
+    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, StandardMessage
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
@@ -482,6 +482,25 @@ class ConnectorInfo:
     # `/mirror channel` when the source channel had any - the hook applies
     # it only when it actually creates the channel, never onto a reused one.
     ensure_channel: Callable[..., Awaitable[str]] | None = None
+    # Best-effort channel-history fetch, already converted to
+    # `StandardMessage` and always returned oldest-first (so relaying the
+    # list in order reproduces the original chronology), for `/mirror
+    # channel with history` (issue #122): `fetch_history(channel_id, limit)` -
+    # `limit=None` means "the entire channel history", oldest message first
+    # (archive mode's `limit:all`); a numeric `limit` instead means
+    # approximately the `limit` *most recent* messages (still returned
+    # oldest-first). Only Discord and Stoat wire this: IRC is a live-only
+    # protocol with no history to fetch, so it can never be a history
+    # *source* - and `ChannelLinker.mirror_channel` also requires the
+    # *destination* to wire it before allowing `with_history` (issue #122
+    # scopes the feature to Discord <-> Stoat only, in both directions -
+    # IRC has no scrollback concept either, so it's an unattractive
+    # destination even though nothing here would stop it functioning as an
+    # ordinary `/mirror channel` target otherwise). Best-effort in the same
+    # sense as the other hooks: an unresolvable channel or a raising fetch is
+    # the caller's problem to report, not something this hook itself needs
+    # to swallow.
+    fetch_history: Callable[[str, "int | None"], Awaitable[list["StandardMessage"]]] | None = None
     # Best-effort native-user-id -> display-name lookup, for `/linked-users`
     # to show real names instead of raw ids. None, an exception, or a falsy
     # return all fall back to the raw id, same as resolve_channel_name.
@@ -637,6 +656,15 @@ class ConnectorInfo:
     @property
     def supports_emotes(self) -> bool:
         return self.resolve_emoji_name is not None
+
+    @property
+    def supports_history(self) -> bool:
+        """Whether this connector can be a `/mirror channel with history`
+        *source* - only Discord/Stoat wire `fetch_history`. `ChannelLinker`
+        also requires the *destination* to satisfy this before allowing
+        `with_history` (issue #122's Discord <-> Stoat scoping - IRC is
+        excluded either way, whether named as source or destination)."""
+        return self.fetch_history is not None
 
 
 # The id<->name walk shared by every `<Kind>Linker._resolve_to_id` /

@@ -150,6 +150,33 @@ async def test_mirror_channel_link_error_is_reported_via_followup_after_defer():
     assert interaction.sent == ["nope"]
 
 
+async def test_mirror_channel_forwards_with_history_and_history_limit():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(
+        interaction, "stoat", None, with_history=True, history_limit="all"
+    )
+
+    call = linker.mirror_channel_calls[0]
+    assert call["with_history"] is True
+    assert call["history_limit"] == "all"
+
+
+async def test_mirror_channel_with_history_and_all_service_is_rejected():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction()
+
+    await sender._handle_mirror_channel(interaction, "all", None, with_history=True)
+
+    assert linker.mirror_channel_calls == []
+    assert linker.mirror_channel_all_calls == []
+    assert interaction.deferred is False  # refused before the up-front defer
+    assert interaction.sent and "with history" in interaction.sent[0]
+
+
 async def test_mirror_channel_from_strips_a_pasted_mention_and_routes_to_the_linker():
     linker = FakeLinker()
     sender = _make_sender(linker)
@@ -164,6 +191,8 @@ async def test_mirror_channel_from_strips_a_pasted_mention_and_routes_to_the_lin
             "source_id": "814279082606592020",
             "new_name": None,
             "local_category": None,
+            "with_history": False,
+            "history_limit": None,
         }
     ]
     assert interaction.deferred is True
@@ -184,6 +213,8 @@ async def test_mirror_channel_from_forwards_a_new_name():
             "source_id": "s1",
             "new_name": "lobby",
             "local_category": None,
+            "with_history": False,
+            "history_limit": None,
         }
     ]
 
