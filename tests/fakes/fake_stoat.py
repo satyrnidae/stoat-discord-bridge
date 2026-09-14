@@ -14,6 +14,36 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import stoat
+
+
+def _paginate_fake_stoat_history(
+    history: list[Any], *, limit: int | None, before: Any, after: Any, sort: Any
+) -> list[Any]:
+    """Shared backing for `FakeChannel.history`/`FakePartialMessageable.history`
+    (issue #122's fetch_history pagination): `history` is always stored
+    oldest-first. `after=<id>` (forward pagination, `sort=oldest`) returns
+    everything strictly after it, oldest-first; `before=<id>` (backward
+    pagination, `sort=latest`) returns everything strictly before it,
+    newest-first - matching the two directions `fetch_history` paginates in.
+    With neither cursor, `sort=latest` starts from the newest message,
+    `sort=oldest` (or no sort) from the oldest. `limit` caps the page from
+    whichever end it's read."""
+    messages = history
+    if after is not None:
+        after_id = str(getattr(after, "id", after))
+        idx = next((i for i, m in enumerate(messages) if str(m.id) == after_id), -1)
+        messages = messages[idx + 1 :]
+    elif before is not None:
+        before_id = str(getattr(before, "id", before))
+        idx = next((i for i, m in enumerate(messages) if str(m.id) == before_id), len(messages))
+        messages = list(reversed(messages[:idx]))
+    elif sort == stoat.MessageSort.latest:
+        messages = list(reversed(messages))
+    if limit is not None:
+        messages = messages[:limit]
+    return list(messages)
+
 
 class FakeAsset:
     def __init__(self, url: str) -> None:
@@ -146,20 +176,14 @@ class FakeChannel:
         **_kwargs: Any,
     ) -> list[Any]:
         """Stands in for stoat.py's `TextChannel.history` - a single page,
-        oldest-first (matching `sort=MessageSort.oldest`, the only sort
-        fetch_history's pagination uses), honoring `after` as a cursor id and
-        `limit` as a page-size cap (real stoat.py caps this at 100 - not
-        enforced here, since fetch_history is what applies that cap)."""
+        honoring `after`/`sort=oldest` (forward pagination) or
+        `before`/`sort=latest` (backward pagination), the two directions
+        `fetch_history`'s pagination uses (issue #122), and `limit` as a
+        page-size cap (real stoat.py caps this at 100 - not enforced here,
+        since `fetch_history` is what applies that cap)."""
         if self._raises is not None:
             raise self._raises
-        messages = self._history
-        if after is not None:
-            after_id = str(getattr(after, "id", after))
-            idx = next((i for i, m in enumerate(messages) if str(m.id) == after_id), -1)
-            messages = messages[idx + 1 :]
-        if limit is not None:
-            messages = messages[:limit]
-        return list(messages)
+        return _paginate_fake_stoat_history(self._history, limit=limit, before=before, after=after, sort=sort)
 
     async def edit(self, **kwargs) -> "FakeChannel":
         self.edits.append(kwargs)
@@ -253,14 +277,7 @@ class FakePartialMessageable:
         populate_users: bool | None = None,
         **_kwargs: Any,
     ) -> list[Any]:
-        messages = self._history
-        if after is not None:
-            after_id = str(getattr(after, "id", after))
-            idx = next((i for i, m in enumerate(messages) if str(m.id) == after_id), -1)
-            messages = messages[idx + 1 :]
-        if limit is not None:
-            messages = messages[:limit]
-        return list(messages)
+        return _paginate_fake_stoat_history(self._history, limit=limit, before=before, after=after, sort=sort)
 
 
 class FakeCategory:

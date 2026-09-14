@@ -66,6 +66,10 @@ logger = logging.getLogger(__name__)
 # profile is fetched again - see `_resolve_sender_pronouns`.
 _PRONOUN_CACHE_TTL = 600.0
 
+# stoat.py caps a single `TextChannel.history()` call at 100 messages -
+# `fetch_history` (issue #122) hand-rolls pagination past that.
+_HISTORY_PAGE_SIZE = 100
+
 
 class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, SenderService):
     def __init__(
@@ -218,6 +222,89 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             mentioned_channels=await self._map_mentioned_channels(message.content or ""),
             mentioned_emoji=await self._map_mentioned_emoji(message.content or ""),
         )
+
+    async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
+        """`ConnectorInfo.fetch_history` for Stoat (issue #122): `channel_id`'s
+        history, converted via the same `_to_standard_message` the live relay
+        path uses, always returned oldest-first so relaying it in list order
+        reproduces the original chronology. `limit=None` fetches the entire
+        channel history (archive mode's `limit:all`); a numeric `limit`
+        instead fetches the `limit` *most recent* messages - so a bounded
+        backfill seeds the freshly-linked channel with recent context, not
+        its oldest messages.
+
+        stoat.py's `TextChannel.history()` returns at most one 100-message
+        page per call, so this hand-rolls pagination in whichever direction
+        the request needs: unbounded (`limit=None`) walks *forward* from the
+        start of the channel (`after=<cursor>`, `sort=oldest`, already in
+        the order we want); a numeric `limit` instead walks *backward* from
+        the current end (`before=<cursor>`, `sort=latest`) and the
+        accumulated pages - each newest-first, appended oldest-page-last -
+        are reversed once at the end into overall oldest-first order. Either
+        way, pagination stops once a page comes back shorter than requested
+        (the real end of the channel) or `limit` *accepted* (post-filter)
+        messages have been collected - a page's filtered-out messages don't
+        count against `limit`, so a noisy tail of skipped rows can't quietly
+        starve a bounded backfill of real content.
+
+        Filters out what `_handle_message` would already drop from a live
+        feed - our own masqueraded relays, a non-whitelisted bot's messages,
+        and system-event rows (pin/unpin) that carry no real content - so a
+        backfill doesn't relay noise a live listener never would have.
+        Best-effort: an unresolvable channel or a page fetch that raises
+        yields whatever was converted before that rather than discarding a
+        long backfill's progress over one bad page."""
+        try:
+            channel = self._client.get_channel(channel_id, partial=True)
+        except Exception:
+            logger.warning("[stoat:%s] fetch_history: couldn't resolve channel %s", self.connector_id, channel_id)
+            return []
+        backward = limit is not None
+        sort = stoat.MessageSort.latest if backward else stoat.MessageSort.oldest
+        messages: list[StandardMessage] = []
+        cursor: str | None = None
+        remaining = limit
+        while remaining is None or remaining > 0:
+            page_size = _HISTORY_PAGE_SIZE if remaining is None else min(_HISTORY_PAGE_SIZE, remaining)
+            page_cursor = {"before": cursor} if backward else {"after": cursor}
+            try:
+                page = await channel.history(limit=page_size, sort=sort, **page_cursor)
+            except Exception:
+                logger.warning(
+                    "[stoat:%s] fetch_history: fetching channel %s failed", self.connector_id, channel_id,
+                    exc_info=True,
+                )
+                break
+            if not page:
+                break
+            accepted = 0
+            for message in page:
+                if await self._skip_history_message(message):
+                    continue
+                messages.append(await self._to_standard_message(message))
+                accepted += 1
+            cursor = page[-1].id
+            if remaining is not None:
+                remaining -= accepted
+            if len(page) < page_size:
+                break  # short page - reached the real end of the channel
+        if backward:
+            # Pages were fetched newest-first, each appended after the last -
+            # reverse once into overall oldest-first relay order.
+            messages.reverse()
+        return messages
+
+    async def _skip_history_message(self, message) -> bool:
+        """Whether a history-fetched `message` should be dropped rather than
+        converted - the non-live-event-specific subset of `_handle_message`'s
+        filtering (the command-message de-dupe doesn't apply to a fetch)."""
+        author = message.author
+        author_id = str(getattr(author, "id", "")) or None
+        if author_id == self._self_id:
+            return True  # our own masqueraded relay - never re-relay
+        if getattr(author, "bot", False) and not await self._bot_is_whitelisted(author_id or ""):
+            return True
+        return getattr(message, "system_event", None) is not None
 
     async def _handle_message_update(self, event) -> None:
         """`on_message_update` (stoat.events.MessageUpdateEvent): a message

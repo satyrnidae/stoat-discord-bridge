@@ -241,10 +241,20 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         )
 
     async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
-        """`ConnectorInfo.fetch_history` for Discord (issue #122): the
-        oldest-first history of `channel_id`, converted via the same
-        `_to_standard_message` the live relay path uses. `limit=None` fetches
-        the entire channel history (archive mode's `limit:all`).
+        """`ConnectorInfo.fetch_history` for Discord (issue #122): `channel_id`'s
+        history, converted via the same `_to_standard_message` the live relay
+        path uses, always returned oldest-first so relaying it in list order
+        reproduces the original chronology. `limit=None` fetches the entire
+        channel history, oldest message first (archive mode's `limit:all`);
+        a numeric `limit` instead fetches the `limit` *most recent* raw
+        messages (discord.py's own newest-first `history()` default) and
+        reverses them into oldest-first order - so a bounded backfill seeds
+        the freshly-linked channel with recent context, not its oldest
+        messages. A message this connector's own filtering below drops still
+        counts against that raw `limit`, so a very noisy tail of skipped
+        messages can leave fewer than `limit` converted ones - the same
+        approximate-count tradeoff `ensure_channel`'s other best-effort hooks
+        already make elsewhere in this file.
 
         Filters out what `_handle_message` would already drop from a live
         feed - a channel outside this connector's configured guild, our own
@@ -268,7 +278,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             return []
         messages: list[StandardMessage] = []
         try:
-            async for message in channel.history(limit=limit, oldest_first=True):
+            async for message in channel.history(limit=limit, oldest_first=limit is None):
                 if message.webhook_id is not None:
                     continue
                 if message.author.bot and not await self._bot_is_whitelisted(str(message.author.id)):
@@ -288,6 +298,11 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             logger.warning(
                 "[discord:%s] fetch_history: fetching channel %s failed", self.connector_id, channel_id, exc_info=True
             )
+        if limit is not None:
+            # `oldest_first=False` (above) walked newest-first so `limit` caps
+            # the *most recent* messages - reverse back into oldest-first
+            # relay order.
+            messages.reverse()
         return messages
 
     def _resolve_sender_color(self, author: object) -> str | None:

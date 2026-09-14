@@ -44,6 +44,8 @@ async def test_fetch_history_converts_messages_oldest_first():
 
 
 async def test_fetch_history_respects_a_numeric_limit():
+    # A numeric limit means the N *most recent* messages (issue #122), not
+    # the oldest N - still returned oldest-first so relay order is correct.
     client = FakeClient()
     guild = FakeGuild(id=123)
     channel = FakeChannel(id=42, guild=guild)
@@ -59,7 +61,7 @@ async def test_fetch_history_respects_a_numeric_limit():
 
     messages = await sender.fetch_history("42", 2)
 
-    assert [m.content_markdown for m in messages] == ["m1", "m2"]
+    assert [m.content_markdown for m in messages] == ["m4", "m5"]
 
 
 async def test_fetch_history_drops_webhook_posts():
