@@ -54,6 +54,40 @@ accepts a value typed by hand — an id, or a bare name.
   / `LINKED CHANNELS`, is hoisted to the first position in IRC's syntax since
   it's the one argument IRC can't let slide.
 
+## Editing a link in place (Discord only)
+
+A successful `/link <noun>`, a single-destination `/mirror <noun> to
+<service>` (not the `all` fan-out - there's no single counterpart to edit),
+and `/linked <noun>` (when the target is already linked and the invoker has
+Manage Server) attach an in-line editor panel to the reply - a row of
+`discord.ui` controls under the confirmation text, so retargeting a link
+doesn't mean retyping the whole command from scratch. Discord only; Stoat and
+IRC still work purely through the command syntax documented above.
+
+The panel has:
+
+- A **connector** dropdown, when the link group has more than one other
+  member - pick which counterpart edge you're editing before retargeting or
+  unlinking it.
+- A **counterpart** dropdown of that connector's known entities (from its
+  `list_channels` / `list_roles` / etc. autocomplete source), plus an
+  "Enter an id/name..." option that opens a text-entry modal for anything not
+  in that list. Picking one unlinks the old counterpart and links the new one
+  in its place - **not** a single atomic operation: if the new link fails
+  (a `LinkError` - already linked elsewhere, unknown id, etc.) the old edge is
+  already gone, exactly as if you'd run `/unlink` followed by a failing
+  `/link` by hand. The panel reports the error and stays open so you can pick
+  another counterpart.
+- An **Unlink** button, removing just the edited counterpart from the group
+  (equivalent to `/unlink <noun> <service>`, not the whole group).
+
+Ephemeral, only visible to and usable by whoever ran the triggering command,
+and expires after 5 minutes (the controls gray out; re-run the command for a
+fresh panel). **v1 scope is retargeting and unlinking only** - renaming the
+*local* entity or moving a channel to a different Category aren't in the
+panel yet and still need the plain `/mirror ... new_name` / channel-move
+paths; a future iteration may add them.
+
 ## `/status`
 
 Reports sync target health (`healthy` / `degraded` / `failing`) per
