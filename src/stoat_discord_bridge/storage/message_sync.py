@@ -63,6 +63,26 @@ class MessageSyncRepository:
             return None
         return [_from_doc(doc["origin"]), *(_from_doc(ref) for ref in doc["relayed"])]
 
+    async def find_group_if_origin(
+        self, connector_id: str, channel_id: str, message_id: str
+    ) -> list[MessageRef] | None:
+        """Like `find_group`, but only matches when the given message ID is
+        the sync group's recorded *origin* - never a relayed copy. Returns
+        `None` both when the message isn't tracked at all and when it's
+        tracked only as a relayed copy; callers that only need "is there
+        anything to propagate from here" don't need to distinguish those two
+        cases."""
+        doc = await self._collection.find_one(
+            {
+                "origin.platform": connector_id,
+                "origin.channel_id": channel_id,
+                "origin.message_id": message_id,
+            }
+        )
+        if doc is None:
+            return None
+        return [_from_doc(doc["origin"]), *(_from_doc(ref) for ref in doc["relayed"])]
+
 
 def _to_doc(ref: MessageRef) -> dict:
     return {"platform": ref.connector_id, "channel_id": ref.channel_id, "message_id": ref.message_id}
