@@ -48,6 +48,27 @@ class DiscordSyncMixin:
             return
         await self._on_member_roles_changed(self.connector_id, str(after.id), added, removed)
 
+    async def _handle_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        """A member's voice-channel connection changed (join, leave, or move
+        between channels) - pushed straight to `VoiceBridgeCoordinator.
+        on_voice_presence` (issue #113); the coordinator itself decides
+        whether either channel is part of a voice-bridgeable group. A move
+        reports as a leave of the old channel followed by a join of the new
+        one, so the coordinator's per-(group, connector) occupant sets never
+        see a channel id that isn't its own."""
+        if self._on_voice_presence is None:
+            return
+        if before.channel is not None and before.channel != after.channel:
+            await self._on_voice_presence(
+                self.connector_id, str(before.channel.id), str(member.id), present=False, is_bot=member.bot
+            )
+        if after.channel is not None and before.channel != after.channel:
+            await self._on_voice_presence(
+                self.connector_id, str(after.channel.id), str(member.id), present=True, is_bot=member.bot
+            )
+
     async def _handle_role_update(self, before: discord.Role, after: discord.Role) -> None:
         """A guild role changed - propagate a rename to linked copies."""
         if self._on_role_renamed is None or after.guild.id != self._config.guild_id:

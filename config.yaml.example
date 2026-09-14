@@ -62,6 +62,13 @@ discord:
     # webhook receiver can't tint a relayed name, so here this only governs
     # the outbound value.
     color_forwarding: true
+    # Whether this connector's voice channels can join the N-way voice bridge
+    # (issue #113) - a bridge group whose linked channels include >= 2 voice
+    # channels on voice-capable connectors is voice-bridgeable automatically,
+    # no separate link command. Defaults to true; set false (or
+    # DISCORD__0__VOICE_BRIDGING=false) to keep this connector's voice
+    # channels text-only.
+    voice_bridging: true
 
 stoat:
   - id: stoat_public
@@ -110,6 +117,15 @@ stoat:
     # STOAT__1__COMMAND_PREFIX=!) to avoid clashing with another bot or with
     # clients that swallow a leading "/". Command names are unchanged.
     command_prefix: "/"
+    # The Stoat-side voice_bridging counterpart of Discord's (issue #113).
+    # Also needs a LiveKit-backed instance and the `livekit` package - a
+    # non-LiveKit instance or missing deps just means this connector's voice
+    # channels are never reported as voice-capable. Defaults to true; set
+    # false (or STOAT__1__VOICE_BRIDGING=false) to opt this connector out.
+    voice_bridging: true
+    # Which LiveKit SFU node this connector's voice joins should use - unset
+    # lets stoat.py/the server pick. Only meaningful alongside voice_bridging.
+    # voice_node: my-node
 
 irc:
   - id: irc
@@ -169,3 +185,15 @@ irc:
 # whitelisted_bots:
 #   - "discord:123456789012345678"
 #   - "stoat:01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+# N-way voice bridging (issue #113) - bridge-wide settings; which connectors
+# can actually participate is the per-connector voice_bridging option above.
+# voice:
+#   # Master switch. Defaults to true; set false (or VOICE__ENABLED=false) to
+#   # disable the whole feature regardless of per-connector settings.
+#   enabled: true
+#   # When the active voice-bridgeable group's session drops below 2 populated
+#   # connectors and closes, whether to immediately open a session for another
+#   # group that already qualifies rather than staying idle until a fresh join
+#   # re-qualifies one. Defaults to false. Env: VOICE__FOLLOW_ON_EMPTY.
+#   follow_on_empty: false
