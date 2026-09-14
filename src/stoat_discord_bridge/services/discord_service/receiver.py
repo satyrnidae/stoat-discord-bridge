@@ -60,6 +60,7 @@ class DiscordReceiverService(ReceiverService):
     supports_pins = True
     supports_typing = True
     supports_edits = True
+    supports_deletes = True
 
     def __init__(
         self,
@@ -261,6 +262,26 @@ class DiscordReceiverService(ReceiverService):
             except discord.HTTPException:
                 logger.warning(
                     "[discord:%s] couldn't edit relayed message %s in channel %s",
+                    self.connector_id,
+                    message_id,
+                    target_channel_id,
+                )
+
+    async def delete_message(self, *, target_channel_id: str, target_message_ids: list[str]) -> None:
+        """Delete every webhook post the original relay produced in this
+        channel. Best-effort per id - a post that's already gone
+        (`discord.NotFound`, or any other `discord.HTTPException`) is
+        skipped rather than stopping the rest of the batch."""
+        if not target_message_ids:
+            return
+        webhook, thread = await self._get_or_create_webhook(target_channel_id)
+        thread_kwarg = {"thread": thread} if thread is not None else {}
+        for message_id in target_message_ids:
+            try:
+                await webhook.delete_message(int(message_id), **thread_kwarg)
+            except discord.HTTPException:
+                logger.warning(
+                    "[discord:%s] couldn't delete relayed message %s in channel %s",
                     self.connector_id,
                     message_id,
                     target_channel_id,

@@ -590,3 +590,91 @@ async def test_handle_raw_message_edit_relays_a_whitelisted_bot_authored_edit():
     assert [e.new_content_markdown for e in recorder.edits] == ["fixed typo"]
 
 
+# -------------------------------------------------------- _handle_raw_message_delete
+
+
+def _delete_payload(**overrides):
+    defaults = dict(guild_id=123, channel_id=42, message_id=7, cached_message=None)
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _bulk_delete_payload(**overrides):
+    defaults = dict(guild_id=123, channel_id=42, message_ids={7, 8}, cached_messages=[])
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+async def test_handle_raw_message_delete_emits_a_standard_delete():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_delete(_delete_payload())
+
+    assert [(d.origin_connector_id, d.origin_channel_id, d.origin_message_id) for d in recorder.deletes] == [
+        ("discord", "42", "7")
+    ]
+
+
+async def test_handle_raw_message_delete_ignores_a_different_guild():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_delete(_delete_payload(guild_id=999))
+
+    assert recorder.deletes == []
+
+
+async def test_handle_raw_message_delete_drops_a_cached_webhook_copy():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_delete(
+        _delete_payload(cached_message=SimpleNamespace(webhook_id=999))
+    )
+
+    assert recorder.deletes == []
+
+
+async def test_handle_raw_message_delete_relays_when_cached_message_has_no_webhook_id():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_delete(
+        _delete_payload(cached_message=SimpleNamespace(webhook_id=None))
+    )
+
+    assert len(recorder.deletes) == 1
+
+
+async def test_handle_raw_bulk_message_delete_emits_one_standard_delete_per_id():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_bulk_message_delete(_bulk_delete_payload())
+
+    assert {(d.origin_channel_id, d.origin_message_id) for d in recorder.deletes} == {("42", "7"), ("42", "8")}
+
+
+async def test_handle_raw_bulk_message_delete_ignores_a_different_guild():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_bulk_message_delete(_bulk_delete_payload(guild_id=999))
+
+    assert recorder.deletes == []
+
+
+async def test_handle_raw_bulk_message_delete_drops_cached_webhook_copies_individually():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_bulk_message_delete(
+        _bulk_delete_payload(
+            cached_messages=[SimpleNamespace(id=7, webhook_id=999), SimpleNamespace(id=8, webhook_id=None)]
+        )
+    )
+
+    assert [(d.origin_channel_id, d.origin_message_id) for d in recorder.deletes] == [("42", "8")]
+
+

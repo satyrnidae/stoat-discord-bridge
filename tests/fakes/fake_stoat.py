@@ -105,11 +105,20 @@ class FakeStoatMessage:
         self.unpin_calls = 0
         self.content: str | None = None
         self.edits: list[str | None] = []
+        self.deleted = False
+        # settable post-construction to make delete() raise, for testing that
+        # one already-gone post doesn't stop the rest of a multi-id delete.
+        self.raises_on_delete: BaseException | None = None
 
     async def edit(self, *, content=None, **kwargs) -> "FakeStoatMessage":
         self.content = content
         self.edits.append(content)
         return self
+
+    async def delete(self) -> None:
+        if self.raises_on_delete is not None:
+            raise self.raises_on_delete
+        self.deleted = True
 
     async def react(self, emoji) -> None:
         self.added_reactions.append(emoji)
@@ -224,6 +233,32 @@ class FakeChannel:
         if self._raises is not None:
             raise self._raises
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
+
+
+class FakeVoiceChannel(stoat.VoiceChannel):
+    """Stands in for stoat.VoiceChannel - needed for the
+    isinstance(channel, stoat.VoiceChannel) check `channel_is_voice`
+    (issue #113) uses. Skips the real (attrs-generated) __init__, same
+    pattern as fake_discord.py's discord.py subclass fakes; `.voice_states`
+    is shadowed with a bare participants dict since the real property reads
+    a gateway-fed cache this fake has none of."""
+
+    def __init__(
+        self,
+        id: str,
+        *,
+        name: str = "voice",
+        server_id: str | None = None,
+        participants: "dict[str, Any] | None" = None,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.server_id = server_id
+        self._participants = participants or {}
+
+    @property
+    def voice_states(self) -> SimpleNamespace:
+        return SimpleNamespace(participants=self._participants)
 
 
 class FakePartialMessageable:

@@ -46,6 +46,12 @@ class _DiscordClient(discord.Client):
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         await self._owner._handle_raw_message_edit(payload)
 
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        await self._owner._handle_raw_message_delete(payload)
+
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        await self._owner._handle_raw_bulk_message_delete(payload)
+
     async def on_thread_create(self, thread: discord.Thread) -> None:
         await self._owner._handle_thread_create(thread)
 
@@ -74,6 +80,11 @@ class _DiscordClient(discord.Client):
 
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
         await self._owner._handle_raw_reaction(payload, added=False)
+
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        await self._owner._handle_voice_state_update(member, before, after)
 
     async def on_guild_emojis_update(
         self, guild: discord.Guild, before: "list[discord.Emoji]", after: "list[discord.Emoji]"

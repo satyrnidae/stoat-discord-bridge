@@ -11,13 +11,16 @@ from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
+    LinkedMember,
     LinkError,
     MirrorGuard,
     _clean_new_name,
     _guards_mirror,
+    _is_all_token,
     _is_forum_channel,
     _kick_group_member,
     _link_conflict_check,
+    _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
     _mirror_to_destination,
@@ -25,6 +28,8 @@ from stoat_discord_bridge.admin_commands.common import (
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    _run_bulk_mirror,
+    collect_linked_members,
     format_linked_listing,
 )
 from stoat_discord_bridge.channel_structure import clip_name, forum_category_title, thread_category_title
@@ -289,7 +294,26 @@ class ChannelLinker:
         resolved by `_resolve_history_limit` - `None` defaults to
         `_DEFAULT_HISTORY_LIMIT`, the literal `"all"` means the entire
         history, anything else is a positive integer clamped to
-        `_MAX_HISTORY_LIMIT`."""
+        `_MAX_HISTORY_LIMIT`. Not combinable with `local_channel_id == "all"`
+        (below) - one backfill request can't fan out across a whole
+        connector's channels.
+
+        `local_channel_id == "all"` (case-insensitive, and only that literal
+        token - never inferred from an omitted argument) mirrors every
+        channel `local_connector` can enumerate via its `list_channels` hook
+        to `destination` instead of just one (issue #123) - one line of
+        summary/skip/error per channel, paced and capped the same as the
+        other bulk helpers in `common.py`. Raises LinkError up front if
+        `local_connector` isn't a known connector, has no `list_channels`
+        hook (nothing to enumerate with - e.g. IRC), if it can't be listed,
+        if there are too many channels to mirror at once, or if `new_name` is
+        also given (one name can't apply to every mirrored channel).
+        `local_channel_category` / `is_thread_category` /
+        `category_from_channel_id` describe a *single* source channel's own
+        Category context (set only by the thread-mirror caller, which never
+        passes `local_channel_id="all"`), so they're dropped rather than
+        forwarded to every enumerated channel; `destination_category`, an
+        explicit destination-side override, still applies to all of them."""
         _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a channel to its own connector.")
@@ -313,6 +337,28 @@ class ChannelLinker:
             resolved_history_limit = _resolve_history_limit(history_limit)
 
         await _refresh_connectors(self._connectors, local_connector, destination)
+
+        if _is_all_token(local_channel_id):
+            if _clean_new_name(new_name) is not None:
+                raise LinkError("can't use 'all' together with a new name - it would collide across every channel.")
+            if with_history:
+                raise LinkError(
+                    "'with history' can't be combined with local_id 'all' - "
+                    "it would trigger a backfill for every enumerated channel."
+                )
+            _require_known_connector(self._connectors, local_connector)
+            info = self._connectors[local_connector]
+            entities = await _list_entities_for_all(self._connectors, local_connector, info.list_channels, kind="channel")
+            return await _run_bulk_mirror(
+                entities,
+                lambda cid, cname: self.mirror_channel(
+                    local_connector=local_connector,
+                    local_channel_id=cid,
+                    local_channel_name=cname,
+                    destination=destination,
+                    destination_category=destination_category,
+                ),
+            )
 
         target_name = _clean_new_name(new_name) or local_channel_name
 
@@ -734,15 +780,27 @@ class ChannelLinker:
         of carrying the source channel's name over (issue #44).
 
         `with_history`/`history_limit` are forwarded as-is to `mirror_channel`
-        - see its docstring (issue #122)."""
+        - see its docstring (issue #122), including its rejection of
+        `with_history` combined with `source_id == "all"`.
+
+        `source_id == "all"` (case-insensitive) mirrors every channel
+        `source` can enumerate instead of just one, via `mirror_channel`'s
+        own entity-`all` handling (issue #123) - the literal token is passed
+        through unresolved rather than run through `_resolve_to_id`/
+        `_resolve_name`, so a source connector that happens to have a real
+        channel literally named "all" doesn't narrow the fan-out to just
+        that one channel."""
         _require_known_connector(self._connectors, source)
         if source == local_connector:
             raise LinkError("can't mirror a channel from a connector to itself.")
 
         await _refresh_connectors(self._connectors, source, local_connector)
 
-        source_id = await self._resolve_to_id(source, source_id)
-        source_name = await self._resolve_name(source, source_id)
+        if _is_all_token(source_id):
+            source_name = source_id
+        else:
+            source_id = await self._resolve_to_id(source, source_id)
+            source_name = await self._resolve_name(source, source_id)
 
         return await self.mirror_channel(
             local_connector=source,
@@ -812,6 +870,23 @@ class ChannelLinker:
                 if local is not None and local.category_name:
                     return local.category_name
         return source_category_name or None
+
+    async def describe_group(
+        self, *, local_connector: str, local_id: str
+    ) -> "tuple[str, list[LinkedMember]] | None":
+        """The structured counterpart of `list_linked_channels` - the bridge
+        group id and every member as a `LinkedMember`, or None if
+        `local_id` (an id or bare name, on `local_connector`) isn't linked to
+        anything. Used by the Discord in-line link editor (issue #115) to
+        build its components off a group's current membership without
+        touching `ChannelMappingRepository` directly."""
+        local_id = await self._resolve_to_id(local_connector, local_id)
+        bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_id)
+        if bridge_group is None:
+            return None
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+        members = await collect_linked_members(mapped, self._connectors, "channel_id", "channel_name")
+        return bridge_group, members
 
     async def list_linked_channels(self, *, local_connector: str, local_channel_id: str) -> str:
         """Human-readable listing of every channel bridged to

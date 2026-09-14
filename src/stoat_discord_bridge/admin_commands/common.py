@@ -227,6 +227,107 @@ def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterabl
     return [d for d in self._connectors if d != kw["local_connector"]]  # type: ignore[attr-defined]
 
 
+# --------------------------------------------------------------------------
+# Entity-level `all` (issue #123): `/mirror <noun> to <service> all` mirrors
+# every local entity of that kind to `<service>`, and `/mirror <noun> from
+# <service> all` pulls in every entity of that kind from `<service>` - the
+# orthogonal axis to the existing destination-level `all` above (which picks
+# every *destination* for one named entity). Both axes are independent, so
+# `/mirror channel to all all` (every local channel, to every connector)
+# reaches this fan-out once per destination via the existing destination-`all`
+# loop, with no extra code needed here.
+
+# Small delay between each entity in a bulk fan-out, so a large `all` doesn't
+# front-load an unpaced burst of channel/category/role/emote-create calls
+# against a platform's rate limiting (the "need to respect limits for
+# requests" ask in issue #123) - a real concern here since, unlike the
+# destination axis (bounded by the number of configured connectors), the
+# entity axis is bounded by how many channels/categories/roles/emoji exist on
+# a connector, which is not small.
+_BULK_ENTITY_PACING_SECONDS: float = 0.25
+
+# A soft ceiling on how many entities one `all` fan-out will touch - past
+# this, the burst of creates is large enough to risk tripping a platform's
+# stricter creation-specific rate limits (and, for a Discord slash command,
+# the 15-minute interaction-followup token window) regardless of pacing, so
+# the operator is asked to link a more targeted subset instead.
+_BULK_ENTITY_CAP: int = 50
+
+
+def _is_all_token(token: str | None) -> bool:
+    """Whether `token` is the literal (case-insensitive) `all` marking an
+    entity-level `/mirror <noun> to|from ... all` (issue #123). `None` - the
+    argument was omitted - is never `all`: omission must keep its existing,
+    narrower meaning (the invoking channel/Category, or "no role/emote
+    picked yet") in every caller, never silently expand into the expensive
+    bulk branch (see point 3 of the issue's plan)."""
+    return token is not None and token.lower() == "all"
+
+
+async def _list_entities_for_all(
+    connectors: "dict[str, ConnectorInfo]",
+    connector_id: str,
+    list_hook: Callable[[], Awaitable[list[tuple[str, str]]]] | None,
+    *,
+    kind: str,
+) -> list[tuple[str, str]]:
+    """Every `(id, name)` pair `list_hook` reports for `connector_id`, to
+    drive an entity-level `all` mirror. Unlike the best-effort autocomplete
+    callers of the same `list_*` hooks (which treat a missing hook or a
+    raised exception as "no suggestions"), a bulk mirror has no such
+    fallback - a connector with no `list_*` hook for `kind` (e.g. IRC for
+    anything but channels) genuinely can't enumerate "every entity", so this
+    raises a user-facing LinkError instead of silently doing nothing. Also
+    raises past `_BULK_ENTITY_CAP` (see its docstring) - checked here, before
+    the caller starts iterating, so an oversized `all` is rejected up front
+    rather than half-run."""
+    info = connectors.get(connector_id)
+    label = info.label if info else connector_id
+    if list_hook is None:
+        raise LinkError(f"{label} doesn't support listing {kind}s - can't use 'all' here.")
+    try:
+        entities = await list_hook()
+    except Exception as exc:
+        raise LinkError(f"{label}: couldn't list {kind}s: {exc}") from exc
+    if len(entities) > _BULK_ENTITY_CAP:
+        raise LinkError(
+            f"{label} has {len(entities)} {kind}s - mirroring more than {_BULK_ENTITY_CAP} at once via "
+            "'all' isn't supported; link them individually instead."
+        )
+    return entities
+
+
+async def _run_bulk_mirror(
+    entities: list[tuple[str, str]],
+    mirror_one: Callable[[str, str], Awaitable[str]],
+    *,
+    pacing_seconds: float = _BULK_ENTITY_PACING_SECONDS,
+) -> str:
+    """Run `mirror_one(entity_id, entity_name)` for every entity in
+    `entities`, in order, pacing each call `pacing_seconds` apart (not before
+    the first) so a large fan-out doesn't front-load a burst of creates.
+    Joins the per-entity result lines the same way the existing
+    destination-`all` fan-outs (`mirror_channel_all` and friends) do - any
+    exception from one entity (a `LinkError`, or a genuinely unexpected one
+    that slipped past `mirror_one`'s own per-connector-problem handling) is
+    caught and reported as its own line (`'<name>': <message>`) rather than
+    aborting the rest, matching those methods' "report, don't raise, per
+    problem" convention."""
+    if not entities:
+        return "nothing to mirror - no entities found."
+    lines: list[str] = []
+    for i, (entity_id, entity_name) in enumerate(entities):
+        if i:
+            await asyncio.sleep(pacing_seconds)
+        try:
+            lines.append(await mirror_one(entity_id, entity_name))
+        except Exception as exc:
+            if not isinstance(exc, LinkError):
+                logger.warning("bulk mirror: entity %r failed: %s", entity_name, exc)
+            lines.append(f"'{entity_name}': {exc}")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class ConnectorInfo:
     id: str
@@ -305,6 +406,26 @@ class ConnectorInfo:
     # as its own channel (issue #100). `CategoryLinker` also consults it to
     # title a forum-sourced Category `💬 #<forum>` rather than `🧵 #<parent>`.
     is_forum_channel: Callable[[str], Awaitable[bool | None]] | None = None
+    # Best-effort "is this native channel id a voice channel?" check -> True,
+    # False, or None (can't tell - bad id, uncached, an error, or a connector
+    # kind with no voice concept). Discord/Stoat implement it; IRC leaves it
+    # unset (no voice channels), as does a Discord/Stoat connector with
+    # `voice_bridging: false` in config.yaml (issue #113) - either way, a
+    # channel this hook can't answer for never counts toward a bridge group's
+    # voice-bridgeable membership. Used by `services/voice/coordinator.py`'s
+    # `VoiceBridgeCoordinator` to classify which linked channel groups are
+    # voice-bridgeable (>= 2 voice channels on voice-capable connectors).
+    channel_is_voice: Callable[[str], Awaitable[bool | None]] | None = None
+    # Best-effort snapshot of the non-bot user ids currently present in voice
+    # channel `channel_id`, or None if it can't be determined right now (bad
+    # id, uncached, an error) - callers should leave whatever presence they
+    # already had for this connector/channel alone on a None rather than
+    # treat it as "now empty". Only meaningful alongside `channel_is_voice`;
+    # IRC and a non-voice-bridging connector leave this unset too. Used by
+    # `VoiceBridgeCoordinator.refresh_groups` for startup seeding and to
+    # self-heal drift between the coordinator's presence table (fed live by
+    # each sender's voice-state events) and the platform's own state.
+    voice_occupants: Callable[[str], Awaitable["set[str] | None"]] | None = None
     # Best-effort "can the bridge bot actually see this channel?" check, keyed
     # by native channel id. Returns True (visible), False (the channel
     # resolves but the bot lacks the view permission on it), or None ("can't
@@ -676,6 +797,50 @@ async def _link_conflict_check(
     )
 
 
+@dataclass(frozen=True)
+class LinkedMember:
+    """One connector's side of a bridge/link/mapping group - the structured
+    counterpart of the `"{label}: {name} ({id})"` strings `format_linked_listing`
+    renders, for a caller (the Discord in-line link editor - issue #115) that
+    needs to build UI components off a group's membership rather than just
+    print it. `connector_id` is the raw config id (`ChannelMapping.connector_id`
+    etc.); `label` is that connector's display label, already resolved so a
+    caller never has to re-look it up."""
+
+    connector_id: str
+    label: str
+    entity_id: str
+    name: str
+
+
+async def collect_linked_members(
+    mappings: "Iterable[object]",
+    connectors: "dict[str, ConnectorInfo]",
+    id_attr: str,
+    name_attr: str | None = None,
+    *,
+    resolve_name: Callable[[str, str], Awaitable[str]] | None = None,
+) -> list[LinkedMember]:
+    """The mapping-to-member gather step shared by every `list_linked_*`
+    method and (issue #115) `describe_group`: one `LinkedMember` per mapping,
+    sorted by `(connector_id, <id_attr>)`. `format_linked_listing` is just
+    this plus the display-string join.
+
+    `name_attr` reads the display name straight off the stored mapping
+    (ChannelLinker/CategoryLinker, which stash the name at link time);
+    `resolve_name(connector_id, entity_id)` instead resolves it live off the
+    connector (EmoteLinker/UserLinker/RoleLinker, whose resolve hook can
+    reflect a rename since linking)."""
+    members = []
+    for mapping in sorted(mappings, key=lambda m: (m.connector_id, getattr(m, id_attr))):  # type: ignore[attr-defined]
+        info = connectors.get(mapping.connector_id)
+        label = info.label if info else mapping.connector_id
+        entity_id = getattr(mapping, id_attr)
+        name = await resolve_name(mapping.connector_id, entity_id) if resolve_name else getattr(mapping, name_attr)
+        members.append(LinkedMember(connector_id=mapping.connector_id, label=label, entity_id=entity_id, name=name))
+    return members
+
+
 async def format_linked_listing(
     mappings: "Iterable[object]",
     connectors: "dict[str, ConnectorInfo]",
@@ -688,31 +853,24 @@ async def format_linked_listing(
 ) -> list[str]:
     """The line-per-member formatting shared by every `list_linked_*`
     method: one `"{label}: {name} ({id})"` line per mapping, sorted by
-    `(connector_id, <id_attr>)`.
-
-    `name_attr` reads the display name straight off the stored mapping
-    (ChannelLinker/CategoryLinker, which stash the name at link time);
-    `resolve_name(connector_id, entity_id)` instead resolves it live off the
-    connector (EmoteLinker/UserLinker/RoleLinker, whose resolve hook can
-    reflect a rename since linking) - in which case the id is dropped from a
-    line whenever it's identical to the resolved name (e.g. IRC, whose
-    user_id already IS the display name).
+    `(connector_id, <id_attr>)` (via `collect_linked_members`).
 
     `marker_for`, a `(connector_id, id)` pair, appends `marker_text` to that
     one line - the "(this channel)"/"(this Category)" flag `/linked
     channels`/`/linked categories` put on the invoking entity. Unset for the
-    live-resolved linkers, which have no such "this one" context."""
+    live-resolved linkers, which have no such "this one" context. The id is
+    dropped from a line whenever it's identical to the resolved name (e.g.
+    IRC, whose user_id already IS the display name) - only reachable when
+    `marker_for` is unset, since every `marker_for` caller's `id_attr` is a
+    real native id, never equal to its own name."""
+    members = await collect_linked_members(mappings, connectors, id_attr, name_attr, resolve_name=resolve_name)
     lines = []
-    for mapping in sorted(mappings, key=lambda m: (m.connector_id, getattr(m, id_attr))):  # type: ignore[attr-defined]
-        info = connectors.get(mapping.connector_id)
-        label = info.label if info else mapping.connector_id
-        entity_id = getattr(mapping, id_attr)
-        name = await resolve_name(mapping.connector_id, entity_id) if resolve_name else getattr(mapping, name_attr)
+    for m in members:
         if marker_for is not None:
-            marker = marker_text if (mapping.connector_id, entity_id) == marker_for else ""
-            lines.append(f"{label}: {name} ({entity_id}){marker}")
+            marker = marker_text if (m.connector_id, m.entity_id) == marker_for else ""
+            lines.append(f"{m.label}: {m.name} ({m.entity_id}){marker}")
         else:
-            lines.append(f"{label}: {name}" if name == entity_id else f"{label}: {name} ({entity_id})")
+            lines.append(f"{m.label}: {m.name}" if m.name == m.entity_id else f"{m.label}: {m.name} ({m.entity_id})")
     return lines
 
 

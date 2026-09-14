@@ -139,6 +139,36 @@ class _NamesMixin:
             return None
         return isinstance(channel, discord.ForumChannel)
 
+    async def channel_is_voice(self, channel_id: str) -> bool | None:
+        """Whether `channel_id` is a Discord voice channel - this connector's
+        `ConnectorInfo.channel_is_voice` (issue #113), used by
+        `VoiceBridgeCoordinator` to classify voice-bridgeable bridge groups.
+        None if the channel can't be resolved."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except Exception:
+            logger.debug("[discord:%s] couldn't resolve channel %s for voice check", self.connector_id, channel_id)
+            return None
+        if channel is None:
+            return None
+        return isinstance(channel, discord.VoiceChannel)
+
+    async def voice_occupants(self, channel_id: str) -> "set[str] | None":
+        """The non-bot user ids currently connected to voice channel
+        `channel_id` - this connector's `ConnectorInfo.voice_occupants`
+        (issue #113). None if the channel can't be resolved (not "no one is
+        in it" - `VoiceBridgeCoordinator` treats the two differently)."""
+        try:
+            channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except Exception:
+            logger.debug(
+                "[discord:%s] couldn't resolve channel %s for voice occupants", self.connector_id, channel_id
+            )
+            return None
+        if channel is None or not isinstance(channel, discord.VoiceChannel):
+            return None
+        return {str(member.id) for member in channel.members if not member.bot}
+
     async def get_channel_category_name(self, channel_id: str) -> str | None:
         """Best-effort channel-id -> Category-name lookup, used by
         `/mirror channel` to carry a channel's Category across to the

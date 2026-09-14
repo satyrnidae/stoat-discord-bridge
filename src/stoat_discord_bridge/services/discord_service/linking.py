@@ -11,12 +11,15 @@ re-check it. Composed into `DiscordSenderService`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Awaitable
+from typing import Any
 
 import discord
 
 from stoat_discord_bridge.admin_commands import LinkError
+from stoat_discord_bridge.services.discord_service.editor import LinkEditorSpec, LinkEditorView
 from stoat_discord_bridge.services.discord_service.formatting import _normalize_channel_id, _normalize_role_id
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,38 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(message, ephemeral=True)
         return False
 
+    async def _send_linker_reply(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        *,
+        deferred: bool = False,
+        editor: LinkEditorSpec | None = None,
+    ) -> None:
+        """Send `content` (a linker summary or read-only listing), attaching
+        a `LinkEditorView` in-line editor (issue #115) when `editor` is
+        given. `deferred` picks `interaction.followup.send` over
+        `interaction.response.send_message`, same as `_reply_linker_result`.
+
+        `interaction.response.send_message` always returns None in the real
+        API (the message has to be fetched back via
+        `interaction.original_response()`); `interaction.followup.send`
+        returns the sent message directly. Either way, the resulting message
+        is stashed on the view so `on_timeout` (which has no interaction of
+        its own to respond through) can still disable the panel in place."""
+        view = await LinkEditorView.create(editor, invoker_id=interaction.user.id, content=content) if editor else None
+        reply = interaction.followup.send if deferred else interaction.response.send_message
+        kwargs: dict[str, Any] = {"ephemeral": True}
+        if view is not None:
+            kwargs["view"] = view
+        sent = await reply(content, **kwargs)
+        if view is not None:
+            message = sent
+            if message is None:
+                with contextlib.suppress(discord.HTTPException, discord.NotFound):
+                    message = await interaction.original_response()
+            view.message = message
+
     async def _reply_linker_result(
         self,
         interaction: discord.Interaction,
@@ -46,6 +81,7 @@ class DiscordLinkingMixin:
         log_context: str,
         deferred: bool = False,
         empty_fallback: str | None = None,
+        editor: LinkEditorSpec | None = None,
     ) -> None:
         """The `try: summary = await <linker call> / except LinkError: log +
         reply(str(exc)) / else: reply(summary)` shape every mutating
@@ -54,15 +90,47 @@ class DiscordLinkingMixin:
         slow mirror) over `interaction.response.send_message`;
         `empty_fallback` (the mirror handlers' "Nothing to mirror.") is
         substituted for a falsy `summary`, matching each handler's own
-        `summary or "..."` it used to write inline (issue #106)."""
-        reply = interaction.followup.send if deferred else interaction.response.send_message
+        `summary or "..."` it used to write inline (issue #106). `editor`,
+        when given, attaches the in-line link editor (issue #115) to a
+        successful, non-empty reply only - there's nothing to edit on an
+        error or a "Nothing to mirror" no-op."""
         try:
             summary = await coro
         except LinkError as exc:
             logger.info("[discord:%s] %s rejected: %s", self.connector_id, log_context, exc)
+            reply = interaction.followup.send if deferred else interaction.response.send_message
             await reply(str(exc), ephemeral=True)
             return
-        await reply(summary if empty_fallback is None else (summary or empty_fallback), ephemeral=True)
+        content = summary if empty_fallback is None else (summary or empty_fallback)
+        await self._send_linker_reply(interaction, content, deferred=deferred, editor=editor if summary else None)
+
+    async def _listing_editor(
+        self, interaction: discord.Interaction, kind: str, linker: Any, local_id: str
+    ) -> LinkEditorSpec | None:
+        """The `LinkEditorSpec` for a `/linked <noun>` listing's Edit
+        controls (issue #115) - None if the invoker can't manage the guild,
+        `local_id` isn't actually linked, or its group has no other member
+        to edit. Anchors on the *first* non-local member; the panel's own
+        connector select can retarget to any other member from there."""
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if permissions is not None and not permissions.manage_guild:
+            return None
+        described = await linker.describe_group(local_connector=self.connector_id, local_id=local_id)
+        if described is None:
+            return None
+        _group_id, members = described
+        local_member = next((m for m in members if m.connector_id == self.connector_id), None)
+        edited_member = next((m for m in members if m.connector_id != self.connector_id), None)
+        if local_member is None or edited_member is None:
+            return None
+        return LinkEditorSpec(
+            kind=kind,
+            linker=linker,
+            local_connector=self.connector_id,
+            local_id=local_member.entity_id,
+            local_name=local_member.name,
+            edited_connector=edited_member.connector_id,
+        )
 
     async def _handle_linked_channels(
         self, interaction: discord.Interaction, local_id: str | None = None
@@ -73,7 +141,8 @@ class DiscordLinkingMixin:
         summary = await self._linker.list_linked_channels(
             local_connector=self.connector_id, local_channel_id=channel_id
         )
-        await interaction.response.send_message(summary, ephemeral=True)
+        editor = await self._listing_editor(interaction, "channel", self._linker, channel_id)
+        await self._send_linker_reply(interaction, summary, editor=editor)
 
     async def _handle_linked_users(self, interaction: discord.Interaction, local_id: discord.Member | None) -> None:
         if not await self._linker_configured(interaction, self._user_linker, "User linking isn't configured."):
@@ -82,9 +151,11 @@ class DiscordLinkingMixin:
             summary = await self._user_linker.list_linked_users(
                 local_connector=self.connector_id, local_user_id=str(local_id.id)
             )
+            editor = await self._listing_editor(interaction, "user", self._user_linker, str(local_id.id))
         else:
             summary = await self._user_linker.list_linked_users()
-        await interaction.response.send_message(summary, ephemeral=True)
+            editor = None
+        await self._send_linker_reply(interaction, summary, editor=editor)
 
     async def _handle_link_channel(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: str | None
@@ -102,6 +173,13 @@ class DiscordLinkingMixin:
             external_id,
             local_id,
         )
+        # The actual anchor is `local_id` (an explicit destination override)
+        # when given, else the invoking channel - matching link_channel's
+        # own destination_channel_id resolution (services/discord_service
+        # doesn't know the override's real name, so it falls back to the id
+        # the same way ChannelLinker._resolve_name does for an unresolvable one).
+        anchor_id = local_id or str(interaction.channel_id)
+        anchor_name = anchor_id if local_id else getattr(interaction.channel, "name", anchor_id)
         await self._reply_linker_result(
             interaction,
             self._linker.link_channel(
@@ -113,6 +191,10 @@ class DiscordLinkingMixin:
                 destination_id=local_id,
             ),
             log_context="/link channel",
+            editor=LinkEditorSpec(
+                kind="channel", linker=self._linker, local_connector=self.connector_id,
+                local_id=anchor_id, local_name=anchor_name, edited_connector=service,
+            ),
         )
 
     def _invoking_category_id(self, interaction: discord.Interaction) -> str | None:
@@ -133,7 +215,9 @@ class DiscordLinkingMixin:
             local_category_id=self._invoking_category_id(interaction),
             local_category=local_id,
         )
-        await interaction.response.send_message(summary, ephemeral=True)
+        anchor_id = local_id or self._invoking_category_id(interaction)
+        editor = await self._listing_editor(interaction, "category", self._category_linker, anchor_id)
+        await self._send_linker_reply(interaction, summary, editor=editor)
 
     async def _handle_link_category(
         self, interaction: discord.Interaction, service: str, external_id: str, local_id: str | None
@@ -154,6 +238,8 @@ class DiscordLinkingMixin:
             external_id,
             local_id,
         )
+        anchor_id = local_id or str(category.id)
+        anchor_name = local_id or category.name
         await self._reply_linker_result(
             interaction,
             self._category_linker.link_category(
@@ -165,6 +251,10 @@ class DiscordLinkingMixin:
                 destination_id=local_id,
             ),
             log_context="/link category",
+            editor=LinkEditorSpec(
+                kind="category", linker=self._category_linker, local_connector=self.connector_id,
+                local_id=anchor_id, local_name=anchor_name, edited_connector=service,
+            ),
         )
 
     async def _handle_unlink_category(
@@ -220,12 +310,21 @@ class DiscordLinkingMixin:
             local_category_id=self._invoking_category_id(interaction),
             local_category=local_id,
         )
+        editor = None
         if service.lower() == "all":
             coro = self._category_linker.mirror_category_all(**kwargs)
         else:
             coro = self._category_linker.mirror_category(destination=service, new_name=new_name, **kwargs)
+            anchor_id = local_id or self._invoking_category_id(interaction)
+            category = getattr(interaction.channel, "category", None)
+            anchor_name = anchor_id if local_id or category is None else category.name
+            editor = LinkEditorSpec(
+                kind="category", linker=self._category_linker, local_connector=self.connector_id,
+                local_id=anchor_id, local_name=anchor_name, edited_connector=service,
+            )
         await self._reply_linker_result(
-            interaction, coro, log_context="/mirror category", deferred=True, empty_fallback="Nothing to mirror."
+            interaction, coro, log_context="/mirror category", deferred=True, empty_fallback="Nothing to mirror.",
+            editor=editor,
         )
 
     async def _handle_mirror_category_from(
@@ -278,6 +377,10 @@ class DiscordLinkingMixin:
                 source_role=external_id,
             ),
             log_context="/link-role",
+            editor=LinkEditorSpec(
+                kind="role", linker=self._role_linker, local_connector=self.connector_id,
+                local_id=local_id, local_name=local_id, edited_connector=service,
+            ),
         )
 
     async def _handle_unlink_role(
@@ -304,12 +407,18 @@ class DiscordLinkingMixin:
     ) -> None:
         if not await self._linker_configured(interaction, self._role_linker, "Role linking isn't configured."):
             return
+        normalized_id = _normalize_role_id(local_id) if local_id else None
         summary = await self._role_linker.list_linked_roles(
             local_connector=self.connector_id,
-            local_role=_normalize_role_id(local_id) if local_id else None,
+            local_role=normalized_id,
             service=service,
         )
-        await interaction.response.send_message(summary, ephemeral=True)
+        editor = (
+            await self._listing_editor(interaction, "role", self._role_linker, normalized_id)
+            if normalized_id
+            else None
+        )
+        await self._send_linker_reply(interaction, summary, editor=editor)
 
     async def _handle_mirror_role(
         self,
@@ -334,14 +443,20 @@ class DiscordLinkingMixin:
         # Creating/matching the role on the target connector is a network
         # round-trip that can outrun Discord's 3s deadline - defer + followup.
         await interaction.response.defer(ephemeral=True, thinking=True)
+        editor = None
         if service.lower() == "all":
             coro = self._role_linker.mirror_role_all(local_connector=self.connector_id, local_role=local_id)
         else:
             coro = self._role_linker.mirror_role(
                 local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
             )
+            editor = LinkEditorSpec(
+                kind="role", linker=self._role_linker, local_connector=self.connector_id,
+                local_id=local_id, local_name=local_id, edited_connector=service,
+            )
         await self._reply_linker_result(
-            interaction, coro, log_context="/mirror-role", deferred=True, empty_fallback="Nothing to mirror."
+            interaction, coro, log_context="/mirror-role", deferred=True, empty_fallback="Nothing to mirror.",
+            editor=editor,
         )
 
     async def _handle_mirror_role_from(
@@ -392,6 +507,10 @@ class DiscordLinkingMixin:
                 source_id=external_id,
             ),
             log_context="/link emote",
+            editor=LinkEditorSpec(
+                kind="emote", linker=self._emote_linker, local_connector=self.connector_id,
+                local_id=local_id, local_name=local_id, edited_connector=service,
+            ),
         )
 
     async def _handle_unlink_emote(
@@ -420,7 +539,10 @@ class DiscordLinkingMixin:
         summary = await self._emote_linker.list_linked_emotes(
             local_connector=self.connector_id, local_emote=local_id
         )
-        await interaction.response.send_message(summary, ephemeral=True)
+        editor = (
+            await self._listing_editor(interaction, "emote", self._emote_linker, local_id) if local_id else None
+        )
+        await self._send_linker_reply(interaction, summary, editor=editor)
 
     async def _handle_mirror_emote(
         self,
@@ -444,14 +566,20 @@ class DiscordLinkingMixin:
         # Recreating the emoji on the target connector uploads its image -
         # comfortably past Discord's 3s deadline - so defer + followup.
         await interaction.response.defer(ephemeral=True, thinking=True)
+        editor = None
         if service.lower() == "all":
             coro = self._emote_linker.mirror_emote_all(local_connector=self.connector_id, local_emote=local_id)
         else:
             coro = self._emote_linker.mirror_emote(
                 local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
             )
+            editor = LinkEditorSpec(
+                kind="emote", linker=self._emote_linker, local_connector=self.connector_id,
+                local_id=local_id, local_name=local_id, edited_connector=service,
+            )
         await self._reply_linker_result(
-            interaction, coro, log_context="/mirror emote", deferred=True, empty_fallback="Nothing to mirror."
+            interaction, coro, log_context="/mirror emote", deferred=True, empty_fallback="Nothing to mirror.",
+            editor=editor,
         )
 
     async def _handle_mirror_emote_from(
@@ -506,6 +634,10 @@ class DiscordLinkingMixin:
                 source_user_id=external_id,
             ),
             log_context="/link user",
+            editor=LinkEditorSpec(
+                kind="user", linker=self._user_linker, local_connector=self.connector_id,
+                local_id=str(local_id.id), local_name=local_id.display_name, edited_connector=service,
+            ),
         )
 
     async def _handle_mirror_channel(
@@ -562,6 +694,7 @@ class DiscordLinkingMixin:
         # runs well past Discord's 3s interaction-response deadline - defer up
         # front and reply via followup so the token doesn't expire mid-run.
         await interaction.response.defer(ephemeral=True, thinking=True)
+        editor = None
         if service.lower() == "all":
             coro = self._linker.mirror_channel_all(
                 local_connector=self.connector_id,
@@ -581,8 +714,13 @@ class DiscordLinkingMixin:
                 with_history=with_history,
                 history_limit=history_limit,
             )
+            editor = LinkEditorSpec(
+                kind="channel", linker=self._linker, local_connector=self.connector_id,
+                local_id=channel_id, local_name=channel_name, edited_connector=service,
+            )
         await self._reply_linker_result(
-            interaction, coro, log_context="/mirror channel", deferred=True, empty_fallback="Nothing to mirror."
+            interaction, coro, log_context="/mirror channel", deferred=True, empty_fallback="Nothing to mirror.",
+            editor=editor,
         )
 
     async def _handle_mirror_channel_from(

@@ -54,6 +54,40 @@ accepts a value typed by hand — an id, or a bare name.
   / `LINKED CHANNELS`, is hoisted to the first position in IRC's syntax since
   it's the one argument IRC can't let slide.
 
+## Editing a link in place (Discord only)
+
+A successful `/link <noun>`, a single-destination `/mirror <noun> to
+<service>` (not the `all` fan-out - there's no single counterpart to edit),
+and `/linked <noun>` (when the target is already linked and the invoker has
+Manage Server) attach an in-line editor panel to the reply - a row of
+`discord.ui` controls under the confirmation text, so retargeting a link
+doesn't mean retyping the whole command from scratch. Discord only; Stoat and
+IRC still work purely through the command syntax documented above.
+
+The panel has:
+
+- A **connector** dropdown, when the link group has more than one other
+  member - pick which counterpart edge you're editing before retargeting or
+  unlinking it.
+- A **counterpart** dropdown of that connector's known entities (from its
+  `list_channels` / `list_roles` / etc. autocomplete source), plus an
+  "Enter an id/name..." option that opens a text-entry modal for anything not
+  in that list. Picking one unlinks the old counterpart and links the new one
+  in its place - **not** a single atomic operation: if the new link fails
+  (a `LinkError` - already linked elsewhere, unknown id, etc.) the old edge is
+  already gone, exactly as if you'd run `/unlink` followed by a failing
+  `/link` by hand. The panel reports the error and stays open so you can pick
+  another counterpart.
+- An **Unlink** button, removing just the edited counterpart from the group
+  (equivalent to `/unlink <noun> <service>`, not the whole group).
+
+Ephemeral, only visible to and usable by whoever ran the triggering command,
+and expires after 5 minutes (the controls gray out; re-run the command for a
+fresh panel). **v1 scope is retargeting and unlinking only** - renaming the
+*local* entity or moving a channel to a different Category aren't in the
+panel yet and still need the plain `/mirror ... new_name` / channel-move
+paths; a future iteration may add them.
+
 ## `/status`
 
 Reports sync target health (`healthy` / `degraded` / `failing`) per
@@ -182,7 +216,7 @@ Links a custom emoji from connector `<service>` to a local custom emoji, so a
 reaction using either can be recreated as the other (see the reaction/emoji
 sync section of `README.md`/`CLAUDE.md`). Manage Server.
 
-### `/mirror emote to <service|all> <local_id|name> [<new_name>]` / `/mirror emote from <service> <external_id|name> [<new_name>]`
+### `/mirror emote to <service|all> <local_id|name|all> [<new_name>]` / `/mirror emote from <service> <external_id|name|all> [<new_name>]`
 
 `to` ensures a linked counterpart of the local emoji exists on `<service>`
 (required), or on every other connector if `<service>` is `all`: reuses the existing link
@@ -196,6 +230,12 @@ group). Unlike `/mirror role`, an emoji
 can't be created name-only - a connector that can't read the source emoji or
 can't create it (slots full, name rejected, image too large) is reported
 per-connector. Manage Server.
+
+`<local_id>` (on `to`) / `<external_id>` (on `from`) also accepts the literal
+`all` (issue #123): mirrors every emote the connector can enumerate (its
+`list_emotes` hook - Discord/Stoat only, so IRC can't be the `all` source)
+instead of just one, one line of summary/skip/error per emote. Not
+combinable with `<new_name>`.
 
 ### `/linked emotes [<local_id|name>]`
 
@@ -284,7 +324,7 @@ limitation), and omitting it defaults to 50. On Discord it's the native
 `history` token (default limit) or `history:<n|all>` key/value token, placed
 anywhere in the argument list.
 
-### `/mirror channel to <service|all> [<local_id>] [<new_name>] [category:<id|name>] [history:<n|all>]`
+### `/mirror channel to <service|all> [<local_id|all>] [<new_name>] [category:<id|name>] [history:<n|all>]`
 
 Ensures a linked counterpart of `<local_id>` (or the invoking channel, if
 omitted) exists on `<service>` — or every other configured connector, if
@@ -296,6 +336,19 @@ is reported per-connector rather than aborting the rest when `all` is used.
 `<local_id>` also accepts a bare channel name. `<service>` is **required**
 (issue #97) and leads, matching `from`'s shape — `all` is a valid explicit
 value but no longer assumed on omission.
+
+`<local_id>` also accepts the literal `all` (issue #123): mirrors every
+channel the connector can enumerate (its `list_channels` hook) to `<service>`
+instead of just one — one line of summary/skip/error per channel, paced and
+capped (a connector reporting more than a fixed number of channels is
+refused up front rather than mirrored). Only the explicit token triggers
+this — an omitted `<local_id>` still means "the invoking channel", never
+"every channel". `<local_id>` and `<service>` can both be `all` at once
+(`/mirror channel to all all`), fanning every local channel out to every
+other connector. On IRC, `list_channels` only reports channels it already
+knows (config plus anything linked), not every channel on the network — so
+`all` there mirrors that known set, not a live enumeration. Not combinable
+with `<new_name>` — one name can't apply to every mirrored channel.
 
 If `<local_id>`'s Category is already linked (via `/link category`) to a
 Category on the destination, the counterpart channel lands in *that* linked
@@ -310,7 +363,7 @@ into a stub named after the platform's hidden-channel placeholder — grant the
 bot access to the channel first. (The check is best-effort: only a definite
 "the bot lacks view permission here" blocks it.)
 
-### `/mirror channel from <service> <external_id> [<new_name>] [category:<id|name>] [history:<n|all>]`
+### `/mirror channel from <service> <external_id|all> [<new_name>] [category:<id|name>] [history:<n|all>]`
 
 The inbound direction: `<service>`'s `<external_id>` channel already exists,
 so a linked counterpart is created **on the connector the command is run on**
@@ -322,9 +375,15 @@ placed into *that* linked Category rather than a fresh same-named one (the
 same linked-Category resolution `to` does, issue #50). Passing
 `category:<id|name>` — a **local** Category — overrides that and places the new
 channel there instead.
-`<external_id>` also accepts a bare channel name. There's no `all` form -
-`from` always names one source. As with `to`, a source channel the bridge bot
-can't see on `<service>` is refused rather than mirrored.
+`<external_id>` also accepts a bare channel name. As with `to`, a source
+channel the bridge bot can't see on `<service>` is refused rather than
+mirrored.
+
+`<external_id>` also accepts the literal `all` (issue #123): pulls in every
+channel `<service>` can enumerate instead of just one — `from`'s side of the
+same entity-level fan-out `to`'s `<local_id>=all` does, since `from` is
+implemented as `to` with the connectors swapped. Not combinable with
+`<new_name>`.
 
 - **Discord**: `/mirror channel to` / `/mirror channel from` subcommands
   under the `/mirror channel` group (Manage Server; `to`'s `service`
@@ -374,7 +433,7 @@ two Categories are linked, any **new channel** created inside either one is
 automatically mirrored (created + linked, same logic as `/mirror channel`)
 into every other connector's own linked Category. Manage Server.
 
-### `/mirror category to <service|all> [<local_id|name>] [<new_name>]` / `/mirror category from <service> <external_id|name> [<new_name>]`
+### `/mirror category to <service|all> [<local_id|name|all>] [<new_name>]` / `/mirror category from <service> <external_id|name|all> [<new_name>]`
 
 `to` ensures a linked counterpart of the local Category exists on `<service>`
 (required, or every other connector if `<service>` is `all`; issue #97):
@@ -387,6 +446,13 @@ there. `from` is the same operation run the other way - a local counterpart
 of `<service>`'s Category is created **here**, linked, and `<service>`'s
 channels relocated/mirrored into it. A connector that can't create Categories
 is reported per-connector. Manage Server.
+
+`<local_id>` (on `to`) / `<external_id>` (on `from`) also accepts the literal
+`all` (issue #123): mirrors every Category the connector can enumerate (its
+`list_categories` hook - Discord/Stoat only, so IRC can't be the `all`
+source) instead of just one, one line of summary/skip/error per Category.
+Only the explicit token triggers this - an omitted `<local_id>` on `to` still
+means "the invoking channel's Category". Not combinable with `<new_name>`.
 
 ### `/linked categories [<local_id|name>]`
 
@@ -426,7 +492,7 @@ share the same `/link` / `/unlink` / `/mirror` / `/linked` groups.
 Links `service`'s role to a local role. Manage Server (Discord) / Manage
 Server (Stoat).
 
-### `/mirror role to <service|all> <local_id|name> [<new_name>]` / `/mirror role from <service> <external_id|name> [<new_name>]`
+### `/mirror role to <service|all> <local_id|name|all> [<new_name>]` / `/mirror role from <service> <external_id|name|all> [<new_name>]`
 
 `to` ensures a linked counterpart of the local role exists on `<service>`
 (required, or every other connector if `<service>` is `all`; issue #97):
@@ -436,6 +502,12 @@ then links it. `from` is the same operation run the other way - a local
 counterpart of `<service>`'s role is created-or-matched **here** and linked
 (reusing an existing bridge group). A connector that can't create roles is
 reported per-connector. Manage Server.
+
+`<local_id>` (on `to`) / `<external_id>` (on `from`) also accepts the literal
+`all` (issue #123): mirrors every role the connector can enumerate (its
+`list_roles` hook - Discord/Stoat only, so IRC can't be the `all` source)
+instead of just one, one line of summary/skip/error per role. Not combinable
+with `<new_name>`.
 
 ### `/linked roles [<local_id|name>]`
 

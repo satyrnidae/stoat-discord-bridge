@@ -174,8 +174,11 @@ class StandardEmojiDeleted:
 class StandardPin:
     """A message pin/unpin event, in the platform-neutral shape senders/
     receivers pass around. Relayed only onto connectors that advertise
-    `ReceiverService.supports_pins` and only for a message the bridge
-    previously relayed (tracked via MessageSyncRepository) — see
+    `ReceiverService.supports_pins` and only when `origin_connector_id`/
+    `origin_channel_id`/`origin_message_id` is the sync group's recorded
+    *origin* (tracked via MessageSyncRepository) — one-way: a pin/unpin
+    performed directly on a relayed copy stays local to that platform and
+    isn't mirrored back to the origin or across to other copies. See
     BridgeCoordinator.handle_pin."""
 
     origin_connector_id: ConnectorId
@@ -206,6 +209,22 @@ class StandardEdit:
     mentioned_roles: dict[str, str] = field(default_factory=dict)
     mentioned_channels: dict[str, str] = field(default_factory=dict)
     mentioned_emoji: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StandardDelete:
+    """A message deletion on `origin_connector_id`, in the platform-neutral
+    shape senders/receivers pass around. Carries only identity - no content
+    is needed to delete something. Relayed onto every other connector's copy
+    of the same message (tracked via MessageSyncRepository) for connectors
+    that advertise `ReceiverService.supports_deletes` — Discord ⇄ Stoat only,
+    IRC has no delete-in-place. Unlike edit/pin sync, this must NOT cascade
+    from a relayed copy - only a delete reported for the sync group's
+    recorded *origin* fans out; see BridgeCoordinator.handle_delete."""
+
+    origin_connector_id: ConnectorId
+    origin_channel_id: str
+    origin_message_id: str  # the message being deleted, native id on the origin platform
 
 
 @dataclass(frozen=True)

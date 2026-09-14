@@ -32,6 +32,7 @@ class _Recorder:
         self.pins: list = []
         self.typing: list = []
         self.edits: list = []
+        self.deletes: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
@@ -41,6 +42,9 @@ class _Recorder:
 
     async def on_edit(self, edit) -> None:
         self.edits.append(edit)
+
+    async def on_delete(self, delete) -> None:
+        self.deletes.append(delete)
 
     async def on_typing(self, typing) -> None:
         self.typing.append(typing)
@@ -94,6 +98,7 @@ def _make_sender(
     sender._on_pin = recorder.on_pin
     sender._on_typing = recorder.on_typing
     sender._on_edit = recorder.on_edit
+    sender._on_delete = recorder.on_delete
     return sender
 
 
@@ -659,6 +664,80 @@ async def test_handle_message_update_ignores_an_update_that_didnt_change_content
     await sender._handle_message_update(_update_event(message=_partial()))
 
     assert recorder.edits == []
+
+
+# ---------------------------------------------------------------- _handle_message_delete
+
+
+def _delete_event(*, channel_id="chan-1", message_id="m1", message=None):
+    return SimpleNamespace(channel_id=channel_id, message_id=message_id, message=message)
+
+
+def _delete_bulk_event(*, channel_id="chan-1", message_ids=("m1", "m2"), messages=()):
+    return SimpleNamespace(channel_id=channel_id, message_ids=list(message_ids), messages=list(messages))
+
+
+async def test_handle_message_delete_emits_a_standard_delete():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_message_delete(_delete_event())
+
+    assert [(d.origin_channel_id, d.origin_message_id) for d in recorder.deletes] == [("chan-1", "m1")]
+
+
+async def test_handle_message_delete_drops_our_own_masqueraded_message_when_cached():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    cached = SimpleNamespace(author=FakeAuthor(id="bridge-bot-id", bot=True))
+
+    await sender._handle_message_delete(_delete_event(message=cached))
+
+    assert recorder.deletes == []
+
+
+async def test_handle_message_delete_relays_a_bot_authored_deleted_message_when_cached():
+    # the deleted message being a bot's own doesn't matter here - only
+    # whether it was OUR masqueraded copy (author id == self_id)
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    cached = SimpleNamespace(author=FakeAuthor(id="some-other-bot", bot=True))
+
+    await sender._handle_message_delete(_delete_event(message=cached))
+
+    assert len(recorder.deletes) == 1
+
+
+async def test_handle_message_delete_relays_when_uncached():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_message_delete(_delete_event(message=None))
+
+    assert len(recorder.deletes) == 1
+
+
+async def test_handle_message_delete_bulk_emits_one_standard_delete_per_id():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_message_delete_bulk(_delete_bulk_event())
+
+    assert {(d.origin_channel_id, d.origin_message_id) for d in recorder.deletes} == {
+        ("chan-1", "m1"),
+        ("chan-1", "m2"),
+    }
+
+
+async def test_handle_message_delete_bulk_drops_our_own_cached_copies_individually():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    ours = SimpleNamespace(id="m1", author=FakeAuthor(id="bridge-bot-id", bot=True))
+    theirs = SimpleNamespace(id="m2", author=FakeAuthor(id="u1", bot=False))
+
+    await sender._handle_message_delete_bulk(_delete_bulk_event(messages=[ours, theirs]))
+
+    assert [(d.origin_channel_id, d.origin_message_id) for d in recorder.deletes] == [("chan-1", "m2")]
 
 
 # ---------------------------------------------------------------- get_user_name

@@ -26,9 +26,10 @@ from stoat_discord_bridge.admin_commands import (
     UserLinker,
 )
 from stoat_discord_bridge.config import StoatConnectorConfig
-from stoat_discord_bridge.models import StandardEdit, StandardMessage, StandardPin
+from stoat_discord_bridge.models import StandardDelete, StandardEdit, StandardMessage, StandardPin
 from stoat_discord_bridge.services.base import (
     OnChannelRolePermissionChanged,
+    OnDelete,
     OnEdit,
     OnEmojiCreated,
     OnEmojiDeleted,
@@ -58,6 +59,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
 from stoat_discord_bridge.services.stoat_service.linking import StoatLinkingMixin
 from stoat_discord_bridge.services.stoat_service.lookups import StoatLookupsMixin
 from stoat_discord_bridge.services.stoat_service.sync import StoatSyncMixin
+from stoat_discord_bridge.services.voice.base import OnVoicePresence
 from stoat_discord_bridge.status import HealthTracker
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,8 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
         on_edit: OnEdit | None = None,
+        on_delete: OnDelete | None = None,
+        on_voice_presence: "OnVoicePresence | None" = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -99,7 +103,15 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         # None is accepted (e.g. for tests) but those commands will then
         # report themselves unconfigured.
         SenderService.__init__(
-            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing, on_edit
+            self,
+            on_message,
+            on_reaction,
+            on_emoji_created,
+            on_emoji_deleted,
+            on_pin,
+            on_typing,
+            on_edit,
+            on_delete,
         )
         self._config = config
         self.server_id = config.server_id
@@ -111,6 +123,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         self._category_linker = category_linker
         self._role_linker = role_linker
         self._bot_whitelist = bot_whitelist
+        self._on_voice_presence = on_voice_presence
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted
@@ -355,6 +368,39 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 mentioned_roles=_map_mentioned_roles(after) if after is not None else {},
                 mentioned_channels=await self._map_mentioned_channels(new_content or ""),
                 mentioned_emoji=await self._map_mentioned_emoji(new_content or ""),
+            )
+        )
+
+    async def _handle_message_delete(self, event) -> None:
+        """`on_message_delete` (stoat.events.MessageDeleteEvent): a message
+        was deleted. `event.message` (the cached copy, when populated) lets
+        us drop our own masqueraded message being deleted the same way
+        `_handle_message_update` drops our own edit; when it's uncached,
+        `BridgeCoordinator`'s `_recent_deletes` TTL guard is the backstop."""
+        await self._emit_delete(event.channel_id, event.message_id, getattr(event, "message", None))
+
+    async def _handle_message_delete_bulk(self, event) -> None:
+        """`on_message_delete_bulk` (stoat.events.MessageDeleteBulkEvent):
+        emit one StandardDelete per deleted id, reusing
+        `_handle_message_delete`'s per-id cached-author check. `event.messages`
+        isn't guaranteed to carry every deleted id (cache-dependent, like
+        `event.message` on the single-delete event)."""
+        cached_by_id = {str(message.id): message for message in getattr(event, "messages", [])}
+        for message_id in event.message_ids:
+            await self._emit_delete(event.channel_id, message_id, cached_by_id.get(str(message_id)))
+
+    async def _emit_delete(self, channel_id: str, message_id: str, cached_message) -> None:
+        if self._on_delete is None:
+            return
+        if cached_message is not None:
+            author_id = str(getattr(cached_message.author, "id", "")) or None
+            if author_id == self._self_id:
+                return  # a masqueraded message we posted - echo, always dropped
+        await self._on_delete(
+            StandardDelete(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(channel_id),
+                origin_message_id=str(message_id),
             )
         )
 

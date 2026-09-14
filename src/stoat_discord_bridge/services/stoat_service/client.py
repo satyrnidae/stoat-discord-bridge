@@ -73,6 +73,20 @@ class _StoatClient(stoat_commands.Bot):
         # 1.2.1; live-server payload completeness unverified.
         await self._owner._handle_message_update(event)
 
+    async def on_message_delete(self, event, /) -> None:
+        # stoat.events.MessageDeleteEvent (event_name 'message_delete'):
+        # `.channel_id`, `.message_id`, `.message` (Optional[Message],
+        # cache-dependent). Verified against stoat.py 1.2.1; live-server
+        # payload completeness unverified.
+        await self._owner._handle_message_delete(event)
+
+    async def on_message_delete_bulk(self, event, /) -> None:
+        # stoat.events.MessageDeleteBulkEvent (event_name
+        # 'message_delete_bulk'): `.channel_id`, `.message_ids`, `.messages`
+        # (cache-dependent, not guaranteed to cover every id). Verified
+        # against stoat.py 1.2.1; live-server payload completeness unverified.
+        await self._owner._handle_message_delete_bulk(event)
+
     async def on_server_channel_create(self, event, /) -> None:
         await self._owner._handle_channel_create(event.channel)
 
@@ -124,6 +138,24 @@ class _StoatClient(stoat_commands.Bot):
 
     async def on_message_unreact(self, event, /) -> None:
         await self._owner._handle_message_react(event, added=False)
+
+    async def on_voice_channel_join(self, event, /) -> None:
+        # stoat.events.VoiceChannelJoinEvent (event_name 'voice_channel_join'):
+        # `.channel_id`, `.state` (UserVoiceState, `.user_id`). Verified
+        # against stoat.py 1.2.1; live server unverified.
+        await self._owner._handle_voice_channel_join(event)
+
+    async def on_voice_channel_leave(self, event, /) -> None:
+        # stoat.events.VoiceChannelLeaveEvent (event_name 'voice_channel_leave'):
+        # `.channel_id`, `.user_id`. Verified against stoat.py 1.2.1; live
+        # server unverified.
+        await self._owner._handle_voice_channel_leave(event)
+
+    async def on_voice_channel_move(self, event, /) -> None:
+        # stoat.events.VoiceChannelMoveEvent (event_name 'voice_channel_move'):
+        # `.user_id`, `.from_`, `.to`. Verified against stoat.py 1.2.1; live
+        # server unverified.
+        await self._owner._handle_voice_channel_move(event)
 
     async def on_server_emoji_create(self, event, /) -> None:
         await self._owner._handle_emoji_create(event.emoji)

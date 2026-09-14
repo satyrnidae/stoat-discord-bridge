@@ -39,6 +39,32 @@ async def test_mirror_channel_with_history_requires_a_backfill_hook_wired(fake_d
         )
 
 
+async def test_mirror_channel_with_history_rejects_local_id_all(fake_db):
+    # issue #123's local_id "all" bulk-mirror and issue #122's with_history
+    # backfill don't compose - a single backfill request can't fan out
+    # across every enumerated channel.
+    async def backfill(**kwargs):
+        raise AssertionError("must not run - with_history + local_id 'all' is rejected up front")
+
+    async def list_channels():
+        raise AssertionError("must not run - rejected before enumeration")
+
+    connectors = _history_connectors()
+    connectors["discord"] = ConnectorInfo(
+        id="discord", label="Discord", fetch_history=_fetch_history, list_channels=list_channels
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, backfill_history=backfill)
+
+    with pytest.raises(LinkError, match="with history.*can't be combined with local_id 'all'"):
+        await linker.mirror_channel(
+            local_connector="discord",
+            local_channel_id="all",
+            local_channel_name="ignored",
+            destination="stoat",
+            with_history=True,
+        )
+
+
 async def test_mirror_channel_with_history_rejects_irc_source(fake_db):
     async def backfill(**kwargs):
         raise AssertionError("must not run - irc doesn't support history")

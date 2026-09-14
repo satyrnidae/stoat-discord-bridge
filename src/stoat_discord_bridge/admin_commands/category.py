@@ -12,14 +12,17 @@ import uuid
 from stoat_discord_bridge.admin_commands.channel import ChannelLinker
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
+    LinkedMember,
     LinkError,
     MirrorGuard,
     MirrorInProgressError,
     _clean_new_name,
     _group_conflict_check,
     _guards_mirror,
+    _is_all_token,
     _is_forum_channel,
     _kick_group_member,
+    _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
     _mirror_to_destination,
@@ -28,6 +31,8 @@ from stoat_discord_bridge.admin_commands.common import (
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    _run_bulk_mirror,
+    collect_linked_members,
     format_linked_listing,
 )
 from stoat_discord_bridge.channel_structure import clip_name, forum_category_title
@@ -156,6 +161,21 @@ class CategoryLinker:
             "New channels in either will now sync automatically."
         )
 
+    async def describe_group(
+        self, *, local_connector: str, local_id: str
+    ) -> "tuple[str, list[LinkedMember]] | None":
+        """The structured counterpart of `list_linked_categories` - the
+        bridge group id and every member as a `LinkedMember`, or None if
+        `local_id` (an id or bare name, on `local_connector`) isn't linked.
+        Used by the Discord in-line link editor (issue #115)."""
+        local_id = await self._resolve_to_id(local_connector, local_id)
+        bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_id)
+        if bridge_group is None:
+            return None
+        mapped = await self._category_mappings.get_mapped_categories(bridge_group)
+        members = await collect_linked_members(mapped, self._connectors, "category_id", "category_name")
+        return bridge_group, members
+
     async def list_linked_categories(
         self, *, local_connector: str, local_category_id: str | None = None, local_category: str | None = None
     ) -> str:
@@ -240,12 +260,40 @@ class CategoryLinker:
 
         `new_name`, if given, is the title to create/find the counterpart
         Category under on `destination` instead of the source Category's title
-        (issue #44); it doesn't rename any mirrored child channels."""
+        (issue #44); it doesn't rename any mirrored child channels.
+
+        `local_category == "all"` (case-insensitive, and only that literal
+        token - never inferred from an omitted argument) mirrors every
+        Category `local_connector` can enumerate via its `list_categories`
+        hook to `destination` instead of just one (issue #123) - one line of
+        summary/skip/error per Category, paced and capped the same as the
+        other bulk helpers in `common.py`. Raises LinkError up front if
+        `local_connector` isn't a known connector, has no `list_categories`
+        hook (nothing to enumerate with - e.g. IRC, which has no Category
+        concept at all), if it can't be listed, if there are too many
+        Categories to mirror at once, or if `new_name` is also given (one
+        title can't apply to every mirrored Category)."""
         _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a Category to its own connector.")
 
         await _refresh_connectors(self._connectors, local_connector, destination)
+
+        if _is_all_token(local_category):
+            if _clean_new_name(new_name) is not None:
+                raise LinkError("can't use 'all' together with a new name - it would collide across every Category.")
+            _require_known_connector(self._connectors, local_connector)
+            info = self._connectors[local_connector]
+            entities = await _list_entities_for_all(self._connectors, local_connector, info.list_categories, kind="category")
+            return await _run_bulk_mirror(
+                entities,
+                lambda cat_id, cat_name: self.mirror_category(
+                    local_connector=local_connector,
+                    local_category_id=cat_id,
+                    local_category_name=cat_name,
+                    destination=destination,
+                ),
+            )
 
         if local_category is not None:
             local_category_id = await self._resolve_to_id(local_connector, local_category)

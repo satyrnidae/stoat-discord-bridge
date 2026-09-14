@@ -1,6 +1,6 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkError, UserLinker
+from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkedMember, LinkError, UserLinker
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 
@@ -233,3 +233,35 @@ async def test_unlink_user_strips_a_pasted_discord_mention(fake_db, connectors):
 
     assert "removed" in summary
     assert await user_mappings.get_link_group("irc", "Alice") is None
+
+
+# ---------------------------------------------------------------- UserLinker.describe_group
+
+
+async def test_describe_group_returns_none_for_an_unlinked_user(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    assert await linker.describe_group(local_connector="irc", local_id="Alice") is None
+
+
+async def test_describe_group_returns_the_group_id_and_members(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+
+    result = await linker.describe_group(local_connector="irc", local_id="Alice")
+
+    assert result is not None
+    group_id, members = result
+    assert group_id == await user_mappings.get_link_group("irc", "Alice")
+    assert members == [
+        LinkedMember(connector_id="discord", label="Discord", entity_id="111", name="111"),
+        LinkedMember(connector_id="irc", label="IRC", entity_id="Alice", name="Alice"),
+    ]
+
+
+async def test_describe_group_strips_a_pasted_discord_mention(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+
+    result = await linker.describe_group(local_connector="discord", local_id="<@111>")
+    assert result is not None

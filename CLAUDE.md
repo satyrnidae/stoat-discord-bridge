@@ -211,14 +211,19 @@ itself drops only once every connector's copy has been deleted.
 
 Pinning/unpinning a message in a bridged channel is mirrored onto every other
 connector's copy of that message (`BridgeCoordinator.handle_pin` →
-`ReceiverService.set_pinned`, gated by `supports_pins` and keyed off the same
-`MessageSyncRepository` group reaction sync uses). Discord ⇄ Stoat only —
-**IRC has no message-pin concept** (`supports_pins` stays `False`), so a pin
-never routes to it. Best-effort and silent (an untracked message, a missing
-`set_pinned` hook, or a raising one are all skipped); loop-safe the same two
-ways as role sync — `set_pinned` is idempotent (no-op if already in that
-state) and the coordinator keeps a ~10s record of writes it issued so the echo
-event is dropped.
+`ReceiverService.set_pinned`, gated by `supports_pins`). **One-way**: only a
+pin/unpin performed on the sync group's recorded *origin* message propagates —
+`handle_pin` looks the group up via `MessageSyncRepository.find_group_if_origin`
+(unlike reaction/edit sync, which stay on the any-side `find_group`), so a
+pin/unpin performed directly on a *relayed copy* stays local to that platform
+and is not mirrored back to the origin or across to other copies (issue #134).
+Discord ⇄ Stoat only — **IRC has no message-pin concept** (`supports_pins`
+stays `False`), so a pin never routes to it. Best-effort and silent (an
+untracked message, a pin on a relayed copy, a missing `set_pinned` hook, or a
+raising one are all skipped); loop-safe the same two ways as role sync —
+`set_pinned` is idempotent (no-op if already in that state) and the
+coordinator keeps a ~10s record of writes it issued so the echo event is
+dropped.
 
 Each platform's pin action produces a *system message* that used to be relayed
 as a blank message: Discord's `MessageType.pins_add` (suppressed in
@@ -260,6 +265,48 @@ Stoat via the bot author on `event.after` — and `BridgeCoordinator` keeps a
 ~10s record of the edits it issued so an echo that still slips through (e.g.
 Stoat's `event.after` uncached so the author can't be checked) is dropped
 before it fans back out.
+
+### Message delete sync
+
+Deleting a message in a bridged channel is mirrored onto every other
+connector's copy of that message (`BridgeCoordinator.handle_delete` →
+`ReceiverService.delete_message`, gated by `supports_deletes` and keyed off
+the same `MessageSyncRepository` group reaction/pin/edit sync use). Discord ⇄
+Stoat only — **IRC has no delete-in-place concept** (`supports_deletes` stays
+`False`), so a delete never routes to it (issue #133).
+
+Unlike edit sync's symmetric cascade (safe there because the bridge bot owns
+every relayed copy, so only a real edit of the origin's own content ever
+arrives), deletion doesn't have that property: a moderator with
+`manage_messages` can delete *any* message in a channel, including the
+bridge's own relayed copies. `handle_delete` therefore looks the group up via
+`MessageSyncRepository.find_group_if_origin` (the same one-way lookup pin
+sync uses, issue #134) rather than the any-side `find_group`, so a delete
+reported for a relayed copy is a no-op rather than cascading back to the
+source or other mirrors.
+
+Each sender emits a `StandardDelete` (identity only — no content is needed to
+delete something): Discord from `on_raw_message_delete` /
+`on_raw_bulk_message_delete` (`RawMessageDeleteEvent` / `RawBulkMessageDeleteEvent`
+— bulk emits one `StandardDelete` per id); Stoat from `on_message_delete` /
+`on_message_delete_bulk` (`stoat.events.MessageDeleteEvent` /
+`MessageDeleteBulkEvent`). A relay split across several native posts in one
+channel is deleted post-by-post via `delete_message`'s `target_message_ids`
+list — Discord via `webhook.delete_message`, Stoat via `Message.delete` (the
+bot owns its masqueraded messages) — best-effort per id, so one post that's
+already gone doesn't stop the rest of the batch.
+
+Best-effort and silent (an untracked message, a delete reported for a
+relayed copy rather than the origin, an unsupported target, or a raising hook
+are all skipped). Loop-safe two ways, like pin/edit sync: each sender drops
+its own relayed copy being deleted where
+it can tell — Discord's `RAW_MESSAGE_DELETE` payload carries no `webhook_id`
+(unlike `MESSAGE_UPDATE`), so this is only a best-effort `cached_message`
+check there; Stoat checks the cached `event.message`'s author against the
+bot's own id, the same way edit sync does — and `BridgeCoordinator` keeps a
+~10s record of the deletes it issued so an echo that slips past the sender-side
+check (the uncached case on either connector) is dropped before it fans back
+out.
 
 ### Typing sync
 
@@ -366,6 +413,10 @@ edit/reaction/pin on one of them won't sync forward, and a very long `all`
 backfill relayed through a Discord slash command risks outliving the
 interaction's 15-minute followup-token window — both known v1 limitations,
 not oversights (tracked for a future pass rather than blocking this issue).
+`with_history` also can't be combined with issue #123's entity-level
+`local_id`/`source_id` `all` fan-out — `ChannelLinker.mirror_channel` rejects
+the combination outright, since one backfill request has no sensible way to
+apply across every enumerated channel at once.
 
 ### Source, pronoun & name-color forwarding
 
@@ -734,6 +785,33 @@ Category that `ThreadCategoryRepository` has marked as a thread category
 (see below) — those stay outside the bridge. A Discord **forum channel** is
 linked as a Category too — `/link channel` / `/mirror channel` on a forum
 redirect here (see "Discord forum channels as Categories" below).
+
+A successful `/link <noun>`, a single-destination `/mirror <noun> to
+<service>`, and a `/linked <noun>` on an already-linked target (invoker
+gated on Manage Server) attach a `discord.ui` in-line editor panel to the
+Discord reply — the project's first use of `discord.ui` components — so
+retargeting an existing link doesn't mean retyping the whole command
+(issue #115). `LinkEditorSpec`/`LinkEditorView`
+(`services/discord_service/editor.py`) are the generic implementation: one
+view class drives all five entity kinds through a small per-kind
+`_KindAdapter` table (wrapping each linker's differently-shaped
+`link_*`/`unlink_*`/`list_*` methods into a uniform shape) rather than five
+near-duplicate views. `DiscordLinkingMixin._send_linker_reply` /
+`_reply_linker_result` (`linking.py`) attach the view when a handler passes
+an `editor=LinkEditorSpec(...)` built from the same arguments it just used
+for the call; `_listing_editor` builds the `/linked <noun>` case's spec off
+`describe_group`. `describe_group` (one per linker, alongside each linker's
+existing `list_linked_*`) and `collect_linked_members`
+(`admin_commands/common.py`, factored out of `format_linked_listing`) are
+the structured (id/name, not pre-formatted string) seam the panel reads and
+re-reads to rebuild itself. Retargeting is unlink-old-then-link-new, not a
+single atomic operation — a rejected new link (already linked elsewhere,
+unknown id, etc.) leaves the old edge gone too, same as running `/unlink`
+then a failing `/link` by hand; the panel surfaces the `LinkError` and stays
+open. **v1 scope is retarget + unlink only** — renaming the local entity or
+moving a channel to a different Category aren't in the panel (deferred to a
+follow-up); see `COMMANDS.md`'s "Editing a link in place" section for the
+user-facing description.
 
 ### Bot whitelisting
 
