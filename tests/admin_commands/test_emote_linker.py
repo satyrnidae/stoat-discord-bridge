@@ -2,7 +2,7 @@ import pytest
 
 import dataclasses
 
-from stoat_discord_bridge.admin_commands import ConnectorInfo, EmoteLinker, LinkError
+from stoat_discord_bridge.admin_commands import ConnectorInfo, EmoteLinker, LinkedMember, LinkError
 from stoat_discord_bridge.models import CustomEmoji
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 
@@ -242,6 +242,30 @@ async def test_mirror_emote_from_own_connector_raises(fake_db, emote_connectors)
     linker = EmoteLinker(EmojiMappingRepository(fake_db), emote_connectors)
     with pytest.raises(LinkError, match="from a connector to itself"):
         await linker.mirror_emote_from(local_connector="discord", source="discord", source_emote="dsrc")
+
+
+# ---------------------------------------------------------------- EmoteLinker.describe_group
+
+
+async def test_describe_group_returns_none_for_an_unlinked_emote(fake_db, connectors):
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+    assert await linker.describe_group(local_connector="stoat", local_id="s1") is None
+
+
+async def test_describe_group_returns_the_group_id_and_members(fake_db, connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, connectors)
+    await linker.link_emote(local_connector="stoat", local_id="s1", source="discord", source_id="d1")
+
+    result = await linker.describe_group(local_connector="stoat", local_id="s1")
+
+    assert result is not None
+    group_id, members = result
+    assert group_id == await emoji_mappings.get_group_id("stoat", "s1")
+    assert members == [
+        LinkedMember(connector_id="discord", label="Discord", entity_id="d1", name="d1"),
+        LinkedMember(connector_id="stoat", label="Stoat", entity_id="s1", name="s1"),
+    ]
 
 
 # ---------------------------------------------------------------- entity-level `all` (issue #123)

@@ -1,6 +1,6 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import CategoryLinker, ChannelLinker, ConnectorInfo, LinkError
+from stoat_discord_bridge.admin_commands import CategoryLinker, ChannelLinker, ConnectorInfo, LinkedMember, LinkError
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 
@@ -596,6 +596,32 @@ async def test_mirror_category_from_own_connector_raises(fake_db, connectors):
     linker, _, _, _ = _make_linker(fake_db, connectors)
     with pytest.raises(LinkError, match="from a connector to itself"):
         await linker.mirror_category_from(local_connector="discord", source="discord", source_id="d-cat")
+
+
+# ---------------------------------------------------------------- CategoryLinker.describe_group
+
+
+async def test_describe_group_returns_none_for_an_unlinked_category(fake_db, connectors):
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+    assert await linker.describe_group(local_connector="stoat", local_id="s-cat") is None
+
+
+async def test_describe_group_returns_the_group_id_and_members(fake_db, connectors):
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await linker.link_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team",
+        source="discord", source_id="d-cat", destination_id=None,
+    )
+
+    result = await linker.describe_group(local_connector="stoat", local_id="s-cat")
+
+    assert result is not None
+    group_id, members = result
+    assert group_id == await category_mappings.get_bridge_group("stoat", "s-cat")
+    assert members == [
+        LinkedMember(connector_id="discord", label="Discord", entity_id="d-cat", name="d-cat"),
+        LinkedMember(connector_id="stoat", label="Stoat", entity_id="s-cat", name="Team"),
+    ]
 
 
 # ---------------------------------------------------------------- entity-level `all` (issue #123)

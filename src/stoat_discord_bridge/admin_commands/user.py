@@ -7,12 +7,14 @@ import uuid
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
+    LinkedMember,
     LinkError,
     _kick_group_member,
     _link_conflict_check,
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    collect_linked_members,
     format_linked_listing,
 )
 from stoat_discord_bridge.storage.user_mappings import UserMapping, UserMappingRepository
@@ -83,6 +85,23 @@ class UserLinker:
         local_info = self._connectors.get(local_connector)
         local_label = local_info.label if local_info else local_connector
         return f"Linked {source_label} user '{source_user_id}' to {local_label} user '{local_user_id}'."
+
+    async def describe_group(
+        self, *, local_connector: str, local_id: str
+    ) -> "tuple[str, list[LinkedMember]] | None":
+        """The structured counterpart of `list_linked_users` - the link
+        group id and every member as a `LinkedMember`, or None if `local_id`
+        (an id, name, or pasted `<@id>` mention, on `local_connector`) isn't
+        linked. Used by the Discord in-line link editor (issue #115)."""
+        local_id = await self._resolve_to_id(local_connector, _strip_discord_mention(local_id))
+        link_group = await self._user_mappings.get_link_group(local_connector, local_id)
+        if link_group is None:
+            return None
+        mapped = await self._user_mappings.get_mapped_users(link_group)
+        members = await collect_linked_members(
+            mapped, self._connectors, "user_id", resolve_name=self._resolve_user_name
+        )
+        return link_group, members
 
     async def list_linked_users(self, *, local_connector: str | None = None, local_user_id: str | None = None) -> str:
         """Human-readable listing of cross-connector user links, for the

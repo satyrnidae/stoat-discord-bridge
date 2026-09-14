@@ -9,6 +9,7 @@ from dataclasses import replace
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
+    LinkedMember,
     LinkError,
     MirrorGuard,
     _clean_new_name,
@@ -25,6 +26,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_id,
     _resolve_entity_title,
     _run_bulk_mirror,
+    collect_linked_members,
     format_linked_listing,
 )
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository, EmojiRef
@@ -259,6 +261,21 @@ class EmoteLinker:
         return await self.mirror_emote(
             local_connector=source, local_emote=source_emote, destination=local_connector, new_name=new_name
         )
+
+    async def describe_group(
+        self, *, local_connector: str, local_id: str
+    ) -> "tuple[str, list[LinkedMember]] | None":
+        """The structured counterpart of `list_linked_emotes` - the mapping
+        group id and every member as a `LinkedMember`, or None if `local_id`
+        (an id, name, or emoji token, on `local_connector`) isn't linked.
+        Used by the Discord in-line link editor (issue #115)."""
+        local_id = await self._resolve_to_id(local_connector, local_id)
+        group_id = await self._emoji_mappings.get_group_id(local_connector, local_id)
+        if group_id is None:
+            return None
+        refs = await self._emoji_mappings.get_refs(group_id)
+        members = await collect_linked_members(refs, self._connectors, "emoji_id", resolve_name=self._resolve_name)
+        return group_id, members
 
     async def list_linked_emotes(
         self, *, local_connector: str, local_emote: str | None = None, service: str | None = None

@@ -736,6 +736,33 @@ Category that `ThreadCategoryRepository` has marked as a thread category
 linked as a Category too — `/link channel` / `/mirror channel` on a forum
 redirect here (see "Discord forum channels as Categories" below).
 
+A successful `/link <noun>`, a single-destination `/mirror <noun> to
+<service>`, and a `/linked <noun>` on an already-linked target (invoker
+gated on Manage Server) attach a `discord.ui` in-line editor panel to the
+Discord reply — the project's first use of `discord.ui` components — so
+retargeting an existing link doesn't mean retyping the whole command
+(issue #115). `LinkEditorSpec`/`LinkEditorView`
+(`services/discord_service/editor.py`) are the generic implementation: one
+view class drives all five entity kinds through a small per-kind
+`_KindAdapter` table (wrapping each linker's differently-shaped
+`link_*`/`unlink_*`/`list_*` methods into a uniform shape) rather than five
+near-duplicate views. `DiscordLinkingMixin._send_linker_reply` /
+`_reply_linker_result` (`linking.py`) attach the view when a handler passes
+an `editor=LinkEditorSpec(...)` built from the same arguments it just used
+for the call; `_listing_editor` builds the `/linked <noun>` case's spec off
+`describe_group`. `describe_group` (one per linker, alongside each linker's
+existing `list_linked_*`) and `collect_linked_members`
+(`admin_commands/common.py`, factored out of `format_linked_listing`) are
+the structured (id/name, not pre-formatted string) seam the panel reads and
+re-reads to rebuild itself. Retargeting is unlink-old-then-link-new, not a
+single atomic operation — a rejected new link (already linked elsewhere,
+unknown id, etc.) leaves the old edge gone too, same as running `/unlink`
+then a failing `/link` by hand; the panel surfaces the `LinkError` and stays
+open. **v1 scope is retarget + unlink only** — renaming the local entity or
+moving a channel to a different Category aren't in the panel (deferred to a
+follow-up); see `COMMANDS.md`'s "Editing a link in place" section for the
+user-facing description.
+
 ### Bot whitelisting
 
 A bot-authored message/edit/reaction is dropped by every sender by default —

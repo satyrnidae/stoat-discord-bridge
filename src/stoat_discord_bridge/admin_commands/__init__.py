@@ -18,9 +18,12 @@ from stoat_discord_bridge.admin_commands.category import CategoryLinker
 from stoat_discord_bridge.admin_commands.channel import ChannelLinker
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
+    LinkedMember,
     LinkError,
     MirrorGuard,
     MirrorInProgressError,
+    collect_linked_members,
+    format_linked_listing,
     pop_kv_option,
 )
 from stoat_discord_bridge.admin_commands.emote import EmoteLinker
@@ -37,10 +40,13 @@ __all__ = [
     "HELP_TOPICS",
     "HelpTopic",
     "LinkError",
+    "LinkedMember",
     "MirrorGuard",
     "MirrorInProgressError",
     "RoleLinker",
     "UserLinker",
+    "collect_linked_members",
+    "format_linked_listing",
     "pop_kv_option",
     "render_help",
     "resolve_help_key",

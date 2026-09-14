@@ -12,6 +12,7 @@ import uuid
 from stoat_discord_bridge.admin_commands.channel import ChannelLinker
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
+    LinkedMember,
     LinkError,
     MirrorGuard,
     MirrorInProgressError,
@@ -31,6 +32,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_id,
     _resolve_entity_title,
     _run_bulk_mirror,
+    collect_linked_members,
     format_linked_listing,
 )
 from stoat_discord_bridge.channel_structure import clip_name, forum_category_title
@@ -158,6 +160,21 @@ class CategoryLinker:
             f"{local_label} Category '{destination_name}' ({destination_category_id}). "
             "New channels in either will now sync automatically."
         )
+
+    async def describe_group(
+        self, *, local_connector: str, local_id: str
+    ) -> "tuple[str, list[LinkedMember]] | None":
+        """The structured counterpart of `list_linked_categories` - the
+        bridge group id and every member as a `LinkedMember`, or None if
+        `local_id` (an id or bare name, on `local_connector`) isn't linked.
+        Used by the Discord in-line link editor (issue #115)."""
+        local_id = await self._resolve_to_id(local_connector, local_id)
+        bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_id)
+        if bridge_group is None:
+            return None
+        mapped = await self._category_mappings.get_mapped_categories(bridge_group)
+        members = await collect_linked_members(mapped, self._connectors, "category_id", "category_name")
+        return bridge_group, members
 
     async def list_linked_categories(
         self, *, local_connector: str, local_category_id: str | None = None, local_category: str | None = None

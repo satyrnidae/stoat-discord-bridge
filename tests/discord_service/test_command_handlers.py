@@ -298,7 +298,7 @@ async def test_link_user_uses_the_picked_members_id_not_free_text():
     user_linker = FakeLinker()
     sender = _make_sender(FakeLinker(), user_linker=user_linker)
     interaction = FakeInteraction()
-    member = SimpleNamespace(id=216591124222050304)
+    member = SimpleNamespace(id=216591124222050304, display_name="ShrinerH")
 
     await sender._handle_link_user(interaction, "stoat", "01KH7TH31EBY08FTQ7YC2RC4DQ", member)
 
