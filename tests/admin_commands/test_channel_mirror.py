@@ -604,6 +604,40 @@ async def test_mirror_channel_to_all_reports_a_per_channel_problem_without_abort
     assert "Linked Discord channel 'd2'" in lines[1]
 
 
+async def test_mirror_channel_to_all_all_fans_out_over_both_axes(fake_db):
+    # `/mirror channel to all all` (issue #123): entity-level `all` (every
+    # local channel) composed with the pre-existing destination-level `all`
+    # (every other connector) - mirror_channel_all's per-destination loop
+    # calling back into mirror_channel's own entity-all branch, both under
+    # the same re-entrant MirrorGuard reservation.
+    created = {"stoat": [], "irc": []}
+
+    def _ensure_channel_for(dest):
+        async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+            created[dest].append(name)
+            return f"{dest}_{name}"
+
+        return ensure_channel
+
+    async def list_channels():
+        return [("d1", "general"), ("d2", "random")]
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", list_channels=list_channels),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=_ensure_channel_for("stoat")),
+        "irc": ConnectorInfo(id="irc", label="IRC", ensure_channel=_ensure_channel_for("irc")),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    summary = await linker.mirror_channel_all(
+        local_connector="discord", local_channel_id="all", local_channel_name="ignored"
+    )
+
+    assert created["stoat"] == ["general", "random"]
+    assert created["irc"] == ["general", "random"]
+    assert summary.count("Linked") == 4
+
+
 async def test_mirror_channel_all_with_no_other_connectors(fake_db):
     connectors = {"discord": ConnectorInfo(id="discord", label="Discord")}
     linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
