@@ -191,25 +191,32 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             message.channel.id,
             message.author.id,
         )
-        await self._on_message(
-            StandardMessage(
-                origin_connector_id=self.connector_id,
-                origin_channel_id=str(message.channel.id),
-                channel_name=getattr(message.channel, "name", str(message.channel.id)),
-                sender_name=await self._resolve_sender_name(message),
-                sender_avatar_url=await self._resolve_avatar_url(message),
-                sender_user_id=str(message.author.id),
-                content_markdown=message.content,
-                message_id=str(message.id),
-                attachments=_map_attachments(message),
-                source_label=self._config.label,
-                sender_pronouns=await self._resolve_sender_pronouns(message),
-                sender_color=self._resolve_sender_color(message),
-                mentioned_users=_map_mentioned_users(message),
-                mentioned_roles=_map_mentioned_roles(message),
-                mentioned_channels=await self._map_mentioned_channels(message.content or ""),
-                mentioned_emoji=await self._map_mentioned_emoji(message.content or ""),
-            )
+        await self._on_message(await self._to_standard_message(message))
+
+    async def _to_standard_message(self, message) -> StandardMessage:
+        """Convert a native Stoat message - live (from `_handle_message`) or
+        historical (from `fetch_history`, issue #122) - into a
+        `StandardMessage`. Factored out of `_handle_message` so a history
+        backfill can reuse the exact same sender-resolution logic without
+        also running the pin/command-message filtering that only makes sense
+        for a live gateway event."""
+        return StandardMessage(
+            origin_connector_id=self.connector_id,
+            origin_channel_id=str(message.channel.id),
+            channel_name=getattr(message.channel, "name", str(message.channel.id)),
+            sender_name=await self._resolve_sender_name(message),
+            sender_avatar_url=await self._resolve_avatar_url(message),
+            sender_user_id=str(message.author.id),
+            content_markdown=message.content,
+            message_id=str(message.id),
+            attachments=_map_attachments(message),
+            source_label=self._config.label,
+            sender_pronouns=await self._resolve_sender_pronouns(message),
+            sender_color=self._resolve_sender_color(message),
+            mentioned_users=_map_mentioned_users(message),
+            mentioned_roles=_map_mentioned_roles(message),
+            mentioned_channels=await self._map_mentioned_channels(message.content or ""),
+            mentioned_emoji=await self._map_mentioned_emoji(message.content or ""),
         )
 
     async def _handle_message_update(self, event) -> None:

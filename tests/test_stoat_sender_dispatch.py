@@ -267,6 +267,33 @@ async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar
     assert message.message_id == "m1"
 
 
+async def test_to_standard_message_converts_a_message_standalone():
+    # _to_standard_message must be independently callable (not just reachable
+    # via _handle_message's live-event path) so a history backfill (issue
+    # #122) can reuse the exact same sender-resolution logic for a message
+    # that never went through the gateway's pin/command-message filtering.
+    recorder = _Recorder()
+    client = FakeClient()
+    sender = _make_sender(recorder, client)
+    channel = FakeChannel(id="42", name="general")
+    author = FakeAuthor(id="u1", tag="alice#0000", display_name="Alice", avatar=FakeAsset("https://cdn.example/a.png"))
+
+    message = await sender._to_standard_message(
+        _stoat_message(channel=channel, author=author, content="hello", id="m1")
+    )
+
+    assert recorder.messages == []  # doesn't itself dispatch on_message
+    assert message.origin_connector_id == "stoat"
+    assert message.origin_channel_id == "42"
+    assert message.channel_name == "general"
+    assert message.source_label == "Stoat"
+    assert message.sender_name == "Alice"
+    assert message.sender_avatar_url == "https://cdn.example/a.png"
+    assert message.sender_user_id == "u1"
+    assert message.content_markdown == "hello"
+    assert message.message_id == "m1"
+
+
 async def test_handle_message_maps_role_mentions():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
