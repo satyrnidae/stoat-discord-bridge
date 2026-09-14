@@ -124,7 +124,11 @@ class FakeWebhook:
         self.user = user
         self.sent: list[dict] = []
         self.edited: list[dict] = []
+        self.deleted: list[int] = []
         self._raises = raises
+        # per-message_id override, for testing that one already-gone post
+        # doesn't stop the rest of a multi-id delete_message call.
+        self.raise_on_delete: dict[int, BaseException] = {}
         self._next_message_id = 1000
 
     async def send(
@@ -152,6 +156,13 @@ class FakeWebhook:
             raise self._raises
         self.edited.append({"message_id": message_id, "content": content, "thread": thread})
         return FakeSentMessage(id=message_id)
+
+    async def delete_message(self, message_id: int, *, thread: Any = None) -> None:
+        if message_id in self.raise_on_delete:
+            raise self.raise_on_delete[message_id]
+        if self._raises is not None:
+            raise self._raises
+        self.deleted.append(message_id)
 
 
 class FakeChannel:

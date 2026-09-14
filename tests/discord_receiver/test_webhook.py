@@ -113,6 +113,15 @@ async def test_edit_message_rejects_a_forum_channel_target():
         await receiver.edit_message(target_channel_id="42", target_message_ids=["1000"], edit=_edit())
 
 
+async def test_delete_message_rejects_a_forum_channel_target():
+    client = FakeClient()
+    client.add_channel(FakeForumChannel(id=42))
+    receiver = _make_receiver(client)
+
+    with pytest.raises(UnsupportedRelayTargetError):
+        await receiver.delete_message(target_channel_id="42", target_message_ids=["1000"])
+
+
 async def test_receive_still_posts_into_a_forum_post_thread():
     client = FakeClient()
     forum = client.add_channel(FakeForumChannel(id=42))

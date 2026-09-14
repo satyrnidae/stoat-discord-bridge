@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import discord
 import pytest
 
 from stoat_discord_bridge.services.base import PartialRelayError
@@ -62,6 +65,34 @@ async def test_edit_message_matches_each_split_chunk_to_its_post(monkeypatch):
 
     webhook = channel.created_webhooks[0]
     assert [e["content"] for e in webhook.edited] == ["abcde", "fghij"]
+
+
+# ---------------------------------------------------------------- delete_message
+
+
+async def test_delete_message_deletes_every_post_through_the_webhook():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.delete_message(target_channel_id="42", target_message_ids=["1000", "1001"])
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.deleted == [1000, 1001]
+
+
+async def test_delete_message_swallows_an_already_gone_post_and_continues():
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+    webhook, _thread = await receiver._get_or_create_webhook("42")
+    webhook.raise_on_delete[1000] = discord.NotFound(
+        SimpleNamespace(status=404, reason="Not Found"), "Unknown Message"
+    )
+
+    await receiver.delete_message(target_channel_id="42", target_message_ids=["1000", "1001"])  # must not raise
+
+    assert webhook.deleted == [1001]
 
 
 async def test_receive_splits_long_content_into_multiple_webhook_sends(monkeypatch):

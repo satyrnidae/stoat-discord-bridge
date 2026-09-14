@@ -29,9 +29,10 @@ from stoat_discord_bridge.admin_commands import (
 )
 from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
-from stoat_discord_bridge.models import StandardEdit, StandardMessage, StandardPin, StandardTyping
+from stoat_discord_bridge.models import StandardDelete, StandardEdit, StandardMessage, StandardPin, StandardTyping
 from stoat_discord_bridge.services.base import (
     OnChannelRolePermissionChanged,
+    OnDelete,
     OnEdit,
     OnEmojiCreated,
     OnEmojiDeleted,
@@ -82,6 +83,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         on_pin: OnPin | None = None,
         on_typing: OnTyping | None = None,
         on_edit: OnEdit | None = None,
+        on_delete: OnDelete | None = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -98,7 +100,15 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         # accepted (e.g. for tests) but those commands will then report
         # themselves unconfigured.
         SenderService.__init__(
-            self, on_message, on_reaction, on_emoji_created, on_emoji_deleted, on_pin, on_typing, on_edit
+            self,
+            on_message,
+            on_reaction,
+            on_emoji_created,
+            on_emoji_deleted,
+            on_pin,
+            on_typing,
+            on_edit,
+            on_delete,
         )
         self._config = config
         self.connector_id = config.id
@@ -344,6 +354,42 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 mentioned_users=_map_mentioned_users(getattr(payload, "message", None)),
                 mentioned_roles=_map_mentioned_roles(getattr(payload, "message", None)),
                 mentioned_channels=_map_mentioned_channels(getattr(payload, "message", None)),
+            )
+        )
+
+    async def _handle_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        """RAW_MESSAGE_DELETE's payload has no `webhook_id` (unlike
+        MESSAGE_UPDATE), so the cache-free "is this our own webhook copy"
+        drop `_handle_raw_message_edit` does isn't available here in the
+        general case. `payload.cached_message` is used as a best-effort
+        optimization when discord.py's message cache happens to hold it; the
+        real (and sufficient) loop guard is `BridgeCoordinator`'s
+        `_recent_deletes` TTL guard, since every delete the bridge itself
+        issues is one exact, known (connector, channel, message_id) triple
+        recorded right before the call."""
+        if payload.guild_id != self._config.guild_id:
+            return
+        await self._emit_delete(payload.channel_id, payload.message_id, payload.cached_message)
+
+    async def _handle_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        """RAW_BULK_MESSAGE_DELETE: emit one StandardDelete per deleted id,
+        reusing `_handle_raw_message_delete`'s per-id cached-webhook check."""
+        if payload.guild_id != self._config.guild_id:
+            return
+        cached_by_id = {message.id: message for message in payload.cached_messages}
+        for message_id in payload.message_ids:
+            await self._emit_delete(payload.channel_id, message_id, cached_by_id.get(message_id))
+
+    async def _emit_delete(self, channel_id: int, message_id: int, cached_message: "discord.Message | None") -> None:
+        if self._on_delete is None:
+            return
+        if cached_message is not None and cached_message.webhook_id is not None:
+            return  # our own relayed webhook copy - best-effort skip
+        await self._on_delete(
+            StandardDelete(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(channel_id),
+                origin_message_id=str(message_id),
             )
         )
 
