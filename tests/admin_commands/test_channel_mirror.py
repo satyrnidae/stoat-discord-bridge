@@ -501,6 +501,109 @@ async def test_mirror_channel_to_falls_back_to_source_category_when_unlinked(fak
     assert calls == [("general", "Discord Team")]
 
 
+# ---------------------------------------------------------------- entity-level `all` (issue #123)
+
+
+async def test_mirror_channel_to_all_mirrors_every_local_channel(fake_db):
+    ensured = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        ensured.append(name)
+        return f"stoat_{name}"
+
+    async def list_channels():
+        return [("d1", "general"), ("d2", "random")]
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", list_channels=list_channels),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="all", local_channel_name="ignored", destination="stoat"
+    )
+
+    assert ensured == ["general", "random"]
+    assert "Linked Discord channel 'd1'" in summary
+    assert "Linked Discord channel 'd2'" in summary
+    assert await channel_mappings.get_bridge_group("stoat", "stoat_general") is not None
+    assert await channel_mappings.get_bridge_group("stoat", "stoat_random") is not None
+
+
+async def test_mirror_channel_to_all_is_case_insensitive(fake_db):
+    async def list_channels():
+        return []
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", list_channels=list_channels),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat"),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="ALL", local_channel_name="ignored", destination="stoat"
+    )
+    assert "nothing to mirror" in summary.lower()
+
+
+async def test_mirror_channel_to_all_without_list_channels_raises(fake_db):
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),  # no list_channels hook
+        "stoat": ConnectorInfo(id="stoat", label="Stoat"),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    with pytest.raises(LinkError, match="doesn't support listing channels"):
+        await linker.mirror_channel(
+            local_connector="discord", local_channel_id="all", local_channel_name="ignored", destination="stoat"
+        )
+
+
+async def test_mirror_channel_to_all_rejects_a_new_name(fake_db):
+    async def list_channels():
+        return [("d1", "general")]
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", list_channels=list_channels),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat"),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    with pytest.raises(LinkError, match="all.*together with a new name"):
+        await linker.mirror_channel(
+            local_connector="discord",
+            local_channel_id="all",
+            local_channel_name="ignored",
+            destination="stoat",
+            new_name="lobby",
+        )
+
+
+async def test_mirror_channel_to_all_reports_a_per_channel_problem_without_aborting(fake_db):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        if name == "general":
+            raise RuntimeError("no room")
+        return f"stoat_{name}"
+
+    async def list_channels():
+        return [("d1", "general"), ("d2", "random")]
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", list_channels=list_channels),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="all", local_channel_name="ignored", destination="stoat"
+    )
+    lines = summary.splitlines()
+    assert len(lines) == 2
+    assert "failed to create/find a channel" in lines[0]
+    assert "Linked Discord channel 'd2'" in lines[1]
+
+
 async def test_mirror_channel_all_with_no_other_connectors(fake_db):
     connectors = {"discord": ConnectorInfo(id="discord", label="Discord")}
     linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
