@@ -45,6 +45,7 @@ from stoat_discord_bridge.services.discord_service import (
     DiscordReceiverService,
     DiscordSenderService,
 )
+from stoat_discord_bridge.services.discord_service.voice import DiscordVoiceConnector
 from stoat_discord_bridge.services.irc_service import (
     IrcReceiverService,
     IrcSenderService,
@@ -54,7 +55,8 @@ from stoat_discord_bridge.services.stoat_service import (
     StoatReceiverService,
     StoatSenderService,
 )
-from stoat_discord_bridge.services.voice import VoiceBridgeCoordinator
+from stoat_discord_bridge.services.stoat_service.voice import StoatVoiceConnector
+from stoat_discord_bridge.services.voice import VoiceBridgeCoordinator, VoiceConnector
 from stoat_discord_bridge.status import HealthTracker
 from stoat_discord_bridge.storage.bot_whitelist import BotWhitelistRepository
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
@@ -709,9 +711,17 @@ async def run(config: BridgeConfig) -> None:
     )
     # N-way voice bridging (issue #113) - always constructed so per-connector
     # wiring below doesn't need to special-case it, but only started (and
-    # only fed presence pushes) when config.voice.enabled.
+    # only fed presence pushes) when config.voice.enabled. voice_connectors
+    # is populated in place as each Discord/Stoat sender below is
+    # constructed, same pattern as connector_infos above - VoiceBridgeCoordinator
+    # only reads from it once a session actually needs to join (well after
+    # this loop finishes), so construction order doesn't matter here either.
+    voice_connectors: dict[str, VoiceConnector] = {}
     voice_coordinator = VoiceBridgeCoordinator(
-        channel_mappings, connector_infos, follow_on_empty=config.voice.follow_on_empty
+        channel_mappings,
+        connector_infos,
+        voice_connectors=voice_connectors,
+        follow_on_empty=config.voice.follow_on_empty,
     )
 
     senders: list = []
@@ -729,6 +739,7 @@ async def run(config: BridgeConfig) -> None:
             on_typing=coordinator.handle_typing,
             on_edit=coordinator.handle_edit,
             on_voice_presence=voice_coordinator.on_voice_presence if config.voice.enabled else None,
+            on_voice_connector_lost=voice_coordinator.connector_disconnected if config.voice.enabled else None,
             linker=linker,
             emote_linker=emote_linker,
             user_linker=user_linker,
@@ -800,6 +811,8 @@ async def run(config: BridgeConfig) -> None:
             channel_is_voice=sender.channel_is_voice if discord_voice_capable else None,
             voice_occupants=sender.voice_occupants if discord_voice_capable else None,
         )
+        if discord_voice_capable:
+            voice_connectors[dc.id] = DiscordVoiceConnector(dc.id, sender.client, voice_bridging=dc.voice_bridging)
         senders.append(sender)
         closables.extend([receiver, sender])
 
@@ -884,6 +897,10 @@ async def run(config: BridgeConfig) -> None:
             channel_is_voice=sender.channel_is_voice if stoat_voice_capable else None,
             voice_occupants=sender.voice_occupants if stoat_voice_capable else None,
         )
+        if stoat_voice_capable:
+            voice_connectors[sc.id] = StoatVoiceConnector(
+                sc.id, sender.client, voice_bridging=sc.voice_bridging, voice_node=sc.voice_node
+            )
         senders.append(sender)
         closables.append(sender)
 

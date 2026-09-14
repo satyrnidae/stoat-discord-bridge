@@ -57,7 +57,7 @@ from stoat_discord_bridge.services.discord_service.formatting import (
 from stoat_discord_bridge.services.discord_service.linking import DiscordLinkingMixin
 from stoat_discord_bridge.services.discord_service.lookups import DiscordLookupsMixin
 from stoat_discord_bridge.services.discord_service.sync import DiscordSyncMixin
-from stoat_discord_bridge.services.voice.base import OnVoicePresence
+from stoat_discord_bridge.services.voice.base import OnVoiceConnectorLost, OnVoicePresence
 from stoat_discord_bridge.status import HealthTracker
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         on_typing: OnTyping | None = None,
         on_edit: OnEdit | None = None,
         on_voice_presence: "OnVoicePresence | None" = None,
+        on_voice_connector_lost: "OnVoiceConnectorLost | None" = None,
         linker: ChannelLinker | None = None,
         emote_linker: "EmoteLinker | None" = None,
         user_linker: "UserLinker | None" = None,
@@ -112,6 +113,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         self._role_linker = role_linker
         self._bot_whitelist = bot_whitelist
         self._on_voice_presence = on_voice_presence
+        self._on_voice_connector_lost = on_voice_connector_lost
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted
@@ -183,6 +185,17 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
     async def _handle_disconnect(self) -> None:
         self._health.mark_disconnected(self.connector_id)
         logger.warning("[discord:%s] disconnected", self.connector_id)
+        # discord.py's on_disconnect also fires on a transient reconnect, not
+        # only a permanent drop - VoiceBridgeCoordinator.connector_disconnected
+        # (issue #113) is cheap and safe either way (a no-op unless this
+        # connector was actually part of a live session). Its presence isn't
+        # re-seeded until the coordinator's own periodic refresh (up to
+        # _REFRESH_INTERVAL later) or the next live presence push on this
+        # connector - _handle_ready doesn't trigger an immediate
+        # refresh_groups() yet, so a fast reconnect can show this connector
+        # as briefly empty rather than instantly restoring its occupants.
+        if self._on_voice_connector_lost is not None:
+            await self._on_voice_connector_lost(self.connector_id)
 
     async def _bot_is_whitelisted(self, user_id: str) -> bool:
         """Whether a bot-authored event from `user_id` should relay like a

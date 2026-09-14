@@ -90,7 +90,14 @@ class StoatSyncMixin:
     def _is_bot_user(self, user_id: str) -> bool:
         """Cache-only, best-effort "is this user a bot" check (same stance as
         `_handle_message_react`'s reactor check) - used by the voice-presence
-        handlers below (issue #113) to exclude bot occupants."""
+        handlers below (issue #113) to exclude bot occupants, including the
+        bridge's own user id explicitly (Livekit fires a join/leave event
+        for the bridge's own voice connection too, per stoat.py's
+        `join_call` docs - a `get_user` cache miss can't be trusted to still
+        resolve `.bot=True` for it the way any other bot's can, same
+        reasoning as `voice_occupants`'s pull-path counterpart)."""
+        if user_id == self._self_id:
+            return True
         try:
             user = self._client.get_user(user_id)
         except Exception:

@@ -51,6 +51,25 @@ async def test_voice_occupants_none_for_an_unresolvable_id():
     assert await sender.voice_occupants("999") is None
 
 
+async def test_voice_occupants_excludes_bridges_own_self_id_even_if_uncached():
+    """The bridge's own user object may not be `get_user`-cached (a plain
+    cache miss defaults `.bot` to False, not True) - `self_id` must be
+    excluded explicitly rather than relying on that lookup alone, since
+    Phase 2 makes the bridge itself join (and so appear as an occupant of)
+    its own voice channels (issue #113)."""
+    client = FakeClient()
+    client.add_user("1", FakeAuthor(id="1", bot=False))
+    # "bridge" (self_id) is deliberately never added to the user cache.
+    client.add_channel(
+        FakeVoiceChannel(
+            id="42", participants={"1": SimpleNamespace(user_id="1"), "bridge": SimpleNamespace(user_id="bridge")}
+        )
+    )
+    sender = _make_sender(client=client, self_id="bridge")
+
+    assert await sender.voice_occupants("42") == {"1"}
+
+
 async def test_voice_occupants_empty_set_for_an_empty_voice_channel():
     client = FakeClient()
     client.add_channel(FakeVoiceChannel(id="42"))
@@ -111,6 +130,25 @@ async def test_voice_channel_move_reports_leave_then_join():
         (("stoat", "42", "7"), {"present": False, "is_bot": False}),
         (("stoat", "43", "7"), {"present": True, "is_bot": False}),
     ]
+
+
+async def test_voice_channel_join_treats_bridges_own_self_id_as_a_bot():
+    """Same reasoning as voice_occupants's self_id exclusion - Livekit fires
+    a join event for the bridge's own voice connection too, and its own
+    user object may not be cached."""
+    calls: list = []
+
+    async def on_voice_presence(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    client = FakeClient()
+    # "bridge" (self_id) is deliberately never added to the user cache.
+    sender = _make_sender(client=client, on_voice_presence=on_voice_presence, self_id="bridge")
+
+    event = SimpleNamespace(channel_id="42", state=SimpleNamespace(user_id="bridge"))
+    await sender._handle_voice_channel_join(event)
+
+    assert calls == [(("stoat", "42", "bridge"), {"present": True, "is_bot": True})]
 
 
 async def test_voice_presence_handlers_are_no_ops_when_not_wired():

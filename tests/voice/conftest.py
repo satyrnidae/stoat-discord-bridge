@@ -1,10 +1,15 @@
 """Fakes shared by services/voice/ tests - a bare ConnectorInfo builder for
 channel_is_voice/voice_occupants, since those are the only two hooks
-VoiceBridgeCoordinator reads."""
+VoiceBridgeCoordinator reads for classification/presence (Phase 1), plus a
+fake VoiceConnector/VoiceTransport pair for the join/leave lifecycle
+(Phase 2) - VoiceBridgeCoordinator never touches discord.py/stoat.py
+directly, so these are all it needs to exercise the real join/close calls
+without a live server."""
 
 from __future__ import annotations
 
 from stoat_discord_bridge.admin_commands import ConnectorInfo
+from stoat_discord_bridge.services.voice.base import VoiceJoinError, VoiceTransport
 
 
 def make_connector(
@@ -39,3 +44,43 @@ def make_connector(
         channel_is_voice=None if no_voice_hook else channel_is_voice,
         voice_occupants=voice_occupants,
     )
+
+
+class FakeVoiceTransport(VoiceTransport):
+    """Records whether/how it was closed; never actually connects to
+    anything."""
+
+    def __init__(self, connector_id: str) -> None:
+        self.connector_id = connector_id
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeVoiceConnector:
+    """A `VoiceConnector` whose `join` either always succeeds (recording
+    every channel id it was asked to join, in order, and every
+    `FakeVoiceTransport` it handed back) or always raises `VoiceJoinError`
+    (`fail=True`) - never both, since a connector isn't expected to flip
+    from failing to succeeding mid-test; construct a fresh one to change
+    behavior partway through."""
+
+    def __init__(self, connector_id: str, *, available: bool = True, fail: bool = False) -> None:
+        self.connector_id = connector_id
+        self._available = available
+        self._fail = fail
+        self.joined: list[str] = []
+        self.transports: list[FakeVoiceTransport] = []
+
+    @property
+    def voice_available(self) -> bool:
+        return self._available
+
+    async def join(self, channel_id: str) -> FakeVoiceTransport:
+        if self._fail:
+            raise VoiceJoinError(f"fake connector {self.connector_id} failed to join {channel_id}")
+        self.joined.append(channel_id)
+        transport = FakeVoiceTransport(self.connector_id)
+        self.transports.append(transport)
+        return transport

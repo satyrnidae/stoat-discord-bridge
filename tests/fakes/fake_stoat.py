@@ -170,13 +170,30 @@ class FakeChannel:
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
 
 
+class FakeStoatRoom:
+    """Stands in for the livekit.rtc.Room `VoiceChannel.connect()` returns -
+    just enough for `StoatVoiceTransport.close()` (issue #113 Phase 2) to
+    exercise its disconnect call."""
+
+    def __init__(self) -> None:
+        self.disconnect_calls = 0
+
+    async def disconnect(self) -> None:
+        self.disconnect_calls += 1
+
+
 class FakeVoiceChannel(stoat.VoiceChannel):
     """Stands in for stoat.VoiceChannel - needed for the
     isinstance(channel, stoat.VoiceChannel) check `channel_is_voice`
     (issue #113) uses. Skips the real (attrs-generated) __init__, same
     pattern as fake_discord.py's discord.py subclass fakes; `.voice_states`
     is shadowed with a bare participants dict since the real property reads
-    a gateway-fed cache this fake has none of."""
+    a gateway-fed cache this fake has none of.
+
+    `connect_result`/`connect_error` (issue #113 Phase 2) drive
+    `StoatVoiceConnector.join`'s test double, mirroring
+    fake_discord.py's `FakeVoiceChannel.connect` - `connect_calls` records
+    every `node=` kwarg `connect()` was called with."""
 
     def __init__(
         self,
@@ -185,15 +202,26 @@ class FakeVoiceChannel(stoat.VoiceChannel):
         name: str = "voice",
         server_id: str | None = None,
         participants: "dict[str, Any] | None" = None,
+        connect_result: "FakeStoatRoom | None" = None,
+        connect_error: Exception | None = None,
     ) -> None:
         self.id = id
         self.name = name
         self.server_id = server_id
         self._participants = participants or {}
+        self._connect_result = connect_result
+        self._connect_error = connect_error
+        self.connect_calls: list[str | None] = []
 
     @property
     def voice_states(self) -> SimpleNamespace:
         return SimpleNamespace(participants=self._participants)
+
+    async def connect(self, *, node: str | None = None, **kwargs):
+        self.connect_calls.append(node)
+        if self._connect_error is not None:
+            raise self._connect_error
+        return self._connect_result or FakeStoatRoom()
 
 
 class FakePartialMessageable:
