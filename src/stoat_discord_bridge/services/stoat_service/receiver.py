@@ -62,6 +62,7 @@ class StoatReceiverService(ReceiverService):
     supports_pins = True
     supports_typing = True
     supports_edits = True
+    supports_deletes = True
     supports_replies = True
 
     # How long a single relayed typing indicator lingers before it's ended,
@@ -303,6 +304,27 @@ class StoatReceiverService(ReceiverService):
             except Exception:
                 logger.warning(
                     "[stoat:%s] couldn't edit relayed message %s in channel %s",
+                    self.connector_id,
+                    message_id,
+                    target_channel_id,
+                )
+
+    async def delete_message(self, *, target_channel_id: str, target_message_ids: list[str]) -> None:
+        """Delete every masqueraded post the original relay produced in this
+        channel (Stoat lets the bot delete its own messages, masqueraded ones
+        included). Best-effort per id - a post that's already gone, or a
+        delete the server rejects, is skipped rather than stopping the rest
+        of the batch."""
+        if not target_message_ids:
+            return
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        for message_id in target_message_ids:
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.delete()
+            except Exception:
+                logger.warning(
+                    "[stoat:%s] couldn't delete relayed message %s in channel %s",
                     self.connector_id,
                     message_id,
                     target_channel_id,

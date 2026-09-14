@@ -266,6 +266,48 @@ Stoat via the bot author on `event.after` — and `BridgeCoordinator` keeps a
 Stoat's `event.after` uncached so the author can't be checked) is dropped
 before it fans back out.
 
+### Message delete sync
+
+Deleting a message in a bridged channel is mirrored onto every other
+connector's copy of that message (`BridgeCoordinator.handle_delete` →
+`ReceiverService.delete_message`, gated by `supports_deletes` and keyed off
+the same `MessageSyncRepository` group reaction/pin/edit sync use). Discord ⇄
+Stoat only — **IRC has no delete-in-place concept** (`supports_deletes` stays
+`False`), so a delete never routes to it (issue #133).
+
+Unlike edit sync's symmetric cascade (safe there because the bridge bot owns
+every relayed copy, so only a real edit of the origin's own content ever
+arrives), deletion doesn't have that property: a moderator with
+`manage_messages` can delete *any* message in a channel, including the
+bridge's own relayed copies. `handle_delete` therefore looks the group up via
+`MessageSyncRepository.find_group_if_origin` (the same one-way lookup pin
+sync uses, issue #134) rather than the any-side `find_group`, so a delete
+reported for a relayed copy is a no-op rather than cascading back to the
+source or other mirrors.
+
+Each sender emits a `StandardDelete` (identity only — no content is needed to
+delete something): Discord from `on_raw_message_delete` /
+`on_raw_bulk_message_delete` (`RawMessageDeleteEvent` / `RawBulkMessageDeleteEvent`
+— bulk emits one `StandardDelete` per id); Stoat from `on_message_delete` /
+`on_message_delete_bulk` (`stoat.events.MessageDeleteEvent` /
+`MessageDeleteBulkEvent`). A relay split across several native posts in one
+channel is deleted post-by-post via `delete_message`'s `target_message_ids`
+list — Discord via `webhook.delete_message`, Stoat via `Message.delete` (the
+bot owns its masqueraded messages) — best-effort per id, so one post that's
+already gone doesn't stop the rest of the batch.
+
+Best-effort and silent (an untracked message, a delete reported for a
+relayed copy rather than the origin, an unsupported target, or a raising hook
+are all skipped). Loop-safe two ways, like pin/edit sync: each sender drops
+its own relayed copy being deleted where
+it can tell — Discord's `RAW_MESSAGE_DELETE` payload carries no `webhook_id`
+(unlike `MESSAGE_UPDATE`), so this is only a best-effort `cached_message`
+check there; Stoat checks the cached `event.message`'s author against the
+bot's own id, the same way edit sync does — and `BridgeCoordinator` keeps a
+~10s record of the deletes it issued so an echo that slips past the sender-side
+check (the uncached case on either connector) is dropped before it fans back
+out.
+
 ### Typing sync
 
 A "someone is typing" event in a bridged channel is relayed onto every other

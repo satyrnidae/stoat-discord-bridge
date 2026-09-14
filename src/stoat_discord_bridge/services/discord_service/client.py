@@ -46,6 +46,12 @@ class _DiscordClient(discord.Client):
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         await self._owner._handle_raw_message_edit(payload)
 
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        await self._owner._handle_raw_message_delete(payload)
+
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        await self._owner._handle_raw_bulk_message_delete(payload)
+
     async def on_thread_create(self, thread: discord.Thread) -> None:
         await self._owner._handle_thread_create(thread)
 
