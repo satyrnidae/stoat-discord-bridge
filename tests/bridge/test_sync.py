@@ -25,6 +25,30 @@ async def test_pin_forwards_only_to_connectors_that_support_it(coordinator_parts
     assert irc_receiver.pins == []
 
 
+async def test_pin_on_a_relayed_copy_does_not_propagate(coordinator_parts):
+    """A pin/unpin performed directly on a relayed copy stays local to that
+    platform - only a pin/unpin on the group's recorded origin fans out
+    (issue #134)."""
+    coordinator, _channel_mappings, message_sync, _emoji_mappings, _health = coordinator_parts
+    await message_sync.record(
+        "general", _ref("discord", "100", "m1"), [_ref("stoat", "200", "s1"), _ref("irc", "300", "i1")]
+    )
+    discord_receiver = FakeReceiver("discord", supports_pins=True)
+    stoat_receiver = FakeReceiver("stoat", supports_pins=True)
+    irc_receiver = FakeReceiver("irc", supports_pins=False)
+    coordinator.register_receiver(discord_receiver)
+    coordinator.register_receiver(stoat_receiver)
+    coordinator.register_receiver(irc_receiver)
+
+    # pinned directly on the *relayed* Stoat copy, not the Discord origin
+    await coordinator.handle_pin(
+        StandardPin(origin_connector_id="stoat", origin_channel_id="200", origin_message_id="s1", pinned=True)
+    )
+
+    assert discord_receiver.pins == []
+    assert irc_receiver.pins == []
+
+
 async def test_pin_is_a_noop_for_an_untracked_message(coordinator_parts):
     coordinator, _channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
     receiver = FakeReceiver("stoat", supports_pins=True)

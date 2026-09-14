@@ -280,10 +280,14 @@ class BridgeCoordinator:
 
     async def handle_pin(self, pin: StandardPin) -> None:
         """Relay a pin/unpin onto every other connector's copy of the same
-        message. Silently does nothing if the message was never bridged, or a
-        target connector doesn't advertise `supports_pins` (IRC) - both are
-        expected, not errors. Loop-safe: a `set_pinned` we issued is recorded
-        briefly so the resulting echo event is dropped here."""
+        message - but only when it was performed on the sync group's
+        recorded *origin*; a pin/unpin on a relayed copy stays local to that
+        platform and isn't mirrored back to the origin or across to other
+        copies (issue #134). Silently does nothing if the message was never
+        bridged, was itself a relayed copy, or a target connector doesn't
+        advertise `supports_pins` (IRC) - all expected, not errors.
+        Loop-safe: a `set_pinned` we issued is recorded briefly so the
+        resulting echo event is dropped here."""
         now = time.monotonic()
         self._recent_pins = {k: v for k, v in self._recent_pins.items() if now - v < _PIN_SUPPRESS_TTL}
         if (
@@ -294,11 +298,11 @@ class BridgeCoordinator:
         ):
             return  # our own write echoing back
 
-        group = await self._message_sync.find_group(
+        group = await self._message_sync.find_group_if_origin(
             pin.origin_connector_id, pin.origin_channel_id, pin.origin_message_id
         )
         if group is None:
-            return  # this message isn't tracked as bridged
+            return  # untracked, or this was a relayed copy rather than the origin
 
         for ref in group:
             if ref.connector_id == pin.origin_connector_id:
