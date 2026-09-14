@@ -227,6 +227,107 @@ def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterabl
     return [d for d in self._connectors if d != kw["local_connector"]]  # type: ignore[attr-defined]
 
 
+# --------------------------------------------------------------------------
+# Entity-level `all` (issue #123): `/mirror <noun> to <service> all` mirrors
+# every local entity of that kind to `<service>`, and `/mirror <noun> from
+# <service> all` pulls in every entity of that kind from `<service>` - the
+# orthogonal axis to the existing destination-level `all` above (which picks
+# every *destination* for one named entity). Both axes are independent, so
+# `/mirror channel to all all` (every local channel, to every connector)
+# reaches this fan-out once per destination via the existing destination-`all`
+# loop, with no extra code needed here.
+
+# Small delay between each entity in a bulk fan-out, so a large `all` doesn't
+# front-load an unpaced burst of channel/category/role/emote-create calls
+# against a platform's rate limiting (the "need to respect limits for
+# requests" ask in issue #123) - a real concern here since, unlike the
+# destination axis (bounded by the number of configured connectors), the
+# entity axis is bounded by how many channels/categories/roles/emoji exist on
+# a connector, which is not small.
+_BULK_ENTITY_PACING_SECONDS: float = 0.25
+
+# A soft ceiling on how many entities one `all` fan-out will touch - past
+# this, the burst of creates is large enough to risk tripping a platform's
+# stricter creation-specific rate limits (and, for a Discord slash command,
+# the 15-minute interaction-followup token window) regardless of pacing, so
+# the operator is asked to link a more targeted subset instead.
+_BULK_ENTITY_CAP: int = 50
+
+
+def _is_all_token(token: str | None) -> bool:
+    """Whether `token` is the literal (case-insensitive) `all` marking an
+    entity-level `/mirror <noun> to|from ... all` (issue #123). `None` - the
+    argument was omitted - is never `all`: omission must keep its existing,
+    narrower meaning (the invoking channel/Category, or "no role/emote
+    picked yet") in every caller, never silently expand into the expensive
+    bulk branch (see point 3 of the issue's plan)."""
+    return token is not None and token.lower() == "all"
+
+
+async def _list_entities_for_all(
+    connectors: "dict[str, ConnectorInfo]",
+    connector_id: str,
+    list_hook: Callable[[], Awaitable[list[tuple[str, str]]]] | None,
+    *,
+    kind: str,
+) -> list[tuple[str, str]]:
+    """Every `(id, name)` pair `list_hook` reports for `connector_id`, to
+    drive an entity-level `all` mirror. Unlike the best-effort autocomplete
+    callers of the same `list_*` hooks (which treat a missing hook or a
+    raised exception as "no suggestions"), a bulk mirror has no such
+    fallback - a connector with no `list_*` hook for `kind` (e.g. IRC for
+    anything but channels) genuinely can't enumerate "every entity", so this
+    raises a user-facing LinkError instead of silently doing nothing. Also
+    raises past `_BULK_ENTITY_CAP` (see its docstring) - checked here, before
+    the caller starts iterating, so an oversized `all` is rejected up front
+    rather than half-run."""
+    info = connectors.get(connector_id)
+    label = info.label if info else connector_id
+    if list_hook is None:
+        raise LinkError(f"{label} doesn't support listing {kind}s - can't use 'all' here.")
+    try:
+        entities = await list_hook()
+    except Exception as exc:
+        raise LinkError(f"{label}: couldn't list {kind}s: {exc}") from exc
+    if len(entities) > _BULK_ENTITY_CAP:
+        raise LinkError(
+            f"{label} has {len(entities)} {kind}s - mirroring more than {_BULK_ENTITY_CAP} at once via "
+            "'all' isn't supported; link them individually instead."
+        )
+    return entities
+
+
+async def _run_bulk_mirror(
+    entities: list[tuple[str, str]],
+    mirror_one: Callable[[str, str], Awaitable[str]],
+    *,
+    pacing_seconds: float = _BULK_ENTITY_PACING_SECONDS,
+) -> str:
+    """Run `mirror_one(entity_id, entity_name)` for every entity in
+    `entities`, in order, pacing each call `pacing_seconds` apart (not before
+    the first) so a large fan-out doesn't front-load a burst of creates.
+    Joins the per-entity result lines the same way the existing
+    destination-`all` fan-outs (`mirror_channel_all` and friends) do - any
+    exception from one entity (a `LinkError`, or a genuinely unexpected one
+    that slipped past `mirror_one`'s own per-connector-problem handling) is
+    caught and reported as its own line (`'<name>': <message>`) rather than
+    aborting the rest, matching those methods' "report, don't raise, per
+    problem" convention."""
+    if not entities:
+        return "nothing to mirror - no entities found."
+    lines: list[str] = []
+    for i, (entity_id, entity_name) in enumerate(entities):
+        if i:
+            await asyncio.sleep(pacing_seconds)
+        try:
+            lines.append(await mirror_one(entity_id, entity_name))
+        except Exception as exc:
+            if not isinstance(exc, LinkError):
+                logger.warning("bulk mirror: entity %r failed: %s", entity_name, exc)
+            lines.append(f"'{entity_name}': {exc}")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class ConnectorInfo:
     id: str
