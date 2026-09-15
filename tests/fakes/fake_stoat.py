@@ -201,6 +201,8 @@ class FakeChannel:
         return _paginate_fake_stoat_history(self._history, limit=limit, before=before, after=after, sort=sort)
 
     async def edit(self, **kwargs) -> "FakeChannel":
+        if self._raises is not None:
+            raise self._raises
         self.edits.append(kwargs)
         for key, value in kwargs.items():
             setattr(self, key, value)
