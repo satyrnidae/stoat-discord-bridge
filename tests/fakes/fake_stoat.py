@@ -513,7 +513,14 @@ class FakeServer:
 
 
 class FakeClient:
-    def __init__(self) -> None:
+    def __init__(self, *, user: Any = None) -> None:
+        # The bridge bot's own identity (issue #154's call-started notice
+        # reads this the same way fake_discord.py's FakeClient.user already
+        # does) - defaults to a real fake user rather than None, matching
+        # the assumption that it's always populated once actually logged in
+        # (see StoatSenderService._handle_ready, which sets stoat.Client.user
+        # as a side effect of storing event.me).
+        self.user: Any = user if user is not None else FakeAuthor(id="bridge-bot-id", name="Bridge", display_name="Bridge")
         self._channels: dict[str, FakeChannel] = {}
         self._fetched_channels: dict[str, FakeChannel] = {}
         self._servers: dict[str, FakeServer] = {}

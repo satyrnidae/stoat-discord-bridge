@@ -200,13 +200,17 @@ async def test_handle_message_unpin_system_event_emits_an_unpin():
     assert (pin.origin_message_id, pin.pinned) == ("um1", False)
 
 
-async def test_handle_message_drops_a_call_started_system_event():
-    # issue #145: a "<user> started a call" system message has no real
-    # .content - relaying it produces a blank message on every linked
-    # channel. It isn't a pin, so it should just be dropped, not relayed.
+async def test_handle_message_relays_a_call_started_notice():
+    # issue #154 (reintroducing, in a controlled shape, what issue #145 had
+    # to fully suppress): a "<user> started a call" system message has no
+    # real .content, so it can't be relayed as-is - post a bot-authored
+    # notice instead, with the real user embedded as a `<@id>` mention so
+    # rewrite_mentions can resolve it to a linked identity on the target.
     recorder = _Recorder()
-    sender = _make_sender(recorder, FakeClient())
-    channel = FakeChannel(id="42")
+    client = FakeClient()
+    client.add_user("u1", FakeAuthor(id="u1", display_name="Alice"))
+    sender = _make_sender(recorder, client)
+    channel = FakeChannel(id="42", name="general")
     message = SimpleNamespace(
         channel=channel,
         author=FakeAuthor(id="u1"),
@@ -217,8 +221,36 @@ async def test_handle_message_drops_a_call_started_system_event():
 
     await sender._handle_message(message)
 
-    assert recorder.messages == []
     assert recorder.pins == []
+    [notice] = recorder.messages
+    assert notice.origin_connector_id == "stoat"
+    assert notice.origin_channel_id == "42"
+    assert notice.content_markdown == "<@u1> started a call in Stoat"
+    assert notice.mentioned_users == {"u1": "Alice"}
+    assert notice.sender_name == "Bridge"
+    assert notice.sender_user_id == "bridge-bot-id"
+
+
+async def test_handle_message_call_started_notice_leaves_mention_raw_on_a_cache_miss():
+    # `get_user` is cache-only and best-effort (issue #154, matching the
+    # bot-whitelist reaction-resolution precedent) - a cache miss just means
+    # no display-name fallback is available, not a failure.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42", name="general")
+    message = SimpleNamespace(
+        channel=channel,
+        author=FakeAuthor(id="u1"),
+        content="",
+        id="sys3",
+        system_event=stoat.CallStartedSystemEvent(internal_by="u1", finished_at=None, message=None),
+    )
+
+    await sender._handle_message(message)
+
+    [notice] = recorder.messages
+    assert notice.content_markdown == "<@u1> started a call in Stoat"
+    assert notice.mentioned_users == {}
 
 
 async def test_handle_message_drops_an_unrecognized_system_event():
