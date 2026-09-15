@@ -110,6 +110,102 @@ async def test_voice_state_update_no_change_reports_nothing():
     assert recorder.voice_presence == []
 
 
+# ---------------------------------------------------------------- call-started notice (issue #154)
+
+
+async def test_voice_state_update_relays_a_call_started_notice_for_the_first_joiner():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeVoiceChannel(id=42, name="Lounge")
+    member = FakeUser(id=7, display_name="Alice", bot=False)
+
+    await sender._handle_voice_state_update(
+        member, SimpleNamespace(channel=None), SimpleNamespace(channel=channel)
+    )
+
+    [notice] = recorder.messages
+    assert notice.origin_connector_id == "discord"
+    assert notice.origin_channel_id == "42"
+    assert notice.content_markdown == "<@7> started a call in Discord"
+    assert notice.mentioned_users == {"7": "Alice"}
+    assert notice.sender_name == "Bridge"
+    assert notice.sender_user_id == "1"
+
+
+async def test_voice_state_update_no_notice_when_channel_already_occupied():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    other = FakeUser(id=9, display_name="Bob", bot=False)
+    channel = FakeVoiceChannel(id=42, members=[other])
+    member = FakeUser(id=7, bot=False)
+
+    await sender._handle_voice_state_update(
+        member, SimpleNamespace(channel=None), SimpleNamespace(channel=channel)
+    )
+
+    assert recorder.messages == []
+
+
+async def test_voice_state_update_no_notice_when_only_bots_were_present():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    a_bot = FakeUser(id=9, display_name="Bot", bot=True)
+    channel = FakeVoiceChannel(id=42, members=[a_bot])
+    member = FakeUser(id=7, bot=False)
+
+    await sender._handle_voice_state_update(
+        member, SimpleNamespace(channel=None), SimpleNamespace(channel=channel)
+    )
+
+    [notice] = recorder.messages
+    assert notice.content_markdown == "<@7> started a call in Discord"
+
+
+async def test_voice_state_update_no_notice_for_a_bot_joining():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeVoiceChannel(id=42)
+    member = FakeUser(id=7, bot=True)
+
+    await sender._handle_voice_state_update(
+        member, SimpleNamespace(channel=None), SimpleNamespace(channel=channel)
+    )
+
+    assert recorder.messages == []
+
+
+async def test_voice_state_update_move_only_checks_the_new_channels_occupancy():
+    # The member is leaving a populated channel (old_channel) and landing in
+    # an empty one (new_channel) - the notice cares only about whether the
+    # *destination* was empty, not what they left behind.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    old_channel = FakeVoiceChannel(id=42)
+    new_channel = FakeVoiceChannel(id=43)
+    member = FakeUser(id=7, bot=False)
+
+    await sender._handle_voice_state_update(
+        member, SimpleNamespace(channel=old_channel), SimpleNamespace(channel=new_channel)
+    )
+
+    [notice] = recorder.messages
+    assert notice.origin_channel_id == "43"
+
+
+async def test_voice_state_update_no_notice_when_voice_presence_is_unwired():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    sender._on_voice_presence = None
+    channel = FakeVoiceChannel(id=42)
+    member = FakeUser(id=7, bot=False)
+
+    await sender._handle_voice_state_update(
+        member, SimpleNamespace(channel=None), SimpleNamespace(channel=channel)
+    )
+
+    assert recorder.messages == []
+
+
 # ---------------------------------------------------------------- _handle_disconnect
 
 
