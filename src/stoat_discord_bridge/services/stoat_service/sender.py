@@ -198,6 +198,24 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                     )
                 )
             return
+        # Every other system event (call started, channel renamed, user
+        # joined/left/kicked/banned, etc.) has no real .content either - its
+        # actual text lives only in stoat.py's system_content property, which
+        # _to_standard_message never reads - so relaying it the normal way
+        # goes out as a blank message (issue #145). None of them are
+        # meaningful to mirror onto Discord/IRC today, so drop any system
+        # event not explicitly converted into a StandardX object above,
+        # rather than special-casing each type: this also means a future new
+        # Stoat system-event type can't reintroduce the same blank-message
+        # bug just by not being on this list yet.
+        if system_event is not None:
+            logger.debug(
+                "[stoat:%s] dropping unhandled system event %s in channel %s",
+                self.connector_id,
+                type(system_event).__name__,
+                message.channel.id,
+            )
+            return
         # Bridge commands (`/link channel …`, `/status`, …) are handled by the
         # `stoat.ext.commands` processor on `_StoatClient` off this same event;
         # anything it recognized was already filtered out above by id.
