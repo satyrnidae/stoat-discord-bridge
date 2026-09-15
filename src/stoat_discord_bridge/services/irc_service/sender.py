@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Awaitable
 
@@ -84,6 +85,14 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         # chanhistory module at all - no NOTICE ever arrives - has something
         # for fetch_history's own timeout to clean up.
         self._pending_history_capture: dict[str, tuple[list[StandardMessage], asyncio.Future]] = {}
+        # Guards every read/write of _history_replay and
+        # _pending_history_capture: _handle_pubnotice/_consume_history_replay
+        # run on the IRC reactor's own OS thread (see start()), while
+        # fetch_history runs on the asyncio event-loop thread - a plain
+        # threading.Lock, not asyncio.Lock, since one side can't await. Held
+        # only across the dict operations themselves, never across an
+        # await/network call, so contention is negligible.
+        self._history_state_lock = threading.Lock()
         # Per-channel lock serializing fetch_history calls (issue #141): two
         # concurrent calls for the same channel would otherwise clobber each
         # other's _pending_history_capture entry - the second call's PART+
@@ -235,14 +244,20 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         )
         # A pending fetch_history call for this channel (if any) hands its
         # capture list/future off to the real HistoryReplayState this NOTICE
-        # starts - see fetch_history/_finish_history_capture.
-        capture, future = self._pending_history_capture.pop(channel, (None, None))
+        # starts - see fetch_history/_finish_history_capture. Locked: this
+        # runs on the reactor thread, fetch_history's dict writes on the
+        # loop thread (see _history_state_lock's docstring).
+        with self._history_state_lock:
+            capture, future = self._pending_history_capture.pop(channel, (None, None))
+            if remaining > 0:
+                self._history_replay[channel] = HistoryReplayState(
+                    remaining=remaining,
+                    deadline=time.monotonic() + _HISTORY_REPLAY_TIMEOUT,
+                    capture=capture,
+                    future=future,
+                )
         if remaining <= 0:
             self._finish_history_capture(future, capture)
-            return
-        self._history_replay[channel] = HistoryReplayState(
-            remaining=remaining, deadline=time.monotonic() + _HISTORY_REPLAY_TIMEOUT, capture=capture, future=future
-        )
 
     def _consume_history_replay(self, channel: str, message: StandardMessage) -> bool:
         """True if `message` is (probably) server-replayed history, not a
@@ -250,22 +265,25 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         budget/expiry so the *next* message gets judged correctly too, and
         appends `message` to the entry's capture list if one is in progress
         (a pending fetch_history call, not just an ordinary join-triggered
-        replay being dropped)."""
+        replay being dropped). Locked (see _history_state_lock's docstring)
+        since fetch_history's timeout path also pops _history_replay, from
+        the loop thread rather than this method's reactor thread."""
         key = channel.lower()
-        entry = self._history_replay.get(key)
-        if entry is None:
-            return False
-        if time.monotonic() > entry.deadline:
-            del self._history_replay[key]
-            self._finish_history_capture(entry.future, entry.capture)
-            return False
-        if entry.capture is not None:
-            entry.capture.append(message)
-        entry.remaining -= 1
-        if entry.remaining <= 0:
-            del self._history_replay[key]
-            self._finish_history_capture(entry.future, entry.capture)
-        return True
+        with self._history_state_lock:
+            entry = self._history_replay.get(key)
+            if entry is None:
+                return False
+            if time.monotonic() > entry.deadline:
+                del self._history_replay[key]
+                self._finish_history_capture(entry.future, entry.capture)
+                return False
+            if entry.capture is not None:
+                entry.capture.append(message)
+            entry.remaining -= 1
+            if entry.remaining <= 0:
+                del self._history_replay[key]
+                self._finish_history_capture(entry.future, entry.capture)
+            return True
 
     def _finish_history_capture(
         self, future: "asyncio.Future[list[StandardMessage]] | None", capture: list[StandardMessage] | None
@@ -425,15 +443,17 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
             loop = asyncio.get_running_loop()
             future: "asyncio.Future[list[StandardMessage]]" = loop.create_future()
             capture: list[StandardMessage] = []
-            self._pending_history_capture[key] = (capture, future)
+            with self._history_state_lock:
+                self._pending_history_capture[key] = (capture, future)
             logger.info("[irc:%s] refreshing history for %s (part/rejoin)", self.connector_id, channel)
             self._client.connection.part(channel, "refreshing history")
             self._client.connection.join(channel)
             try:
                 messages = await asyncio.wait_for(future, timeout=_HISTORY_FETCH_TIMEOUT)
             except asyncio.TimeoutError:
-                self._pending_history_capture.pop(key, None)
-                self._history_replay.pop(key, None)
+                with self._history_state_lock:
+                    self._pending_history_capture.pop(key, None)
+                    self._history_replay.pop(key, None)
                 messages = capture
         if limit is not None:
             messages = messages[-limit:] if limit > 0 else []

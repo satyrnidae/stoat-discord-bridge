@@ -91,7 +91,7 @@ async def test_backfill_history_handles_an_empty_history(coordinator_parts):
         limit=None,
     )
 
-    assert "nothing to backfill" in summary
+    assert "No history to preserve" in summary
 
 
 async def test_backfill_history_returns_a_message_on_fetch_failure(coordinator_parts):
