@@ -50,10 +50,18 @@ class _ChannelsMixin:
         category_parent_channel_id: str | None = None,
         *,
         metadata: ChannelMetadata | None = None,
+        is_voice: bool = False,
     ) -> str:
         """Idempotent get-or-create by name, for `/mirror channel`'s
-        `ConnectorInfo.ensure_channel` hook - matches an existing channel by
-        name, else creates one. If `category` is given,
+        `ConnectorInfo.ensure_channel` hook - matches an existing channel of
+        the requested kind by name, else creates one. `is_voice` (issue
+        #146), when set, only matches a channel whose `.voice` metadata is
+        already set (a modern Stoat voice channel - see
+        `services/stoat_service/lookups/names.py`'s `_channel_supports_voice`)
+        and creates with `voice=stoat.ChannelVoiceMetadata()` when it
+        creates one; a same-named channel of the *other* kind (voice vs.
+        plain text) never satisfies the match, mirroring Discord's separate
+        `text_channels`/`voice_channels` lookup lists. If `category` is given,
         the matched-or-created channel is placed into a same-named Category
         (creating it if needed) - best-effort, never raises, since the
         channel itself has already been secured by this point.
@@ -93,11 +101,14 @@ class _ChannelsMixin:
             if not isinstance(server, stoat.Server):
                 server = self._client.get_server(self.server_id, partial=True)
         for channel in getattr(server, "channels", []):
-            if channel.name == name:
+            if channel.name == name and bool(getattr(channel, "voice", None) is not None) == is_voice:
                 channel_id = channel.id
                 break
         else:
-            channel = await server.create_channel(name=name, **_create_channel_metadata_kwargs(metadata))
+            create_kwargs = _create_channel_metadata_kwargs(metadata)
+            if is_voice:
+                create_kwargs["voice"] = stoat.ChannelVoiceMetadata()
+            channel = await server.create_channel(name=name, **create_kwargs)
             channel_id = channel.id
             if metadata is not None and metadata.icon_url:
                 await self._apply_channel_icon(channel, metadata.icon_url)
