@@ -148,6 +148,7 @@ class FakeChannel:
         nsfw: bool = False,
         icon: Any = None,
         viewable_by: set[str] | None = None,
+        voice: Any = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -161,6 +162,11 @@ class FakeChannel:
         self.description = description
         self.nsfw = nsfw
         self.icon = icon
+        # None for a plain text channel; set (issue #146) for a voice-capable
+        # one - matches `_channel_supports_voice`'s `channel.voice is not
+        # None` check, which is how a modern Stoat voice channel is
+        # distinguished from the deprecated dedicated stoat.VoiceChannel type.
+        self.voice = voice
         self.edits: list[dict] = []
         # When set, the channel models stoat.py's ServerChannel.permissions_for:
         # a member id in the set sees the channel, one outside it doesn't.
@@ -458,11 +464,20 @@ class FakeServer:
             raise LookupError(f"no such member: {user_id}")
         return member
 
-    async def create_channel(self, *, name: str, description: str | None = None, nsfw: bool | None = None):
+    async def create_channel(
+        self, *, name: str, description: str | None = None, nsfw: bool | None = None, **kwargs: Any
+    ):
         self.created_channels.append(name)
-        self.created_channel_calls.append({"name": name, "description": description, "nsfw": nsfw})
+        call = {"name": name, "description": description, "nsfw": nsfw}
+        call.update(kwargs)
+        self.created_channel_calls.append(call)
         channel = FakeChannel(
-            id=f"chan-{name}", name=name, server_id=self.id, description=description, nsfw=bool(nsfw)
+            id=f"chan-{name}",
+            name=name,
+            server_id=self.id,
+            description=description,
+            nsfw=bool(nsfw),
+            voice=kwargs.get("voice"),
         )
         self.channels.append(channel)
         return channel

@@ -68,6 +68,65 @@ async def test_ensure_channel_without_a_category_leaves_categories_untouched():
     assert server.created_categories == []
 
 
+async def test_ensure_channel_creates_a_voice_channel_when_is_voice():
+    server = FakeServer(id="s1")
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("Lounge", is_voice=True)
+
+    assert channel_id == "chan-Lounge"
+    [call] = server.created_channel_calls
+    assert isinstance(call["voice"], stoat.ChannelVoiceMetadata)
+    [channel] = server.channels
+    assert channel.voice is not None
+
+
+async def test_ensure_channel_matches_an_existing_voice_channel_by_name():
+    server = FakeServer(id="s1")
+    existing = FakeChannel(id="chan-existing", name="Lounge", voice=stoat.ChannelVoiceMetadata())
+    server.channels.append(existing)
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("Lounge", is_voice=True)
+
+    assert channel_id == "chan-existing"
+    assert server.created_channels == []  # matched, nothing created
+
+
+async def test_ensure_channel_voice_flag_ignores_a_same_named_text_channel():
+    # A plain text channel named "Lounge" must not satisfy a voice-flagged
+    # mirror - the match has to confirm kind, not just name (issue #146).
+    server = FakeServer(id="s1")
+    existing_text = FakeChannel(id="chan-existing", name="Lounge")
+    server.channels.append(existing_text)
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("Lounge", is_voice=True)
+
+    assert channel_id != "chan-existing"
+    assert server.created_channels == ["Lounge"]
+
+
+async def test_ensure_channel_without_is_voice_ignores_a_same_named_voice_channel():
+    server = FakeServer(id="s1")
+    existing_voice = FakeChannel(id="chan-existing", name="general", voice=stoat.ChannelVoiceMetadata())
+    server.channels.append(existing_voice)
+    client = FakeClient()
+    client.add_server(server)
+    sender = _make_sender(client=client)
+
+    channel_id = await sender.ensure_channel("general")
+
+    assert channel_id != "chan-existing"
+    assert server.created_channels == ["general"]
+
+
 async def test_ensure_channel_reports_channel_even_if_category_placement_fails():
     class ExplodingServer(FakeServer):
         async def create_category(self, name, *, channels):

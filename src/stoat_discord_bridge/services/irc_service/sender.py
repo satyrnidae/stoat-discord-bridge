@@ -324,6 +324,7 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         category_parent_channel_id: str | None = None,
         *,
         metadata: ChannelMetadata | None = None,
+        is_voice: bool = False,
     ) -> str:
         """IRC has no separate channel-creation call - JOINing a channel
         that doesn't exist yet creates it (see join_channel, which already
@@ -343,7 +344,10 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         `description` is usable - it becomes the channel TOPIC, set only when
         this JOIN just created the channel (see join_channel); NSFW / icon /
         slowmode_delay (issue #108) have no IRC equivalent and are ignored.
-        The `#name` is truncated to the
+        `is_voice` (issue #146) is likewise accepted and ignored - IRC has no
+        voice-channel concept, so mirroring a Discord/Stoat voice channel to
+        IRC still lands as an ordinary flat channel rather than raising for
+        an unexpected keyword. The `#name` is truncated to the
         server's CHANNELLEN (or the RFC default) as a backstop, since a name
         can reach here from paths other than `/mirror` - issue #99."""
         channel = normalize_channel_name(name, self._channel_name_limit())

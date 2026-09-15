@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from tests.discord_service.conftest import FakeCategoryLinker, FakeLinker, _make_sender
-from tests.fakes.fake_discord import FakeForumChannel, FakeGuild, FakeGuildChannel
+from tests.fakes.fake_discord import FakeForumChannel, FakeGuild, FakeGuildChannel, FakeVoiceChannel
 
 
 # ---------------------------------------------------------------- _handle_channel_create
@@ -169,3 +169,63 @@ async def test_ensure_channel_matches_an_existing_channel_and_skips_metadata(mon
     assert new_id == "888"
     assert guild.created_text_channels == []  # matched, nothing created
     assert getattr(existing, "slowmode_delay", None) is None  # slowmode not applied to a matched channel
+
+
+# ---------------------------------------------------------------- is_voice (issue #146)
+
+
+async def test_ensure_channel_creates_a_voice_channel_when_is_voice(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = FakeGuild(id=123)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    new_id = await sender.ensure_channel("Lounge", is_voice=True)
+
+    assert guild.created_text_channels == []  # never fell through to the text-channel path
+    [created] = guild.created_voice_channels
+    assert created["name"] == "Lounge"
+    [channel] = guild.voice_channels
+    assert new_id == str(channel.id)
+
+
+async def test_ensure_channel_matches_an_existing_voice_channel_by_name(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = FakeGuild(id=123)
+    existing = FakeVoiceChannel(id=888, name="Lounge", guild=guild)
+    guild.voice_channels.append(existing)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    new_id = await sender.ensure_channel("Lounge", is_voice=True)
+
+    assert new_id == "888"
+    assert guild.created_voice_channels == []  # matched, nothing created
+
+
+async def test_ensure_channel_voice_flag_ignores_a_same_named_text_channel(monkeypatch):
+    # A text channel named "Lounge" must not satisfy a voice-flagged mirror -
+    # Discord keeps separate text_channels/voice_channels lists for a reason.
+    sender = _make_sender(FakeLinker())
+    guild = FakeGuild(id=123)
+    existing_text = FakeGuildChannel(id=888, name="Lounge", guild=guild)
+    guild.text_channels.append(existing_text)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    new_id = await sender.ensure_channel("Lounge", is_voice=True)
+
+    [created] = guild.created_voice_channels
+    assert created["name"] == "Lounge"
+    assert new_id != "888"
+
+
+async def test_ensure_channel_without_is_voice_ignores_a_same_named_voice_channel(monkeypatch):
+    sender = _make_sender(FakeLinker())
+    guild = FakeGuild(id=123)
+    existing_voice = FakeVoiceChannel(id=888, name="general", guild=guild)
+    guild.voice_channels.append(existing_voice)
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    new_id = await sender.ensure_channel("general")
+
+    [created] = guild.created_text_channels
+    assert created["name"] == "general"
+    assert new_id != "888"
