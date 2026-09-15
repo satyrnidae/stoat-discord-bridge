@@ -83,7 +83,19 @@ class VoiceBridgeCoordinator:
     ) -> None:
         self._channel_mappings = channel_mappings
         self._connectors = connectors
-        self._voice_connectors = voice_connectors or {}
+        # `voice_connectors if ... is not None else {}`, NOT `voice_connectors
+        # or {}` - bridge.py constructs an *empty* dict up front and hands it
+        # in here specifically so it can keep populating it in place as each
+        # sender is built (`voice_connectors[dc.id] = DiscordVoiceConnector(...)`,
+        # after this constructor has already returned). An empty dict is
+        # falsy, so `or {}` would silently discard that dict and bind this
+        # attribute to an unrelated, permanently-empty one instead - every
+        # later mutation in bridge.py would then never be visible here,
+        # leaving `_join_connector` treating every connector as unwired (the
+        # Phase 1 "trivially joined, no real transport" fallback) forever,
+        # with `_open_session` reporting success despite never actually
+        # joining anything.
+        self._voice_connectors = voice_connectors if voice_connectors is not None else {}
         self._follow_on_empty = follow_on_empty
         # bridge_group -> {connector_id: channel_id} - every currently
         # voice-bridgeable group and its voice-capable member channels.
@@ -165,7 +177,16 @@ class VoiceBridgeCoordinator:
             per_connector: dict[str, list[str]] = {}
             for member in members:
                 info = self._connectors.get(member.connector_id)
-                if info is None or info.channel_is_voice is None:
+                if info is None:
+                    logger.debug("[voice] group %r: connector %s isn't wired at all", group, member.connector_id)
+                    continue
+                if info.channel_is_voice is None:
+                    logger.debug(
+                        "[voice] group %r: connector %s has no channel_is_voice hook "
+                        "(voice.enabled or this connector's voice_bridging is off)",
+                        group,
+                        member.connector_id,
+                    )
                     continue
                 try:
                     is_voice = await info.channel_is_voice(member.channel_id)
@@ -175,6 +196,13 @@ class VoiceBridgeCoordinator:
                     )
                     is_voice = None
                 if not is_voice:
+                    logger.debug(
+                        "[voice] group %r: %s/%s isn't classified as a voice channel (channel_is_voice -> %r)",
+                        group,
+                        member.connector_id,
+                        member.channel_id,
+                        is_voice,
+                    )
                     continue
                 per_connector.setdefault(member.connector_id, []).append(member.channel_id)
 
@@ -193,6 +221,13 @@ class VoiceBridgeCoordinator:
                 resolved[connector_id] = lowest
             if len(resolved) >= 2:
                 voice_groups[group] = resolved
+            elif resolved:
+                logger.debug(
+                    "[voice] group %r: only %d voice-classified connector(s) (%s) - not voice-bridgeable",
+                    group,
+                    len(resolved),
+                    sorted(resolved),
+                )
 
         self._voice_groups = voice_groups
         # Drop presence bookkeeping for groups/connectors no longer voice-bridgeable.

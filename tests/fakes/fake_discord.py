@@ -360,6 +360,7 @@ class FakeDiscordVoiceClient:
         self.playing = False
         self.play_calls: list[object] = []
         self.stop_calls = 0
+        self._after: object = None
 
     def is_connected(self) -> bool:
         return self.connected
@@ -368,9 +369,10 @@ class FakeDiscordVoiceClient:
         self.disconnect_calls.append(force)
         self.connected = False
 
-    def listen(self, sink) -> None:
+    def listen(self, sink, *, after=None) -> None:
         self.listen_calls.append(sink)
         self.listening = True
+        self._after = after
 
     def is_listening(self) -> bool:
         return self.listening
@@ -378,6 +380,18 @@ class FakeDiscordVoiceClient:
     def stop_listening(self) -> None:
         self.stop_listening_calls += 1
         self.listening = False
+
+    def simulate_listen_stopped(self, error: "Exception | None" = None) -> None:
+        """Stands in for `discord-ext-voice-recv`'s `AudioReader._stop()`
+        calling its `after` callback once receiving stops - matches real
+        behavior's ordering (the reader is no longer "listening" *before*
+        `after` fires) so a test exercising the restart path
+        (`DiscordVoiceTransport._on_listen_stopped`) sees the same state
+        `is_listening()` would report at that point for real."""
+        self.listening = False
+        after, self._after = self._after, None
+        if after is not None:
+            after(error)
 
     def play(self, source, **kwargs) -> None:
         self.play_calls.append(source)

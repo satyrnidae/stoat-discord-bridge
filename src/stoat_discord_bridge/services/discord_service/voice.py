@@ -36,6 +36,8 @@ import asyncio
 import ctypes.util
 import importlib.util
 import logging
+import time
+from collections import deque
 from typing import TYPE_CHECKING
 
 import discord
@@ -50,6 +52,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _sink_class: "type | None" = None
+
+# DiscordVoiceTransport's receive-restart backoff (see _on_listen_stopped's
+# docstring): if audio receive crashes this many times within this many
+# seconds, stop restarting - a persistent (not merely one bad packet)
+# failure would otherwise thrash forever, each restart's brief interruption
+# of an in-flight Opus decode producing an audible glitch, which in rapid
+# succession is heard as continuous garbled noise rather than the plain
+# silence a giving-up connector leaves instead.
+_RESTART_WINDOW_SECONDS = 30.0
+_RESTART_MAX_IN_WINDOW = 3
 
 
 def _voice_recv_importable() -> bool:
@@ -76,6 +88,9 @@ def _ensure_opus_loaded() -> bool:
 def _voice_recv_module() -> "voice_recv":
     from discord.ext import voice_recv as module
 
+    from stoat_discord_bridge.services.discord_service._compat import apply_voice_recv_patches
+
+    apply_voice_recv_patches(module)
     return module
 
 
@@ -103,6 +118,7 @@ def _get_sink_class() -> "type":
             self.connector_id = connector_id
             self._loop = loop
             self._on_speaker_frame = on_speaker_frame
+            self._warned_unresolved_speaker = False
 
         def wants_opus(self) -> bool:
             return False
@@ -111,10 +127,24 @@ def _get_sink_class() -> "type":
             # Bots (including the bridge's own other connectors, if ever
             # audible to each other via some future direct link) never
             # count as a speaker - same stance as presence (issue #113
-            # assumption #6). An unresolved SSRC (user is None, before
-            # discord.py has matched the packet to a member) is skipped too
-            # rather than buffered under a fake identity.
-            if user is None or user.bot:
+            # assumption #6). An unresolved SSRC (user is None -
+            # discord-ext-voice-recv's reader.py resolves it via
+            # `voice_client.guild.get_member(whoid)`, a cache-only lookup -
+            # is skipped too rather than buffered under a fake identity.
+            # Logged once (not per-packet - write() runs on discord.py's
+            # receive thread and fires many times a second) so a persistently
+            # uncached speaker doesn't look identical to "no audio arriving
+            # at all" in the logs.
+            if user is None:
+                if not self._warned_unresolved_speaker:
+                    self._warned_unresolved_speaker = True
+                    logger.warning(
+                        "[voice] connector %s: receiving audio from an SSRC that couldn't be resolved to a "
+                        "guild member (cache miss) - that speaker's audio is being dropped",
+                        self.connector_id,
+                    )
+                return
+            if user.bot:
                 return
             # write() runs on discord.py's own receive thread, not the
             # asyncio loop - on_speaker_frame is async (SpeakerFrameCallback,
@@ -160,6 +190,9 @@ class DiscordVoiceTransport(VoiceTransport):
         self.connector_id = connector_id
         self._voice_client = voice_client
         self._sink = None
+        self._loop: "asyncio.AbstractEventLoop | None" = None
+        self._closing = False
+        self._restart_times: "deque[float]" = deque()
 
     async def start(self, on_speaker_frame) -> None:
         """Begin receiving: attach an `AudioSink` that hands every non-bot
@@ -171,16 +204,66 @@ class DiscordVoiceTransport(VoiceTransport):
         `listen()` - since nothing guarantees `VoiceRecvClient` itself holds
         the sole strong reference; without this the sink (and its bound
         `_loop`/`_on_speaker_frame`) could be garbage-collected once this
-        method returns, silently starving `write()` callbacks."""
-        loop = asyncio.get_running_loop()
+        method returns, silently starving `write()` callbacks.
+
+        `listen()`'s `after` callback is a backstop, not the primary
+        defense: `apply_voice_recv_patches` (`_compat.py`) already fixes
+        the common case (a single undecodable Opus packet) at its actual
+        source, so `PacketRouter` no longer treats that as fatal at all.
+        `after` only fires here for something else genuinely killing the
+        reader - `_on_listen_stopped` restarts it, bounded (see
+        `_restart_listening`) so a persistent, non-transient failure
+        degrades to silence instead of a tight crash-restart loop, which
+        would itself be audible as constant interruption artifacts."""
+        self._loop = asyncio.get_running_loop()
         sink_cls = _get_sink_class()
-        self._sink = sink_cls(self.connector_id, loop, on_speaker_frame)
-        self._voice_client.listen(self._sink)
+        self._sink = sink_cls(self.connector_id, self._loop, on_speaker_frame)
+        self._voice_client.listen(self._sink, after=self._on_listen_stopped)
+
+    def _on_listen_stopped(self, error: "Exception | None") -> None:
+        """`AudioReader`'s `after` callback - runs on a plain background
+        thread `AudioReader._stop()` spawns, neither the asyncio loop nor
+        the packet-router thread. `error` is `None` for a deliberate stop
+        (our own `close()`, or another legitimate `stop_listening()` caller)
+        - only a non-`None` error (the crash case above) triggers a
+        restart, scheduled onto the loop since `VoiceRecvClient.listen()`
+        touches the voice connection's internal state."""
+        if self._closing or error is None:
+            return
+        logger.warning(
+            "[voice] connector %s: audio receive stopped unexpectedly (%r) - restarting",
+            self.connector_id,
+            error,
+        )
+        assert self._loop is not None
+        self._loop.call_soon_threadsafe(self._restart_listening)
+
+    def _restart_listening(self) -> None:
+        if self._closing or self._voice_client.is_listening():
+            return
+        now = time.monotonic()
+        while self._restart_times and now - self._restart_times[0] > _RESTART_WINDOW_SECONDS:
+            self._restart_times.popleft()
+        if len(self._restart_times) >= _RESTART_MAX_IN_WINDOW:
+            logger.error(
+                "[voice] connector %s: audio receive crashed %d times in %.0fs - giving up on restarting "
+                "for the rest of this session (a persistent failure, not a one-off bad packet)",
+                self.connector_id,
+                len(self._restart_times),
+                _RESTART_WINDOW_SECONDS,
+            )
+            return
+        self._restart_times.append(now)
+        try:
+            self._voice_client.listen(self._sink, after=self._on_listen_stopped)
+        except Exception:
+            logger.exception("[voice] connector %s: failed to restart audio receive", self.connector_id)
 
     def set_output(self, source: "pipeline.LatestFrameHolder") -> None:
         self._voice_client.play(BridgeAudioSource(source))
 
     async def close(self) -> None:
+        self._closing = True
         if self._voice_client.is_listening():
             self._voice_client.stop_listening()
         if self._voice_client.is_playing():

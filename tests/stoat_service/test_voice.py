@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from tests.fakes.fake_stoat import FakeAuthor, FakeChannel, FakeClient, FakeVoiceChannel
+from tests.fakes.fake_stoat import (
+    FakeAuthor,
+    FakeChannel,
+    FakeClient,
+    FakeVoiceChannel,
+    FakeVoiceEnabledTextChannel,
+)
 from tests.stoat_service.conftest import _make_sender
 
 # ---------------------------------------------------------------- channel_is_voice
@@ -24,10 +30,44 @@ async def test_channel_is_voice_false_for_a_text_channel():
     assert await sender.channel_is_voice("42") is False
 
 
+async def test_channel_is_voice_true_for_a_voice_enabled_text_channel():
+    """A live Stoat server no longer sends the legacy dedicated
+    `VoiceChannel` type at all (deprecated since API 0.7.0) - a real voice
+    channel is an ordinary `TextChannel` whose `.voice` metadata is set."""
+    client = FakeClient()
+    client.add_channel(FakeVoiceEnabledTextChannel(id="42", name="Lounge"))
+    sender = _make_sender(client=client)
+
+    assert await sender.channel_is_voice("42") is True
+
+
+async def test_channel_is_voice_false_for_a_text_channel_with_no_voice_metadata():
+    client = FakeClient()
+    channel = FakeVoiceEnabledTextChannel(id="42", name="general")
+    channel.voice = None
+    client.add_channel(channel)
+    sender = _make_sender(client=client)
+
+    assert await sender.channel_is_voice("42") is False
+
+
 async def test_channel_is_voice_none_for_an_unresolvable_id():
     sender = _make_sender(client=FakeClient())
 
     assert await sender.channel_is_voice("999") is None
+
+
+async def test_channel_is_voice_falls_back_to_a_live_fetch_on_a_cache_miss():
+    """A voice channel that's uncached (issue #66's drift) but resolvable
+    via `fetch_channel` still classifies correctly - `refresh_groups`
+    otherwise treats a cache-only miss identically to "not a voice
+    channel", permanently excluding the bridge group even once both sides
+    have an occupant."""
+    client = FakeClient()
+    client.set_fetched_channel(FakeVoiceChannel(id="42", name="Lounge"))
+    sender = _make_sender(client=client)
+
+    assert await sender.channel_is_voice("42") is True
 
 
 # ---------------------------------------------------------------- voice_occupants
@@ -51,6 +91,17 @@ async def test_voice_occupants_none_for_an_unresolvable_id():
     assert await sender.voice_occupants("999") is None
 
 
+async def test_voice_occupants_falls_back_to_a_live_fetch_on_a_cache_miss():
+    client = FakeClient()
+    client.add_user("1", FakeAuthor(id="1", bot=False))
+    client.set_fetched_channel(
+        FakeVoiceChannel(id="42", participants={"1": SimpleNamespace(user_id="1")})
+    )
+    sender = _make_sender(client=client)
+
+    assert await sender.voice_occupants("42") == {"1"}
+
+
 async def test_voice_occupants_excludes_bridges_own_self_id_even_if_uncached():
     """The bridge's own user object may not be `get_user`-cached (a plain
     cache miss defaults `.bot` to False, not True) - `self_id` must be
@@ -66,6 +117,17 @@ async def test_voice_occupants_excludes_bridges_own_self_id_even_if_uncached():
         )
     )
     sender = _make_sender(client=client, self_id="bridge")
+
+    assert await sender.voice_occupants("42") == {"1"}
+
+
+async def test_voice_occupants_from_a_voice_enabled_text_channel():
+    client = FakeClient()
+    client.add_user("1", FakeAuthor(id="1", bot=False))
+    client.add_channel(
+        FakeVoiceEnabledTextChannel(id="42", participants={"1": SimpleNamespace(user_id="1")})
+    )
+    sender = _make_sender(client=client)
 
     assert await sender.voice_occupants("42") == {"1"}
 

@@ -242,9 +242,11 @@ class FakeLocalParticipant:
     def __init__(self, identity: str = "bridge") -> None:
         self.identity = identity
         self.publish_track_calls: list = []
+        self.publish_options_calls: list = []
 
     async def publish_track(self, track, options=None):
         self.publish_track_calls.append(track)
+        self.publish_options_calls.append(options)
         return None
 
 
@@ -311,6 +313,34 @@ class FakeVoiceChannel(stoat.VoiceChannel):
         if self._connect_error is not None:
             raise self._connect_error
         return self._connect_result or FakeStoatRoom()
+
+
+class FakeVoiceEnabledTextChannel(stoat.TextChannel):
+    """Stands in for a *modern* Stoat voice channel: an ordinary
+    `TextChannel` whose `.voice` metadata is set, rather than the legacy
+    dedicated `stoat.VoiceChannel` type/parser (deprecated server-side since
+    API 0.7.0 - a live server no longer ever sends it). Same
+    skip-the-real-`__init__` pattern as `FakeVoiceChannel` above; `.voice`
+    is just a truthy sentinel since `_channel_supports_voice` only checks
+    it's not `None`."""
+
+    def __init__(
+        self,
+        id: str,
+        *,
+        name: str = "voice",
+        server_id: str | None = None,
+        participants: "dict[str, Any] | None" = None,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.server_id = server_id
+        self.voice = SimpleNamespace(max_users=0)
+        self._participants = participants or {}
+
+    @property
+    def voice_states(self) -> SimpleNamespace:
+        return SimpleNamespace(participants=self._participants)
 
 
 class FakePartialMessageable:
@@ -470,6 +500,7 @@ class FakeServer:
 class FakeClient:
     def __init__(self) -> None:
         self._channels: dict[str, FakeChannel] = {}
+        self._fetched_channels: dict[str, FakeChannel] = {}
         self._servers: dict[str, FakeServer] = {}
         self._fresh_servers: dict[str, FakeServer] = {}
         self._users: dict[str, Any] = {}
@@ -498,6 +529,14 @@ class FakeClient:
 
     def add_channel(self, channel: FakeChannel) -> FakeChannel:
         self._channels[channel.id] = channel
+        return channel
+
+    def set_fetched_channel(self, channel: FakeChannel) -> FakeChannel:
+        """Make `fetch_channel` return `channel` without it being in the
+        cache `get_channel` reads - models a channel `refresh_groups`'s
+        cache-only classification misses (issue #66's drift) but a live
+        `fetch_channel` fallback still resolves."""
+        self._fetched_channels[channel.id] = channel
         return channel
 
     def add_server(self, server: FakeServer) -> FakeServer:
@@ -547,3 +586,9 @@ class FakeClient:
         if user is None:
             raise LookupError(f"no such user: {user_id}")
         return user
+
+    async def fetch_channel(self, channel_id: str):
+        channel = self._fetched_channels.get(channel_id) or self._channels.get(channel_id)
+        if channel is None:
+            raise LookupError(f"no such channel: {channel_id}")
+        return channel

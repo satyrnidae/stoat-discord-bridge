@@ -147,11 +147,22 @@ class _NamesMixin:
         try:
             channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         except Exception:
-            logger.debug("[discord:%s] couldn't resolve channel %s for voice check", self.connector_id, channel_id)
+            logger.debug(
+                "[discord:%s] couldn't resolve channel %s for voice check", self.connector_id, channel_id,
+                exc_info=True,
+            )
             return None
         if channel is None:
             return None
-        return isinstance(channel, discord.VoiceChannel)
+        is_voice = isinstance(channel, discord.VoiceChannel)
+        if not is_voice:
+            logger.debug(
+                "[discord:%s] channel %s resolved but isn't a VoiceChannel (got %s)",
+                self.connector_id,
+                channel_id,
+                type(channel).__name__,
+            )
+        return is_voice
 
     async def voice_occupants(self, channel_id: str) -> "set[str] | None":
         """The non-bot user ids currently connected to voice channel
@@ -162,7 +173,8 @@ class _NamesMixin:
             channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
         except Exception:
             logger.debug(
-                "[discord:%s] couldn't resolve channel %s for voice occupants", self.connector_id, channel_id
+                "[discord:%s] couldn't resolve channel %s for voice occupants", self.connector_id, channel_id,
+                exc_info=True,
             )
             return None
         if channel is None or not isinstance(channel, discord.VoiceChannel):

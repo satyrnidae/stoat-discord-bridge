@@ -36,6 +36,21 @@ test = [
 #  - livekit's Python API isn't yet at 1.0 stability guarantees either.
 # Bumping either happens deliberately, re-verifying voice still works, not
 # as a side effect of a routine dependency update.
+#
+# discord-ext-voice-recv==0.5.2a179 predates Discord's DAVE (end-to-end
+# encryption) rollout entirely - its receive path only ever did transport
+# (SRTP) decryption, so a DAVE-encrypted call's Opus payload reaches the
+# decoder still MLS-ciphertext, producing near-constant `OpusError:
+# corrupted stream` or outright garbled audio ("digital auditory vomit").
+# `services/discord_service/_compat.py`'s `apply_voice_recv_patches`
+# monkeypatches the actual decode call site to decrypt via discord.py's own
+# `davey`-backed `DaveSession` first (mirroring upstream's own unmerged
+# PR #58), and to substitute silence for a packet that still fails
+# afterward instead of crashing the whole receive connection. `davey` isn't
+# listed as a direct dependency here since discord.py[voice]>=2.5 already
+# requires it. Re-check `apply_voice_recv_patches` against upstream's own
+# fix (PR #58, or whatever supersedes it - #54/#56 cover similar ground)
+# before ever bumping discord-ext-voice-recv off this pin.
 voice = [
     "discord.py[voice]>=2.5",
     "discord-ext-voice-recv==0.5.2a179",

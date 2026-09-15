@@ -42,6 +42,35 @@ async def _two_connector_group(
     return coord, connector_infos, voice_connectors
 
 
+async def test_voice_connectors_dict_populated_after_construction_is_still_seen(fake_db):
+    """`bridge.py` constructs `voice_connectors` as an *empty* dict, hands it
+    to `VoiceBridgeCoordinator.__init__`, and only populates it afterward as
+    each sender is built - relying on the coordinator holding onto that same
+    dict object rather than copying it. `voice_connectors or {}` would
+    silently break that aliasing (an empty dict is falsy), permanently
+    stranding the coordinator on a disconnected, forever-empty dict - every
+    connector then hits the Phase 1 "no VoiceConnector wired" fallback
+    (trivially "joined" with no real transport) instead of ever really
+    joining, with no error anywhere to show for it."""
+    mappings = ChannelMappingRepository(fake_db)
+    await _link(mappings, "g", "discord", "d-vc")
+    await _link(mappings, "g", "stoat", "s-vc")
+    connector_infos = {
+        "discord": make_connector("discord", voice_channels={"d-vc"}, occupants={"d-vc": {"u1"}}),
+        "stoat": make_connector("stoat", voice_channels={"s-vc"}, occupants={"s-vc": {"u2"}}),
+    }
+    voice_connectors: dict[str, FakeVoiceConnector] = {}
+    coord = VoiceBridgeCoordinator(mappings, connector_infos, voice_connectors=voice_connectors)
+    # Mutated only *after* construction, matching bridge.py's real ordering.
+    voice_connectors["discord"] = FakeVoiceConnector("discord")
+    voice_connectors["stoat"] = FakeVoiceConnector("stoat")
+
+    await coord.refresh_groups()
+
+    assert voice_connectors["discord"].joined == ["d-vc"]
+    assert voice_connectors["stoat"].joined == ["s-vc"]
+
+
 async def test_opening_session_joins_every_populated_connector(fake_db):
     coord, _, voice_connectors = await _two_connector_group(fake_db)
     await coord.refresh_groups()

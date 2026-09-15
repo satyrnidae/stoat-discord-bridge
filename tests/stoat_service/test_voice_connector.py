@@ -66,6 +66,22 @@ async def test_join_unknown_channel_raises_voice_join_error():
         await connector.join("missing")
 
 
+async def test_join_falls_back_to_a_live_fetch_on_a_cache_miss():
+    """A channel `refresh_groups` only classified as voice-bridgeable via
+    `_resolve_voice_channel`'s own fetch fallback (issue #66's cache drift)
+    must resolve the same way here, or the session that classification just
+    allowed would immediately fail to join."""
+    client = FakeClient()
+    room = FakeStoatRoom()
+    channel = client.set_fetched_channel(FakeVoiceChannel("c1", connect_result=room))
+    connector = StoatVoiceConnector("stoat", client, voice_bridging=True, voice_node="worldwide")
+
+    transport = await connector.join("c1")
+
+    assert transport.connector_id == "stoat"
+    assert channel.connect_calls == ["worldwide"]
+
+
 async def test_join_connect_failure_raises_voice_join_error():
     client = FakeClient()
     client.add_channel(FakeVoiceChannel("c1", connect_error=TypeError("Livekit is unavailable")))
@@ -255,6 +271,13 @@ async def test_set_output_publishes_and_loops_capture_frame(monkeypatch):
     await transport.close()
 
     assert room.local_participant.publish_track_calls == ["fake-local-track"]
+    # source=SOURCE_MICROPHONE - Stoat's server gates a member's
+    # `is_publishing` (unmuted) state on a published *microphone* track,
+    # not just any published track; the default (SOURCE_UNKNOWN) left the
+    # bot showing as muted with no client ever rendering its audio, even
+    # though the track was live at the LiveKit layer.
+    (published_options,) = room.local_participant.publish_options_calls
+    assert published_options.source == rtc.TrackSource.SOURCE_MICROPHONE
     assert fake_source.captured
     # capture_frame receives a real rtc.AudioFrame (only track/source
     # construction is faked here) - unwrap .data to check the PCM itself.

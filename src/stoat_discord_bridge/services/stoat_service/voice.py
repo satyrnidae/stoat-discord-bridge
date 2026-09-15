@@ -148,9 +148,20 @@ class StoatVoiceTransport(VoiceTransport):
         self._publish_task = asyncio.create_task(self._run_publish(source))
 
     async def _run_publish(self, source: "pipeline.LatestFrameHolder") -> None:
+        import livekit.rtc as rtc
+
         audio_source, local_track = _create_publish_track()
         try:
-            await self._room.local_participant.publish_track(local_track)
+            # source=SOURCE_MICROPHONE (default is SOURCE_UNKNOWN) - Stoat's
+            # server tracks each voice-channel member's `is_publishing` state
+            # off a webhook-driven check for a published *microphone* track,
+            # not just any published track; publishing without this the bot
+            # joined and its track was live at the LiveKit layer, but Stoat
+            # never flipped it out of "muted" and no client ever rendered
+            # its audio.
+            await self._room.local_participant.publish_track(
+                local_track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+            )
             while True:
                 await audio_source.capture_frame(_build_audio_frame(source.read()))
                 await asyncio.sleep(pipeline.FRAME_MS / 1000)
@@ -179,8 +190,11 @@ class StoatVoiceTransport(VoiceTransport):
 class StoatVoiceConnector:
     """Owns one Stoat connector's voice-join capability -
     `VoiceBridgeCoordinator` holds one of these per Stoat connector. Channel
-    resolution is cache-only (`client.get_channel(..., partial=False)`),
-    matching `channel_is_voice`/`voice_occupants`'s own lookup pattern."""
+    resolution tries the cache first, falling back to a live `fetch_channel`
+    on a miss, matching `channel_is_voice`/`voice_occupants`'s own lookup
+    pattern (`lookups/names.py`'s `_resolve_voice_channel`) - so a channel
+    `refresh_groups` only just classified as voice-bridgeable via that same
+    fallback doesn't then fail to `join()` for the identical reason."""
 
     def __init__(
         self,
@@ -202,7 +216,12 @@ class StoatVoiceConnector:
     async def join(self, channel_id: str) -> StoatVoiceTransport:
         channel = self._client.get_channel(channel_id, partial=False)
         if channel is None:
-            raise VoiceJoinError(f"Stoat voice channel {channel_id!r} not found on connector {self.connector_id!r}")
+            try:
+                channel = await self._client.fetch_channel(channel_id)
+            except Exception as exc:
+                raise VoiceJoinError(
+                    f"Stoat voice channel {channel_id!r} not found on connector {self.connector_id!r}: {exc}"
+                ) from exc
         try:
             room = await channel.connect(node=self._voice_node)
         except Exception as exc:

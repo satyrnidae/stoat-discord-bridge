@@ -14,28 +14,71 @@ import stoat
 logger = logging.getLogger(__name__)
 
 
+def _channel_supports_voice(channel) -> bool:
+    """Whether `channel` is voice-capable. `stoat.VoiceChannel` (a distinct
+    channel type/parser, `parse_voice_channel`) is deprecated server-side as
+    of API 0.7.0 in favor of an ordinary `TextChannel` whose `.voice`
+    (`ChannelVoiceMetadata`) field is set (`parse_text_channel`) - a live
+    Stoat server no longer sends the dedicated type at all, so
+    `isinstance(channel, stoat.VoiceChannel)` alone never matched a single
+    real voice channel, silently keeping every voice-bridgeable group out of
+    `VoiceBridgeCoordinator._voice_groups` regardless of the
+    `_resolve_voice_channel` cache/fetch fix above. Both classes subclass
+    `Connectable` and expose the same `voice_states`/`connect()` surface, so
+    this is purely a classification fix - `voice_occupants`/
+    `StoatVoiceConnector.join` need no change to work with either shape."""
+    if isinstance(channel, stoat.VoiceChannel):
+        return True
+    return isinstance(channel, stoat.TextChannel) and channel.voice is not None
+
+
 class _NamesMixin:
     """Id <-> name resolution half of `StoatLookupsMixin`."""
+
+    async def _resolve_voice_channel(self, channel_id: str):
+        """Cache lookup, falling back to a live `fetch_channel` on a miss -
+        matching Discord's `get_channel(...) or await fetch_channel(...)`
+        pattern (`discord_service/lookups/names.py`). stoat.py's cached
+        `Server` only gets patched from a narrow set of gateway events
+        (issue #66), so a voice channel the bridge hasn't otherwise touched
+        since connect can sit uncached indefinitely - without this fallback,
+        `channel_is_voice`/`voice_occupants` read that as "not a voice
+        channel" forever, silently keeping the bridge group out of
+        `VoiceBridgeCoordinator._voice_groups` even once both sides have a
+        real occupant. None if the channel can't be resolved at all (cache
+        miss *and* the fetch failed/404'd)."""
+        channel = self._client.get_channel(channel_id, partial=False)
+        if channel is not None:
+            return channel
+        try:
+            return await self._client.fetch_channel(channel_id)
+        except Exception:
+            logger.debug(
+                "[stoat:%s] couldn't resolve channel %s for voice check", self.connector_id, channel_id,
+                exc_info=True,
+            )
+            return None
 
     async def channel_is_voice(self, channel_id: str) -> bool | None:
         """Whether `channel_id` is a Stoat voice channel - this connector's
         `ConnectorInfo.channel_is_voice` (issue #113), used by
         `VoiceBridgeCoordinator` to classify voice-bridgeable bridge groups.
-        None if the channel isn't cached. Classification only - whether this
-        instance can actually *join* one (LiveKit + deps) is a later phase's
-        concern."""
-        channel = self._client.get_channel(channel_id, partial=False)
+        None if the channel can't be resolved (see `_resolve_voice_channel`).
+        Classification only - whether this instance can actually *join* one
+        (LiveKit + deps) is a later phase's concern."""
+        channel = await self._resolve_voice_channel(channel_id)
         if channel is None:
             return None
-        return isinstance(channel, stoat.VoiceChannel)
+        return _channel_supports_voice(channel)
 
     async def voice_occupants(self, channel_id: str) -> "set[str] | None":
         """The non-bot user ids currently connected to voice channel
         `channel_id` - this connector's `ConnectorInfo.voice_occupants`
         (issue #113), read off `VoiceChannel.voice_states.participants`
         (never None - an uncached channel's container is just empty).
-        None only if `channel_id` isn't a (cached) voice channel at all -
-        `VoiceBridgeCoordinator` treats that differently from "empty".
+        None only if `channel_id` isn't a voice channel at all (see
+        `_resolve_voice_channel`) - `VoiceBridgeCoordinator` treats that
+        differently from "empty".
 
         The bridge's own user id is always excluded, in addition to the
         `bot` flag - once Phase 2 makes the bridge actually join a voice
@@ -44,8 +87,8 @@ class _NamesMixin:
         (very likely already-cached, but not guaranteed) user object can't
         be trusted to still resolve `.bot=True` the way any other bot's
         can."""
-        channel = self._client.get_channel(channel_id, partial=False)
-        if channel is None or not isinstance(channel, stoat.VoiceChannel):
+        channel = await self._resolve_voice_channel(channel_id)
+        if channel is None or not _channel_supports_voice(channel):
             return None
         occupants: set[str] = set()
         for raw_user_id in channel.voice_states.participants:

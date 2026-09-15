@@ -204,6 +204,71 @@ async def test_start_sink_skips_bots_and_unresolved_speakers():
     assert calls == []
 
 
+async def test_listen_restarts_after_an_unexpected_stop():
+    """`discord-ext-voice-recv` 0.5.2a179's packet router treats any single
+    packet-decode exception (an ordinary corrupted Opus frame, not a bug of
+    ours) as fatal and calls `stop_listening()` - without a restart, one bad
+    packet would permanently end audio receive for the rest of the voice
+    session."""
+    transport, voice_client = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+    first_sink = voice_client.listen_calls[0]
+    assert voice_client.is_listening() is True
+
+    voice_client.simulate_listen_stopped(RuntimeError("corrupted stream"))
+    await asyncio.sleep(0)  # let call_soon_threadsafe's callback run
+
+    assert voice_client.is_listening() is True
+    assert voice_client.listen_calls == [first_sink, first_sink]
+
+
+async def test_listen_gives_up_restarting_after_repeated_crashes(monkeypatch):
+    """A persistent (not one-off) failure must degrade to silence rather
+    than a tight crash-restart loop - each restart interrupts an in-flight
+    decode, and enough of those in quick succession is itself audible as
+    continuous garbled noise, which is worse than just going quiet."""
+    import stoat_discord_bridge.services.discord_service.voice as voice_mod
+
+    monkeypatch.setattr(voice_mod, "_RESTART_MAX_IN_WINDOW", 2)
+    transport, voice_client = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+
+    voice_client.simulate_listen_stopped(RuntimeError("corrupted stream"))
+    await asyncio.sleep(0)
+    voice_client.simulate_listen_stopped(RuntimeError("corrupted stream"))
+    await asyncio.sleep(0)
+    assert voice_client.is_listening() is True
+    assert len(voice_client.listen_calls) == 3  # initial + 2 allowed restarts
+
+    voice_client.simulate_listen_stopped(RuntimeError("corrupted stream"))
+    await asyncio.sleep(0)
+
+    assert voice_client.is_listening() is False
+    assert len(voice_client.listen_calls) == 3  # the 3rd restart was refused
+
+
+async def test_listen_does_not_restart_after_a_deliberate_stop():
+    transport, voice_client = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+
+    await transport.close()
+    await asyncio.sleep(0)
+
+    assert voice_client.is_listening() is False
+    assert len(voice_client.listen_calls) == 1
+
+
+async def test_listen_does_not_restart_on_a_clean_stop_with_no_error():
+    transport, voice_client = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+
+    voice_client.simulate_listen_stopped(None)
+    await asyncio.sleep(0)
+
+    assert voice_client.is_listening() is False
+    assert len(voice_client.listen_calls) == 1
+
+
 async def test_set_output_plays_a_bridge_audio_source_wrapping_the_holder():
     transport, voice_client = await _joined_transport()
     holder = pipeline.LatestFrameHolder()

@@ -1098,11 +1098,25 @@ async def run(config: BridgeConfig) -> None:
     health_runner = await start_health_server(health)
 
     if config.voice.enabled:
-        await voice_coordinator.start()
         closables.append(voice_coordinator)
 
     try:
-        await asyncio.gather(*(sender.start() for sender in senders))
+        # voice_coordinator.start() runs concurrently with the senders'
+        # own start() below, not before it: each sender's start() is its
+        # gateway's whole run loop (blocks until disconnect), so awaiting
+        # voice_coordinator.start() first - it fires one refresh_groups()
+        # immediately - guaranteed that first classification pass to run
+        # before any sender had even logged in. Discord's HTTP client in
+        # particular has no token at all until Client.start()/login() runs,
+        # so that first pass always failed to resolve every Discord channel
+        # (issue #113's `channel_is_voice`/`voice_occupants` fetch
+        # fallback included) - harmless since the periodic 60s refresh
+        # retries, but a needless guaranteed miss (and a wall of misleading
+        # DEBUG noise) on every restart.
+        starts = [sender.start() for sender in senders]
+        if config.voice.enabled:
+            starts.append(voice_coordinator.start())
+        await asyncio.gather(*starts)
     finally:
         logger.info("shutting down bridge")
         await asyncio.gather(*(closable.close() for closable in closables), return_exceptions=True)
