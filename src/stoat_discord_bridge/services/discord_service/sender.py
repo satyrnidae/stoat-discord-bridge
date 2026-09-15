@@ -59,6 +59,7 @@ from stoat_discord_bridge.services.discord_service.formatting import (
 from stoat_discord_bridge.services.discord_service.linking import DiscordLinkingMixin
 from stoat_discord_bridge.services.discord_service.lookups import DiscordLookupsMixin
 from stoat_discord_bridge.services.discord_service.sync import DiscordSyncMixin
+from stoat_discord_bridge.services.mentions import _defang_mentions
 from stoat_discord_bridge.services.voice.base import OnVoiceConnectorLost, OnVoicePresence
 from stoat_discord_bridge.status import HealthTracker
 
@@ -698,7 +699,14 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         renamer is embedded as a `<@id>` mention plus a `mentioned_users`
         entry so the existing `rewrite_mentions` pipeline resolves it to a
         `/link-user`-linked identity on the target, or falls back to the
-        plain display name carried here."""
+        plain display name carried here. `message.content` is user-supplied
+        text spliced straight into relayed content, so it's run through
+        `_defang_mentions` the same way every other embedded display string
+        is - a thread renamed to `@everyone` shouldn't relay a live mass
+        ping (the bridge sets no `allowed_mentions` on its webhook sends).
+        The rename propagated via `on_channel_renamed` below uses the real,
+        un-defanged name - that value is a channel name on the target, never
+        rendered as chat content."""
         thread = message.channel
         # thread.parent can be None (parent deleted/uncached) - isinstance
         # against None is just False, so this intentionally falls back to
@@ -715,7 +723,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                     str(bot_user.display_avatar.url) if bot_user is not None and bot_user.display_avatar else None
                 ),
                 sender_user_id=str(bot_user.id) if bot_user is not None else "",
-                content_markdown=f"<@{message.author.id}> changed the {wording}: {message.content}",
+                content_markdown=f"<@{message.author.id}> changed the {wording}: {_defang_mentions(message.content)}",
                 message_id=f"thread-renamed:{message.id}",
                 mentioned_users={str(message.author.id): message.author.display_name},
             )
