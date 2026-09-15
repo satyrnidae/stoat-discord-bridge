@@ -10,6 +10,7 @@ calls back in (`grant_role`, `rename_role`, `set_channel_role_permission`,
 from __future__ import annotations
 
 import logging
+import time
 
 import discord
 
@@ -17,6 +18,7 @@ from stoat_discord_bridge.models import (
     CustomEmoji,
     StandardEmojiCreated,
     StandardEmojiDeleted,
+    StandardMessage,
 )
 from stoat_discord_bridge.services.discord_service.formatting import (
     _MAPPED_DISCORD_PERM_ATTRS,
@@ -68,6 +70,53 @@ class DiscordSyncMixin:
             await self._on_voice_presence(
                 self.connector_id, str(after.channel.id), str(member.id), present=True, is_bot=member.bot
             )
+            if not member.bot and self._is_call_start(member, after.channel):
+                await self._relay_call_started_notice(member, after.channel)
+
+    def _is_call_start(self, member: discord.Member, channel: discord.abc.GuildChannel) -> bool:
+        """Whether `member` just joined `channel` from an empty state - the
+        first non-bot occupant, i.e. the one who "started the call" (issue
+        #154). Excludes `member` from the occupancy count by id rather than
+        assuming they're already reflected in `channel.members` by dispatch
+        time - true for a real gateway event, but not guaranteed by every
+        code path or test double, so checking it this way is correct
+        either way."""
+        return not any(not m.bot and m.id != member.id for m in channel.members)
+
+    async def _relay_call_started_notice(
+        self, member: discord.Member, channel: discord.abc.GuildChannel
+    ) -> None:
+        """Post a bot-authored "<user> started a call in <service>" notice
+        when `member` starts a call (issue #154) - the Discord-origin
+        counterpart of Stoat's own call_started system event. Discord has no
+        system message of its own for a voice join to suppress (a join
+        produces no text-channel message at all), so this is synthesized
+        outright. The real user is embedded as a `<@id>` mention plus a
+        `mentioned_users` entry (the same "system notification" shape used
+        elsewhere, issue #152) so rewrite_mentions resolves it to a
+        /link-user-linked identity on the target, or falls back to the
+        plain display name carried here."""
+        bot_user = self._client.user
+        await self._on_message(
+            StandardMessage(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(channel.id),
+                channel_name=getattr(channel, "name", str(channel.id)),
+                sender_name=bot_user.display_name if bot_user is not None else "Bridge",
+                sender_avatar_url=(
+                    str(bot_user.display_avatar.url) if bot_user is not None and bot_user.display_avatar else None
+                ),
+                sender_user_id=str(bot_user.id) if bot_user is not None else "",
+                content_markdown=f"<@{member.id}> started a call in {self._config.label}",
+                # No natural per-event id exists for a voice join (unlike
+                # Stoat's system-event message id) - a channel can start
+                # fresh calls repeatedly, so a static per-channel id would
+                # collide across occurrences in MessageSyncRepository's
+                # insert_one-based bookkeeping.
+                message_id=f"call-started:{channel.id}:{int(time.time() * 1000)}",
+                mentioned_users={str(member.id): member.display_name},
+            )
+        )
 
     async def _handle_role_update(self, before: discord.Role, after: discord.Role) -> None:
         """A guild role changed - propagate a rename to linked copies."""

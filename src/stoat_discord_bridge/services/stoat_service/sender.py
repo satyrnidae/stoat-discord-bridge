@@ -210,11 +210,16 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                     )
                 )
             return
-        # Every other system event (call started, channel renamed, user
-        # joined/left/kicked/banned, etc.) has no real .content either - its
-        # actual text lives only in stoat.py's system_content property, which
-        # _to_standard_message never reads - so relaying it the normal way
-        # goes out as a blank message (issue #145). None of them are
+        # A call_started system event, like pin/unpin, has no real .content -
+        # its actual text lives only in stoat.py's system_content property,
+        # which _to_standard_message never reads. Rather than drop it
+        # (issue #145's original fix), reintroduce it as a bot-authored
+        # notice (issue #154) so other connectors still learn a call started.
+        if isinstance(system_event, stoat.CallStartedSystemEvent):
+            await self._relay_call_started_notice(message, system_event)
+            return
+        # Every other system event (channel renamed, user joined/left/kicked/
+        # banned, etc.) has the same no-real-.content problem but isn't
         # meaningful to mirror onto Discord/IRC today, so drop any system
         # event not explicitly converted into a StandardX object above,
         # rather than special-casing each type: this also means a future new
@@ -239,6 +244,37 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             message.author.id,
         )
         await self._on_message(await self._to_standard_message(message))
+
+    async def _relay_call_started_notice(self, message, system_event) -> None:
+        """Post a bot-authored "<user> started a call in <service>" notice
+        standing in for Stoat's own call_started system message (issue #154 -
+        previously dropped outright by issue #145). The real user is
+        embedded as a `<@id>` mention (`system_event.by_id`, always
+        resolvable with no cache/state dependency) plus a `mentioned_users`
+        entry when a display name can be resolved from cache
+        (`self._client.get_user`, cache-only and best-effort - not
+        `system_event.get_by()`, which needs a fully state-attached message
+        to do the same lookup itself) - the same "system notification" shape
+        used elsewhere (issue #152) - so the existing rewrite_mentions
+        pipeline resolves it to a /link-user-linked identity on the target,
+        falls back to a plain display name, or leaves the raw token if
+        neither is available."""
+        by_id = system_event.by_id
+        by_user = self._client.get_user(by_id)
+        bot_user = self._client.user
+        await self._on_message(
+            StandardMessage(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(message.channel.id),
+                channel_name=getattr(message.channel, "name", str(message.channel.id)),
+                sender_name=_display_name(bot_user) if bot_user is not None else "Bridge",
+                sender_avatar_url=_avatar_url(bot_user) if bot_user is not None else None,
+                sender_user_id=str(bot_user.id) if bot_user is not None else "",
+                content_markdown=f"<@{by_id}> started a call in {self._config.label}",
+                message_id=f"call-started:{message.id}",
+                mentioned_users={by_id: _display_name(by_user)} if by_user is not None else {},
+            )
+        )
 
     async def _to_standard_message(self, message) -> StandardMessage:
         """Convert a native Stoat message - live (from `_handle_message`) or
