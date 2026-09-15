@@ -85,6 +85,7 @@ _EDIT_SUPPRESS_TTL = 10.0
 # large backfill from front-loading a burst of create-message calls.
 _HISTORY_BACKFILL_PACING = 0.35
 _DELETE_SUPPRESS_TTL = _EDIT_SUPPRESS_TTL
+_CHANNEL_RENAME_SUPPRESS_TTL = 10.0
 
 
 class BridgeCoordinator:
@@ -122,6 +123,11 @@ class BridgeCoordinator:
         # (harmlessly, but noisily) re-processed. Same two-layer loop guard
         # as edit/pin sync.
         self._recent_deletes: dict[tuple[str, str, str], float] = {}
+        # A ~10s record of channel-rename writes we just issued, keyed
+        # (connector_id, channel_id, new_name), so the resulting rename event
+        # echoing back from that connector is dropped rather than fanned back
+        # out - same two-layer loop guard pin/edit/delete sync use (issue #152).
+        self._recent_channel_renames: dict[tuple[str, str, str], float] = {}
 
     def register_receiver(self, receiver: ReceiverService) -> None:
         """Every bridged connector's receiver must be registered before any
@@ -507,6 +513,67 @@ class BridgeCoordinator:
                 )
             except Exception:
                 logger.exception("delete relay from %s to %s failed", delete.origin_connector_id, connector_id)
+
+    async def handle_channel_renamed(self, origin_connector_id: str, channel_id: str, new_name: str) -> None:
+        """A channel was renamed on `origin_connector_id` (issue #152 -
+        currently Discord threads/forum posts only). If it's bridged, rename
+        every other connector's mapped copy to match and refresh the stored
+        `channel_name` - but only to whatever `rename_channel` reports it
+        actually applied there (which may be a clipped/truncated version of
+        `new_name` - each connector has its own name-length limit), and only
+        once that connector's own rename actually succeeds (or for the
+        origin itself, which already renamed natively to the real `new_name`
+        before this ran): a connector whose receiver doesn't advertise
+        `supports_channel_rename` (IRC - a channel's id there *is* its name,
+        so an in-place rename isn't meaningful) never gets a `rename_channel`
+        call and keeps its stored name untouched rather than the DB claiming
+        a rename that never happened there; likewise a `rename_channel` that
+        returns `None` (or raises, as a defensive backstop) leaves the stored
+        name as the old value, so a later rename to the same name isn't
+        skipped as a no-op - it retries instead of silently masking the
+        earlier failure. No-op if the channel isn't bridged. Loop-safe: a
+        `rename_channel` write we issued is recorded (keyed by the name it
+        actually applied, so a future echo carrying that same clipped name
+        matches) only once it succeeds, so a failed attempt never leaves a
+        stale suppress entry that could wrongly drop a later genuine rename -
+        same two-layer guard pin/edit/delete sync use (idempotent hook +
+        short-TTL record)."""
+        now = time.monotonic()
+        self._recent_channel_renames = {
+            k: v for k, v in self._recent_channel_renames.items() if now - v < _CHANNEL_RENAME_SUPPRESS_TTL
+        }
+        if self._recent_channel_renames.pop((origin_connector_id, channel_id, new_name), None) is not None:
+            return  # our own rename echoing back
+        bridge_group = await self._channel_mappings.get_bridge_group(origin_connector_id, channel_id)
+        if bridge_group is None:
+            return
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+        for m in mapped:
+            if m.channel_name == new_name:
+                continue
+            applied_name = new_name
+            if m.connector_id != origin_connector_id:
+                receiver = self._receivers.get(m.connector_id)
+                if receiver is None or not receiver.supports_channel_rename:
+                    continue  # can't rename here - leave the stored name alone, it still matches reality
+                try:
+                    applied_name = await receiver.rename_channel(target_channel_id=m.channel_id, new_name=new_name)
+                except Exception:
+                    logger.exception(
+                        "channel rename relay from %s to %s failed", origin_connector_id, m.connector_id
+                    )
+                    continue  # rename didn't actually take - don't claim otherwise in the mapping
+                if applied_name is None:
+                    continue  # receiver couldn't apply it either - same reasoning
+                self._recent_channel_renames[(m.connector_id, m.channel_id, applied_name)] = time.monotonic()
+            await self._channel_mappings.upsert(
+                ChannelMapping(
+                    bridge_group=bridge_group,
+                    connector_id=m.connector_id,
+                    channel_id=m.channel_id,
+                    channel_name=applied_name,
+                )
+            )
 
     async def _translate_emoji(
         self, origin_connector_id: str, emoji: str | CustomEmoji, target_connector_id: str
@@ -900,6 +967,7 @@ async def run(config: BridgeConfig) -> None:
             on_role_renamed=role_grants.handle_role_renamed,
             on_role_deleted=role_grants.handle_role_deleted,
             on_channel_role_permission_changed=role_grants.handle_channel_role_permission,
+            on_channel_renamed=coordinator.handle_channel_renamed,
         )
         receiver = DiscordReceiverService(
             client=sender.client,

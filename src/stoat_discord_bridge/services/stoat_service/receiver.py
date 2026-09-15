@@ -23,6 +23,7 @@ import stoat
 # `receive()` at call time - the historical monkeypatch seam.
 import stoat_discord_bridge.services.stoat_service as _stoat_pkg
 
+from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.formatting import (
@@ -63,6 +64,7 @@ class StoatReceiverService(ReceiverService):
     supports_typing = True
     supports_edits = True
     supports_deletes = True
+    supports_channel_rename = True
     supports_replies = True
 
     # How long a single relayed typing indicator lingers before it's ended,
@@ -400,6 +402,28 @@ class StoatReceiverService(ReceiverService):
                 target_message_id,
                 target_channel_id,
             )
+
+    async def rename_channel(self, *, target_channel_id: str, new_name: str) -> str | None:
+        """Idempotent - returns the current name without an edit if the
+        channel already has it (issue #152). Clips `new_name` to Stoat's
+        32-char limit and returns the name actually applied, so the caller's
+        own bookkeeping can match reality rather than assume the raw
+        requested name took effect verbatim. Best-effort: an uncached
+        channel (a bare `PartialMessageable` with no `.name`/`.edit`) or an
+        edit Stoat rejects is logged and returns `None` rather than raising,
+        matching `rename_role`'s stance."""
+        channel = self._sender.get_channel(target_channel_id, partial=True)
+        new_name = clip_name(new_name, 32)
+        if getattr(channel, "name", None) == new_name:
+            return new_name
+        try:
+            await channel.edit(name=new_name)
+        except Exception:
+            logger.exception(
+                "[stoat:%s] channel rename sync: rename of %s failed", self.connector_id, target_channel_id
+            )
+            return None
+        return new_name
 
     async def trigger_typing(self, *, target_channel_id: str) -> None:
         """Show a typing indicator in the channel, attributed to the bridge

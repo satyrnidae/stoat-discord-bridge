@@ -55,6 +55,9 @@ OnRoleDeleted = Callable[[str, str], Awaitable[None]]
 # (origin_connector_id, channel_id, role_id, RolePermissionOverride, *, is_category)
 # - a linked role's permission override on a channel/category changed.
 OnChannelRolePermissionChanged = Callable[..., Awaitable[None]]
+# (origin_connector_id, channel_id, new_name) - a channel was renamed on one
+# connector (issue #152 - currently Discord threads/forum posts only).
+OnChannelRenamed = Callable[[str, str, str], Awaitable[None]]
 
 
 class SenderService(ABC):
@@ -98,6 +101,7 @@ class ReceiverService(ABC):
     supports_edits: bool = False
     supports_replies: bool = False
     supports_deletes: bool = False
+    supports_channel_rename: bool = False
 
     @abstractmethod
     async def receive(
@@ -181,6 +185,19 @@ class ReceiverService(ABC):
         does nothing; each supporting receiver overrides it (Stoat ends the
         indicator now, Discord stops re-arming its keep-alive and lets its
         own ~10s timeout lapse — Discord has no clear-typing API)."""
+
+    async def rename_channel(self, *, target_channel_id: str, new_name: str) -> str | None:
+        """Rename `target_channel_id` to `new_name`, clipped to this
+        connector's own name-length limit (issue #152). Idempotent - a no-op
+        if the channel already has that name. Returns the name actually
+        applied (which may be a clipped/truncated version of `new_name`) so
+        the caller's own bookkeeping can match reality instead of assuming
+        the raw requested name took effect verbatim - or `None` if the
+        rename didn't happen at all (an unresolvable channel, or the
+        platform rejected the edit), matching this codebase's usual
+        best-effort/log-and-swallow stance rather than raising. Only called
+        when `supports_channel_rename`."""
+        raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         """Mirror `emoji` onto this connector, returning it with this connector's
