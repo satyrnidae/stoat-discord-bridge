@@ -101,6 +101,7 @@ class ReceiverService(ABC):
     supports_edits: bool = False
     supports_replies: bool = False
     supports_deletes: bool = False
+    supports_channel_rename: bool = False
 
     @abstractmethod
     async def receive(
@@ -184,6 +185,12 @@ class ReceiverService(ABC):
         does nothing; each supporting receiver overrides it (Stoat ends the
         indicator now, Discord stops re-arming its keep-alive and lets its
         own ~10s timeout lapse — Discord has no clear-typing API)."""
+
+    async def rename_channel(self, *, target_channel_id: str, new_name: str) -> None:
+        """Rename `target_channel_id` to `new_name` (issue #152). Idempotent -
+        a no-op if the channel already has that name. Only called when
+        `supports_channel_rename`."""
+        raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         """Mirror `emoji` onto this connector, returning it with this connector's
