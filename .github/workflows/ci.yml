@@ -38,8 +38,15 @@ jobs:
       - name: Voice extra import smoke test
         run: |
           python -c "
+          import ctypes.util
           import discord.opus, discord.ext.voice_recv, livekit.rtc
-          assert discord.opus.is_loaded(), 'libopus not found by discord.py - is libopus0 installed?'
+          # discord.opus.is_loaded() only reports a *previous* load_opus()
+          # call - it never itself probes for the library - so force the
+          # same find_library() probe discord.py does lazily on first use.
+          name = ctypes.util.find_library('opus')
+          assert name is not None, 'libopus not found - is libopus0 installed?'
+          discord.opus.load_opus(name)
+          assert discord.opus.is_loaded()
           "
 
       - name: Run tests

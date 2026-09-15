@@ -8,12 +8,21 @@ Joining needs PyNaCl (the encrypted voice UDP transport) even for a silent
 connection - discord.py already exposes whether it's installed as
 `discord.voice_client.has_nacl` and raises `RuntimeError` from `connect()`
 itself if it's missing, so this module doesn't need its own import probe for
-that. Actually encoding/decoding audio additionally needs libopus
-(`discord.opus.is_loaded()`, auto-probed by discord.py at import time via
-`ctypes.util.find_library`) and the optional `discord-ext-voice-recv`
-package (the `[voice]` extra, `pyproject.toml`) - `voice_available` checks
-all of these so the coordinator skips a connector that can't actually carry
-audio rather than joining and immediately failing to `play()`/`listen()`.
+that. Actually encoding/decoding audio additionally needs libopus - but
+`discord.opus.is_loaded()` only reports whether something *already* called
+`discord.opus.load_opus()`/constructed an `Encoder`; it never itself probes
+for the library, despite what its docstring implies. discord.py only makes
+that probe lazily, the first time an `Encoder` is actually constructed (i.e.
+once a voice connection already exists and starts playing something) - so
+checking `is_loaded()` alone, before ever joining a channel, always reads
+`False` even with libopus installed. `_ensure_opus_loaded()` below forces
+the same `ctypes.util.find_library('opus')` probe up front via the public
+`load_opus()` API, so `voice_available` reflects reality instead of an
+always-`False` reading that would permanently block every Discord voice
+join. Combined with the optional `discord-ext-voice-recv` package (the
+`[voice]` extra, `pyproject.toml`), `voice_available` checks all of these so
+the coordinator skips a connector that can't actually carry audio rather
+than joining and immediately failing to `play()`/`listen()`.
 
 `discord-ext-voice-recv` stays an *optional* dependency at runtime (a
 deployment can run text-only bridging with it absent) - `voice_recv` is
@@ -24,6 +33,7 @@ already confirmed it's installed, via `_voice_recv_module()` below.
 from __future__ import annotations
 
 import asyncio
+import ctypes.util
 import importlib.util
 import logging
 from typing import TYPE_CHECKING
@@ -44,6 +54,23 @@ _sink_class: "type | None" = None
 
 def _voice_recv_importable() -> bool:
     return importlib.util.find_spec("discord.ext.voice_recv") is not None
+
+
+def _ensure_opus_loaded() -> bool:
+    """Force discord.py's libopus probe instead of trusting
+    `discord.opus.is_loaded()` alone - see the module docstring for why that
+    check alone never becomes `True` before a voice connection already
+    exists. A no-op if something already loaded it."""
+    if discord.opus.is_loaded():
+        return True
+    name = ctypes.util.find_library("opus")
+    if name is None:
+        return False
+    try:
+        discord.opus.load_opus(name)
+    except OSError:
+        return False
+    return discord.opus.is_loaded()
 
 
 def _voice_recv_module() -> "voice_recv":
@@ -182,7 +209,7 @@ class DiscordVoiceConnector:
         return (
             self._voice_bridging
             and _discord_voice_client.has_nacl
-            and discord.opus.is_loaded()
+            and _ensure_opus_loaded()
             and _voice_recv_importable()
         )
 
