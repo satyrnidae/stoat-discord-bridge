@@ -1,15 +1,27 @@
-"""`StoatVoiceConnector`/`StoatVoiceTransport` (issue #113 Phase 2) - real
-join/close against `FakeClient`/`FakeVoiceChannel`/`FakeStoatRoom`, no real
-stoat.py network/livekit involved.
+"""`StoatVoiceConnector`/`StoatVoiceTransport` (issue #113) - real join/close
+(Phase 2) and real send/receive wiring (Phase 3) against
+`FakeClient`/`FakeVoiceChannel`/`FakeStoatRoom`, no real stoat.py
+network/livekit involved. The genuinely FFI-backed livekit objects
+(`AudioStream`, `AudioSource`, `LocalAudioTrack`) are never constructed here
+- `_open_audio_stream`/`_create_publish_track` are monkeypatched seams
+instead, same rationale as their docstrings in `stoat_service/voice.py`.
+`livekit.rtc.TrackKind` itself IS the real enum (`livekit` is a genuine
+installed dependency, the `voice` extra) since referencing it needs no FFI
+object construction.
 """
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
+from livekit import rtc
 
 from stoat_discord_bridge.services.stoat_service.voice import StoatVoiceConnector
+from stoat_discord_bridge.services.voice import pipeline
 from stoat_discord_bridge.services.voice.base import VoiceJoinError
-from tests.fakes.fake_stoat import FakeChannel, FakeClient, FakeStoatRoom, FakeVoiceChannel
+from tests.fakes.fake_stoat import FakeChannel, FakeClient, FakeLocalParticipant, FakeStoatRoom, FakeVoiceChannel
 
 
 def test_voice_available_true_when_bridging_on_and_livekit_importable(monkeypatch):
@@ -86,3 +98,217 @@ async def test_transport_close_disconnects_room():
     await transport.close()
 
     assert room.disconnect_calls == 1
+
+
+# ---------------------------------------------------------------- Phase 3: receive
+
+
+class _FakeAudioStream:
+    """Stands in for livekit.rtc.AudioStream - an async-iterable of
+    SimpleNamespace(frame=SimpleNamespace(data=<bytes>)), matching the real
+    AudioFrameEvent shape closely enough for `_consume_track` to unwrap."""
+
+    def __init__(self, frames: "list[bytes]") -> None:
+        self._frames = list(frames)
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._frames:
+            # Real AudioStream never raises StopAsyncIteration on its own -
+            # a still-subscribed track just has no next frame yet. Block
+            # forever here too, so tests control the end of iteration via
+            # cancellation (transport.close()), matching production.
+            await asyncio.Future()
+        return SimpleNamespace(frame=SimpleNamespace(data=self._frames.pop(0)))
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def _joined_transport(room: "FakeStoatRoom | None" = None):
+    room = room or FakeStoatRoom()
+    client = FakeClient()
+    client.add_channel(FakeVoiceChannel("c1", connect_result=room))
+    connector = StoatVoiceConnector("stoat", client, voice_bridging=True)
+    transport = await connector.join("c1")
+    return transport, room
+
+
+async def test_start_subscribes_to_track_subscribed():
+    transport, room = await _joined_transport()
+
+    await transport.start(lambda *a, **k: None)
+
+    assert room._listeners["track_subscribed"] == transport._on_track_subscribed
+
+
+def test_on_track_subscribed_skips_non_audio_tracks():
+    room = FakeStoatRoom()
+    from stoat_discord_bridge.services.stoat_service.voice import StoatVoiceTransport
+
+    transport = StoatVoiceTransport("stoat", room)
+    track = SimpleNamespace(kind=rtc.TrackKind.KIND_VIDEO)
+    participant = SimpleNamespace(identity="remote-user")
+
+    transport._on_track_subscribed(track, None, participant)
+
+    assert transport._consume_tasks == {}
+
+
+def test_on_track_subscribed_skips_local_participants_own_track():
+    room = FakeStoatRoom()
+    from stoat_discord_bridge.services.stoat_service.voice import StoatVoiceTransport
+
+    transport = StoatVoiceTransport("stoat", room)
+    track = SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO)
+    participant = SimpleNamespace(identity=room.local_participant.identity)
+
+    transport._on_track_subscribed(track, None, participant)
+
+    assert transport._consume_tasks == {}
+
+
+async def test_on_track_subscribed_routes_remote_audio_frames(monkeypatch):
+    import stoat_discord_bridge.services.stoat_service.voice as voice_mod
+
+    frame_bytes = b"\x01" * pipeline.FRAME_BYTES
+    fake_stream = _FakeAudioStream([frame_bytes])
+    monkeypatch.setattr(voice_mod, "_open_audio_stream", lambda track: fake_stream)
+
+    transport, room = await _joined_transport()
+    calls: list = []
+
+    async def on_speaker_frame(connector_id, user_id, frame):
+        calls.append((connector_id, user_id, frame))
+
+    await transport.start(on_speaker_frame)
+    track = SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO)
+    participant = SimpleNamespace(identity="remote-user")
+
+    room.trigger("track_subscribed", track, None, participant)
+    await asyncio.sleep(0)  # let the scheduled consume task run one frame
+
+    assert calls == [("stoat", "remote-user", frame_bytes)]
+
+    await transport.close()  # cancel the still-iterating consume task
+    assert fake_stream.closed is True
+
+
+async def test_on_track_subscribed_refiring_for_same_identity_cancels_the_stale_task(monkeypatch):
+    """A republish/reconnect re-fires track_subscribed for an identity
+    already being consumed - the stale task must be cancelled, not just
+    silently replaced in the dict (which would orphan it: still running,
+    its AudioStream never closed)."""
+    import stoat_discord_bridge.services.stoat_service.voice as voice_mod
+
+    first_stream = _FakeAudioStream([])
+    second_stream = _FakeAudioStream([])
+    streams = [first_stream, second_stream]
+    monkeypatch.setattr(voice_mod, "_open_audio_stream", lambda track: streams.pop(0))
+
+    transport, room = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+    track = SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO)
+    participant = SimpleNamespace(identity="remote-user")
+
+    room.trigger("track_subscribed", track, None, participant)
+    await asyncio.sleep(0)
+    first_task = transport._consume_tasks["remote-user"]
+
+    room.trigger("track_subscribed", track, None, participant)
+    await asyncio.sleep(0)
+    second_task = transport._consume_tasks["remote-user"]
+
+    assert first_task is not second_task
+    assert first_task.done()
+    assert first_stream.closed is True
+
+    await transport.close()
+
+
+# ---------------------------------------------------------------- Phase 3: send
+
+
+class _FakeAudioSource:
+    def __init__(self) -> None:
+        self.captured: "list[bytes]" = []
+
+    async def capture_frame(self, frame: bytes) -> None:
+        self.captured.append(frame)
+
+
+async def test_set_output_publishes_and_loops_capture_frame(monkeypatch):
+    import stoat_discord_bridge.services.stoat_service.voice as voice_mod
+
+    fake_source = _FakeAudioSource()
+    monkeypatch.setattr(voice_mod, "_create_publish_track", lambda: (fake_source, "fake-local-track"))
+
+    transport, room = await _joined_transport()
+    holder = pipeline.LatestFrameHolder()
+    holder.set(b"\x07" * pipeline.FRAME_BYTES)
+
+    transport.set_output(holder)
+    await asyncio.sleep(0.05)  # let a couple of 20ms capture_frame ticks run
+    await transport.close()
+
+    assert room.local_participant.publish_track_calls == ["fake-local-track"]
+    assert fake_source.captured
+    # capture_frame receives a real rtc.AudioFrame (only track/source
+    # construction is faked here) - unwrap .data to check the PCM itself.
+    assert all(bytes(frame.data) == b"\x07" * pipeline.FRAME_BYTES for frame in fake_source.captured)
+
+
+async def test_close_cancels_consume_and_publish_tasks(monkeypatch):
+    import stoat_discord_bridge.services.stoat_service.voice as voice_mod
+
+    fake_stream = _FakeAudioStream([])
+    monkeypatch.setattr(voice_mod, "_open_audio_stream", lambda track: fake_stream)
+    fake_source = _FakeAudioSource()
+    monkeypatch.setattr(voice_mod, "_create_publish_track", lambda: (fake_source, "fake-local-track"))
+
+    transport, room = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+    transport.set_output(pipeline.LatestFrameHolder())
+    room.trigger("track_subscribed", SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO), None, SimpleNamespace(identity="u1"))
+    await asyncio.sleep(0)
+    consume_task = transport._consume_tasks["u1"]
+    publish_task = transport._publish_task
+
+    await transport.close()
+
+    assert consume_task.done()
+    assert publish_task.done()
+    assert transport._consume_tasks == {}
+    assert room.disconnect_calls == 1
+
+
+async def test_close_awaits_retired_tasks_from_a_track_subscribed_refire(monkeypatch):
+    """close() must not return while a task retired by a track_subscribed
+    refire (test_on_track_subscribed_refiring_for_same_identity_cancels_the_
+    stale_task, above) is still mid-cancellation - both streams should be
+    fully closed by the time close() returns, and _retiring_tasks emptied."""
+    import stoat_discord_bridge.services.stoat_service.voice as voice_mod
+
+    first_stream = _FakeAudioStream([])
+    second_stream = _FakeAudioStream([])
+    streams = [first_stream, second_stream]
+    monkeypatch.setattr(voice_mod, "_open_audio_stream", lambda track: streams.pop(0))
+
+    transport, room = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+    track = SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO)
+    participant = SimpleNamespace(identity="remote-user")
+
+    room.trigger("track_subscribed", track, None, participant)
+    await asyncio.sleep(0)
+    room.trigger("track_subscribed", track, None, participant)
+    await asyncio.sleep(0)
+
+    await transport.close()
+
+    assert first_stream.closed is True
+    assert second_stream.closed is True
+    assert transport._retiring_tasks == []

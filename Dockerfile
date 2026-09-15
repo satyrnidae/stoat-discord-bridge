@@ -27,11 +27,22 @@ RUN if [ "$INSTALL_OP" = "1" ]; then set -eux; \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# libopus0 (Discord/LiveKit audio codec) + libsodium23 (PyNaCl's encrypted
+# voice transport) - native libs the `voice` extra below needs at runtime,
+# not something pip can install (issue #113 Phase 3). The Debian slim base
+# is glibc, matching the livekit wheel's manylinux tag - an Alpine base
+# would not work here.
+RUN apt-get update && apt-get install -y --no-install-recommends libopus0 libsodium23 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Layer-cached separately from the source so an app-only change doesn't
-# force a dependency reinstall.
+# force a dependency reinstall. `.[voice]` is installed by default - voice
+# bridging has no opt-in flag (issue #113: any bridge group whose linked
+# channels are voice channels bridges audio automatically), so the deps it
+# needs ship in the image the same way.
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir .[voice]
 
 # config.yaml, .env's contents (via env_file/environment, not the file
 # itself), and certs/ are supplied at run time - see docker-compose.yml -

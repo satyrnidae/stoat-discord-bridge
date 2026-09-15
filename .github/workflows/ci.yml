@@ -27,10 +27,27 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Install system voice libs
+        run: sudo apt-get update && sudo apt-get install -y libopus0
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          pip install -e ".[test,voice]"
+
+      - name: Voice extra import smoke test
+        run: |
+          python -c "
+          import ctypes.util
+          import discord.opus, discord.ext.voice_recv, livekit.rtc
+          # discord.opus.is_loaded() only reports a *previous* load_opus()
+          # call - it never itself probes for the library - so force the
+          # same find_library() probe discord.py does lazily on first use.
+          name = ctypes.util.find_library('opus')
+          assert name is not None, 'libopus not found - is libopus0 installed?'
+          discord.opus.load_opus(name)
+          assert discord.opus.is_loaded()
+          "
 
       - name: Run tests
         run: pytest -q

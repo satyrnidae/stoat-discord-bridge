@@ -43,6 +43,67 @@ copy config.yaml.example config.yaml
 python -m stoat_discord_bridge
 ```
 
+## Voice bridging
+
+A bridge group whose linked channels are voice channels on at least two
+voice-capable connectors bridges live audio between them automatically - no
+command, no opt-in flag. The bot joins once at least two of a group's voice
+channels have a non-bot occupant, and leaves when that drops back below two;
+each connector hears a mix of every *other* joined connector's speakers,
+never its own.
+
+Requires the `voice` extra (`pip install -e ".[voice]"`, or already included
+in the Docker image) - `discord.py[voice]`, `discord-ext-voice-recv`
+(exact-pinned; it hooks discord.py's undocumented voice internals and stays
+pre-release) and `livekit`, plus the native `libopus0` and `libsodium23`
+libraries (installed via `apt` outside Docker; already in the image). A
+deployment that skips the extra still runs text-only - a connector without
+it just never reports its voice channels as voice-capable.
+
+On the Stoat side, voice needs a **LiveKit-backed instance**
+(`Instance.features.voice.is_livekit`) - a legacy/Vortex instance has no
+usable voice at all. Set `voice_node` on a `stoat:` connector entry to pin
+which LiveKit SFU node it joins through
+(`StoatConnectorConfig.voice_node`/`STOAT__<index>__VOICE_NODE`), if your
+deployment needs one over the default.
+
+Per-connector `voice_bridging` (default on, `DiscordConnectorConfig`/
+`StoatConnectorConfig`) opts a single connector's voice channels out of the
+bridge entirely (its channels never count toward the >= 2 threshold and are
+never joined) without touching the other connectors in a group. The
+top-level `voice:` block (`VoiceConfig`) has `enabled` (master switch) and
+`follow_on_empty` (default off - when the active group's session ends, jump
+straight into another group that's already eligible instead of just going
+idle).
+
+Only one voice-bridgeable group is ever live at a time (first group to reach
+two populated connectors wins; the bot doesn't switch groups mid-session) -
+see `services/voice/coordinator.py`'s module docstring for the full state
+machine. IRC has no voice concept and stays text-only in any group it's a
+member of.
+
+**Manual test checklist** (this can't be exercised by the automated suite -
+the pure mixing/framing logic is unit-tested, but actual audio needs a real
+Discord guild + LiveKit-backed Stoat instance(s)):
+
+- Two/three accounts across Discord + Stoat (+ a second, self-hosted Stoat)
+  join a linked voice channel each - the bot joins all of them once the 2nd
+  populates.
+- Each side hears the other(s) but never itself - talk on one connector,
+  confirm no echo comes back through it.
+- A 3rd/4th connector's channel populating mid-call pulls the bot into it
+  without disrupting the existing session.
+- Dropping to one populated connector ends the session (bot leaves every
+  connector); if `follow_on_empty` is on, it immediately starts on another
+  already-eligible group.
+- A non-LiveKit Stoat instance (or one with `voice_bridging: false`) is
+  never joined, and shows as unavailable in `/voice status` (Discord/Stoat)
+  / `STATUS`.
+- An unlinked voice channel's occupants never pull the bot in.
+- Restarting the bridge while people are already in linked voice channels
+  re-seeds presence and opens a session without anyone needing to
+  rejoin/leave.
+
 ## Docker
 
 ```powershell

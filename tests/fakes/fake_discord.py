@@ -346,13 +346,20 @@ class FakeGuildChannel(discord.TextChannel):
 
 
 class FakeDiscordVoiceClient:
-    """Stands in for the discord.VoiceClient `VoiceChannel.connect()`
-    returns - just enough for `DiscordVoiceTransport.close()` (issue #113
-    Phase 2) to exercise its is_connected/disconnect pair."""
+    """Stands in for the `discord.ext.voice_recv.VoiceRecvClient`
+    `VoiceChannel.connect()` returns - `is_connected`/`disconnect` (issue
+    #113 Phase 2) plus `listen`/`stop_listening`/`is_listening` and
+    `play`/`stop`/`is_playing` (Phase 3's send/receive surface)."""
 
     def __init__(self) -> None:
         self.connected = True
         self.disconnect_calls: list[bool] = []
+        self.listening = False
+        self.listen_calls: list[object] = []
+        self.stop_listening_calls = 0
+        self.playing = False
+        self.play_calls: list[object] = []
+        self.stop_calls = 0
 
     def is_connected(self) -> bool:
         return self.connected
@@ -360,6 +367,28 @@ class FakeDiscordVoiceClient:
     async def disconnect(self, *, force: bool = False) -> None:
         self.disconnect_calls.append(force)
         self.connected = False
+
+    def listen(self, sink) -> None:
+        self.listen_calls.append(sink)
+        self.listening = True
+
+    def is_listening(self) -> bool:
+        return self.listening
+
+    def stop_listening(self) -> None:
+        self.stop_listening_calls += 1
+        self.listening = False
+
+    def play(self, source, **kwargs) -> None:
+        self.play_calls.append(source)
+        self.playing = True
+
+    def is_playing(self) -> bool:
+        return self.playing
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.playing = False
 
 
 class FakeVoiceChannel(discord.VoiceChannel):

@@ -1,38 +1,62 @@
-"""`DiscordVoiceConnector`/`DiscordVoiceTransport` (issue #113 Phase 2) -
-real join/close against `FakeClient`/`FakeVoiceChannel`/`FakeDiscordVoiceClient`,
-no real discord.py network/voice involved.
+"""`DiscordVoiceConnector`/`DiscordVoiceTransport` (issue #113) - real
+join/close (Phase 2) and real send/receive wiring (Phase 3) against
+`FakeClient`/`FakeVoiceChannel`/`FakeDiscordVoiceClient`, no real discord.py
+network/voice involved. `discord.ext.voice_recv` and `discord.opus` ARE the
+real installed libraries here (the `voice` extra, `pyproject.toml`) - only
+`discord.opus.is_loaded()` needs monkeypatching, since this test environment
+has no native libopus for discord.py to find.
 """
 
 from __future__ import annotations
 
+import asyncio
+
 import discord
 import pytest
+from discord.ext import voice_recv
 
-from stoat_discord_bridge.services.discord_service.voice import DiscordVoiceConnector
+from stoat_discord_bridge.services.discord_service.voice import BridgeAudioSource, DiscordVoiceConnector
+from stoat_discord_bridge.services.voice import pipeline
 from stoat_discord_bridge.services.voice.base import VoiceJoinError
-from tests.fakes.fake_discord import FakeChannel, FakeClient, FakeDiscordVoiceClient, FakeVoiceChannel
+from tests.fakes.fake_discord import FakeChannel, FakeClient, FakeDiscordVoiceClient, FakeUser, FakeVoiceChannel
 
 
-def test_voice_available_true_when_bridging_on_and_nacl_present(monkeypatch):
+def _all_voice_available(monkeypatch, *, nacl: bool = True, opus: bool = True) -> None:
     import discord.voice_client as discord_voice_client
 
-    monkeypatch.setattr(discord_voice_client, "has_nacl", True)
+    monkeypatch.setattr(discord_voice_client, "has_nacl", nacl)
+    monkeypatch.setattr(discord.opus, "is_loaded", lambda: opus)
+
+
+def test_voice_available_true_when_bridging_on_nacl_and_opus_present(monkeypatch):
+    _all_voice_available(monkeypatch)
     connector = DiscordVoiceConnector("discord", FakeClient(), voice_bridging=True)
     assert connector.voice_available is True
 
 
 def test_voice_available_false_when_voice_bridging_off(monkeypatch):
-    import discord.voice_client as discord_voice_client
-
-    monkeypatch.setattr(discord_voice_client, "has_nacl", True)
+    _all_voice_available(monkeypatch)
     connector = DiscordVoiceConnector("discord", FakeClient(), voice_bridging=False)
     assert connector.voice_available is False
 
 
 def test_voice_available_false_when_nacl_missing(monkeypatch):
-    import discord.voice_client as discord_voice_client
+    _all_voice_available(monkeypatch, nacl=False)
+    connector = DiscordVoiceConnector("discord", FakeClient(), voice_bridging=True)
+    assert connector.voice_available is False
 
-    monkeypatch.setattr(discord_voice_client, "has_nacl", False)
+
+def test_voice_available_false_when_opus_not_loaded(monkeypatch):
+    _all_voice_available(monkeypatch, opus=False)
+    connector = DiscordVoiceConnector("discord", FakeClient(), voice_bridging=True)
+    assert connector.voice_available is False
+
+
+def test_voice_available_false_when_voice_recv_not_importable(monkeypatch):
+    import stoat_discord_bridge.services.discord_service.voice as voice_module
+
+    _all_voice_available(monkeypatch)
+    monkeypatch.setattr(voice_module, "_voice_recv_importable", lambda: False)
     connector = DiscordVoiceConnector("discord", FakeClient(), voice_bridging=True)
     assert connector.voice_available is False
 
@@ -46,7 +70,7 @@ async def test_join_connects_and_returns_transport():
     transport = await connector.join("1")
 
     assert transport.connector_id == "discord"
-    assert channel.connect_calls == [discord.VoiceClient]
+    assert channel.connect_calls == [voice_recv.VoiceRecvClient]
 
 
 async def test_join_falls_back_to_fetch_on_cache_miss():
@@ -123,3 +147,94 @@ async def test_transport_close_is_noop_if_already_disconnected():
     await transport.close()
 
     assert voice_client.disconnect_calls == []
+
+
+# ---------------------------------------------------------------- Phase 3: start/set_output
+
+
+async def _joined_transport():
+    voice_client = FakeDiscordVoiceClient()
+    client = FakeClient()
+    client.add_channel(FakeVoiceChannel(1, connect_result=voice_client))
+    connector = DiscordVoiceConnector("discord", client, voice_bridging=True)
+    transport = await connector.join("1")
+    return transport, voice_client
+
+
+async def test_start_attaches_a_sink_that_routes_non_bot_speaker_frames():
+    from types import SimpleNamespace
+
+    transport, voice_client = await _joined_transport()
+    calls: list = []
+
+    async def on_speaker_frame(connector_id, user_id, frame):
+        calls.append((connector_id, user_id, frame))
+
+    await transport.start(on_speaker_frame)
+    assert len(voice_client.listen_calls) == 1
+    sink = voice_client.listen_calls[0]
+    assert sink.wants_opus() is False
+
+    sink.write(FakeUser(id=7, bot=False), SimpleNamespace(pcm=b"\x01\x02"))
+    # run_coroutine_threadsafe needs two round-trips through the loop: one
+    # for call_soon_threadsafe's callback to schedule the coroutine as a
+    # task, another for that task to actually run.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert calls == [("discord", "7", b"\x01\x02")]
+
+
+async def test_start_sink_skips_bots_and_unresolved_speakers():
+    from types import SimpleNamespace
+
+    transport, voice_client = await _joined_transport()
+    calls: list = []
+
+    async def on_speaker_frame(connector_id, user_id, frame):
+        calls.append((connector_id, user_id, frame))
+
+    await transport.start(on_speaker_frame)
+    sink = voice_client.listen_calls[0]
+
+    sink.write(FakeUser(id=1, bot=True), SimpleNamespace(pcm=b"\x01"))
+    sink.write(None, SimpleNamespace(pcm=b"\x02"))
+    await asyncio.sleep(0)
+
+    assert calls == []
+
+
+async def test_set_output_plays_a_bridge_audio_source_wrapping_the_holder():
+    transport, voice_client = await _joined_transport()
+    holder = pipeline.LatestFrameHolder()
+    holder.set(b"\x09" * pipeline.FRAME_BYTES)
+
+    transport.set_output(holder)
+
+    assert len(voice_client.play_calls) == 1
+    source = voice_client.play_calls[0]
+    assert isinstance(source, BridgeAudioSource)
+    assert source.read() == b"\x09" * pipeline.FRAME_BYTES
+    assert source.is_opus() is False
+
+
+async def test_transport_close_stops_listening_and_playing_if_active():
+    transport, voice_client = await _joined_transport()
+    await transport.start(lambda *a, **k: None)
+    transport.set_output(pipeline.LatestFrameHolder())
+
+    await transport.close()
+
+    assert voice_client.stop_listening_calls == 1
+    assert voice_client.stop_calls == 1
+    assert voice_client.disconnect_calls == [False]
+
+
+async def test_transport_close_skips_listening_and_playing_stops_if_inactive():
+    transport, voice_client = await _joined_transport()
+
+    await transport.close()
+
+    assert voice_client.stop_listening_calls == 0
+    assert voice_client.stop_calls == 0
+    assert voice_client.disconnect_calls == [False]
