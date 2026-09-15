@@ -12,6 +12,7 @@ list can have any number of entries - public, self-hosted, or more).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 
@@ -71,6 +72,11 @@ _PRONOUN_CACHE_TTL = 600.0
 # stoat.py caps a single `TextChannel.history()` call at 100 messages -
 # `fetch_history` (issue #122) hand-rolls pagination past that.
 _HISTORY_PAGE_SIZE = 100
+
+# Pacing between `fetch_history`'s own page-fetch calls (issue #151) -
+# mirrors `bridge.py`'s `_HISTORY_BACKFILL_PACING`, which only paces the
+# destination relay sends, not this source-side read loop.
+_HISTORY_FETCH_PACING = 0.35
 
 
 class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, SenderService):
@@ -296,6 +302,10 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         cursor: str | None = None
         remaining = limit
         while remaining is None or remaining > 0:
+            if cursor is not None:
+                # Not the first page - pace this fetch so a long backfill
+                # doesn't burst past Stoat's per-route rate-limit buckets.
+                await asyncio.sleep(_HISTORY_FETCH_PACING)
             page_size = _HISTORY_PAGE_SIZE if remaining is None else min(_HISTORY_PAGE_SIZE, remaining)
             page_cursor = {"before": cursor} if backward else {"after": cursor}
             try:

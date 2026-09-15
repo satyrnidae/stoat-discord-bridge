@@ -142,3 +142,28 @@ async def test_fetch_history_returns_empty_for_an_unresolvable_channel():
     messages = await sender.fetch_history("999999", None)
 
     assert messages == []
+
+
+async def test_fetch_history_paces_between_page_fetches_but_not_before_the_first(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("stoat_discord_bridge.services.stoat_service.sender.asyncio.sleep", fake_sleep)
+    channel = FakeChannel(id="42", name="general")
+    channel.set_history(
+        [
+            _stoat_message(channel=channel, author=FakeAuthor(id="u1"), content=f"m{i}", id=f"id{i:03d}")
+            for i in range(150)
+        ]
+    )
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(_Recorder(), client)
+
+    await sender.fetch_history("42", None)
+
+    # 150 messages over the 100-per-page cap is 2 page fetches - pacing
+    # applies only between them, never before the first.
+    assert len(sleeps) == 1
