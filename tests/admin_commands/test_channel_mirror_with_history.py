@@ -65,12 +65,15 @@ async def test_mirror_channel_with_history_rejects_local_id_all(fake_db):
         )
 
 
-async def test_mirror_channel_with_history_rejects_irc_source(fake_db):
+async def test_mirror_channel_with_history_rejects_irc_source_with_no_fetch_history(fake_db):
+    # An IRC connector that hasn't wired fetch_history at all (e.g. a
+    # disconnected/unconfigured one) still can't be a history source -
+    # supports_history is source-only now, but it's still required.
     async def backfill(**kwargs):
-        raise AssertionError("must not run - irc doesn't support history")
+        raise AssertionError("must not run - this irc connector has no fetch_history wired")
 
     linker = ChannelLinker(ChannelMappingRepository(fake_db), _history_connectors(), backfill_history=backfill)
-    with pytest.raises(LinkError, match="only supported between Discord and Stoat"):
+    with pytest.raises(LinkError, match="'with history' isn't supported from IRC"):
         await linker.mirror_channel(
             local_connector="irc",
             local_channel_id="#general",
@@ -80,7 +83,10 @@ async def test_mirror_channel_with_history_rejects_irc_source(fake_db):
         )
 
 
-async def test_mirror_channel_with_history_reports_both_sides_when_neither_supports_it(fake_db):
+async def test_mirror_channel_with_history_reports_only_the_source_when_it_lacks_history(fake_db):
+    # Loosened destination check (issue #141): only the *source*'s support
+    # matters now - a destination with no fetch_history at all (unlike IRC,
+    # which now wires one) is fine, only the source's absence is reported.
     async def backfill(**kwargs):
         raise AssertionError("must not run")
 
@@ -98,7 +104,51 @@ async def test_mirror_channel_with_history_reports_both_sides_when_neither_suppo
             with_history=True,
         )
     assert "IRC" in str(exc_info.value)
-    assert "IRC2" in str(exc_info.value)
+    assert "IRC2" not in str(exc_info.value)
+
+
+async def test_mirror_channel_with_history_rejects_irc_destination_without_chanhistory_configured(fake_db):
+    # issue #141's IRC -> IRC decision: an IRC destination needs its own
+    # extra gate (supports_history_destination) since fetch_history is a
+    # source-only concept - a destination that can't preserve backfilled
+    # history is refused even though the source supports it fine.
+    async def backfill(**kwargs):
+        raise AssertionError("must not run - irc destination has no chanhistory configured")
+
+    connectors = _history_connectors()
+    connectors["irc"] = ConnectorInfo(
+        id="irc", label="IRC", ensure_channel=_ensure_channel, supports_history_destination=lambda: False
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, backfill_history=backfill)
+    with pytest.raises(LinkError, match="History is not supported/configured on the target service"):
+        await linker.mirror_channel(
+            local_connector="discord",
+            local_channel_id="d1",
+            local_channel_name="general",
+            destination="irc",
+            with_history=True,
+        )
+
+
+async def test_mirror_channel_with_history_allows_irc_destination_with_chanhistory_configured(fake_db):
+    async def backfill(*, fetch_history, source_channel_id, destination_connector, destination_channel_id, limit):
+        return "relayed 2 message(s)."
+
+    connectors = _history_connectors()
+    connectors["irc"] = ConnectorInfo(
+        id="irc", label="IRC", ensure_channel=_ensure_channel, supports_history_destination=lambda: True
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, backfill_history=backfill)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="irc",
+        with_history=True,
+    )
+
+    assert "relayed 2 message(s)." in summary
 
 
 async def test_mirror_channel_with_history_survives_a_raising_backfill_hook(fake_db):
@@ -161,21 +211,30 @@ async def test_mirror_channel_with_history_rejects_a_forum_source(fake_db):
         )
 
 
-async def test_mirror_channel_with_history_rejects_irc_destination(fake_db):
-    async def backfill(**kwargs):
-        raise AssertionError("must not run - irc doesn't support history")
+async def test_mirror_channel_with_history_allows_irc_destination_with_no_extra_check_wired(fake_db):
+    # An IRC (or any) destination with no supports_history_destination hook
+    # at all imposes no extra restriction - only IRC wires that hook, and
+    # only when it wants to gate on chanhistory being configured.
+    calls = []
+
+    async def backfill(*, fetch_history, source_channel_id, destination_connector, destination_channel_id, limit):
+        calls.append(destination_channel_id)
+        return "relayed 1 message(s)."
 
     connectors = _history_connectors()
     connectors["irc"] = ConnectorInfo(id="irc", label="IRC", ensure_channel=_ensure_channel)
     linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, backfill_history=backfill)
-    with pytest.raises(LinkError, match="only supported between Discord and Stoat"):
-        await linker.mirror_channel(
-            local_connector="discord",
-            local_channel_id="d1",
-            local_channel_name="general",
-            destination="irc",
-            with_history=True,
-        )
+
+    summary = await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="irc",
+        with_history=True,
+    )
+
+    assert calls == ["stoat_general"]
+    assert "relayed 1 message(s)." in summary
 
 
 async def test_mirror_channel_with_history_invalid_limit_raises_before_creating(fake_db):
