@@ -200,6 +200,49 @@ async def test_handle_message_unpin_system_event_emits_an_unpin():
     assert (pin.origin_message_id, pin.pinned) == ("um1", False)
 
 
+async def test_handle_message_drops_a_call_started_system_event():
+    # issue #145: a "<user> started a call" system message has no real
+    # .content - relaying it produces a blank message on every linked
+    # channel. It isn't a pin, so it should just be dropped, not relayed.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    message = SimpleNamespace(
+        channel=channel,
+        author=FakeAuthor(id="u1"),
+        content="",
+        id="sys3",
+        system_event=stoat.CallStartedSystemEvent(internal_by="u1", finished_at=None, message=None),
+    )
+
+    await sender._handle_message(message)
+
+    assert recorder.messages == []
+    assert recorder.pins == []
+
+
+async def test_handle_message_drops_an_unrecognized_system_event():
+    # Defensive fallback (issue #145): any system event not explicitly
+    # converted into a StandardX object is dropped rather than relayed
+    # blank, so a future new Stoat system-event type doesn't reintroduce
+    # this same bug.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    channel = FakeChannel(id="42")
+    message = SimpleNamespace(
+        channel=channel,
+        author=FakeAuthor(id="u1"),
+        content="",
+        id="sys4",
+        system_event=stoat.ChannelRenamedSystemEvent(name="new-name", internal_by="u1", message=None),
+    )
+
+    await sender._handle_message(message)
+
+    assert recorder.messages == []
+    assert recorder.pins == []
+
+
 async def test_handle_message_skips_a_message_the_command_processor_claimed():
     # `/link channel …`, `/status`, … are handled by the ext.commands processor
     # on _StoatClient off the same MessageCreateEvent; it records the id so
