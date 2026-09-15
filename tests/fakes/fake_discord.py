@@ -473,8 +473,10 @@ class FakeGuild:
         self._next_emoji_id = 1
         self._members: dict[int, FakeUser] = {}
         self.text_channels: list = []
+        self.voice_channels: list = []
         self.categories: list = []
         self.created_text_channels: list[dict] = []
+        self.created_voice_channels: list[dict] = []
         self.created_categories: list[str] = []
 
     async def create_text_channel(self, name: str, *, reason: str | None = None, **kwargs) -> FakeGuildChannel:
@@ -484,6 +486,13 @@ class FakeGuild:
         channel.topic = kwargs.get("topic")
         channel.nsfw = bool(kwargs.get("nsfw", False))
         self.text_channels.append(channel)
+        return channel
+
+    async def create_voice_channel(self, name: str, *, reason: str | None = None, **kwargs) -> "FakeVoiceChannel":
+        self.created_voice_channels.append({"name": name, **kwargs})
+        channel = FakeVoiceChannel(id=self._next_emoji_id + 6000, name=name, guild=self)
+        self._next_emoji_id += 1
+        self.voice_channels.append(channel)
         return channel
 
     async def create_category(self, name: str, *, reason: str | None = None) -> FakeCategoryChannel:

@@ -58,24 +58,32 @@ class _ChannelsMixin:
         category_parent_channel_id: str | None = None,
         *,
         metadata: ChannelMetadata | None = None,
+        is_voice: bool = False,
     ) -> str:
-        """Idempotent get-or-create text channel by name, this connector's
-        `ConnectorInfo.ensure_channel` for `/mirror channel`. Matches an
-        existing text channel by name (case-insensitive), else creates one;
-        if `category` is given, the channel ends up under a same-named
-        Category (created if needed). `is_thread_category` /
-        `category_parent_channel_id` bind that Category as thread-only
-        (`CategoryLinker.bind_thread_category`), same as the Stoat hook, so
-        `/link category` later refuses it. `metadata`, when given, sets the
-        new channel's topic / NSFW flag / slowmode delay - *only when this
-        call creates the channel* (issue #32, #108); a matched channel is
-        left as-is."""
+        """Idempotent get-or-create text (or, with `is_voice`, voice) channel
+        by name, this connector's `ConnectorInfo.ensure_channel` for
+        `/mirror channel`. Matches an existing channel of the requested kind
+        by name (case-insensitive), else creates one; if `category` is
+        given, the channel ends up under a same-named Category (created if
+        needed). `is_thread_category` / `category_parent_channel_id` bind
+        that Category as thread-only (`CategoryLinker.bind_thread_category`),
+        same as the Stoat hook, so `/link category` later refuses it.
+        `metadata`, when given, sets the new channel's topic / NSFW flag /
+        slowmode delay - *only when this call creates the channel* (issue
+        #32, #108); a matched channel is left as-is. `is_voice` (issue #146),
+        when set, matches/creates against `guild.voice_channels` via
+        `create_voice_channel` instead of the text-channel path - a
+        same-named channel of the *other* kind never satisfies the match, so
+        a voice mirror can't be silently matched onto an existing text
+        channel (or vice versa); `metadata`'s topic/slowmode aren't
+        meaningful for a voice channel and are skipped in that case."""
         guild = self._guild_or_none()
         if guild is None:
             raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
 
         lowered = name.casefold()
-        channel = next((c for c in guild.text_channels if c.name.casefold() == lowered), None)
+        existing_channels = guild.voice_channels if is_voice else guild.text_channels
+        channel = next((c for c in existing_channels if c.name.casefold() == lowered), None)
 
         parent: discord.CategoryChannel | None = None
         if category is not None:
@@ -87,14 +95,17 @@ class _ChannelsMixin:
             create_kwargs: dict = {}
             if parent is not None:
                 create_kwargs["category"] = parent
-            if metadata is not None:
-                if metadata.description:
-                    create_kwargs["topic"] = metadata.description[:_TOPIC_LIMIT]
-                if metadata.nsfw:
-                    create_kwargs["nsfw"] = True
-                if metadata.slowmode_delay:
-                    create_kwargs["slowmode_delay"] = metadata.slowmode_delay
-            channel = await guild.create_text_channel(name, reason="bridge channel mirror", **create_kwargs)
+            if is_voice:
+                channel = await guild.create_voice_channel(name, reason="bridge channel mirror", **create_kwargs)
+            else:
+                if metadata is not None:
+                    if metadata.description:
+                        create_kwargs["topic"] = metadata.description[:_TOPIC_LIMIT]
+                    if metadata.nsfw:
+                        create_kwargs["nsfw"] = True
+                    if metadata.slowmode_delay:
+                        create_kwargs["slowmode_delay"] = metadata.slowmode_delay
+                channel = await guild.create_text_channel(name, reason="bridge channel mirror", **create_kwargs)
         elif parent is not None and getattr(channel, "category_id", None) != parent.id:
             try:
                 await channel.edit(category=parent, reason="bridge channel mirror")
