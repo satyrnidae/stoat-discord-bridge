@@ -306,12 +306,11 @@ Category's name.
 
 `/mirror channel` (both directions) also takes an optional **`with history`**
 backfill of the source channel's message history into the freshly-linked
-counterpart (issue #122) — **Discord ⇄ Stoat only**; IRC has no history
-concept and is rejected outright as either side. It only runs after a *fresh*
-link succeeds — a repeat `/mirror ... with history` on an already-linked pair
-hits the existing "already synced" no-op and never re-backfills. History is
-relayed in order onto the one new destination only, never fanned out to any
-other pre-existing bridge member of the source channel, and isn't recorded for
+counterpart (issue #122). It only runs after a *fresh* link succeeds — a
+repeat `/mirror ... with history` on an already-linked pair hits the
+existing "already synced" no-op and never re-backfills. History is relayed
+in order onto the one new destination only, never fanned out to any other
+pre-existing bridge member of the source channel, and isn't recorded for
 edit/reaction/pin sync (a known v1 limitation, not an oversight). It also
 needs a single `<service>`, not `all`. An optional history limit controls how
 much: a number (clamped to 1000) backfills that many of the most recent
@@ -323,6 +322,28 @@ limitation), and omitting it defaults to 50. On Discord it's the native
 `category`, the first parameters that can't be positional — it's a bare
 `history` token (default limit) or `history:<n|all>` key/value token, placed
 anywhere in the argument list.
+
+Only the *source* needs to support fetching history — Discord and Stoat
+always do; IRC does too (issue #141), by forcing a PART and immediate
+re-JOIN and capturing whatever chanhistory-replay burst the server sends
+back, the same way this network signals "recent history follows" right
+after any ordinary JOIN. **This is visibly disruptive**: the channel is
+genuinely parted and rejoined while the fetch is in flight (usually a few
+seconds), and anything sent there during that window won't relay live. If
+the network/channel has no chanhistory module enabled at all, no replay
+ever arrives and the fetch just comes back empty — reported as "No history
+to preserve.", the same outcome any connector's empty history produces. A
+destination needs no history-fetch capability of its own (the backfill just
+posts through its ordinary relay path) — **except IRC as a destination**,
+which additionally requires its own `default_channel_modes` to have
+chanhistory enabled (the `H` flag) before accepting a backfill at all,
+since a backfill into a channel with no chanhistory module would have no
+more persistence than any other live IRC message — rejected up front with
+"History is not supported/configured on the target service." rather than
+silently accepted and immediately forgotten. IRC's own `MIRROR CHANNEL`
+commands don't parse a `history:`/`with_history` option themselves — reach
+IRC as either side of a backfill via Discord's or Stoat's `/mirror channel`
+naming it as the `service`/`destination`.
 
 ### `/mirror channel to <service|all> [<local_id|all>] [<new_name>] [category:<id|name>] [history:<n|all>]`
 
@@ -401,8 +422,10 @@ implemented as `to` with the connectors swapped. Not combinable with
   "current channel" to default to, and `<service>` is required (issue #97);
   `AS <new_name>` is honored for a single-destination `TO` and for
   `FROM`; `CATEGORY:<id|name>` only for a single-destination `TO` — IRC, the
-  local side of `FROM`, has no Categories; no `with history` support either
-  way — IRC has no history concept)
+  local side of `FROM`, has no Categories; IRC's own `MIRROR CHANNEL`
+  commands don't parse a `history:`/`with_history` option themselves — reach
+  IRC as either side of a `with history` backfill via Discord's or Stoat's
+  `/mirror channel` naming it as the `service`/`destination` instead)
 
 ## Categories: `/link category`, `/mirror category`, `/linked categories`, `/unlink category`
 

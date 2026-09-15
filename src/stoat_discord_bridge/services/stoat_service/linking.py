@@ -290,8 +290,8 @@ class StoatLinkingMixin:
         `category` (a Category id/name on the target service) overrides linked
         Categories and needs a single service (issue #75).
         `history:<n|all>` backfills the newly-linked channel with the source
-        channel's message history (issue #122) - Discord/Stoat only, and also
-        needs a single service, not `all`."""
+        channel's message history (issue #122; IRC as either side since
+        issue #141) - needs a single service, not `all`."""
         if not await self._require_admin(ctx):
             return
         if category and service.lower() == "all":
