@@ -11,6 +11,13 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import asyncio
+
+    from stoat_discord_bridge.models import StandardMessage
 
 # IRC's protocol limit is 512 bytes per raw line, including the
 # `:nick!user@host PRIVMSG #channel :` prefix the server sees and the
@@ -48,6 +55,29 @@ _HISTORY_REPLAY_NOTICE_RE = re.compile(r"Replaying up to (\d+) lines? of pre-joi
 # arrive, however much later. Observed replay bursts land in a single TCP
 # read (sub-second), so this is generous, not tight.
 _HISTORY_REPLAY_TIMEOUT = 5.0
+
+# `IrcSenderService.fetch_history`'s own overall deadline (issue #141): a bit
+# more than _HISTORY_REPLAY_TIMEOUT, so a channel with no chanhistory module
+# at all (no NOTICE ever arrives to start the replay-timeout clock) still
+# resolves to an empty list in bounded time, and a channel that *does* get a
+# NOTICE always has that NOTICE's own deadline expire first.
+_HISTORY_FETCH_TIMEOUT = _HISTORY_REPLAY_TIMEOUT + 2.0
+
+
+@dataclass
+class HistoryReplayState:
+    """Bookkeeping for one channel's chanhistory replay burst currently in
+    progress - either an ordinary join-triggered replay (`capture`/`future`
+    both None: `_consume_history_replay` just drops these lines, the
+    original issue #40-era behavior) or a `fetch_history` call's
+    capture-for-return (`capture` a list appended to as replayed
+    `StandardMessage`s arrive, `future` resolved with it once `remaining`
+    hits zero or `deadline` passes) - never both at once (issue #141)."""
+
+    remaining: int
+    deadline: float
+    capture: "list[StandardMessage] | None" = None
+    future: "asyncio.Future[list[StandardMessage]] | None" = None
 
 
 # Octets an IRC channel name can't contain (RFC 2812: NUL, BEL, CR, LF,
