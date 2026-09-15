@@ -174,10 +174,23 @@ class FakeChannel:
         # Oldest-first fake backing for `.history()` (issue #122's
         # fetch_history) - see `set_history`.
         self._history: list[Any] = []
+        # Made-up rate-limit failures for `.history()` (issue #151) - see
+        # `set_history_raises`.
+        self._history_raise_exc: BaseException | None = None
+        self._history_raise_remaining: int | None = None
 
     def set_history(self, messages: list[Any]) -> None:
         """Seed this channel's fake history, oldest-first."""
         self._history = list(messages)
+
+    def set_history_raises(self, exc: BaseException, *, times: int | None = None) -> None:
+        """Make the next `history()` call(s) raise `exc` instead of
+        returning a page (issue #151's rate-limit-retry handling) -
+        `times=None` raises on every call (a persistent-failure case),
+        otherwise the given number of calls raise before falling back to
+        `history()`'s normal paginated behavior."""
+        self._history_raise_exc = exc
+        self._history_raise_remaining = times
 
     async def history(
         self,
@@ -198,6 +211,12 @@ class FakeChannel:
         since `fetch_history` is what applies that cap)."""
         if self._raises is not None:
             raise self._raises
+        if self._history_raise_exc is not None and (
+            self._history_raise_remaining is None or self._history_raise_remaining > 0
+        ):
+            if self._history_raise_remaining is not None:
+                self._history_raise_remaining -= 1
+            raise self._history_raise_exc
         return _paginate_fake_stoat_history(self._history, limit=limit, before=before, after=after, sort=sort)
 
     async def edit(self, **kwargs) -> "FakeChannel":

@@ -7,10 +7,17 @@ same `_to_standard_message` the live relay path uses.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import stoat
 
 from tests.fakes.fake_stoat import FakeAuthor, FakeChannel, FakeClient
 from tests.test_stoat_sender_dispatch import _Recorder, _make_sender, _stoat_message
+
+
+def _make_ratelimited(retry_after: float | None = 0.01) -> stoat.Ratelimited:
+    response = SimpleNamespace(status=429)
+    return stoat.Ratelimited(response, {"type": "RateLimitError", "retry_after": retry_after})
 
 
 async def test_fetch_history_converts_messages_oldest_first():
@@ -140,5 +147,74 @@ async def test_fetch_history_returns_empty_for_an_unresolvable_channel():
     sender = _make_sender(_Recorder(), client)
 
     messages = await sender.fetch_history("999999", None)
+
+    assert messages == []
+
+
+async def test_fetch_history_paces_between_page_fetches_but_not_before_the_first(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("stoat_discord_bridge.services.stoat_service.sender.asyncio.sleep", fake_sleep)
+    channel = FakeChannel(id="42", name="general")
+    channel.set_history(
+        [
+            _stoat_message(channel=channel, author=FakeAuthor(id="u1"), content=f"m{i}", id=f"id{i:03d}")
+            for i in range(150)
+        ]
+    )
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(_Recorder(), client)
+
+    await sender.fetch_history("42", None)
+
+    # 150 messages over the 100-per-page cap is 2 page fetches - pacing
+    # applies only between them, never before the first.
+    assert len(sleeps) == 1
+
+
+async def test_fetch_history_retries_a_page_after_a_transient_ratelimit(monkeypatch):
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr("stoat_discord_bridge.services.stoat_service.sender.asyncio.sleep", fake_sleep)
+    channel = FakeChannel(id="42", name="general")
+    channel.set_history(
+        [_stoat_message(channel=channel, author=FakeAuthor(id="u1"), content="m1", id="id1")]
+    )
+    channel.set_history_raises(_make_ratelimited(retry_after=0.01), times=2)
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(_Recorder(), client)
+
+    messages = await sender.fetch_history("42", None)
+
+    # The page fetch failed twice with Ratelimited and succeeded on the
+    # third try - the whole result should still come through, not a
+    # truncated one.
+    assert [m.content_markdown for m in messages] == ["m1"]
+
+
+async def test_fetch_history_gives_up_after_the_retry_budget_is_exhausted(monkeypatch):
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr("stoat_discord_bridge.services.stoat_service.sender.asyncio.sleep", fake_sleep)
+    channel = FakeChannel(id="42", name="general")
+    channel.set_history(
+        [_stoat_message(channel=channel, author=FakeAuthor(id="u1"), content="m1", id="id1")]
+    )
+    # Always raises Ratelimited - even a bounded retry budget can't recover,
+    # so this degrades to today's truncation behavior (an empty result,
+    # since it never even gets the first page).
+    channel.set_history_raises(_make_ratelimited(retry_after=0.01))
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(_Recorder(), client)
+
+    messages = await sender.fetch_history("42", None)
 
     assert messages == []

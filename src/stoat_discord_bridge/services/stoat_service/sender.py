@@ -12,6 +12,7 @@ list can have any number of entries - public, self-hosted, or more).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 
@@ -71,6 +72,17 @@ _PRONOUN_CACHE_TTL = 600.0
 # stoat.py caps a single `TextChannel.history()` call at 100 messages -
 # `fetch_history` (issue #122) hand-rolls pagination past that.
 _HISTORY_PAGE_SIZE = 100
+
+# Pacing between `fetch_history`'s own page-fetch calls (issue #151) -
+# mirrors `bridge.py`'s `_HISTORY_BACKFILL_PACING`, which only paces the
+# destination relay sends, not this source-side read loop.
+_HISTORY_FETCH_PACING = 0.35
+
+# How many times a single page fetch retries after a `stoat.Ratelimited`
+# (issue #151) before giving up on the rest of the backfill, and the
+# backoff used when the exception carries no `retry_after`.
+_HISTORY_RATELIMIT_MAX_RETRIES = 3
+_HISTORY_RATELIMIT_DEFAULT_BACKOFF = 1.0
 
 
 class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, SenderService):
@@ -254,6 +266,25 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             mentioned_emoji=await self._map_mentioned_emoji(message.content or ""),
         )
 
+    async def _fetch_history_page(self, channel, page_size: int, sort, page_cursor: dict) -> list:
+        """One `channel.history()` call, retrying a `stoat.Ratelimited`
+        (issue #151) up to `_HISTORY_RATELIMIT_MAX_RETRIES` times - backing
+        off by the exception's own `retry_after` (or
+        `_HISTORY_RATELIMIT_DEFAULT_BACKOFF` if it reports none) rather than
+        treating a transient rate limit as the end of the channel's history.
+        Exhausting the retry budget re-raises the last `Ratelimited` so
+        `fetch_history`'s existing blanket-failure handling (log a warning,
+        stop, return whatever was collected so far) still applies - a
+        persistent rate limit should degrade gracefully, not hang forever."""
+        for attempt in range(_HISTORY_RATELIMIT_MAX_RETRIES + 1):
+            try:
+                return await channel.history(limit=page_size, sort=sort, **page_cursor)
+            except stoat.Ratelimited as exc:
+                if attempt >= _HISTORY_RATELIMIT_MAX_RETRIES:
+                    raise
+                await asyncio.sleep(exc.retry_after or _HISTORY_RATELIMIT_DEFAULT_BACKOFF)
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
         """`ConnectorInfo.fetch_history` for Stoat (issue #122): `channel_id`'s
         history, converted via the same `_to_standard_message` the live relay
@@ -276,15 +307,19 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         (the real end of the channel) or `limit` *accepted* (post-filter)
         messages have been collected - a page's filtered-out messages don't
         count against `limit`, so a noisy tail of skipped rows can't quietly
-        starve a bounded backfill of real content.
+        starve a bounded backfill of real content. Page fetches are paced
+        (`_HISTORY_FETCH_PACING`) and a transient `stoat.Ratelimited` is
+        retried with backoff (`_fetch_history_page`, issue #151) rather than
+        bursting past Stoat's per-route rate-limit buckets.
 
         Filters out what `_handle_message` would already drop from a live
         feed - our own masqueraded relays, a non-whitelisted bot's messages,
         and system-event rows (pin/unpin) that carry no real content - so a
         backfill doesn't relay noise a live listener never would have.
         Best-effort: an unresolvable channel or a page fetch that raises
-        yields whatever was converted before that rather than discarding a
-        long backfill's progress over one bad page."""
+        (including a `Ratelimited` that outlasts its retry budget) yields
+        whatever was converted before that rather than discarding a long
+        backfill's progress over one bad page."""
         try:
             channel = self._client.get_channel(channel_id, partial=True)
         except Exception:
@@ -296,10 +331,14 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         cursor: str | None = None
         remaining = limit
         while remaining is None or remaining > 0:
+            if cursor is not None:
+                # Not the first page - pace this fetch so a long backfill
+                # doesn't burst past Stoat's per-route rate-limit buckets.
+                await asyncio.sleep(_HISTORY_FETCH_PACING)
             page_size = _HISTORY_PAGE_SIZE if remaining is None else min(_HISTORY_PAGE_SIZE, remaining)
             page_cursor = {"before": cursor} if backward else {"after": cursor}
             try:
-                page = await channel.history(limit=page_size, sort=sort, **page_cursor)
+                page = await self._fetch_history_page(channel, page_size, sort, page_cursor)
             except Exception:
                 logger.warning(
                     "[stoat:%s] fetch_history: fetching channel %s failed", self.connector_id, channel_id,
