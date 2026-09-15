@@ -36,6 +36,8 @@ class FakeReceiver(ReceiverService):
         supports_replies: bool = False,
         supports_deletes: bool = False,
         supports_channel_rename: bool = False,
+        channel_name_limit: int | None = None,
+        rename_fails: bool = False,
         native_ids: list[str] | None = None,
         raises: BaseException | None = None,
         created_emoji: CustomEmoji | None = None,
@@ -49,6 +51,8 @@ class FakeReceiver(ReceiverService):
         self.supports_replies = supports_replies
         self.supports_deletes = supports_deletes
         self.supports_channel_rename = supports_channel_rename
+        self._channel_name_limit = channel_name_limit
+        self._rename_fails = rename_fails
         self._native_ids = native_ids if native_ids is not None else ["native-1"]
         self._raises = raises
         self._created_emoji = created_emoji
@@ -115,10 +119,14 @@ class FakeReceiver(ReceiverService):
             raise self._raises
         self.typing_stopped.append(target_channel_id)
 
-    async def rename_channel(self, *, target_channel_id, new_name) -> None:
+    async def rename_channel(self, *, target_channel_id, new_name) -> str | None:
         if self._raises is not None:
             raise self._raises
-        self.renames.append((target_channel_id, new_name))
+        if self._rename_fails:
+            return None
+        applied = new_name[: self._channel_name_limit] if self._channel_name_limit is not None else new_name
+        self.renames.append((target_channel_id, applied))
+        return applied
 
 
 def _message(**overrides) -> StandardMessage:

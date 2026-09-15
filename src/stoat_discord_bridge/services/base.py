@@ -186,10 +186,17 @@ class ReceiverService(ABC):
         indicator now, Discord stops re-arming its keep-alive and lets its
         own ~10s timeout lapse — Discord has no clear-typing API)."""
 
-    async def rename_channel(self, *, target_channel_id: str, new_name: str) -> None:
-        """Rename `target_channel_id` to `new_name` (issue #152). Idempotent -
-        a no-op if the channel already has that name. Only called when
-        `supports_channel_rename`."""
+    async def rename_channel(self, *, target_channel_id: str, new_name: str) -> str | None:
+        """Rename `target_channel_id` to `new_name`, clipped to this
+        connector's own name-length limit (issue #152). Idempotent - a no-op
+        if the channel already has that name. Returns the name actually
+        applied (which may be a clipped/truncated version of `new_name`) so
+        the caller's own bookkeeping can match reality instead of assuming
+        the raw requested name took effect verbatim - or `None` if the
+        rename didn't happen at all (an unresolvable channel, or the
+        platform rejected the edit), matching this codebase's usual
+        best-effort/log-and-swallow stance rather than raising. Only called
+        when `supports_channel_rename`."""
         raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:

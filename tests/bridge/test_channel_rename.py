@@ -38,6 +38,45 @@ async def test_channel_renamed_refreshes_the_stored_channel_name(coordinator_par
     assert names == {"discord": "new-name", "stoat": "new-name"}
 
 
+async def test_channel_renamed_stores_the_name_the_receiver_actually_applied(coordinator_parts):
+    # A target's own name-length limit can force rename_channel to apply a
+    # clipped/truncated name - the stored mapping must reflect that, not the
+    # raw requested new_name, or the next identical rename would be wrongly
+    # skipped as already-applied while the DB drifts from the real name.
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    stoat_receiver = FakeReceiver("stoat", supports_channel_rename=True, channel_name_limit=5)
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_channel_renamed("discord", "100", "a-very-long-new-name")
+
+    assert stoat_receiver.renames == [("200", "a-ver")]
+    mapped = await channel_mappings.get_mapped_channels("general")
+    names = {m.connector_id: m.channel_name for m in mapped}
+    assert names == {"discord": "a-very-long-new-name", "stoat": "a-ver"}
+
+
+async def test_channel_renamed_leaves_the_stored_name_untouched_when_the_receiver_reports_failure(
+    coordinator_parts,
+):
+    # rename_channel signals a failure it handled internally (no exception)
+    # by returning None - the stored name and suppress bookkeeping must both
+    # treat that exactly like a raised exception, not like success.
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    stoat_receiver = FakeReceiver("stoat", supports_channel_rename=True, rename_fails=True)
+    coordinator.register_receiver(stoat_receiver)
+
+    await coordinator.handle_channel_renamed("discord", "100", "new-name")  # must not raise
+
+    assert stoat_receiver.renames == []
+    mapped = await channel_mappings.get_mapped_channels("general")
+    names = {m.connector_id: m.channel_name for m in mapped}
+    assert names == {"discord": "new-name", "stoat": "200"}
+
+
 async def test_channel_renamed_leaves_a_non_supporting_connectors_stored_name_untouched(coordinator_parts):
     # A connector without supports_channel_rename (IRC - a channel's id
     # there is its name) never actually renames anything, so its stored
