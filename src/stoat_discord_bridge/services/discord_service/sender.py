@@ -31,6 +31,7 @@ from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.models import StandardDelete, StandardEdit, StandardMessage, StandardPin, StandardTyping
 from stoat_discord_bridge.services.base import (
+    OnChannelRenamed,
     OnChannelRolePermissionChanged,
     OnDelete,
     OnEdit,
@@ -97,6 +98,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         on_role_renamed: "OnRoleRenamed | None" = None,
         on_role_deleted: "OnRoleDeleted | None" = None,
         on_channel_role_permission_changed: "OnChannelRolePermissionChanged | None" = None,
+        on_channel_renamed: "OnChannelRenamed | None" = None,
     ) -> None:
         # linker/emote_linker/user_linker/category_linker/role_linker are only
         # needed to serve the corresponding `/link-*` commands; None is
@@ -128,6 +130,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         self._on_role_renamed = on_role_renamed
         self._on_role_deleted = on_role_deleted
         self._on_channel_role_permission_changed = on_channel_role_permission_changed
+        self._on_channel_renamed = on_channel_renamed
         self._commands_synced = False
         # Discord thread auto-mirror (_handle_thread_create) bookkeeping - see
         # both methods' docstrings. _pending_thread_starter maps a thread id
@@ -237,6 +240,14 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             # parent channel - suppressed here; _handle_thread_create posts the
             # bot notice itself, once the thread's mirror channel exists and is
             # linked so the <#thread> mention can resolve to it.
+            return
+        if message.type is discord.MessageType.channel_name_change and isinstance(message.channel, discord.Thread):
+            # Discord's own "<user> changed the post title/channel name: <new
+            # name>" system message in the thread/forum-post itself - the
+            # displayed wording is client-rendered from the message type, not
+            # stored content (.content is just the bare new name) - suppressed
+            # here and replaced with a bot notice + rename sync (issue #152).
+            await self._relay_thread_renamed_notice(message)
             return
         if message.channel.id in self._pending_thread_starter:
             # The starter message of a thread _handle_thread_create is still
@@ -672,6 +683,45 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 mentioned_channels={str(thread.id): thread.name},
             )
         )
+
+    async def _relay_thread_renamed_notice(self, message: discord.Message) -> None:
+        """Post a bot-authored "<user> changed the post title/channel name:
+        <new name>" notice into the thread/forum-post itself, standing in for
+        Discord's own `channel_name_change` system message (which
+        `_handle_message` suppresses) - and propagate the rename to every
+        other connector's linked copy of this channel via `on_channel_renamed`
+        (issue #152).
+
+        `message.content` is the bare new name Discord populates this system
+        message with (the "changed the ... title/name" wording is
+        client-rendered from the message type, not stored content). The real
+        renamer is embedded as a `<@id>` mention plus a `mentioned_users`
+        entry so the existing `rewrite_mentions` pipeline resolves it to a
+        `/link-user`-linked identity on the target, or falls back to the
+        plain display name carried here."""
+        thread = message.channel
+        # thread.parent can be None (parent deleted/uncached) - isinstance
+        # against None is just False, so this intentionally falls back to
+        # the plain "channel name" wording rather than needing its own guard.
+        wording = "post title" if isinstance(thread.parent, discord.ForumChannel) else "channel name"
+        bot_user = self._client.user
+        await self._on_message(
+            StandardMessage(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(thread.id),
+                channel_name=getattr(thread, "name", str(thread.id)),
+                sender_name=bot_user.display_name if bot_user is not None else "Bridge",
+                sender_avatar_url=(
+                    str(bot_user.display_avatar.url) if bot_user is not None and bot_user.display_avatar else None
+                ),
+                sender_user_id=str(bot_user.id) if bot_user is not None else "",
+                content_markdown=f"<@{message.author.id}> changed the {wording}: {message.content}",
+                message_id=f"thread-renamed:{message.id}",
+                mentioned_users={str(message.author.id): message.author.display_name},
+            )
+        )
+        if self._on_channel_renamed is not None:
+            await self._on_channel_renamed(self.connector_id, str(thread.id), message.content)
 
     async def _thread_starter_name(self, thread: discord.Thread, starter_author: object) -> str:
         """Best-effort display name of whoever opened the thread: the starter

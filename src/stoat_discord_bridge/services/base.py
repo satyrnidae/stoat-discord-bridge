@@ -55,6 +55,9 @@ OnRoleDeleted = Callable[[str, str], Awaitable[None]]
 # (origin_connector_id, channel_id, role_id, RolePermissionOverride, *, is_category)
 # - a linked role's permission override on a channel/category changed.
 OnChannelRolePermissionChanged = Callable[..., Awaitable[None]]
+# (origin_connector_id, channel_id, new_name) - a channel was renamed on one
+# connector (issue #152 - currently Discord threads/forum posts only).
+OnChannelRenamed = Callable[[str, str, str], Awaitable[None]]
 
 
 class SenderService(ABC):
