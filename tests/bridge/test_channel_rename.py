@@ -38,6 +38,40 @@ async def test_channel_renamed_refreshes_the_stored_channel_name(coordinator_par
     assert names == {"discord": "new-name", "stoat": "new-name"}
 
 
+async def test_channel_renamed_leaves_a_non_supporting_connectors_stored_name_untouched(coordinator_parts):
+    # A connector without supports_channel_rename (IRC - a channel's id
+    # there is its name) never actually renames anything, so its stored
+    # channel_name shouldn't be overwritten to claim otherwise.
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "irc", "300")
+    coordinator.register_receiver(FakeReceiver("irc", supports_channel_rename=False))
+
+    await coordinator.handle_channel_renamed("discord", "100", "new-name")
+
+    mapped = await channel_mappings.get_mapped_channels("general")
+    names = {m.connector_id: m.channel_name for m in mapped}
+    assert names == {"discord": "new-name", "irc": "300"}
+
+
+async def test_channel_renamed_leaves_a_failed_targets_stored_name_untouched(coordinator_parts):
+    # If the rename actually fails on the target, the stored name must stay
+    # at the old value - otherwise a later rename to the same new_name would
+    # be skipped as a no-op, silently masking the earlier failure forever.
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    coordinator.register_receiver(
+        FakeReceiver("stoat", supports_channel_rename=True, raises=RuntimeError("boom"))
+    )
+
+    await coordinator.handle_channel_renamed("discord", "100", "new-name")  # must not raise
+
+    mapped = await channel_mappings.get_mapped_channels("general")
+    names = {m.connector_id: m.channel_name for m in mapped}
+    assert names == {"discord": "new-name", "stoat": "200"}
+
+
 async def test_channel_renamed_is_a_noop_for_an_unmapped_channel(coordinator_parts):
     coordinator, _channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
     receiver = FakeReceiver("stoat", supports_channel_rename=True)
