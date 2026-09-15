@@ -28,6 +28,21 @@ async def test_ensure_channel_leaves_existing_hash_prefix_alone(monkeypatch):
     assert conn.join_calls == ["#general"]
 
 
+async def test_ensure_channel_accepts_and_ignores_is_voice(monkeypatch):
+    # issue #146: /mirror channel (to/from/all) can pass is_voice=True when
+    # the source is a voice channel - IRC has no voice-channel concept, but
+    # must still accept the keyword rather than raising TypeError, the same
+    # way it already accepts-and-ignores category/is_thread_category.
+    sender = _make_sender()
+    conn = FakeConnection()
+    _patch_connection(monkeypatch, sender, conn)
+
+    result = await sender.ensure_channel("general", is_voice=True)
+
+    assert result == "#general"
+    assert conn.join_calls == ["#general"]
+
+
 async def test_ensure_channel_lowercases_and_hyphenates_a_thread_style_name(monkeypatch):
     # Discord thread names can have spaces/capitals (unlike a regular,
     # already-kebab-case Discord channel name) - IRC channel names can't
