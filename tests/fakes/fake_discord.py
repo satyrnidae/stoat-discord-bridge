@@ -188,7 +188,7 @@ class FakeHistoryIterator:
 class FakeChannel:
     def __init__(
         self, id: int, *, name: str = "general", webhooks: list[FakeWebhook] | None = None,
-        history_messages: list[Any] | None = None, guild: Any = None,
+        history_messages: list[Any] | None = None, guild: Any = None, edit_error: Exception | None = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -201,6 +201,15 @@ class FakeChannel:
         # Oldest-first, regardless of what order the test hands in - see
         # FakeHistoryIterator.
         self._history_messages = history_messages or []
+        self._edit_error = edit_error
+        self.edits: list[dict] = []
+
+    async def edit(self, **kwargs) -> None:
+        if self._edit_error is not None:
+            raise self._edit_error
+        self.edits.append(kwargs)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     def set_history(self, messages: list[Any]) -> None:
         self._history_messages = messages

@@ -21,6 +21,7 @@ import discord
 # `stoat_discord_bridge.services.discord_service._CONTENT_LIMIT` is picked up
 # by `receive()` at call time - the historical monkeypatch seam.
 import stoat_discord_bridge.services.discord_service as _discord_pkg
+from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.base import (
     PartialRelayError,
@@ -61,6 +62,7 @@ class DiscordReceiverService(ReceiverService):
     supports_typing = True
     supports_edits = True
     supports_deletes = True
+    supports_channel_rename = True
 
     def __init__(
         self,
@@ -328,6 +330,27 @@ class DiscordReceiverService(ReceiverService):
                 "pin" if pinned else "unpin",
                 target_message_id,
                 target_channel_id,
+            )
+
+    async def rename_channel(self, *, target_channel_id: str, new_name: str) -> None:
+        """Idempotent - skips the API call if the channel already has that
+        name (issue #152). Best-effort: a rename Discord rejects (missing
+        permission, rate limit, etc.) is logged and swallowed rather than
+        raised, matching `set_pinned`'s stance."""
+        channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
+            int(target_channel_id)
+        )
+        new_name = clip_name(new_name, 100)
+        if channel.name == new_name:
+            return
+        try:
+            await channel.edit(name=new_name, reason="bridge channel rename sync")
+        except discord.HTTPException:
+            logger.warning(
+                "[discord:%s] couldn't rename channel %s to %r",
+                self.connector_id,
+                target_channel_id,
+                new_name,
             )
 
     # Discord shows a typing indicator for ~10s per call and has no API to
