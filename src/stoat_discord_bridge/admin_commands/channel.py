@@ -505,6 +505,22 @@ class ChannelLinker:
                 )
         extra = {"metadata": metadata} if metadata is not None else {}
 
+        # Whether the source channel is a voice channel, so the destination
+        # creates a voice channel too instead of always defaulting to text
+        # (issue #146). Best-effort, same shape as metadata above: a missing
+        # hook (e.g. voice_bridging disabled on the source connector) or a
+        # raising one just falls through to today's text-channel default -
+        # and the kwarg is only added when actually True, so an ensure_channel
+        # fake/hook that doesn't accept it is unaffected by a non-voice mirror.
+        if src_info is not None and src_info.channel_is_voice is not None:
+            try:
+                if await src_info.channel_is_voice(local_channel_id):
+                    extra["is_voice"] = True
+            except Exception as exc:
+                logger.warning(
+                    "mirror channel: %s.channel_is_voice(%r) failed: %s", local_connector, local_channel_id, exc
+                )
+
         try:
             destination_channel_id = await dest_info.ensure_channel(
                 target_name, category, is_thread_category, category_parent_channel_id, **extra

@@ -481,6 +481,12 @@ class ConnectorInfo:
     # An optional `metadata` keyword (a `ChannelMetadata`) is passed by
     # `/mirror channel` when the source channel had any - the hook applies
     # it only when it actually creates the channel, never onto a reused one.
+    # An optional `is_voice` keyword (bool, only ever passed as True - never
+    # explicitly False) is passed by `/mirror channel` when the source
+    # channel's own `channel_is_voice` hook reports it as a voice channel
+    # (issue #146) - the hook should match/create a voice-capable channel
+    # instead of a text one. Omitted entirely on a text-channel mirror, so a
+    # hook/test fake that doesn't accept the keyword at all is unaffected.
     ensure_channel: Callable[..., Awaitable[str]] | None = None
     # Best-effort channel-history fetch, already converted to
     # `StandardMessage` and always returned oldest-first (so relaying the

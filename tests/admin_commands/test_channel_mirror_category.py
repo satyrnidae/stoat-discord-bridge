@@ -226,6 +226,93 @@ async def test_mirror_channel_survives_a_raising_describe_channel(fake_db):
     assert "Linked" in result
 
 
+async def test_mirror_channel_forwards_is_voice_when_source_is_a_voice_channel(fake_db):
+    # issue #146: a voice-channel source should tell the destination's
+    # ensure_channel() to create a voice channel too, not a text one.
+    ensure_calls = []
+
+    async def channel_is_voice(channel_id):
+        assert channel_id == "d1"
+        return True
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, *, is_voice=False):
+        ensure_calls.append(is_voice)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", channel_is_voice=channel_is_voice),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert ensure_calls == [True]
+
+
+async def test_mirror_channel_omits_is_voice_kwarg_when_the_source_is_not_voice(fake_db):
+    seen = []
+
+    async def channel_is_voice(channel_id):
+        return False
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        # no is_voice keyword accepted at all - must still work, since
+        # mirror_channel only passes it on when the source is actually voice.
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", channel_is_voice=channel_is_voice),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert seen == ["general"]
+
+
+async def test_mirror_channel_omits_is_voice_kwarg_when_the_source_has_no_channel_is_voice_hook(fake_db):
+    seen = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        seen.append(name)
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),  # no channel_is_voice - e.g. voice_bridging off
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert seen == ["general"]
+
+
+async def test_mirror_channel_survives_a_raising_channel_is_voice(fake_db):
+    async def channel_is_voice(channel_id):
+        raise RuntimeError("boom")
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"stoat_{name}"
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", channel_is_voice=channel_is_voice),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel),
+    }
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+
+    result = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+    assert "Linked" in result
+
+
 async def test_mirror_channel_forwards_is_thread_category_to_ensure_channel(fake_db):
     calls = []
 
