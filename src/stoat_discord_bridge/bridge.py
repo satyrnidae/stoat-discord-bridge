@@ -271,7 +271,7 @@ class BridgeCoordinator:
             logger.exception("history backfill: fetching channel %s failed", source_channel_id)
             return "history backfill failed while fetching the source channel's history."
         if not messages:
-            return "history backfill: nothing to backfill."
+            return "No history to preserve."
         relayed = 0
         partial = 0
         skipped = 0
@@ -1093,6 +1093,12 @@ async def run(config: BridgeConfig) -> None:
             resolve_channel_id_by_name=sender.resolve_channel_id_by_name,
             normalize_channel_name=sender.normalize_channel_name,
             list_channels=sender.list_channels,
+            # `/mirror channel with history` (issue #141): IRC as both a
+            # source (fetch_history's PART+re-JOIN capture) and a
+            # destination (supports_history_destination's config-level
+            # chanhistory check, gating a backfill *into* this connector).
+            fetch_history=sender.fetch_history,
+            supports_history_destination=sender.chanhistory_configured,
         )
         senders.append(sender)
         closables.append(sender)

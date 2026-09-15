@@ -495,18 +495,34 @@ class ConnectorInfo:
     # `limit=None` means "the entire channel history", oldest message first
     # (archive mode's `limit:all`); a numeric `limit` instead means
     # approximately the `limit` *most recent* messages (still returned
-    # oldest-first). Only Discord and Stoat wire this: IRC is a live-only
-    # protocol with no history to fetch, so it can never be a history
-    # *source* - and `ChannelLinker.mirror_channel` also requires the
-    # *destination* to wire it before allowing `with_history` (issue #122
-    # scopes the feature to Discord <-> Stoat only, in both directions -
-    # IRC has no scrollback concept either, so it's an unattractive
-    # destination even though nothing here would stop it functioning as an
-    # ordinary `/mirror channel` target otherwise). Best-effort in the same
+    # oldest-first). Discord and Stoat always wire this; IRC wires it too as
+    # of issue #141, via `IrcSenderService.fetch_history` - a PART+re-JOIN
+    # that captures whatever chanhistory-replay burst follows, resolving to
+    # an empty list (the same "nothing to backfill" outcome every connector
+    # produces in the no-history case) if the target network/channel has no
+    # chanhistory module enabled at all. `ChannelLinker.mirror_channel` only
+    # requires the *source* to wire this before allowing `with_history` -
+    # the destination needs no such support (its ordinary `receive()` is all
+    # a backfill uses); see `supports_history_destination` below for the one
+    # extra destination-side gate that does exist. Best-effort in the same
     # sense as the other hooks: an unresolvable channel or a raising fetch is
     # the caller's problem to report, not something this hook itself needs
     # to swallow.
     fetch_history: Callable[[str, "int | None"], Awaitable[list["StandardMessage"]]] | None = None
+    # Best-effort, synchronous "would history backfilled *into* this
+    # connector's channel actually persist?" check - None (every connector
+    # but IRC) means "no extra restriction, always fine" (a Discord/Stoat
+    # channel always keeps whatever's relayed into it). Only IRC wires this
+    # (issue #141's IRC -> IRC decision): a `with_history` mirror *into* an
+    # IRC channel is only meaningful if this connector's own chanhistory
+    # replay module is configured (`default_channel_modes`'s `H` flag) -
+    # otherwise the backfilled messages would have no more persistence than
+    # any other live IRC message there, so `ChannelLinker.mirror_channel`
+    # refuses up front rather than silently landing a "successful" backfill
+    # nothing will ever replay back. A config-level check (not a live
+    # per-channel MODE query), matching this feature's existing "gold setup"
+    # scoping for chanhistory detection.
+    supports_history_destination: Callable[[], bool] | None = None
     # Best-effort native-user-id -> display-name lookup, for `/linked-users`
     # to show real names instead of raw ids. None, an exception, or a falsy
     # return all fall back to the raw id, same as resolve_channel_name.
@@ -666,10 +682,11 @@ class ConnectorInfo:
     @property
     def supports_history(self) -> bool:
         """Whether this connector can be a `/mirror channel with history`
-        *source* - only Discord/Stoat wire `fetch_history`. `ChannelLinker`
-        also requires the *destination* to satisfy this before allowing
-        `with_history` (issue #122's Discord <-> Stoat scoping - IRC is
-        excluded either way, whether named as source or destination)."""
+        *source* - whichever connector kinds wire `fetch_history` (Discord,
+        Stoat, and - since issue #141 - IRC). `ChannelLinker.mirror_channel`
+        only checks this on the source; a destination needs no such support
+        of its own (see `supports_history_destination` for IRC's one extra
+        destination-side gate)."""
         return self.fetch_history is not None
 
 

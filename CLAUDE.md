@@ -372,22 +372,68 @@ reply/threading concept** — `supports_replies` stays `False` there too.
 
 `/mirror channel with history` (issue #122) optionally backfills a
 freshly-linked channel with the source channel's message history, so linking
-two channels doesn't start every reader at a blank slate. **Discord ⇄ Stoat
-only** — gated by `ConnectorInfo.supports_history` (true only when
-`fetch_history` is wired), checked symmetrically on both the source *and*
-destination in `ChannelLinker.mirror_channel`, so IRC is excluded as either
-one (it has no history concept to fetch from, and no way to distinguish a
-backfilled message from a live one on relay back out). Each connector's
-`fetch_history(channel_id, limit)` (`services/discord_service/sender.py` /
-`services/stoat_service/sender.py`) returns `StandardMessage`s oldest-first
-regardless of fetch direction — Discord's is a single `channel.history()` call
-(reversed when `limit` is bounded, since bounded means "the most recent N",
-fetched newest-first); Stoat's is hand-paginated (`≤100`/page, stoat.py's own
-cap) since it has no single unbounded-history call, walking backward
-(`sort=latest, before=cursor`) when bounded or forward (`sort=oldest,
-after=cursor`) for the unbounded `all` case, reversing only the bounded
-result. Both drop the bridge's own messages, non-whitelisted bots, and
-system-event rows the same way their live `_handle_message` does.
+two channels doesn't start every reader at a blank slate. `ChannelLinker
+.mirror_channel` requires only the *source* to support fetching history
+(`ConnectorInfo.supports_history`, true whenever `fetch_history` is wired) —
+the destination needs no such capability itself, since the backfill just
+calls its ordinary `ReceiverService.receive()` (loosened from a symmetric
+source-*and*-destination check in issue #141, which also wired IRC's own
+`fetch_history` as a source). Each connector's `fetch_history(channel_id,
+limit)` (`services/discord_service/sender.py` / `services/stoat_service
+/sender.py` / `services/irc_service/sender.py`) returns `StandardMessage`s
+oldest-first regardless of fetch direction — Discord's is a single
+`channel.history()` call (reversed when `limit` is bounded, since bounded
+means "the most recent N", fetched newest-first); Stoat's is hand-paginated
+(`≤100`/page, stoat.py's own cap) since it has no single unbounded-history
+call, walking backward (`sort=latest, before=cursor`) when bounded or forward
+(`sort=oldest, after=cursor`) for the unbounded `all` case, reversing only
+the bounded result; both drop the bridge's own messages, non-whitelisted
+bots, and system-event rows the same way their live `_handle_message` does.
+
+IRC has no on-demand history query at all — no CAP negotiation on this
+network, and no per-channel scrollback API — only a chanhistory-style replay
+(`_HISTORY_REPLAY_NOTICE_RE`, `_HISTORY_REPLAY_TIMEOUT`) that a server sends
+right after JOIN, which the live-relay path (`_consume_history_replay`)
+already detects and drops so it isn't relayed as if live. `IrcSenderService
+.fetch_history` gets a *fresh* snapshot on demand by forcing a genuine PART
+and immediate re-JOIN, then diverting that replay burst into a capture list
+instead of dropping it (`HistoryReplayState.capture`/`.future`, tracked
+per-channel in `_history_replay` for a replay already in progress and
+`_pending_history_capture` for a fetch still waiting on its NOTICE to
+arrive — never both at once for the same channel) — resolved once the
+replay's own announced count is exhausted or `_HISTORY_REPLAY_TIMEOUT`
+elapses, the latter also covering a channel with no chanhistory module at
+all (no NOTICE ever arrives), which resolves to an empty list exactly like
+Discord/Stoat's own "channel has no history" case. `limit` only narrows the
+captured list client-side — there's no way to ask the server to replay more
+than its own chanhistory cap already chose to send. Two concurrent
+`fetch_history` calls for the same channel are serialized (`_history_fetch
+_locks`) rather than racing each other's PART/re-JOIN cycle; `_history_replay`
+/`_pending_history_capture` are touched from both the IRC reactor thread
+(`_handle_pubnotice`/`_consume_history_replay`) and the asyncio loop thread
+(`fetch_history` itself), guarded by a plain `threading.Lock`
+(`_history_state_lock`) held only across the dict operations, never an
+`await`. **Visibly disruptive**: the channel is genuinely parted and
+rejoined while a fetch is in flight (typically well under
+`_HISTORY_REPLAY_TIMEOUT`), during which anything sent there won't relay
+live — an accepted, rare (once per `with_history` request) side effect,
+unlike Discord/Stoat's silent API-based fetch.
+
+A backfill *into* IRC additionally requires that connector's own
+`default_channel_modes` to enable chanhistory (the `H` flag) —
+`IrcSenderService.chanhistory_configured`, wired to `ConnectorInfo
+.supports_history_destination` — checked by `mirror_channel` only when the
+*destination* wires that hook (IRC is currently the only connector that
+does; Discord/Stoat leave it unset, imposing no extra restriction) and
+rejected up front ("History is not supported/configured on the target
+service.") rather than silently landing a backfill that has no more
+persistence than any other live IRC message there. A config-level check
+(this connector's own setting, not a live per-channel MODE query), matching
+this feature's existing "gold setup" scoping for chanhistory detection.
+IRC's own `MIRROR CHANNEL` commands don't parse a `history:`/`with_history`
+option themselves (see `COMMANDS.md`) — reach IRC as either side of a
+backfill via Discord's or Stoat's `/mirror channel` naming it as the
+`service`/`destination` instead.
 
 `BridgeCoordinator.backfill_history` is the orchestration step `mirror_channel`
 calls once a fresh link succeeds (never on the "already synced - skipped"

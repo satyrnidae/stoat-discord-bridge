@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Awaitable
 
@@ -24,10 +25,12 @@ from stoat_discord_bridge.services.irc_service.commands import (
     IrcAdminCommandsMixin,
 )
 from stoat_discord_bridge.services.irc_service.formatting import (
+    _HISTORY_FETCH_TIMEOUT,
     _HISTORY_REPLAY_NOTICE_RE,
     _HISTORY_REPLAY_TIMEOUT,
     _PERMANENT_CHANNEL_MODE,
     RFC_CHANNEL_NAME_LIMIT,
+    HistoryReplayState,
     _split_permanent_mode,
     _synthetic_message_id,
     normalize_channel_name,
@@ -35,6 +38,15 @@ from stoat_discord_bridge.services.irc_service.formatting import (
 from stoat_discord_bridge.status import HealthTracker
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_future(future: "asyncio.Future[list[StandardMessage]]", value: list[StandardMessage]) -> None:
+    # Scheduled via call_soon_threadsafe onto the loop thread - by the time
+    # this runs, a timed-out fetch_history caller may already have given up
+    # and moved on, in which case the future is already done and setting it
+    # again would raise InvalidStateError.
+    if not future.done():
+        future.set_result(value)
 
 
 class IrcSenderService(IrcAdminCommandsMixin, SenderService):
@@ -60,10 +72,36 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         # nick, awaiting resolution from the reactor thread's on_whoisoperator
         # / on_endofwhois / on_nosuchnick callbacks - see _resolve_whois.
         self._pending_whois: dict[str, asyncio.Future] = {}
-        # Channel (lowercased) -> (remaining count, deadline) for a history
-        # replay currently in progress - see _handle_pubnotice/
-        # _consume_history_replay and _HISTORY_REPLAY_NOTICE_RE's comment.
-        self._history_replay: dict[str, tuple[int, float]] = {}
+        # Channel (lowercased) -> HistoryReplayState for a history replay
+        # currently in progress - see _handle_pubnotice/_consume_history_replay
+        # and _HISTORY_REPLAY_NOTICE_RE's comment.
+        self._history_replay: dict[str, HistoryReplayState] = {}
+        # Channel (lowercased) -> (capture list, future) for a fetch_history
+        # call that's issued its PART+re-JOIN and is waiting for the replay
+        # NOTICE that promotes it into _history_replay (see fetch_history/
+        # _handle_pubnotice). Kept separate from _history_replay itself so an
+        # ordinary join-triggered replay (no pending fetch) can never be
+        # mistaken for one still waiting to start, and so a channel with no
+        # chanhistory module at all - no NOTICE ever arrives - has something
+        # for fetch_history's own timeout to clean up.
+        self._pending_history_capture: dict[str, tuple[list[StandardMessage], asyncio.Future]] = {}
+        # Guards every read/write of _history_replay and
+        # _pending_history_capture: _handle_pubnotice/_consume_history_replay
+        # run on the IRC reactor's own OS thread (see start()), while
+        # fetch_history runs on the asyncio event-loop thread - a plain
+        # threading.Lock, not asyncio.Lock, since one side can't await. Held
+        # only across the dict operations themselves, never across an
+        # await/network call, so contention is negligible.
+        self._history_state_lock = threading.Lock()
+        # Per-channel lock serializing fetch_history calls (issue #141): two
+        # concurrent calls for the same channel would otherwise clobber each
+        # other's _pending_history_capture entry - the second call's PART+
+        # re-JOIN overwrites the first's (capture, future) pair, orphaning
+        # the first caller's future and then, on its timeout, popping the
+        # *second* caller's still-pending entry out from under it. Created
+        # lazily per channel key, never removed - cheap, and avoids a
+        # dict-mutation race with the lookup itself.
+        self._history_fetch_locks: dict[str, asyncio.Lock] = {}
         # Channels a JOIN was rejected for (ERR_NEEDREGGEDNICK/477 - this
         # network requires a registered+identified nick to join anything but
         # #welcome) and hasn't yet been retried - see _handle_join_blocked/
@@ -200,53 +238,87 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         if match is None:
             return
         channel = event.target.lower()
+        remaining = int(match.group(1))
         logger.debug(
-            "[irc:%s] expecting up to %s line(s) of history replay in %s", self.connector_id, match.group(1), channel
+            "[irc:%s] expecting up to %s line(s) of history replay in %s", self.connector_id, remaining, channel
         )
-        self._history_replay[channel] = (int(match.group(1)), time.monotonic() + _HISTORY_REPLAY_TIMEOUT)
-
-    def _consume_history_replay(self, channel: str) -> bool:
-        """True if this message is (probably) server-replayed history, not
-        a live message - and, side-effectingly, advances that channel's
-        replay budget/expiry so the *next* message gets judged correctly too."""
-        key = channel.lower()
-        entry = self._history_replay.get(key)
-        if entry is None:
-            return False
-        remaining, deadline = entry
-        if time.monotonic() > deadline:
-            del self._history_replay[key]
-            return False
-        remaining -= 1
+        # A pending fetch_history call for this channel (if any) hands its
+        # capture list/future off to the real HistoryReplayState this NOTICE
+        # starts - see fetch_history/_finish_history_capture. Locked: this
+        # runs on the reactor thread, fetch_history's dict writes on the
+        # loop thread (see _history_state_lock's docstring).
+        with self._history_state_lock:
+            capture, future = self._pending_history_capture.pop(channel, (None, None))
+            if remaining > 0:
+                self._history_replay[channel] = HistoryReplayState(
+                    remaining=remaining,
+                    deadline=time.monotonic() + _HISTORY_REPLAY_TIMEOUT,
+                    capture=capture,
+                    future=future,
+                )
         if remaining <= 0:
-            del self._history_replay[key]
-        else:
-            self._history_replay[key] = (remaining, deadline)
-        return True
+            self._finish_history_capture(future, capture)
+
+    def _consume_history_replay(self, channel: str, message: StandardMessage) -> bool:
+        """True if `message` is (probably) server-replayed history, not a
+        live message - and, side-effectingly, advances that channel's replay
+        budget/expiry so the *next* message gets judged correctly too, and
+        appends `message` to the entry's capture list if one is in progress
+        (a pending fetch_history call, not just an ordinary join-triggered
+        replay being dropped). Locked (see _history_state_lock's docstring)
+        since fetch_history's timeout path also pops _history_replay, from
+        the loop thread rather than this method's reactor thread."""
+        key = channel.lower()
+        with self._history_state_lock:
+            entry = self._history_replay.get(key)
+            if entry is None:
+                return False
+            if time.monotonic() > entry.deadline:
+                del self._history_replay[key]
+                self._finish_history_capture(entry.future, entry.capture)
+                return False
+            if entry.capture is not None:
+                entry.capture.append(message)
+            entry.remaining -= 1
+            if entry.remaining <= 0:
+                del self._history_replay[key]
+                self._finish_history_capture(entry.future, entry.capture)
+            return True
+
+    def _finish_history_capture(
+        self, future: "asyncio.Future[list[StandardMessage]] | None", capture: list[StandardMessage] | None
+    ) -> None:
+        """Resolve a pending `fetch_history` call's future with whatever was
+        captured, once its replay budget hits zero or its deadline passes.
+        A no-op for an ordinary join-triggered replay, which never has a
+        future to resolve. `_handle_pubnotice`/`_consume_history_replay` run
+        on the IRC reactor's own thread, so the future - an asyncio object -
+        can only be touched via call_soon_threadsafe onto the loop thread."""
+        if future is None or self._loop is None:
+            return
+        messages = list(capture) if capture is not None else []
+        self._loop.call_soon_threadsafe(_resolve_future, future, messages)
 
     def _handle_pubmsg(self, event) -> None:
         channel = event.target
-        if self._consume_history_replay(channel):
-            logger.debug("[irc:%s] dropping replayed history line in %s", self.connector_id, channel)
-            return  # server-replayed history from joining, not a live message - don't relay it
         content = event.arguments[0]
-        logger.debug("[irc:%s] message in %s from %s", self.connector_id, channel, event.source.nick)
-        self._schedule(
-            self._on_message(
-                StandardMessage(
-                    origin_connector_id=self.connector_id,
-                    origin_channel_id=channel,
-                    channel_name=channel,
-                    sender_name=event.source.nick,
-                    sender_avatar_url=None,
-                    sender_user_id=event.source.nick,
-                    content_markdown=content,
-                    message_id=_synthetic_message_id(channel, event.source.nick, content),
-                    attachments=[],
-                    source_label=self._config.label,
-                )
-            )
+        message = StandardMessage(
+            origin_connector_id=self.connector_id,
+            origin_channel_id=channel,
+            channel_name=channel,
+            sender_name=event.source.nick,
+            sender_avatar_url=None,
+            sender_user_id=event.source.nick,
+            content_markdown=content,
+            message_id=_synthetic_message_id(channel, event.source.nick, content),
+            attachments=[],
+            source_label=self._config.label,
         )
+        if self._consume_history_replay(channel, message):
+            logger.debug("[irc:%s] capturing/dropping replayed history line in %s", self.connector_id, channel)
+            return  # server-replayed history from joining, not a live message - don't relay it
+        logger.debug("[irc:%s] message in %s from %s", self.connector_id, channel, event.source.nick)
+        self._schedule(self._on_message(message))
 
     async def join_channel(self, channel: str, *, permanent: bool = True, topic: str | None = None) -> None:
         """Called by ChannelLinker right after a fresh mapping involving this
@@ -315,6 +387,77 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
             )
             self._client.connection.privmsg(channel, notice)
             self._client.connection.part(channel, notice)
+
+    def chanhistory_configured(self) -> bool:
+        """Whether this connector's `default_channel_modes` enables the
+        chanhistory-replay module (`H`) - the signal `ConnectorInfo.
+        supports_history_destination` wires for the IRC -> IRC `with_history`
+        decision (issue #141): a config-level check (this connector's own
+        setting, not a live per-channel MODE query) so a backfill *into* an
+        IRC channel is refused up front when nothing would actually persist
+        it, matching this feature's existing "gold setup" scoping for
+        chanhistory detection elsewhere in this module. A plain method, not a
+        property - `supports_history_destination` is wired to it directly as
+        a bound callable (`ConnectorInfo`'s hook contract), not called."""
+        return "H" in (self._config.default_channel_modes or "")
+
+    async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
+        """`ConnectorInfo.fetch_history` for IRC (issue #141): unlike
+        Discord/Stoat, IRC has no on-demand history query, no CAP
+        negotiation on this network at all, and no per-channel scrollback API
+        - chanhistory only ever replays as a side effect of JOIN. Getting a
+        *fresh* snapshot on demand therefore means forcing a PART and
+        immediate re-JOIN, then capturing the replay burst that follows
+        (`_consume_history_replay`, diverted into capture mode via
+        `_pending_history_capture`/`HistoryReplayState.capture` instead of
+        its ordinary drop-only behavior) rather than relaying it live.
+
+        Resolves to an empty list if no matching NOTICE arrives at all
+        within `_HISTORY_FETCH_TIMEOUT` (module not installed/enabled on
+        this channel or network) - the same "nothing to backfill" outcome
+        every other connector's `fetch_history` produces in the no-history
+        case; no separate capability flag needed for the *source* side (see
+        `chanhistory_configured` for the *destination*-side gate).
+
+        `limit` can only narrow what the server's own chanhistory cap
+        already chose to replay - there's no way to ask for more than its
+        configured maximum - so it's applied by slicing the captured list
+        client-side to the most recent `limit` messages, the same caveat
+        Stoat's 100-per-page pagination cap already documents.
+
+        Known side effect (documented in CLAUDE.md/COMMANDS.md): the channel
+        is genuinely PARTed and re-JOINed while this is in flight (typically
+        well under `_HISTORY_REPLAY_TIMEOUT`), during which anything sent
+        there won't relay live.
+
+        Two concurrent calls for the same channel are serialized (via
+        `_history_fetch_locks`) rather than run in parallel - a second
+        PART+re-JOIN before the first's capture finished would clobber its
+        `_pending_history_capture` entry and orphan its future."""
+        channel = normalize_channel_name(channel_id, self._channel_name_limit())
+        key = channel.lower()
+        if not self._client.connection.is_connected():
+            return []
+        lock = self._history_fetch_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            loop = asyncio.get_running_loop()
+            future: "asyncio.Future[list[StandardMessage]]" = loop.create_future()
+            capture: list[StandardMessage] = []
+            with self._history_state_lock:
+                self._pending_history_capture[key] = (capture, future)
+            logger.info("[irc:%s] refreshing history for %s (part/rejoin)", self.connector_id, channel)
+            self._client.connection.part(channel, "refreshing history")
+            self._client.connection.join(channel)
+            try:
+                messages = await asyncio.wait_for(future, timeout=_HISTORY_FETCH_TIMEOUT)
+            except asyncio.TimeoutError:
+                with self._history_state_lock:
+                    self._pending_history_capture.pop(key, None)
+                    self._history_replay.pop(key, None)
+                messages = capture
+        if limit is not None:
+            messages = messages[-limit:] if limit > 0 else []
+        return messages
 
     async def ensure_channel(
         self,

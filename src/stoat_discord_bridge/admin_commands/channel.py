@@ -285,11 +285,18 @@ class ChannelLinker:
         link succeeds (issue #122) - never on the "already synced - skipped"
         early-return path, so a repeat `/mirror ... with history` on an
         already-linked pair is a natural no-op rather than a duplicate
-        backfill. Requires both `local_connector` and `destination` to
-        support history (`ConnectorInfo.supports_history` - Discord/Stoat
-        only; IRC has no history concept as either a source or a
-        destination) and requires a `backfill_history` hook to have been
-        wired at construction - raises LinkError otherwise, since silently
+        backfill. Requires only `local_connector` to support history as a
+        *source* (`ConnectorInfo.supports_history`) - the destination needs
+        no such support itself, since the backfill just calls its ordinary
+        `ReceiverService.receive()` (issue #141: this is what unlocks IRC as
+        a `with_history` destination, and, via `IrcSenderService.fetch_history`,
+        as a source too). A destination can still opt into an
+        extra gate via `ConnectorInfo.supports_history_destination` (IRC
+        only: whether its own chanhistory replay is configured, so a
+        backfill into a non-chanhistory IRC channel is refused up front
+        rather than silently landing as ordinary, non-persistent IRC
+        traffic). Also requires a `backfill_history` hook to have been wired
+        at construction - raises LinkError otherwise, since silently
         skipping a requested backfill would be surprising. `history_limit` is
         resolved by `_resolve_history_limit` - `None` defaults to
         `_DEFAULT_HISTORY_LIMIT`, the literal `"all"` means the entire
@@ -323,14 +330,13 @@ class ChannelLinker:
                 raise LinkError("this bridge instance doesn't support 'with history' backfills.")
             local_info = self._connectors[local_connector]
             dest_info = self._connectors[destination]
-            unsupported = [
-                info.label for info in (local_info, dest_info) if not info.supports_history
-            ]
-            if unsupported:
+            if not local_info.supports_history:
                 raise LinkError(
-                    "'with history' is only supported between Discord and Stoat channels - "
-                    f"{' and '.join(unsupported)} doesn't support it."
+                    f"'with history' isn't supported from {local_info.label} - "
+                    "it has no channel history to fetch."
                 )
+            if dest_info.supports_history_destination is not None and not dest_info.supports_history_destination():
+                raise LinkError("History is not supported/configured on the target service.")
             # Resolve+validate up front, before any create/link side effects,
             # so an invalid history_limit fails fast rather than after a
             # channel's already been created.
