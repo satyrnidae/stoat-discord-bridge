@@ -9,7 +9,7 @@ from stoat_discord_bridge.admin_commands import (
     pop_kv_option,
 )
 from stoat_discord_bridge.admin_commands.common import (
-    _BULK_ENTITY_CAP,
+    _BULK_ENTITY_BATCH_SIZE,
     _is_all_token,
     _list_entities_for_all,
     _run_bulk_mirror,
@@ -124,13 +124,14 @@ async def test_list_entities_for_all_raises_when_the_hook_raises():
         await _list_entities_for_all(connectors, "discord", boom, kind="channel")
 
 
-async def test_list_entities_for_all_raises_past_the_cap():
+async def test_list_entities_for_all_returns_more_than_the_batch_size_worth_of_entities():
+    # issue #157: a large `all` fan-out is batched, not rejected outright.
     async def many():
-        return [(str(i), f"chan-{i}") for i in range(_BULK_ENTITY_CAP + 1)]
+        return [(str(i), f"chan-{i}") for i in range(_BULK_ENTITY_BATCH_SIZE + 1)]
 
     connectors = {"discord": ConnectorInfo(id="discord", label="Discord")}
-    with pytest.raises(LinkError, match=str(_BULK_ENTITY_CAP)):
-        await _list_entities_for_all(connectors, "discord", many, kind="channel")
+    entities = await _list_entities_for_all(connectors, "discord", many, kind="channel")
+    assert len(entities) == _BULK_ENTITY_BATCH_SIZE + 1
 
 
 async def test_list_entities_for_all_returns_the_hooks_list():
@@ -212,4 +213,20 @@ async def test_run_bulk_mirror_paces_between_entities_not_before_the_first(monke
 
     await _run_bulk_mirror([("c1", "a"), ("c2", "b"), ("c3", "c")], mirror_one, pacing_seconds=0.5)
     assert sleeps == [0.5, 0.5]
+
+
+async def test_run_bulk_mirror_paces_longer_between_batches_than_within_them(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("stoat_discord_bridge.admin_commands.common.asyncio.sleep", fake_sleep)
+
+    async def mirror_one(entity_id, entity_name):
+        return "ok"
+
+    entities = [(str(i), f"e{i}") for i in range(5)]
+    await _run_bulk_mirror(entities, mirror_one, pacing_seconds=0.1, batch_size=2, batch_pacing_seconds=9.0)
+    assert sleeps == [0.1, 9.0, 0.1, 9.0]
 
