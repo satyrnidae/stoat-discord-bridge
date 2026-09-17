@@ -1020,6 +1020,7 @@ async def run(config: BridgeConfig) -> None:
             resolve_emoji_id_by_name=sender.resolve_emoji_id_by_name,
             resolve_emoji=sender.resolve_emoji,
             ensure_emoji=receiver.create_emoji,
+            emoji_capacity=sender.emoji_capacity,
             list_channels=sender.list_channels,
             list_categories=sender.list_categories,
             list_roles=sender.list_roles,

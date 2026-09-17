@@ -150,6 +150,18 @@ class CustomEmoji:
 
 
 @dataclass(frozen=True)
+class EmojiCapacity:
+    """A destination's remaining custom-emoji slots (issue #157), read where
+    the client library exposes it (Discord only - see
+    `ConnectorInfo.emoji_capacity`). Static and animated emoji occupy
+    separate pools of equal size on Discord, so this is two numbers, not
+    one."""
+
+    free_static: int
+    free_animated: int
+
+
+@dataclass(frozen=True)
 class StandardEmojiCreated:
     """A custom emoji newly added on `origin_connector_id`, for the bridge to
     mirror onto every other connector (see BridgeCoordinator.handle_emoji_created)."""

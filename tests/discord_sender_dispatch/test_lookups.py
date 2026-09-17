@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from stoat_discord_bridge.models import EmojiCapacity
 from tests.fakes.fake_discord import (
     FakeChannel,
     FakeClient,
@@ -141,5 +142,32 @@ async def test_channels_in_category_returns_empty_for_a_non_category_non_forum(m
     )
 
     assert await sender.channels_in_category("42") == []
+
+
+# ---------------------------------------------------------------- emoji_capacity (issue #157)
+
+
+async def test_emoji_capacity_counts_static_and_animated_pools_separately(monkeypatch):
+    sender = _make_sender(_Recorder(), FakeClient())
+    guild = SimpleNamespace(
+        emoji_limit=50,
+        emojis=[
+            SimpleNamespace(animated=False),
+            SimpleNamespace(animated=False),
+            SimpleNamespace(animated=True),
+        ],
+    )
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    capacity = await sender.emoji_capacity()
+
+    assert capacity == EmojiCapacity(free_static=48, free_animated=49)
+
+
+async def test_emoji_capacity_returns_none_when_the_guild_isnt_cached(monkeypatch):
+    sender = _make_sender(_Recorder(), FakeClient())
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: None)
+
+    assert await sender.emoji_capacity() is None
 
 

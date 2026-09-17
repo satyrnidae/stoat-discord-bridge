@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, StandardMessage
+    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, EmojiCapacity, StandardMessage
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
@@ -623,6 +623,15 @@ class ConnectorInfo:
     # then reports that connector as unsupported. Wired straight to the
     # receiver's existing create_emoji.
     ensure_emoji: Callable[["CustomEmoji"], Awaitable["CustomEmoji | None"]] | None = None
+    # Best-effort remaining emoji-slot capacity on this connector (issue
+    # #157), so `/mirror emote` can skip a doomed create before spending an
+    # image download and API call on it. None - hook unset, or it raises or
+    # returns None - means "capacity unknown," which callers treat as
+    # "attempt the create and let it succeed or fail normally." Discord-only:
+    # Guild.emoji_limit + the cached emoji list give this for free with no
+    # extra request; stoat.py's client has no equivalent queryable limit (only
+    # a TooManyEmoji error at creation time), so Stoat leaves this unset.
+    emoji_capacity: Callable[[], Awaitable["EmojiCapacity | None"]] | None = None
     # --- Autocomplete listing hooks. Each returns every entity of that kind
     # currently visible on this connector as [(native_id, display_name), ...]
     # (unsorted; the caller filters and caps). Discord's slash commands call

@@ -7,7 +7,7 @@ rest of the id<->name lookups in `names.py`.
 
 from __future__ import annotations
 
-from stoat_discord_bridge.models import CustomEmoji
+from stoat_discord_bridge.models import CustomEmoji, EmojiCapacity
 
 
 class _RolesEmojiMixin:
@@ -68,4 +68,19 @@ class _RolesEmojiMixin:
             return None
         return CustomEmoji(
             native_id=str(emoji.id), name=emoji.name, image_url=str(emoji.url), animated=emoji.animated
+        )
+
+    async def emoji_capacity(self) -> "EmojiCapacity | None":
+        """Remaining static/animated emoji-slot capacity, this connector's
+        `ConnectorInfo.emoji_capacity` (issue #157). `Guild.emoji_limit` is a
+        cache-only property (boost-tier based) and `Guild.emojis` the
+        already-cached emoji list, so this is a local read, not an API call.
+        None if the guild isn't cached yet."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        static_count = sum(1 for emoji in guild.emojis if not emoji.animated)
+        animated_count = sum(1 for emoji in guild.emojis if emoji.animated)
+        return EmojiCapacity(
+            free_static=guild.emoji_limit - static_count, free_animated=guild.emoji_limit - animated_count
         )
