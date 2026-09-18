@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, StandardMessage
+    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, EmojiCapacity, StandardMessage
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
@@ -246,12 +246,16 @@ def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterabl
 # a connector, which is not small.
 _BULK_ENTITY_PACING_SECONDS: float = 0.25
 
-# A soft ceiling on how many entities one `all` fan-out will touch - past
-# this, the burst of creates is large enough to risk tripping a platform's
-# stricter creation-specific rate limits (and, for a Discord slash command,
-# the 15-minute interaction-followup token window) regardless of pacing, so
-# the operator is asked to link a more targeted subset instead.
-_BULK_ENTITY_CAP: int = 50
+# `_run_bulk_mirror` groups entities into batches of this size (issue #157) -
+# every `_BULK_ENTITY_BATCH_SIZE`-th entity takes the longer
+# `_BULK_ENTITY_BATCH_PACING_SECONDS` pause instead of the normal per-entity
+# one, easing off further before a platform's stricter creation-specific rate
+# limits (and, for a Discord slash command, the 15-minute
+# interaction-followup token window) come into play on a very large `all`.
+# Entities are no longer capped outright above this size - see
+# `_list_entities_for_all`.
+_BULK_ENTITY_BATCH_SIZE: int = 50
+_BULK_ENTITY_BATCH_PACING_SECONDS: float = 5.0
 
 
 def _is_all_token(token: str | None) -> bool:
@@ -277,10 +281,9 @@ async def _list_entities_for_all(
     raised exception as "no suggestions"), a bulk mirror has no such
     fallback - a connector with no `list_*` hook for `kind` (e.g. IRC for
     anything but channels) genuinely can't enumerate "every entity", so this
-    raises a user-facing LinkError instead of silently doing nothing. Also
-    raises past `_BULK_ENTITY_CAP` (see its docstring) - checked here, before
-    the caller starts iterating, so an oversized `all` is rejected up front
-    rather than half-run."""
+    raises a user-facing LinkError instead of silently doing nothing. No
+    longer caps the result (issue #157) - `_run_bulk_mirror` batches an
+    oversized list instead of this rejecting it up front."""
     info = connectors.get(connector_id)
     label = info.label if info else connector_id
     if list_hook is None:
@@ -289,11 +292,6 @@ async def _list_entities_for_all(
         entities = await list_hook()
     except Exception as exc:
         raise LinkError(f"{label}: couldn't list {kind}s: {exc}") from exc
-    if len(entities) > _BULK_ENTITY_CAP:
-        raise LinkError(
-            f"{label} has {len(entities)} {kind}s - mirroring more than {_BULK_ENTITY_CAP} at once via "
-            "'all' isn't supported; link them individually instead."
-        )
     return entities
 
 
@@ -302,23 +300,28 @@ async def _run_bulk_mirror(
     mirror_one: Callable[[str, str], Awaitable[str]],
     *,
     pacing_seconds: float = _BULK_ENTITY_PACING_SECONDS,
+    batch_size: int = _BULK_ENTITY_BATCH_SIZE,
+    batch_pacing_seconds: float = _BULK_ENTITY_BATCH_PACING_SECONDS,
 ) -> str:
     """Run `mirror_one(entity_id, entity_name)` for every entity in
     `entities`, in order, pacing each call `pacing_seconds` apart (not before
     the first) so a large fan-out doesn't front-load a burst of creates.
-    Joins the per-entity result lines the same way the existing
-    destination-`all` fan-outs (`mirror_channel_all` and friends) do - any
-    exception from one entity (a `LinkError`, or a genuinely unexpected one
-    that slipped past `mirror_one`'s own per-connector-problem handling) is
-    caught and reported as its own line (`'<name>': <message>`) rather than
-    aborting the rest, matching those methods' "report, don't raise, per
-    problem" convention."""
+    Every `batch_size`-th entity (issue #157) takes the longer
+    `batch_pacing_seconds` pause instead of the normal one, easing off
+    further before a platform's stricter creation-specific rate limits come
+    into play on a very large `all`. Joins the per-entity result lines the
+    same way the existing destination-`all` fan-outs (`mirror_channel_all`
+    and friends) do - any exception from one entity (a `LinkError`, or a
+    genuinely unexpected one that slipped past `mirror_one`'s own
+    per-connector-problem handling) is caught and reported as its own line
+    (`'<name>': <message>`) rather than aborting the rest, matching those
+    methods' "report, don't raise, per problem" convention."""
     if not entities:
         return "nothing to mirror - no entities found."
     lines: list[str] = []
     for i, (entity_id, entity_name) in enumerate(entities):
         if i:
-            await asyncio.sleep(pacing_seconds)
+            await asyncio.sleep(batch_pacing_seconds if i % batch_size == 0 else pacing_seconds)
         try:
             lines.append(await mirror_one(entity_id, entity_name))
         except Exception as exc:
@@ -620,6 +623,15 @@ class ConnectorInfo:
     # then reports that connector as unsupported. Wired straight to the
     # receiver's existing create_emoji.
     ensure_emoji: Callable[["CustomEmoji"], Awaitable["CustomEmoji | None"]] | None = None
+    # Best-effort remaining emoji-slot capacity on this connector (issue
+    # #157), so `/mirror emote` can skip a doomed create before spending an
+    # image download and API call on it. None - hook unset, or it raises or
+    # returns None - means "capacity unknown," which callers treat as
+    # "attempt the create and let it succeed or fail normally." Discord-only:
+    # Guild.emoji_limit + the cached emoji list give this for free with no
+    # extra request; stoat.py's client has no equivalent queryable limit (only
+    # a TooManyEmoji error at creation time), so Stoat leaves this unset.
+    emoji_capacity: Callable[[], Awaitable["EmojiCapacity | None"]] | None = None
     # --- Autocomplete listing hooks. Each returns every entity of that kind
     # currently visible on this connector as [(native_id, display_name), ...]
     # (unsorted; the caller filters and caps). Discord's slash commands call

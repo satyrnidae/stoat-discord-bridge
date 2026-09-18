@@ -3,7 +3,7 @@ import pytest
 import dataclasses
 
 from stoat_discord_bridge.admin_commands import ConnectorInfo, EmoteLinker, LinkedMember, LinkError
-from stoat_discord_bridge.models import CustomEmoji
+from stoat_discord_bridge.models import CustomEmoji, EmojiCapacity
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 
 
@@ -166,6 +166,82 @@ async def test_mirror_emote_new_name_renames_the_recreated_copy(fake_db, emote_c
     )
 
     assert [e.name for e in created] == ["blobcat"]
+
+
+# ---------------------------------------------------------------- EmoteLinker.mirror_emote: emoji-slot capacity pre-check (issue #157)
+
+
+async def test_mirror_emote_skips_the_create_when_the_matching_slot_pool_is_full(fake_db, emote_connectors):
+    async def capacity():
+        return EmojiCapacity(free_static=0, free_animated=5)
+
+    emote_connectors["stoat"] = dataclasses.replace(emote_connectors["stoat"], emoji_capacity=capacity)
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "no static emoji slots left" in summary
+    assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") is None
+
+
+async def test_mirror_emote_creates_when_the_matching_slot_pool_has_room(fake_db, emote_connectors):
+    async def capacity():
+        return EmojiCapacity(free_static=1, free_animated=0)
+
+    emote_connectors["stoat"] = dataclasses.replace(emote_connectors["stoat"], emoji_capacity=capacity)
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "Linked" in summary
+    assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "snew"
+
+
+async def test_mirror_emote_checks_the_animated_pool_for_an_animated_source_emoji(fake_db, emote_connectors):
+    async def resolve_animated(emoji_id):
+        return CustomEmoji(native_id=emoji_id, name="blob", image_url="http://x/blob.gif", animated=True)
+
+    async def capacity():
+        # static pool is full, but the source emoji is animated - the
+        # animated pool (which has room) is the one that should be checked.
+        return EmojiCapacity(free_static=0, free_animated=1)
+
+    emote_connectors["discord"] = dataclasses.replace(emote_connectors["discord"], resolve_emoji=resolve_animated)
+    emote_connectors["stoat"] = dataclasses.replace(emote_connectors["stoat"], emoji_capacity=capacity)
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "Linked" in summary
+
+
+async def test_mirror_emote_create_proceeds_when_capacity_is_unknown(fake_db, emote_connectors):
+    async def capacity():
+        return None
+
+    emote_connectors["stoat"] = dataclasses.replace(emote_connectors["stoat"], emoji_capacity=capacity)
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "Linked" in summary
+
+
+async def test_mirror_emote_create_proceeds_when_the_capacity_hook_raises(fake_db, emote_connectors):
+    async def capacity():
+        raise RuntimeError("guild not cached yet")
+
+    emote_connectors["stoat"] = dataclasses.replace(emote_connectors["stoat"], emoji_capacity=capacity)
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "Linked" in summary
 
 
 async def test_mirror_emote_new_name_drives_the_same_named_match_lookup(fake_db, emote_connectors):

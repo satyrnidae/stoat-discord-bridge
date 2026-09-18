@@ -215,6 +215,22 @@ class EmoteLinker:
             # the recreated copy takes `new_name` (issue #44).
             custom_emoji = replace(custom_emoji, name=target_name)
 
+        if dest_info.emoji_capacity is not None:
+            # Best-effort pre-check (issue #157): skip a doomed create before
+            # spending an image download and API call on it. A missing hook,
+            # an exception, or capacity that isn't exhausted all fall through
+            # to the create attempt unchanged.
+            try:
+                capacity = await dest_info.emoji_capacity()
+            except Exception:
+                logger.debug("mirror-emote: %s.emoji_capacity() failed", destination, exc_info=True)
+                capacity = None
+            if capacity is not None:
+                pool_kind = "animated" if custom_emoji.animated else "static"
+                free_slots = capacity.free_animated if custom_emoji.animated else capacity.free_static
+                if free_slots <= 0:
+                    return f"{dest_info.label}: no {pool_kind} emoji slots left - skipped."
+
         try:
             created = await dest_info.ensure_emoji(custom_emoji)
         except Exception as exc:
