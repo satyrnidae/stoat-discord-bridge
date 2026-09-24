@@ -117,8 +117,8 @@ class LinkError(Exception):
 
 
 class MirrorInProgressError(LinkError):
-    """A `/mirror <x>` command whose destination connector is still being
-    written to by another `/mirror` run - rejected up front rather than
+    """A `/mirror <x>` (or `/import` / `/export`, issue #161) command whose
+    connector is still being written to by another such run - rejected up front rather than
     left to race the first one into duplicate channels/Categories/roles/
     emoji (issue #79). A LinkError subclass, so every existing
     `except LinkError` / "relay str(exc) to the admin" path handles it."""
@@ -161,7 +161,7 @@ class MirrorGuard:
                 sorted((connectors[d].label if d in connectors else d) for d in clash)
             )
             raise MirrorInProgressError(
-                f"another /mirror into {names} is still running - wait for it to finish "
+                f"another mirror/import/export into {names} is still running - wait for it to finish "
                 "before starting another, or its results may be duplicated."
             )
         claimed = [d for d in wanted if d not in self._held]
@@ -225,6 +225,13 @@ def _mirror_all_other_connectors(self: object, kw: dict[str, object]) -> Iterabl
     so a single busy destination rejects the whole operation up front (with
     that connector named) rather than being quietly skipped."""
     return [d for d in self._connectors if d != kw["local_connector"]]  # type: ignore[attr-defined]
+
+
+def _transfer_both_connectors(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/import` / `/export` (issue #161) - reserve both connectors involved,
+    so a transfer and a `/mirror` touching either one exclude each other.
+    `MirrorGuard.reserve` collapses a same-connector transfer to one."""
+    return (kw["local_connector"], kw["service"])  # type: ignore[return-value]
 
 
 # --------------------------------------------------------------------------

@@ -7,7 +7,7 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
@@ -29,6 +29,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_id,
     _resolve_entity_title,
     _run_bulk_mirror,
+    _transfer_both_connectors,
     collect_linked_members,
     format_linked_listing,
 )
@@ -85,6 +86,11 @@ def _resolve_history_limit(raw: int | str | None) -> int | None:
     if value <= 0:
         raise LinkError("history limit must be a positive number, or 'all' for the entire history.")
     return min(value, _MAX_HISTORY_LIMIT)
+
+
+def _hash(channel_name: str) -> str:
+    """`#name` for a transfer summary - IRC names already carry the `#`."""
+    return "#" + channel_name.lstrip("#")
 
 
 class ChannelLinker:
@@ -326,21 +332,13 @@ class ChannelLinker:
             raise LinkError("can't mirror a channel to its own connector.")
 
         if with_history:
-            if self._backfill_history is None:
-                raise LinkError("this bridge instance doesn't support 'with history' backfills.")
             local_info = self._connectors[local_connector]
-            dest_info = self._connectors[destination]
-            if not local_info.supports_history:
-                raise LinkError(
-                    f"'with history' isn't supported from {local_info.label} - "
-                    "it has no channel history to fetch."
-                )
-            if dest_info.supports_history_destination is not None and not dest_info.supports_history_destination():
-                raise LinkError("History is not supported/configured on the target service.")
             # Resolve+validate up front, before any create/link side effects,
             # so an invalid history_limit fails fast rather than after a
             # channel's already been created.
-            resolved_history_limit = _resolve_history_limit(history_limit)
+            resolved_history_limit = self._check_history_transfer(
+                local_info, self._connectors[destination], history_limit, feature="'with history'"
+            )
 
         await _refresh_connectors(self._connectors, local_connector, destination)
 
@@ -1039,6 +1037,100 @@ class ChannelLinker:
             source_id=forum_id,
             destination_id=other_id,
         )
+
+    def _check_history_transfer(
+        self, source_info: ConnectorInfo, dest_info: ConnectorInfo, history_limit: int | str | None, *, feature: str
+    ) -> int | None:
+        """The history gates `/mirror channel ... with history` and `/import` /
+        `/export` share: a wired backfill hook, a source that can fetch
+        history, a destination whose `supports_history_destination` (if any)
+        says yes, and a valid `history_limit`. Returns the resolved limit.
+        `feature` names the command in the error text."""
+        if self._backfill_history is None:
+            raise LinkError(f"this bridge instance doesn't support {feature} backfills.")
+        if not source_info.supports_history:
+            raise LinkError(f"{feature} isn't supported from {source_info.label} - it has no channel history to fetch.")
+        if dest_info.supports_history_destination is not None and not dest_info.supports_history_destination():
+            raise LinkError("History is not supported/configured on the target service.")
+        return _resolve_history_limit(history_limit)
+
+    @_guards_mirror(_transfer_both_connectors)
+    async def transfer_history(
+        self,
+        *,
+        local_connector: str,
+        service: str,
+        external_channel_id: str,
+        local_channel_id: str,
+        direction: Literal["import", "export"],
+        history_limit: int | str | None = None,
+    ) -> str:
+        """`/import` / `/export` (issue #161): copy one existing channel's
+        full history - relayed and bot posts included - into another existing
+        channel. `import` copies `service`'s `external_channel_id` into
+        `local_channel_id` on `local_connector`; `export` is the reverse.
+
+        No link is created or required, and a same-connector transfer is fine
+        as long as the two channels differ. Runs the same history gates as
+        `mirror_channel`'s `with_history` (`_check_history_transfer`) and
+        refuses a source channel the bridge bot definitely can't see. Holds a
+        `MirrorGuard` reservation on both connectors, so it and any `/mirror`
+        into either one exclude each other. The transferred posts land only in
+        the destination channel - `backfill_history` never fans out."""
+        if direction not in ("import", "export"):
+            raise ValueError(f"unknown transfer direction {direction!r}")
+        _require_known_connector(self._connectors, local_connector)
+        _require_known_connector(self._connectors, service)
+
+        external = (service, external_channel_id)
+        local = (local_connector, local_channel_id)
+        (source, source_token), (dest, dest_token) = (external, local) if direction == "import" else (local, external)
+        source_info = self._connectors[source]
+        resolved_limit = self._check_history_transfer(
+            source_info, self._connectors[dest], history_limit, feature="history transfer"
+        )
+
+        await _refresh_connectors(self._connectors, source, dest)
+        source_id, source_name = await self._resolve_existing_channel(source, source_token)
+        dest_id, dest_name = await self._resolve_existing_channel(dest, dest_token)
+        if source == dest and source_id == dest_id:
+            raise LinkError("can't transfer a channel's history into itself.")
+        if await self._channel_is_hidden(source, source_id):
+            raise LinkError(
+                f"the bridge bot can't see channel '{source_id}' on "
+                f"{source_info.label} - give it access to that channel first."
+            )
+
+        assert self._backfill_history is not None  # checked above
+        try:
+            backfill_summary = await self._backfill_history(
+                fetch_history=source_info.fetch_history,
+                source_channel_id=source_id,
+                destination_connector=dest,
+                destination_channel_id=dest_id,
+                limit=resolved_limit,
+                include_relayed=True,
+            )
+        except Exception as exc:
+            logger.warning("history %s failed: %s", direction, exc, exc_info=True)
+            backfill_summary = f"history {direction} failed unexpectedly: {exc}"
+
+        service_label = self._connectors[service].label
+        if direction == "import":
+            return f"Imported {service_label} {_hash(source_name)} into {_hash(dest_name)}: {backfill_summary}"
+        return f"Exported {_hash(source_name)} to {service_label} {_hash(dest_name)}: {backfill_summary}"
+
+    async def _resolve_existing_channel(self, connector: str, token: str) -> tuple[str, str]:
+        """`token` (an id or bare name) resolved to `(id, name)` on
+        `connector`. Raises LinkError when the connector can look channel
+        names up and doesn't know this one; a connector without that hook
+        (IRC, whose id is already the `#name`) takes the token as-is."""
+        channel_id = await self._resolve_to_id(connector, token)
+        info = self._connectors[connector]
+        name = await _resolve_entity_title(channel_id, info.resolve_channel_name, connector=connector, kind="channel")
+        if name is None and info.resolve_channel_name is not None:
+            raise LinkError(f"{info.label} has no channel '{token}'.")
+        return channel_id, name or channel_id
 
     async def _linked_channel(
         self, local_connector: str, channel_id: str, destination: str
