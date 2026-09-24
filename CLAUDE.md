@@ -464,6 +464,29 @@ not oversights (tracked for a future pass rather than blocking this issue).
 the combination outright, since one backfill request has no sensible way to
 apply across every enumerated channel at once.
 
+`/import` / `/export` (issue #161; `IMPORT` / `EXPORT` on IRC) reuse the same
+machinery to copy history between two channels that **already exist**, with
+no create or link step: `ChannelLinker.transfer_history` picks source and
+destination from the direction, resolves both channels (an unknown one is a
+`LinkError`), rejects only an identical source and destination (a
+same-connector transfer is fine), and runs the same gates as `with_history`
+via the shared `_check_history_transfer`. It calls `backfill_history(...,
+include_relayed=True)`, which passes `include_relayed=True` on to each
+connector's `fetch_history` (only when set, so `/mirror ... with history` is
+unchanged and still skips relayed and bot posts). In that mode a relayed post
+is kept and read back under the identity it was shown with - Discord's
+webhook name/avatar, Stoat's masquerade name/avatar/color, and IRC's
+`<nick, Source, pronouns>` line tag parsed back by
+`irc_service/formatting.parse_relayed_line` (paired with the receiver's
+`format_line_tag`) - with `source_label`/`sender_pronouns` left `None` so the
+destination doesn't decorate an already-decorated name twice. Bot posts are
+kept as native. Nothing echoes across the destination's linked channels:
+`backfill_history` never fans out, and every post it makes is the bridge's
+own, which each sender's loop guard drops. `transfer_history` is
+`@_guards_mirror`-wrapped reserving **both** connectors
+(`_transfer_both_connectors`), so a transfer and any `/mirror` into either
+one exclude each other.
+
 ### Source, pronoun & name-color forwarding
 
 Every `StandardMessage` carries `source_label` — the origin connector's
