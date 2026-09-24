@@ -41,6 +41,33 @@ class DiscordLinkingMixin:
         await interaction.response.send_message(message, ephemeral=True)
         return False
 
+    async def _send_deferred(
+        self, interaction: discord.Interaction, content: str, *, view: discord.ui.View | None = None
+    ) -> discord.Message | None:
+        """Send a deferred command's ephemeral reply via
+        `interaction.followup.send`, falling back to a plain post in the
+        invoking channel if that fails (issue #159) - the followup token
+        expires 15 minutes after the command ran, which a long batched
+        `/mirror <noun> to <service> all` can outlive. The fallback can't be
+        ephemeral, so it mentions the invoker instead. Returns the sent
+        message, or None if even the fallback couldn't be delivered."""
+        kwargs: dict[str, Any] = {"ephemeral": True}
+        if view is not None:
+            kwargs["view"] = view
+        try:
+            return await interaction.followup.send(content, **kwargs)
+        except discord.HTTPException as exc:
+            logger.warning(
+                "[discord:%s] followup reply failed (%s), posting in the channel instead", self.connector_id, exc
+            )
+        channel = interaction.channel
+        if channel is None:
+            return None
+        fallback_kwargs: dict[str, Any] = {} if view is None else {"view": view}
+        with contextlib.suppress(discord.HTTPException):
+            return await channel.send(f"{interaction.user.mention} {content}", **fallback_kwargs)
+        return None
+
     async def _send_linker_reply(
         self,
         interaction: discord.Interaction,
@@ -61,11 +88,13 @@ class DiscordLinkingMixin:
         is stashed on the view so `on_timeout` (which has no interaction of
         its own to respond through) can still disable the panel in place."""
         view = await LinkEditorView.create(editor, invoker_id=interaction.user.id, content=content) if editor else None
-        reply = interaction.followup.send if deferred else interaction.response.send_message
-        kwargs: dict[str, Any] = {"ephemeral": True}
-        if view is not None:
-            kwargs["view"] = view
-        sent = await reply(content, **kwargs)
+        if deferred:
+            sent = await self._send_deferred(interaction, content, view=view)
+        else:
+            kwargs: dict[str, Any] = {"ephemeral": True}
+            if view is not None:
+                kwargs["view"] = view
+            sent = await interaction.response.send_message(content, **kwargs)
         if view is not None:
             message = sent
             if message is None:
@@ -98,8 +127,10 @@ class DiscordLinkingMixin:
             summary = await coro
         except LinkError as exc:
             logger.info("[discord:%s] %s rejected: %s", self.connector_id, log_context, exc)
-            reply = interaction.followup.send if deferred else interaction.response.send_message
-            await reply(str(exc), ephemeral=True)
+            if deferred:
+                await self._send_deferred(interaction, str(exc))
+            else:
+                await interaction.response.send_message(str(exc), ephemeral=True)
             return
         content = summary if empty_fallback is None else (summary or empty_fallback)
         await self._send_linker_reply(interaction, content, deferred=deferred, editor=editor if summary else None)
