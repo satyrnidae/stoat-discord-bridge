@@ -812,7 +812,12 @@ rather than leaving a lone member (a group of one isn't a bridge), and fires
 channel left with no linked counterparts — regardless of which connector ran
 the command. Only IRC wires it (`IrcSenderService.part_channel`): it posts a
 `This channel was unlinked from …` notice and PARTs. Discord/Stoat leave
-their channels alone.
+their channels alone. `local_id` also accepts the literal `all` (issue #160,
+`_unlink_all_channels`): it runs the same kick/dissolve over every bridge
+group the invoking connector has a stored mapping in. It needs an explicit
+`service` (a connector, or `all` to dissolve every group), skips groups with
+no member on that service, and reports failures per group rather than
+aborting.
 
 On IRC, a channel the bridge's own JOIN created gets
 `default_channel_modes` applied; the `P` (InspIRCd permanent-channel) mode,
