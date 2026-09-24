@@ -510,8 +510,10 @@ class ConnectorInfo:
     # extra destination-side gate that does exist. Best-effort in the same
     # sense as the other hooks: an unresolvable channel or a raising fetch is
     # the caller's problem to report, not something this hook itself needs
-    # to swallow.
-    fetch_history: Callable[[str, "int | None"], Awaitable[list["StandardMessage"]]] | None = None
+    # to swallow. `/import` / `/export` (issue #161) also pass
+    # `include_relayed=True` to keep posts the bridge relayed in and bot
+    # posts, which `/mirror ... with history` skips.
+    fetch_history: Callable[..., Awaitable[list["StandardMessage"]]] | None = None
     # Best-effort, synchronous "would history backfilled *into* this
     # connector's channel actually persist?" check - None (every connector
     # but IRC) means "no extra restriction, always fine" (a Discord/Stoat
