@@ -178,8 +178,10 @@ class FakeInteraction:
         app_can_view: bool = True,
     ):
         self.channel_id = channel_id
-        self.channel = SimpleNamespace(name=channel_name, category=category)
-        self.user = SimpleNamespace(id=user_id)
+        # `send` is the fallback path for a deferred reply whose followup
+        # token has expired (issue #159) - recorded in `channel_sent`.
+        self.channel = SimpleNamespace(name=channel_name, category=category, send=self._send_channel_message)
+        self.user = SimpleNamespace(id=user_id, mention=f"<@{user_id}>")
         # discord.py fills this from the interaction payload - the app's
         # computed permissions in the channel the command was run in.
         self.app_permissions = SimpleNamespace(view_channel=app_can_view)
@@ -199,6 +201,12 @@ class FakeInteraction:
         # just posted (which returns None).
         self.original_response = self._original_response
         self.deferred = False
+        # Set to an exception to make `followup.send` / `channel.send` raise
+        # it instead of sending - simulates an expired interaction token
+        # (issue #159) and a failing fallback channel post.
+        self.followup_error: Exception | None = None
+        self.channel_error: Exception | None = None
+        self.channel_sent: list[str] = []
 
     async def _send_response_message(self, content, ephemeral=False, view=None):
         # Real discord.py's response.send_message always returns None - the
@@ -208,8 +216,16 @@ class FakeInteraction:
         return None
 
     async def _send_followup_message(self, content, ephemeral=False, view=None):
+        if self.followup_error is not None:
+            raise self.followup_error
         self.sent.append(content)
         self.sent_views.append(view)
+        return self._sent_message
+
+    async def _send_channel_message(self, content, view=None):
+        if self.channel_error is not None:
+            raise self.channel_error
+        self.channel_sent.append(content)
         return self._sent_message
 
     async def _original_response(self):
