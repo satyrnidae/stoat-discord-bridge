@@ -203,7 +203,7 @@ class IrcAdminCommandsMixin:
             elif len(args) == 2:
                 local_id, service = args
             else:
-                self._notify(nick, "Usage: UNLINK CHANNEL <local_id> [service|all]")
+                self._notify(nick, "Usage: UNLINK CHANNEL <local_id|all> [service|all]")
                 return
             if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
                 return

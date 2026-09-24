@@ -318,8 +318,8 @@ def build_command_tree(service) -> None:
         name="channel", description="Unlink a channel - one connector, or the whole group (default: all)"
     )
     @app_commands.describe(
-        local_id="Channel id or name on this connector (defaults to the current channel)",
-        service="Connector id to unlink, or 'all' (default: all)",
+        local_id="Channel id/name on this connector, or 'all' for every linked one (default: current channel)",
+        service="Connector id to unlink, or 'all' (default: all; required when local_id is 'all')",
     )
     @app_commands.autocomplete(
         service=channel_service_autocomplete(include_all=True), local_id=channel_local_ac
