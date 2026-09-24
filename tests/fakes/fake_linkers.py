@@ -23,6 +23,7 @@ class FakeLinker:
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
         self.mirror_channel_from_calls: list[dict] = []
+        self.transfer_history_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
         self.unlink_channel_calls: list[dict] = []
 
@@ -53,6 +54,12 @@ class FakeLinker:
         if self._raises is not None:
             raise self._raises
         return "mirrored from ok"
+
+    async def transfer_history(self, **kwargs):
+        self.transfer_history_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return "transferred ok"
 
     async def unlink_channel(self, **kwargs):
         self.unlink_channel_calls.append(kwargs)

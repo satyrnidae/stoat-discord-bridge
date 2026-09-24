@@ -235,3 +235,48 @@ async def test_mirror_category_from_routes_to_the_category_linker():
     ]
 
 
+# ---------------------------------------------------------------- /import, /export (issue #161)
+
+
+async def test_transfer_history_defaults_local_channel_to_the_invoking_channel():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._transfer_history(ctx, "import", "discord", "d1")
+
+    assert linker.transfer_history_calls == [
+        {
+            "local_connector": "stoat",
+            "service": "discord",
+            "external_channel_id": "d1",
+            "local_channel_id": "c1",
+            "direction": "import",
+            "history_limit": None,
+        }
+    ]
+    assert ctx.channel.sent[0]["content"] == "transferred ok"
+
+
+async def test_transfer_history_forwards_an_explicit_local_channel_and_limit():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._transfer_history(ctx, "export", "irc", "#chat", "lobby", "all")
+
+    call = linker.transfer_history_calls[0]
+    assert (call["direction"], call["local_channel_id"], call["history_limit"]) == ("export", "lobby", "all")
+
+
+async def test_transfer_history_relays_a_link_error():
+    from stoat_discord_bridge.admin_commands import LinkError
+
+    sender = _make_sender(linker=FakeLinker(raises=LinkError("nope")))
+    ctx = _make_ctx(channel=FakeChannel(id="c1", name="general"))
+
+    await sender._transfer_history(ctx, "import", "discord", "d1")
+
+    assert ctx.channel.sent[0]["content"] == "nope"
+
+

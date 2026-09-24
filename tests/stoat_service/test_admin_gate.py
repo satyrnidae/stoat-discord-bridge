@@ -84,9 +84,12 @@ async def test_each_admin_command_rejects_a_non_admin():
     await sender._link_category(ctx, "discord", "s1")
     await sender._unlink_category(ctx)
     await sender._link_role(ctx, "Mods", "discord", "111")
+    await sender._transfer_history(ctx, "import", "discord", "d1")
+    await sender._transfer_history(ctx, "export", "discord", "d1")
 
     assert ctx.channel.sent == [
         {"content": "You need the Manage Server permission to do that.", "masquerade": None}
-    ] * 9
+    ] * 11
+    assert sender._linker.transfer_history_calls == []
 
 

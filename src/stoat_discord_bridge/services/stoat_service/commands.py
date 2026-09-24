@@ -258,6 +258,24 @@ def build_command_tree(bot, owner, prefix: str) -> None:
             return
         await owner._whitelist(ctx, action, target, " ".join(tokens))
 
+    # `/import` / `/export` (issue #161) - flat like /whitelist, since a
+    # history transfer creates no link. `limit:<n|all>` is a kv token so it
+    # can sit anywhere, like /mirror channel's `category:`.
+    def transfer_command(direction: str) -> None:
+        @bot.command(name=direction)
+        async def command(ctx, *args: str):
+            tokens, limit = pop_kv_option(list(args), "limit")
+            if len(tokens) < 2:
+                await owner._reply(
+                    ctx, f"Usage: {p}{direction} <service> <external_channel> [local_channel] [limit:<n|all>]"
+                )
+                return
+            local_channel = tokens[2] if len(tokens) > 2 else None
+            await owner._transfer_history(ctx, direction, tokens[0], tokens[1], local_channel, limit or None)
+
+    transfer_command("import")
+    transfer_command("export")
+
     @bot.command(name="whitelisted")
     async def whitelisted(ctx, service: typing.Optional[str] = None):
         await owner._whitelisted(ctx, service or "local")

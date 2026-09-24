@@ -341,6 +341,42 @@ class StoatLinkingMixin:
             )
         await self._reply_linker_result(ctx, coro, log_context="/mirror channel")
 
+    async def _transfer_history(
+        self,
+        ctx,
+        direction: str,
+        service: str,
+        external_channel: str,
+        local_channel: str | None = None,
+        history_limit: str | None = None,
+    ) -> None:
+        """`/import` / `/export <service> <external_channel> [local_channel] [limit:<n|all>]`
+        (issue #161): copy `service`'s channel history into `local_channel`,
+        or the reverse. `local_channel` defaults to the invoking channel."""
+        if not await self._require_admin(ctx):
+            return
+        if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
+            return
+        local_channel_id = local_channel or str(ctx.channel.id)
+        logger.info(
+            "[stoat:%s] %s ran /%s service=%s external_channel=%s local_channel=%s",
+            self.connector_id,
+            ctx.author_id,
+            direction,
+            service,
+            external_channel,
+            local_channel_id,
+        )
+        coro = self._linker.transfer_history(
+            local_connector=self.connector_id,
+            service=service,
+            external_channel_id=external_channel,
+            local_channel_id=local_channel_id,
+            direction=direction,
+            history_limit=history_limit,
+        )
+        await self._reply_linker_result(ctx, coro, log_context=f"/{direction}")
+
     async def _mirror_channel_from(
         self,
         ctx,
