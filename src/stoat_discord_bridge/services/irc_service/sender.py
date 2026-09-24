@@ -22,6 +22,7 @@ from stoat_discord_bridge.services.base import OnMessage, SenderService
 from stoat_discord_bridge.services.irc_service.client import _IrcClient
 from stoat_discord_bridge.services.irc_service.commands import (
     _ADMIN_DM_CHANNEL_VERBS,
+    _ADMIN_DM_ONE_WORD_VERBS,
     _ADMIN_DM_TWO_WORD_NOUNS,
     IrcAdminCommandsMixin,
 )
@@ -205,8 +206,8 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
     def _handle_privmsg(self, connection, event) -> None:
         # DM to the bot. `STATUS`/`HELP`/`LINKED CHANNELS`/`LINKED USERS` are
         # read-only, no permission gate. `LINK CHANNEL`/`MIRROR CHANNEL`/
-        # `UNLINK CHANNEL`/`LINK USER`/`UNLINK USER` (two-token) are oper-gated
-        # admin commands, dispatched to _handle_dm_command.
+        # `UNLINK CHANNEL`/`LINK USER`/`UNLINK USER` (two-token) and `IMPORT`/
+        # `EXPORT` are oper-gated admin commands, dispatched to _handle_dm_command.
         content = event.arguments[0]
         if content.strip().upper() == "STATUS":
             for line in self._health.render().splitlines():
@@ -228,7 +229,7 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         if two == "LINKED USERS":
             self._schedule(self._handle_linked_users_command(event.source.nick, words[2:]))
             return
-        if (
+        if words[0].upper() in _ADMIN_DM_ONE_WORD_VERBS or (
             words[0].upper() in _ADMIN_DM_CHANNEL_VERBS
             and len(words) > 1
             and words[1].upper() in _ADMIN_DM_TWO_WORD_NOUNS

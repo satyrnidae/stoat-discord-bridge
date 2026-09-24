@@ -605,3 +605,70 @@ async def test_privmsg_help_with_an_unrecognized_topic_falls_back_to_the_index()
     sender, conn = _make_sender()
     sender._handle_privmsg(None, FakeIrcEvent(text="HELP BOGUS", nick="alice"))
     assert conn.notice_calls[0] == ("alice", "Bridge commands (see COMMANDS.md for full detail):")
+
+
+# ---------------------------------------------------------------- IMPORT / EXPORT (issue #161)
+
+
+@pytest.mark.parametrize("text", ["IMPORT discord general #chat", "export discord general #chat"])
+async def test_privmsg_import_export_is_scheduled(text):
+    sender, _conn = _make_sender(linker=FakeLinker())
+    scheduled = []
+    sender._schedule = lambda coro: scheduled.append(coro)
+
+    sender._handle_privmsg(None, FakeIrcEvent(text=text, nick="alice"))
+
+    assert len(scheduled) == 1
+    scheduled[0].close()
+
+
+@pytest.mark.parametrize("verb", ["IMPORT", "EXPORT"])
+async def test_import_export_forwards_to_transfer_history(verb):
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", f"{verb.lower()} discord general #chat LIMIT:all")
+
+    assert linker.transfer_history_calls == [
+        {
+            "local_connector": "irc",
+            "service": "discord",
+            "external_channel_id": "general",
+            "local_channel_id": "#chat",
+            "direction": verb.lower(),
+            "history_limit": "all",
+        }
+    ]
+    assert conn.notice_calls == [("alice", "transferred ok")]
+
+
+async def test_import_limit_defaults_to_none():
+    linker = FakeLinker()
+    sender, _conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "IMPORT discord general #chat")
+
+    assert linker.transfer_history_calls[0]["history_limit"] is None
+
+
+async def test_import_requires_a_local_channel():
+    # An IRC DM has no current channel to default to.
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "IMPORT discord general")
+
+    assert linker.transfer_history_calls == []
+    assert conn.notice_calls == [
+        ("alice", "Usage: IMPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]")
+    ]
+
+
+async def test_export_is_oper_gated():
+    linker = FakeLinker()
+    sender, conn = _make_sender(is_oper=False, linker=linker)
+
+    await sender._handle_dm_command("alice", "EXPORT discord general #chat")
+
+    assert linker.transfer_history_calls == []
+    assert conn.notice_calls == [("alice", "You need to be an IRC operator to do that.")]

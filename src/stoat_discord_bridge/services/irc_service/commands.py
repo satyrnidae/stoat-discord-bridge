@@ -6,7 +6,7 @@ IRC clients swallow a leading "/" as a local client command). The channel
 and user commands are two-token (`LINK CHANNEL` / `MIRROR CHANNEL` /
 `UNLINK CHANNEL` / `LINK USER` / `UNLINK USER`, and read-only `LINKED
 CHANNELS` / `LINKED USERS`), matching Discord's `/link channel` subcommand
-shape. IRC has no custom-emoji concept, so the emote commands aren't
+shape; the history transfers are single-word (`IMPORT` / `EXPORT`). IRC has no custom-emoji concept, so the emote commands aren't
 offered here at all (same as roles/categories). See
 `IrcSenderService._handle_privmsg` / `IrcAdminCommandsMixin._handle_dm_command`.
 """
@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 _ADMIN_DM_CHANNEL_VERBS = frozenset({"LINK", "MIRROR", "UNLINK"})
 # Second tokens accepted after a verb in _ADMIN_DM_CHANNEL_VERBS.
 _ADMIN_DM_TWO_WORD_NOUNS = frozenset({"CHANNEL", "USER"})
+# Single-word admin commands (issue #161's history transfers).
+_ADMIN_DM_ONE_WORD_VERBS = frozenset({"IMPORT", "EXPORT"})
 
 
 class IrcAdminCommandsMixin:
@@ -211,6 +213,29 @@ class IrcAdminCommandsMixin:
                 nick,
                 self._linker.unlink_channel(
                     local_connector=self.connector_id, local_channel_id=local_id, destination=service
+                ),
+                log_context=command,
+            )
+        elif command in _ADMIN_DM_ONE_WORD_VERBS:
+            # `IMPORT|EXPORT <service> <external_channel> <local_channel>
+            # [LIMIT:<n|all>]` (issue #161). The local channel is required -
+            # an IRC DM has no current channel to default to.
+            rest, limit = pop_kv_option(list(args), "limit")
+            if len(rest) != 3:
+                self._notify(nick, f"Usage: {command} <service> <external_channel> <local_channel> [LIMIT:<n|all>]")
+                return
+            if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
+                return
+            service, external_channel, local_channel = rest
+            await self._reply_linker_result(
+                nick,
+                self._linker.transfer_history(
+                    local_connector=self.connector_id,
+                    service=service,
+                    external_channel_id=external_channel,
+                    local_channel_id=local_channel,
+                    direction=command.lower(),
+                    history_limit=limit or None,
                 ),
                 log_context=command,
             )
