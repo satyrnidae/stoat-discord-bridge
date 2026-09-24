@@ -130,6 +130,16 @@ async def test_unlink_channel_with_a_specific_local_channel_id():
     ]
 
 
+async def test_unlink_channel_passes_all_through_as_local_channel_id():
+    linker = FakeLinker()
+    sender = _make_sender(linker=linker)
+    ctx = _make_ctx(channel=FakeChannel(id="c1"))
+
+    await sender._unlink_channel(ctx, "all", "all")
+
+    assert linker.unlink_channel_calls == [{"local_connector": "stoat", "local_channel_id": "all", "destination": "all"}]
+
+
 async def test_unlink_channel_without_a_configured_linker():
     sender = _make_sender(linker=None)
     ctx = _make_ctx()

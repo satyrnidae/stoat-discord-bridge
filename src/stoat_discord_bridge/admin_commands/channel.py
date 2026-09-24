@@ -941,11 +941,19 @@ class ChannelLinker:
         member. Raises LinkError if the channel isn't linked, or
         `destination` isn't actually a member of its group.
 
+        A literal (case-insensitive) `all` as `local_channel_id` does this
+        for every bridge group `local_connector` is in (issue #160) - see
+        `_unlink_all_channels`. It's checked before name resolution, the
+        same as `/mirror channel ... all`, so a channel literally named `all`
+        has to be addressed by id.
+
         Every channel that ends up with *no* linked counterparts left - the
         kicked one, and any lone survivor a kick strands - is announced to
         its connector via the on_channel_unlinked hook (IRC uses it to post a
         "this channel was unlinked from ..." notice and PART); a channel that
         still has other links stays untouched and unannounced."""
+        if _is_all_token(local_channel_id):
+            return await self._unlink_all_channels(local_connector, destination)
         local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is None:
@@ -953,9 +961,72 @@ class ChannelLinker:
         mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
 
         if destination is None or destination.lower() == "all":
-            count = await self._channel_mappings.delete_bridge_group(bridge_group)
-            await self._announce_unlinked(mapped, removed=mapped)
+            count = await self._dissolve_group(bridge_group, mapped)
             return f"Unlinked this channel's entire bridge group ({count} channel(s) removed)."
+
+        target = await self._kick_from_group(mapped, destination)
+        return (
+            f"Unlinked {self._label(destination)} channel '{target.channel_name}' ({target.channel_id}) "
+            "from this bridge group."
+        )
+
+    async def _unlink_all_channels(self, local_connector: str, destination: str | None) -> str:
+        """`/unlink channel all <service|all>` (issue #160). For every bridge
+        group `local_connector` has a stored mapping in, kick `destination`'s
+        member out (skipping groups without one), or dissolve the group when
+        `destination` is `all`. Enumerates stored mappings rather than the
+        live channel list, so mappings to since-deleted channels get cleaned
+        up too. Unlike the single-channel form, an omitted `destination` is
+        rejected instead of meaning "dissolve everything". A group that fails
+        is reported as its own line rather than aborting the rest."""
+        if destination is None:
+            raise LinkError("'all' needs an explicit service - name a connector, or 'all' to dissolve every group.")
+        dissolve = _is_all_token(destination)
+        local_label = self._label(local_connector)
+
+        # one entry per bridge group, keeping the first local channel seen for display
+        local_by_group: dict[str, ChannelMapping] = {}
+        for m in await self._channel_mappings.get_all_for_connector(local_connector):
+            local_by_group.setdefault(m.bridge_group, m)
+        if not local_by_group:
+            raise LinkError(f"no channels on {local_label} are linked to anything.")
+
+        lines: list[str] = []
+        done = 0
+        for bridge_group, local in local_by_group.items():
+            prefix = f"'{local.channel_name}'"
+            # re-read now, in case a concurrent command changed the group
+            mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+            if not dissolve and not any(m.connector_id == destination for m in mapped):
+                continue
+            try:
+                if dissolve:
+                    count = await self._dissolve_group(bridge_group, mapped)
+                    lines.append(f"{prefix}: dissolved its bridge group ({count} channel(s) removed)")
+                else:
+                    target = await self._kick_from_group(mapped, destination)
+                    lines.append(f"{prefix}: unlinked {self._label(destination)} channel '{target.channel_name}'")
+                done += 1
+            except Exception as exc:  # report per group, don't abort the rest
+                logger.exception("bulk unlink failed for bridge group %s", bridge_group)
+                lines.append(f"{prefix}: failed - {exc}")
+
+        if not lines:
+            raise LinkError(f"none of {local_label}'s channels are linked to {self._label(destination)}.")
+        header = "Dissolved" if dissolve else f"Unlinked {self._label(destination)} from"
+        return f"{header} {done} bridge group(s) on {local_label}:\n" + "\n".join(lines)
+
+    async def _dissolve_group(self, bridge_group: str, mapped: list[ChannelMapping]) -> int:
+        """Delete every member of `bridge_group` and announce each one.
+        Returns how many mappings were removed."""
+        count = await self._channel_mappings.delete_bridge_group(bridge_group)
+        await self._announce_unlinked(mapped, removed=mapped)
+        return count
+
+    async def _kick_from_group(self, mapped: list[ChannelMapping], destination: str) -> ChannelMapping:
+        """Kick `destination`'s member out of the group `mapped` describes,
+        dissolving a lone survivor, and announce whoever ended up unlinked.
+        Returns the kicked mapping."""
 
         async def _dissolve(survivors: list[ChannelMapping]) -> None:
             # only one member (or none) would be left - a group of one isn't
@@ -973,8 +1044,10 @@ class ChannelLinker:
         )
         # announce every former member on a dissolve, just the kicked one otherwise
         await self._announce_unlinked(mapped, removed=mapped if len(survivors) <= 1 else [target])
-        label = self._connectors[destination].label if destination in self._connectors else destination
-        return f"Unlinked {label} channel '{target.channel_name}' ({target.channel_id}) from this bridge group."
+        return target
+
+    def _label(self, connector_id: str) -> str:
+        return self._connectors[connector_id].label if connector_id in self._connectors else connector_id
 
     async def _announce_unlinked(self, members: list[ChannelMapping], *, removed: list[ChannelMapping]) -> None:
         """Fire the on_channel_unlinked hook for each channel in `removed`,

@@ -291,12 +291,14 @@ HELP_TOPICS: dict[str, HelpTopic] = {
             "Given a service, kicks just that member out - the rest of the group stays linked. "
             "With no argument, or all, dissolves the whole group. A kick that would leave a "
             "single member dissolves the group instead. A channel left with no linked "
-            "counterparts is announced to its connector; IRC posts a notice and leaves it."
+            "counterparts is announced to its connector; IRC posts a notice and leaves it. "
+            "With all as the channel, does this for every channel this connector has linked - "
+            "the service is then required (a connector, or all to dissolve every group)."
         ),
         syntax={
-            "discord": "/unlink channel [local_id] [service|all]",
-            "stoat": "{p}unlink channel [local_id|name] [service|all]",
-            "irc": "UNLINK CHANNEL <local_id> [service|all]",
+            "discord": "/unlink channel [local_id|all] [service|all]",
+            "stoat": "{p}unlink channel [local_id|name|all] [service|all]",
+            "irc": "UNLINK CHANNEL <local_id|all> [service|all]",
         },
         permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
     ),

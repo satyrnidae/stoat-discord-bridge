@@ -496,12 +496,23 @@ async def test_unlink_channel_with_a_specific_destination():
     ]
 
 
+async def test_unlink_channel_passes_all_through_as_local_channel_id():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "UNLINK CHANNEL all discord")
+
+    assert linker.unlink_channel_calls == [
+        {"local_connector": "irc", "local_channel_id": "all", "destination": "discord"}
+    ]
+
+
 async def test_unlink_channel_wrong_arg_count_sends_usage():
     sender, conn = _make_sender(linker=FakeLinker())
 
     await sender._handle_dm_command("alice", "UNLINK CHANNEL")
 
-    assert conn.notice_calls == [("alice", "Usage: UNLINK CHANNEL <local_id> [service|all]")]
+    assert conn.notice_calls == [("alice", "Usage: UNLINK CHANNEL <local_id|all> [service|all]")]
 
 
 async def test_unlink_channel_without_a_configured_linker():

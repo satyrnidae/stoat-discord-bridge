@@ -568,7 +568,7 @@ silent):
   set of permission bits that mean the same on Discord and Stoat; every other
   bit on the target is left untouched.
 
-## `/unlink channel [<local_id>] [<service>|all]`
+## `/unlink channel [<local_id>|all] [<service>|all]`
 
 Removes members from `local_id`'s (or the invoking channel, if
 omitted) bridge group. `<local_id>` also accepts a bare channel name. Given a specific `service` (a connector id),
@@ -587,14 +587,33 @@ from ...` notice into the channel and then leaving it (PART) - it applies no
 matter which connector ran the `/unlink channel`. Discord/Stoat leave their
 channels in place (they're real, human-created channels there).
 
+**`local_id: all`** does this for every channel the invoking connector has
+linked, instead of one at a time. Here `service` is required:
+
+- `all <service>` kicks that connector's member out of every bridge group
+  this connector is in. Groups with no member on `<service>` are skipped.
+  Passing your own connector unlinks all of this connector's channels and
+  leaves everyone else linked.
+- `all all` dissolves every bridge group this connector is in. Groups this
+  connector isn't part of are left alone.
+- `all` with no `service` is rejected, so the most destructive form is never
+  a silent default.
+
+It works from the stored links, so links to channels that have since been
+deleted are cleaned up too. The same lone-survivor and announcement rules
+apply per group, so on IRC every channel left unlinked gets its own notice
+and PART. The reply lists one line per group, and a group that fails gets
+its own error line rather than stopping the rest. A channel literally named
+`all` has to be addressed by id in this command.
+
 - **Discord**: `/unlink channel` slash subcommand under the `/unlink` group
   (Manage Server); `service`'s autocomplete includes the literal `all`
   choice, same as `/mirror channel to`. `local_id` defaults to the current
-  channel.
-- **Stoat**: `/unlink channel [<local_id|name>] [<service>|all]` message
+  channel; type `all` into it for the bulk form.
+- **Stoat**: `/unlink channel [<local_id|name|all>] [<service>|all]` message
   command (Manage Server). `local_id` defaults to the current
   channel.
-- **IRC**: `UNLINK CHANNEL <local_id> [<service>|all]`, DM
+- **IRC**: `UNLINK CHANNEL <local_id|all> [<service>|all]`, DM
   (IRC-operator; channel always required - no "current channel" to default
   to - and hoisted to the first arg since it's the one id IRC can't leave
   out; `service` remains optional and comes after)
