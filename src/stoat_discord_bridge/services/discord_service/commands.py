@@ -661,6 +661,48 @@ def build_command_tree(service) -> None:
     ) -> None:
         await self._handle_whitelist(interaction, action.value if action else "add", service, bot)
 
+    # `/import` / `/export` (issue #161) - flat commands like /whitelist: a
+    # history transfer creates no link, so it doesn't belong under /mirror.
+    def transfer_command(direction: str, description: str, service_help: str, external_help: str, local_help: str):
+        @self.tree.command(name=direction, description=description, guild=self._guild)
+        @app_commands.describe(
+            service=service_help,
+            external_channel=external_help,
+            local_channel=local_help,
+            history_limit="How many messages to copy, or 'all' for the entire history (default: 50)",
+        )
+        @app_commands.autocomplete(
+            service=channel_service_autocomplete(include_all=False),
+            external_channel=channel_external_ac,
+            local_channel=channel_local_ac,
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        async def command(
+            interaction: discord.Interaction,
+            service: str,
+            external_channel: str,
+            local_channel: str | None = None,
+            history_limit: str | None = None,
+        ) -> None:
+            await self._handle_transfer_history(
+                interaction, direction, service, external_channel, local_channel, history_limit
+            )
+
+    transfer_command(
+        "import",
+        "Copy another channel's message history into a channel here",
+        "Connector to copy history from",
+        "Channel id or name on that connector to copy from",
+        "Channel here to copy into (defaults to the current channel)",
+    )
+    transfer_command(
+        "export",
+        "Copy a channel's message history here into another channel",
+        "Connector to copy history to",
+        "Channel id or name on that connector to copy into",
+        "Channel here to copy from (defaults to the current channel)",
+    )
+
     @self.tree.command(
         name="whitelisted", description="List whitelisted bot users on a connector", guild=self._guild
     )
