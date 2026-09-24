@@ -187,6 +187,53 @@ async def test_fetch_history_respects_limit_by_slicing_the_most_recent():
     assert [m.content_markdown for m in messages] == ["third"]
 
 
+async def _fetch_with_replay(sender, lines, **kwargs):
+    """Run fetch_history against a replay burst of `(nick, text)` lines."""
+    conn = FakeConnection(nickname="bot")
+    sender._client.connection = conn
+    task = asyncio.create_task(sender.fetch_history("#general", None, **kwargs))
+    await asyncio.sleep(0)
+    sender._handle_pubnotice(_notice_event("#general", f"Replaying up to {len(lines)} lines of pre-join history"))
+    for nick, text in lines:
+        sender._handle_pubmsg(_pubmsg_event("#general", nick=nick, text=text))
+    return await asyncio.wait_for(task, timeout=1)
+
+
+async def test_fetch_history_include_relayed_unpacks_the_bridges_own_line_tag():
+    # issue #161: a line the bridge relayed in reads back as the sender it
+    # was relayed for, already decorated, not as the bridge nick.
+    sender = _make_sender()
+
+    [relayed, native] = await _fetch_with_replay(
+        sender, [("bot", "<alice, Discord, she/her> hi"), ("carol", "hello")], include_relayed=True
+    )
+
+    assert relayed.sender_name == "alice [Discord, she/her]"
+    assert relayed.content_markdown == "hi"
+    assert relayed.source_label is None
+    assert relayed.sender_pronouns is None
+    assert native.sender_name == "carol"
+    assert native.source_label == "IRC"
+
+
+async def test_fetch_history_include_relayed_keeps_an_untagged_own_line_as_the_bridge_nick():
+    sender = _make_sender()
+
+    [message] = await _fetch_with_replay(sender, [("bot", "This channel was unlinked")], include_relayed=True)
+
+    assert message.sender_name == "bot"
+    assert message.content_markdown == "This channel was unlinked"
+
+
+async def test_fetch_history_default_leaves_the_bridges_own_lines_untouched():
+    sender = _make_sender()
+
+    [message] = await _fetch_with_replay(sender, [("bot", "<alice, Discord> hi")])
+
+    assert message.sender_name == "bot"
+    assert message.content_markdown == "<alice, Discord> hi"
+
+
 async def test_fetch_history_resolves_empty_when_no_replay_notice_arrives(monkeypatch):
     import stoat_discord_bridge.services.irc_service.sender as irc_sender_module
 
