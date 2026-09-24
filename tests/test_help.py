@@ -109,3 +109,24 @@ def test_mirror_channel_topic_key_combines_verb_and_noun():
 def test_stoat_topic_detail_uses_the_given_prefix():
     text = render_help("link channel", connector="stoat", prefix="!")
     assert text.startswith("!link channel")
+
+
+@pytest.mark.parametrize(
+    "connector, expected",
+    [
+        ("discord", "/import <service> <external_channel> [local_channel] [history_limit]"),
+        ("stoat", "!import <service> <external_channel|name> [local_channel|name] [limit:<n|all>]"),
+        ("irc", "IMPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]"),
+    ],
+)
+def test_import_topic_on_every_connector(connector, expected):
+    # issue #161 - IRC's HELP IMPORT is a single-token key, like STATUS.
+    text = render_help(resolve_help_key("import"), connector=connector, prefix="!")
+    assert text.startswith(expected)
+
+
+@pytest.mark.parametrize("connector", _CONNECTORS)
+def test_export_topic_on_every_connector(connector):
+    text = render_help("export", connector=connector)
+    assert text.lower().lstrip("/").startswith("export <service> <external_channel")
+    assert "Permission:" in text
