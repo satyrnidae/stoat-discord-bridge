@@ -337,6 +337,156 @@ async def test_unlink_channel_defaults_to_all(fake_db, connectors):
     assert await channel_mappings.get_bridge_group("discord", "d1") is None
 
 
+# ---------------------------------------------------------------- ChannelLinker.unlink_channel (local_id: all, issue #160)
+
+
+async def _link(linker, local_connector, local_id, source, source_id, name=None):
+    await linker.link_channel(
+        local_connector=local_connector, local_channel_id=local_id, local_channel_name=name or local_id,
+        source=source, source_id=source_id, destination_id=None,
+    )
+
+
+def _recording_connectors(parted, *connector_ids):
+    """ConnectorInfos whose on_channel_unlinked hook records
+    `(connector_id, channel_id, unlinked_from)` into `parted`."""
+    labels = {"discord": "Discord", "stoat": "Stoat", "irc": "IRC"}
+
+    def hook_for(connector_id):
+        async def on_unlinked(channel_id, unlinked_from):
+            parted.append((connector_id, channel_id, unlinked_from))
+        return on_unlinked
+
+    return {
+        c: ConnectorInfo(id=c, label=labels[c], on_channel_unlinked=hook_for(c)) for c in connector_ids
+    }
+
+
+async def test_unlink_channel_all_with_service_kicks_that_service_from_every_group(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    # two 3-way groups, so kicking IRC leaves discord+stoat linked in each
+    for n in ("1", "2"):
+        await _link(linker, "stoat", f"s{n}", "discord", f"d{n}")
+        await _link(linker, "irc", f"#c{n}", "discord", f"d{n}")
+
+    summary = await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="irc")
+
+    assert "2" in summary.splitlines()[0]
+    assert "'d1'" in summary and "'d2'" in summary
+    for n in ("1", "2"):
+        assert await channel_mappings.get_bridge_group("irc", f"#c{n}") is None
+        group = await channel_mappings.get_bridge_group("discord", f"d{n}")
+        assert group is not None
+        assert group == await channel_mappings.get_bridge_group("stoat", f"s{n}")
+
+
+async def test_unlink_channel_all_with_service_skips_groups_without_that_service(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await _link(linker, "stoat", "s1", "discord", "d1")
+    await _link(linker, "irc", "#c1", "discord", "d1")
+    await _link(linker, "stoat", "s2", "discord", "d2")  # no IRC member
+
+    summary = await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="irc")
+
+    assert "'d2'" not in summary
+    assert await channel_mappings.get_bridge_group("irc", "#c1") is None
+    assert await channel_mappings.get_bridge_group("discord", "d2") is not None
+
+
+async def test_unlink_channel_all_with_service_no_matching_group_raises(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await _link(linker, "stoat", "s1", "discord", "d1")
+
+    with pytest.raises(LinkError, match="none of Discord's channels are linked to IRC"):
+        await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="irc")
+    assert await channel_mappings.get_bridge_group("discord", "d1") is not None
+
+
+async def test_unlink_channel_all_with_service_dissolves_and_announces_a_lone_survivor(fake_db):
+    parted = []
+    connectors = _recording_connectors(parted, "discord", "irc")
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await _link(linker, "irc", "#c1", "discord", "d1")
+
+    await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="irc")
+
+    assert sorted(parted) == [("discord", "d1", "IRC '#c1'"), ("irc", "#c1", "Discord 'd1'")]
+    assert await channel_mappings.get_bridge_group("discord", "d1") is None
+
+
+async def test_unlink_channel_all_all_dissolves_only_the_local_connectors_groups(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await _link(linker, "stoat", "s1", "discord", "d1")
+    await _link(linker, "irc", "#c2", "discord", "d2")
+    await _link(linker, "irc", "#c3", "stoat", "s3")  # Stoat<->IRC only
+
+    summary = await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="all")
+
+    assert "2" in summary.splitlines()[0]
+    for connector_id, channel_id in (("discord", "d1"), ("stoat", "s1"), ("discord", "d2"), ("irc", "#c2")):
+        assert await channel_mappings.get_bridge_group(connector_id, channel_id) is None
+    assert await channel_mappings.get_bridge_group("stoat", "s3") is not None
+    assert await channel_mappings.get_bridge_group("irc", "#c3") is not None
+
+
+async def test_unlink_channel_all_all_announces_every_member_of_every_group(fake_db):
+    parted = []
+    connectors = _recording_connectors(parted, "discord", "stoat", "irc")
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await _link(linker, "stoat", "s1", "discord", "d1")
+    await _link(linker, "irc", "#c2", "discord", "d2")
+
+    await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="all")
+
+    assert sorted((c, ch) for c, ch, _ in parted) == [
+        ("discord", "d1"), ("discord", "d2"), ("irc", "#c2"), ("stoat", "s1"),
+    ]
+
+
+async def test_unlink_channel_all_without_service_raises_and_deletes_nothing(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await _link(linker, "stoat", "s1", "discord", "d1")
+
+    with pytest.raises(LinkError, match="explicit service"):
+        await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination=None)
+    assert await channel_mappings.get_bridge_group("discord", "d1") is not None
+
+
+async def test_unlink_channel_all_with_no_mappings_raises(fake_db, connectors):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    with pytest.raises(LinkError, match="no channels on Discord are linked"):
+        await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="all")
+
+
+async def test_unlink_channel_all_is_case_insensitive(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    await _link(linker, "stoat", "s1", "discord", "d1")
+
+    await linker.unlink_channel(local_connector="discord", local_channel_id="ALL", destination="ALL")
+    assert await channel_mappings.get_bridge_group("discord", "d1") is None
+
+
+async def test_unlink_channel_all_with_own_connector_removes_every_local_channel(fake_db, connectors):
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+    for n in ("1", "2"):
+        await _link(linker, "stoat", f"s{n}", "discord", f"d{n}")
+        await _link(linker, "irc", f"#c{n}", "discord", f"d{n}")
+
+    await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="discord")
+
+    for n in ("1", "2"):
+        assert await channel_mappings.get_bridge_group("discord", f"d{n}") is None
+        assert await channel_mappings.get_bridge_group("stoat", f"s{n}") is not None
+
+
 # ---------------------------------------------------------------- ChannelLinker.describe_group
 
 
