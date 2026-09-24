@@ -11,7 +11,7 @@ from __future__ import annotations
 import discord
 
 from tests.discord_sender_dispatch.conftest import _Recorder, _discord_message, _make_sender
-from tests.fakes.fake_discord import FakeChannel, FakeClient, FakeGuild, FakeUser
+from tests.fakes.fake_discord import FakeAsset, FakeChannel, FakeClient, FakeGuild, FakeUser
 
 
 class _FakeBotWhitelist:
@@ -151,3 +151,65 @@ async def test_fetch_history_returns_empty_for_an_unresolvable_channel():
     messages = await sender.fetch_history("999999", None)
 
     assert messages == []
+
+
+# ---- include_relayed=True (issue #161's /import and /export)
+
+
+async def test_fetch_history_include_relayed_keeps_webhook_posts_with_their_displayed_identity():
+    client = FakeClient()
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, guild=guild)
+    client.add_channel(channel)
+    webhook_author = FakeUser(id=7, display_name="alice [Stoat]", bot=True, display_avatar=FakeAsset("https://a/x.png"))
+    channel.set_history(
+        [_discord_message(channel=channel, guild=guild, author=webhook_author, content="relayed", id=1, webhook_id=999)]
+    )
+    sender = _make_sender(recorder=_Recorder(), client=client)
+
+    [message] = await sender.fetch_history("42", None, include_relayed=True)
+
+    assert message.content_markdown == "relayed"
+    assert message.sender_name == "alice [Stoat]"
+    assert message.sender_avatar_url == "https://a/x.png"
+    # Already decorated - the destination receiver mustn't decorate it again.
+    assert message.source_label is None
+    assert message.sender_pronouns is None
+
+
+async def test_fetch_history_include_relayed_keeps_non_whitelisted_bot_posts_as_native():
+    client = FakeClient()
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, guild=guild)
+    client.add_channel(channel)
+    author = FakeUser(id=1, display_name="Beeper", bot=True)
+    channel.set_history([_discord_message(channel=channel, guild=guild, author=author, content="beep", id=1)])
+    sender = _make_sender(recorder=_Recorder(), client=client)
+
+    [message] = await sender.fetch_history("42", None, include_relayed=True)
+
+    assert message.content_markdown == "beep"
+    assert message.source_label is not None
+
+
+async def test_fetch_history_include_relayed_still_drops_system_messages():
+    client = FakeClient()
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, guild=guild)
+    client.add_channel(channel)
+    author = FakeUser(id=1, display_name="Alice")
+    channel.set_history(
+        [
+            _discord_message(
+                channel=channel, guild=guild, author=author, content="", id=1,
+                type=discord.MessageType.pins_add, webhook_id=999,
+            ),
+            _discord_message(
+                channel=channel, guild=guild, author=author, content="", id=2,
+                type=discord.MessageType.thread_created,
+            ),
+        ]
+    )
+    sender = _make_sender(recorder=_Recorder(), client=client)
+
+    assert await sender.fetch_history("42", None, include_relayed=True) == []
