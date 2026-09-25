@@ -125,6 +125,18 @@ class EmojiMappingRepository:
         doc, remaining = found
         await self._collection.update_one({"_id": doc["_id"]}, {"$set": {"refs": remaining}})
 
+    async def rename_ref(self, connector_id: str, emoji_id: str, new_name: str) -> None:
+        """Update the stored name of one (connector_id, emoji_id) ref, leaving
+        the rest of its group alone - emote rename sync (issue #175)."""
+        doc = await self._find_doc(connector_id, emoji_id)
+        if doc is None:
+            return
+        refs = [
+            {**ref, "name": new_name} if ref["platform"] == connector_id and ref["emoji_id"] == emoji_id else ref
+            for ref in doc["refs"]
+        ]
+        await self._collection.update_one({"_id": doc["_id"]}, {"$set": {"refs": refs}})
+
     async def delete_group(self, group_id: str) -> int:
         """Drop a whole mapping group - `/unlink emote` with no/`all` target.
         Returns the number of refs it held."""

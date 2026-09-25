@@ -86,3 +86,24 @@ async def test_delete_group_drops_it_and_reports_ref_count(fake_db):
 
     assert await repo.delete_group(group_id) == 2
     assert await repo.get_group_id("stoat", "s1") is None
+
+
+async def test_rename_ref_updates_only_that_refs_name(fake_db):
+    repo = EmojiMappingRepository(fake_db)
+    group_id = await repo.try_reserve(EmojiRef(connector_id="discord", emoji_id="d1", name="pog"))
+    await repo.add_refs(group_id, [EmojiRef(connector_id="stoat", emoji_id="s1", name="pog")])
+
+    await repo.rename_ref("discord", "d1", "poggers")
+
+    assert await repo.find_name("discord", "d1") == "poggers"
+    assert await repo.find_name("stoat", "s1") == "pog"
+    assert await repo.get_group_id("discord", "d1") == group_id
+
+
+async def test_rename_ref_is_a_no_op_for_an_unknown_ref(fake_db):
+    repo = EmojiMappingRepository(fake_db)
+    await repo.try_reserve(EmojiRef(connector_id="discord", emoji_id="d1", name="pog"))
+
+    await repo.rename_ref("discord", "nope", "poggers")
+
+    assert await repo.find_name("discord", "d1") == "pog"
