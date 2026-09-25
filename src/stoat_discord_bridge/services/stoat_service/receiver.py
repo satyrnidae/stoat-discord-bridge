@@ -33,6 +33,7 @@ from stoat_discord_bridge.services.formatting import (
     inline_attachment_urls,
 )
 from stoat_discord_bridge.services.mentions import (
+    neutralize_mass_pings,
     rewrite_channel_mentions,
     rewrite_emoji,
     rewrite_mentions,
@@ -274,7 +275,8 @@ class StoatReceiverService(ReceiverService):
                 emoji_mappings=self._emoji_mappings,
                 mentioned_emoji=mentioned_emoji,
             )
-        return content
+        # always, unlike the rewrites above: no mapping gates a mass ping
+        return neutralize_mass_pings(content)
 
     async def edit_message(
         self, *, target_channel_id: str, target_message_ids: list[str], edit: StandardEdit

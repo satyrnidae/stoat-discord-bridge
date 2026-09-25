@@ -33,6 +33,21 @@ async def test_edit_message_edits_the_relayed_masqueraded_post():
     assert (await channel.fetch_message("7")).edits == ["edited text"]
 
 
+async def test_receive_and_edit_neutralize_a_literal_mass_ping():
+    # issue #163: e.g. a forwarded message quoting another server's @everyone
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(_message(content_markdown="> Hello @everyone"), target_channel_id="42")
+    await receiver.edit_message(
+        target_channel_id="42", target_message_ids=["7"], edit=_edit(new_content_markdown="now @here")
+    )
+
+    assert channel.sent[0]["content"] == "> Hello @​everyone"
+    assert (await channel.fetch_message("7")).edits == ["now @​here"]
+
+
 async def test_edit_message_blanks_posts_a_shortened_edit_no_longer_fills():
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id="42"))

@@ -69,6 +69,16 @@ async def test_receive_splits_a_line_longer_than_the_per_message_limit():
     assert all(len(text.encode()) <= 512 for _target, text in connection.privmsg_calls)
 
 
+async def test_receive_neutralizes_a_literal_mass_ping():
+    # issue #163
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+
+    await receiver.receive(_message(content_markdown="Hello @everyone"), target_channel_id="#general")
+
+    assert connection.privmsg_calls == [("#general", "<Alice> Hello @​everyone")]
+
+
 async def test_receive_drops_a_content_less_synced_message():
     # This is how IRC ignores pin/unpin notifications: Discord/Stoat relay
     # them as content-less messages, and IRC has no message-pin concept.
