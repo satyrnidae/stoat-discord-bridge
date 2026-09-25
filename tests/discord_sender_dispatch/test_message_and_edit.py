@@ -160,10 +160,10 @@ async def test_handle_message_with_no_reference_has_no_reply_target():
     assert message.reply_to_message_id is None
 
 
-# ---------------------------------------------------------------- GIF-picker embeds (issue #102)
+# ---------------------------------------------------------------- link-preview embeds (issues #102, #164)
 
 
-def _gif_embed(*, type="gifv", url="https://tenor.com/view/cat-dance-123", video=None, image=None, thumbnail=None):
+def _embed(*, type="gifv", url="https://tenor.com/view/cat-dance-123", video=None, image=None, thumbnail=None):
     data = {"type": type, "url": url}
     if video:
         data["video"] = {"url": video}
@@ -174,13 +174,13 @@ def _gif_embed(*, type="gifv", url="https://tenor.com/view/cat-dance-123", video
     return discord.Embed.from_dict(data)
 
 
-async def test_handle_message_converts_a_gifv_embed_to_a_reuploaded_attachment_and_strips_the_link():
+async def test_handle_message_converts_a_gifv_embed_to_an_attachment_and_leaves_the_link():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     guild = FakeGuild(id=123)
     channel = FakeChannel(id=42, name="general")
     author = FakeUser(id=1, display_name="Alice")
-    embed = _gif_embed(video="https://c.tenor.com/abc/tenor.mp4", image="https://c.tenor.com/abc/still.png")
+    embed = _embed(video="https://c.tenor.com/abc/tenor.mp4", image="https://c.tenor.com/abc/still.png")
 
     await sender._handle_message(
         _discord_message(
@@ -190,11 +190,13 @@ async def test_handle_message_converts_a_gifv_embed_to_a_reuploaded_attachment_a
     )
 
     [message] = recorder.messages
-    assert message.content_markdown == ""
+    # Stripping the link is each receiver's call now (issue #164).
+    assert message.content_markdown == "https://tenor.com/view/cat-dance-123"
     [attachment] = message.attachments
     assert attachment.url == "https://c.tenor.com/abc/tenor.mp4"  # video preferred over the still image
     assert attachment.filename == "gif.mp4"
     assert attachment.content_type == "video/mp4"
+    assert attachment.source_page_url == "https://tenor.com/view/cat-dance-123"
 
 
 async def test_handle_message_falls_back_to_a_still_image_with_no_video():
@@ -203,7 +205,7 @@ async def test_handle_message_falls_back_to_a_still_image_with_no_video():
     guild = FakeGuild(id=123)
     channel = FakeChannel(id=42, name="general")
     author = FakeUser(id=1, display_name="Alice")
-    embed = _gif_embed(type="image", image="https://c.klipy.co/abc/still.gif")
+    embed = _embed(type="image", image="https://c.klipy.co/abc/still.gif")
 
     await sender._handle_message(
         _discord_message(
@@ -225,7 +227,7 @@ async def test_handle_message_recognizes_a_klipy_host_even_with_an_unrecognized_
     guild = FakeGuild(id=123)
     channel = FakeChannel(id=42, name="general")
     author = FakeUser(id=1, display_name="Alice")
-    embed = _gif_embed(type="link", url="https://klipy.com/view/xyz", video="https://c.klipy.com/xyz/klipy.mp4")
+    embed = _embed(type="link", url="https://klipy.com/view/xyz", video="https://c.klipy.com/xyz/klipy.mp4")
 
     await sender._handle_message(
         _discord_message(
@@ -239,32 +241,65 @@ async def test_handle_message_recognizes_a_klipy_host_even_with_an_unrecognized_
     assert message.attachments[0].url == "https://c.klipy.com/xyz/klipy.mp4"
 
 
-async def test_handle_message_preserves_surrounding_text_around_a_stripped_gif_link():
+async def test_handle_message_converts_an_article_embed_with_an_image():
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     guild = FakeGuild(id=123)
     channel = FakeChannel(id=42, name="general")
     author = FakeUser(id=1, display_name="Alice")
-    embed = _gif_embed(video="https://c.tenor.com/abc/tenor.mp4")
+    embed = _embed(
+        type="article", url="https://example.com/some-article", image="https://cdn.example.com/hero.jpg"
+    )
 
     await sender._handle_message(
         _discord_message(
             channel=channel, guild=guild, author=author,
-            content="look at this https://tenor.com/view/cat-dance-123", embeds=[embed],
+            content="look https://example.com/some-article", embeds=[embed],
         )
     )
 
     [message] = recorder.messages
-    assert message.content_markdown == "look at this"
+    assert message.content_markdown == "look https://example.com/some-article"
+    [attachment] = message.attachments
+    assert attachment.url == "https://cdn.example.com/hero.jpg"
+    assert attachment.filename == "preview.jpg"
+    assert attachment.content_type == "image/jpeg"
+    assert attachment.source_page_url == "https://example.com/some-article"
 
 
-async def test_handle_message_with_a_non_gif_embed_is_unaffected():
+async def test_handle_message_skips_a_video_player_url_for_the_thumbnail():
+    # A YouTube-style embed's video.url is a player page, not a media file.
     recorder = _Recorder()
     sender = _make_sender(recorder, FakeClient())
     guild = FakeGuild(id=123)
     channel = FakeChannel(id=42, name="general")
     author = FakeUser(id=1, display_name="Alice")
-    embed = _gif_embed(type="article", url="https://example.com/some-article")
+    embed = _embed(
+        type="video",
+        url="https://www.youtube.com/watch?v=abc",
+        video="https://www.youtube.com/embed/abc",
+        thumbnail="https://i.ytimg.com/vi/abc/hqdefault.jpg",
+    )
+
+    await sender._handle_message(
+        _discord_message(
+            channel=channel, guild=guild, author=author,
+            content="https://www.youtube.com/watch?v=abc", embeds=[embed],
+        )
+    )
+
+    [message] = recorder.messages
+    [attachment] = message.attachments
+    assert attachment.url == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+
+
+async def test_handle_message_with_a_media_less_embed_is_unaffected():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    guild = FakeGuild(id=123)
+    channel = FakeChannel(id=42, name="general")
+    author = FakeUser(id=1, display_name="Alice")
+    embed = _embed(type="article", url="https://example.com/some-article")
 
     await sender._handle_message(
         _discord_message(

@@ -10,11 +10,11 @@ the client.
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit
 
 import discord
 
 from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage, StandardReaction
+from stoat_discord_bridge.services.formatting import guess_media_type, is_video_file_url
 from stoat_discord_bridge.services.role_sync import NEUTRAL_PERMISSIONS
 
 # Discord webhook hard limits: 2000 chars per message, 1-80 char usernames,
@@ -31,14 +31,6 @@ _MAPPED_DISCORD_PERM_ATTRS = {d_attr for d_attr, _ in NEUTRAL_PERMISSIONS.values
 
 _CHANNEL_MENTION_RE = re.compile(r"^<#(\d+)>$")
 _ROLE_MENTION_RE = re.compile(r"^<@&(\d+)>$")
-
-# Discord's built-in GIF picker (Tenor, then Klipy after Tenor's API was
-# killed) doesn't post a native attachment - it posts the picker page's URL
-# as plain content, which Discord auto-unfurls into an embed. Recognized by
-# embed type first, falling back to a known GIF-picker host in `embed.url`
-# for a picker whose embed type doesn't come through as expected (issue #102).
-_GIF_EMBED_TYPES = frozenset({"gifv", "image"})
-_GIF_EMBED_HOSTS = ("tenor.com", "klipy.co", "klipy.com")
 
 
 def _normalize_role_id(raw: str) -> str:
@@ -131,11 +123,7 @@ def _to_standard_message(
     sender_pronouns: str | None = None,
     sender_color: str | None = None,
 ) -> StandardMessage:
-    gif_embeds = _gif_embeds(message)
     content = _forwarded_content(message)
-    for embed in gif_embeds:
-        if embed.url and embed.url in content:
-            content = content.replace(embed.url, "").strip()
     attachments = list(message.attachments)
     for snapshot in message.message_snapshots:
         attachments.extend(snapshot.attachments)
@@ -155,7 +143,7 @@ def _to_standard_message(
             Attachment(url=a.url, filename=a.filename, content_type=a.content_type, size_bytes=a.size)
             for a in attachments
         ]
-        + _gif_embed_attachments(gif_embeds),
+        + _link_preview_attachments(message),
         mentioned_users=_map_mentioned_users(message),
         mentioned_roles=_map_mentioned_roles(message),
         mentioned_channels=_map_mentioned_channels(message),
@@ -181,58 +169,40 @@ def _reply_to_message_id(message: discord.Message) -> str | None:
     return str(message_id)
 
 
-def _gif_embeds(message: discord.Message) -> list[discord.Embed]:
-    """Every embed on `message` that looks like a GIF-picker (Tenor/Klipy)
-    auto-unfurl, rather than an attachment (issue #102). `getattr` for the
-    same defensiveness `_map_mentioned_users` etc. use against a bare fake in
-    tests / an edit payload with no `embeds`."""
-    embeds = getattr(message, "embeds", None) or []
-    matched = []
-    for embed in embeds:
-        if embed.type in _GIF_EMBED_TYPES:
-            matched.append(embed)
-        elif embed.url and any(host in embed.url for host in _GIF_EMBED_HOSTS):
-            matched.append(embed)
-    return matched
-
-
-def _gif_embed_attachments(gif_embeds: list[discord.Embed]) -> list[Attachment]:
-    """Turn each GIF-picker embed into a re-uploadable `Attachment`, pointing
-    at the actual playable/still asset rather than the picker webpage link -
-    `services/formatting.download_attachments` + the Stoat receiver then
-    handle it exactly like a native attachment (issue #102)."""
+def _link_preview_attachments(message: discord.Message) -> list[Attachment]:
+    """Turn each link-preview embed on `message` that carries fetchable media
+    into an `Attachment` pointing at that media, with `source_page_url` set
+    to the previewed page (issues #102, #164). Each receiver then decides
+    whether to re-upload it (stripping the link) or leave the link for its
+    own platform to unfurl - see `formatting.partition_link_preview_attachments`.
+    An embed with no media (a plain text/author embed) is skipped. `getattr`
+    for the same defensiveness `_map_mentioned_users` etc. use against a bare
+    fake in tests / an edit payload with no `embeds`."""
     attachments = []
-    for embed in gif_embeds:
-        asset_url = _gif_embed_asset_url(embed)
+    for embed in getattr(message, "embeds", None) or []:
+        asset_url = _embed_asset_url(embed)
         if asset_url is None:
             continue
-        filename, content_type = _guess_gif_asset_type(asset_url)
-        attachments.append(Attachment(url=asset_url, filename=filename, content_type=content_type))
+        filename, content_type = guess_media_type(asset_url, is_gif=embed.type == "gifv")
+        attachments.append(
+            Attachment(url=asset_url, filename=filename, content_type=content_type, source_page_url=embed.url)
+        )
     return attachments
 
 
-def _gif_embed_asset_url(embed: discord.Embed) -> str | None:
-    """The directly-fetchable media URL for a GIF-picker embed - the playable
-    video first (a `gifv` embed's real media is usually an .mp4, not a
-    .gif), falling back to a still image if there's no video."""
-    for media in (embed.video, embed.image, embed.thumbnail):
+def _embed_asset_url(embed: discord.Embed) -> str | None:
+    """The directly-fetchable media URL for an embed: the video first (a
+    GIF-picker `gifv` embed's real media is usually an .mp4), then the full
+    image, then the thumbnail. A video is only used when it's a `gifv` or
+    looks like a media file - a YouTube-style `video.url` is a player page."""
+    video_url = getattr(embed.video, "url", None)
+    if video_url and (embed.type == "gifv" or is_video_file_url(video_url)):
+        return video_url
+    for media in (embed.image, embed.thumbnail):
         url = getattr(media, "url", None)
         if url:
             return url
     return None
-
-
-def _guess_gif_asset_type(asset_url: str) -> tuple[str, str]:
-    """(filename, content_type) guessed from the asset URL's path extension,
-    query string ignored. Defaults to gif/image when the extension is
-    anything else (or missing) - the 8 MiB post-download size check in
-    `download_attachments` still applies regardless of the guess."""
-    path = urlsplit(asset_url).path.lower()
-    if path.endswith(".mp4"):
-        return "gif.mp4", "video/mp4"
-    if path.endswith(".webm"):
-        return "gif.webm", "video/webm"
-    return "gif.gif", "image/gif"
 
 
 def _to_standard_reaction(

@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import posixpath
 import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from typing import Protocol
 from urllib.parse import urlsplit
 
 import aiohttp
 
 from stoat_discord_bridge.models import Attachment
+
+logger = logging.getLogger(__name__)
 
 # Discord/Stoat dynamic-timestamp markup: <t:UNIX_SECONDS> or <t:UNIX_SECONDS:STYLE>
 # where STYLE is one of t T d D f F R (absent == f). IRC has no equivalent, so
@@ -192,6 +197,100 @@ def inline_attachment_urls(content: str, attachments: Sequence[Attachment]) -> s
     lines = [content] if content else []
     lines.extend(a.url for a in attachments if a.url)
     return "\n".join(lines) or "\u200b"
+
+
+_MEDIA_TYPES = {
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+}
+
+
+def _url_extension(url: str) -> str:
+    return posixpath.splitext(urlsplit(url).path.lower())[1]
+
+
+def is_video_file_url(url: str) -> bool:
+    """True if `url` looks like a video file rather than a player page - a
+    link preview's video URL is often an embeddable player (YouTube's is)."""
+    return (_MEDIA_TYPES.get(_url_extension(url)) or "").startswith("video/")
+
+
+def guess_media_type(asset_url: str, *, is_gif: bool = False) -> tuple[str, str | None]:
+    """(filename, content_type) for a link-preview asset, guessed from its
+    URL's path extension (query string ignored). GIF media is named `gif.*`
+    and defaults to gif/image when the extension is unknown; anything else is
+    `preview.*`, with no content type if the extension is unknown. The 8 MiB
+    post-download size check in `download_attachments` still applies
+    regardless of the guess."""
+    ext = _url_extension(asset_url)
+    content_type = _MEDIA_TYPES.get(ext)
+    stem = "gif" if is_gif or ext == ".gif" else "preview"
+    if content_type is None:
+        return ("gif.gif", "image/gif") if stem == "gif" else (stem, None)
+    return f"{stem}{ext}", content_type
+
+
+class LinkPreviewPreferences(Protocol):
+    """What `partition_link_preview_attachments` needs from
+    `admin_commands.AttachmentPreferenceManager`."""
+
+    async def preferred_kind_for(self, url: str) -> str | None: ...
+
+
+async def partition_link_preview_attachments(
+    content: str,
+    attachments: Sequence[Attachment],
+    *,
+    my_kind: str | None,
+    preferences: LinkPreviewPreferences | None,
+) -> tuple[str, list[Attachment]]:
+    """Decide, per link-preview attachment (one with `source_page_url`),
+    whether this receiver re-uploads the source's resolved media or leaves
+    the raw link for its own platform to unfurl (issue #164).
+
+    By default the media is kept and the link is stripped from `content`, so
+    the preview looks the way the source platform built it. If an
+    `/attachments prefer` rule names `my_kind`, the attachment is dropped and
+    the link left in place. `my_kind=None` (IRC, no previews) always keeps
+    the link, since the page URL is more useful there than a bare media URL.
+    A preview whose link isn't in `content` is always kept - there's nothing
+    to rebuild it from. Ordinary attachments pass through untouched. Returns
+    `(content, attachments)`.
+    """
+    kept: list[Attachment] = []
+    for attachment in attachments:
+        page_url = attachment.source_page_url
+        link = _whole_link_pattern(page_url) if page_url else None
+        if link is None or not link.search(content):
+            kept.append(attachment)
+            continue
+        if my_kind is None or await _preferred_kind(preferences, page_url) == my_kind:
+            continue
+        content = link.sub("", content).strip()
+        kept.append(attachment)
+    return content, kept
+
+
+def _whole_link_pattern(url: str) -> re.Pattern[str]:
+    """Matches `url` only as a whole token - not as the prefix of a longer
+    link. Trailing sentence punctuation right after it is allowed."""
+    return re.compile(rf"(?<![^\s<(]){re.escape(url)}(?=$|[\s>)]|[.,!?;:](?:\s|$))")
+
+
+async def _preferred_kind(preferences: LinkPreviewPreferences | None, url: str) -> str | None:
+    if preferences is None:
+        return None
+    try:
+        return await preferences.preferred_kind_for(url)
+    except Exception:
+        logger.warning("attachment preference lookup failed for %s", url, exc_info=True)
+        return None
 
 
 # A relayed attachment larger than this is left as a CDN link rather than

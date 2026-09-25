@@ -172,6 +172,25 @@ class FakeBotWhitelistManager:
         return "bot1 (bot1)"
 
 
+class FakeAttachmentPreferenceManager:
+    def __init__(self):
+        self.prefer_calls: list[dict] = []
+        self.unprefer_calls: list[dict] = []
+        self.list_calls = 0
+
+    async def prefer(self, **kwargs):
+        self.prefer_calls.append(kwargs)
+        return "Links containing 'instagram.com' will now use stoat's own preview."
+
+    async def unprefer(self, **kwargs):
+        self.unprefer_calls.append(kwargs)
+        return "Removed the preference for 'instagram.com'."
+
+    async def list_preferences(self):
+        self.list_calls += 1
+        return "Attachment preferences:\ninstagram.com -> stoat"
+
+
 class FakeInteraction:
     def __init__(
         self,
@@ -251,6 +270,7 @@ def _make_sender(
     category_linker=None,
     role_linker=None,
     bot_whitelist=None,
+    attachment_preferences=None,
 ) -> DiscordSenderService:
     return DiscordSenderService(
         _discord_config(),
@@ -262,4 +282,5 @@ def _make_sender(
         category_linker=category_linker,
         role_linker=role_linker,
         bot_whitelist=bot_whitelist,
+        attachment_preferences=attachment_preferences,
     )

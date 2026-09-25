@@ -128,23 +128,34 @@ so it's never lost. IRC has no native attachments, so
 `IrcReceiverService.receive` still inlines every attachment URL as its own
 line.
 
-A Discord GIF picked via Discord's built-in picker (Tenor, then Klipy after
-Tenor's API was killed) is **not** a native attachment — Discord posts the
-picker page's URL as message content, which auto-unfurls into a
-`discord.Embed`. `discord_service/formatting._gif_embeds` recognizes one
-(`embed.type` of `gifv`/`image`, or a `tenor.com`/`klipy.co`/`klipy.com`
-`embed.url` as a fallback) and `_to_standard_message` turns it into a regular
-`Attachment` pointing at the actual asset (`embed.video.url`, preferred since
-a `gifv` embed's real media is usually an `.mp4`, then `embed.image.url` /
-`embed.thumbnail.url`), stripping the matched webpage link out of
-`content_markdown` so it isn't relayed both as a dead link and a re-uploaded
-file — from there it rides the same re-upload path as a normal attachment
-(issue #102). Discord → Stoat only, since IRC inlines the (still-present) raw
-link like any other URL and has no image rendering to lose. **Unverified
-against a live server**: whether the picker's embed is present on the
-message's initial payload (vs. arriving later via a `MESSAGE_UPDATE` the
-sender otherwise ignores as an auto-embed unfurl) and whether Stoat renders a
-re-uploaded `.mp4` inline the same way it does a `.gif`.
+A link preview (an auto-unfurled embed) is relayed as the *source*
+platform's own preview media, re-uploaded as an attachment, rather than
+letting each destination unfurl the link itself (issue #164, generalizing
+#102's GIF-picker case — a Discord GIF-picker pick is just a Tenor/Klipy link
+whose embed carries the media). Each sender turns every embed with fetchable
+media into an `Attachment` with `source_page_url` set to the previewed link:
+Discord's `discord_service/formatting._link_preview_attachments` (video if
+it's a `gifv` or a media file — a YouTube-style `video.url` is a player page
+— then `image`, then `thumbnail`), Stoat's
+`stoat_service/formatting._link_preview_embed_attachments` (`WebsiteEmbed`
+video-if-media-file then image, keyed by `original_url`; a bare
+`ImageEmbed`/`VideoEmbed` points at itself). Senders leave the link in
+`content_markdown`; each receiver decides via
+`services/formatting.partition_link_preview_attachments`: by default it keeps
+the attachment and strips the link (whole-token match only). An
+`/attachments prefer <discord|stoat> <url-substr>` rule
+(`admin_commands/attachment_preferences.AttachmentPreferenceManager`, Mongo
+`storage/attachment_preferences.py`, longest case-insensitive substring
+wins, cached ~30s) naming the receiver's own kind makes it drop the
+attachment and keep the link, so its own platform unfurls it. IRC
+(`my_kind=None`) always keeps the link and drops the preview media, since
+the page link is more useful there than a bare media URL. A preview whose
+link isn't in the text (a bot's rich embed) is always kept. Rules are keyed
+by kind, not connector id. **Unverified against a live server**: whether
+either platform's embed is on the message's initial payload (vs. arriving
+later via an update event the senders ignore as an auto-embed unfurl) and
+whether Stoat renders a re-uploaded `.mp4` inline the same way it does a
+`.gif`.
 
 A Discord **forwarded message** carries its actual content in a separate
 `Message.message_snapshots` field, not in `.content`/`.attachments` — those
@@ -155,9 +166,9 @@ the caption with every snapshot's content as a Markdown blockquote (`>
 <line>`, each line prefixed individually) and appends every snapshot's
 attachments to the message's own — issue #125; without this, a forward with
 no caption relayed nothing, and one with a caption relayed only the caption,
-in both cases silently dropping the forwarded content itself. Embeds aren't
-modeled by `StandardMessage` at all (a separate, pre-existing gap), so a
-forwarded embed is still dropped.
+in both cases silently dropping the forwarded content itself. A forwarded
+embed is still dropped - only the message's own embeds are read as link
+previews (above).
 
 `config.py` loads `config.yaml` and layers env vars over it per-field: an
 `{SECTION}__{index}__{FIELD}` env var (Azure App Configuration/ASP.NET

@@ -103,6 +103,22 @@ async def test_receive_inlines_attachment_urls_for_an_image_only_message():
     assert connection.privmsg_calls == [("#general", "<Alice> https://cdn.example/f.png")]
 
 
+async def test_receive_keeps_a_previewed_link_and_drops_its_media_url():
+    # Issue #164: the page link is more useful on IRC than the resolved
+    # preview media, and relaying both would duplicate it.
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+    page = "https://www.youtube.com/watch?v=abc"
+    preview = Attachment(url="https://i.ytimg.com/vi/abc/hq.jpg", source_page_url=page)
+
+    await receiver.receive(
+        _message(content_markdown=f"watch {page}", attachments=[preview]),
+        target_channel_id="#general",
+    )
+
+    assert connection.privmsg_calls == [("#general", f"<Alice> watch {page}")]
+
+
 async def test_receive_appends_attachment_urls_after_the_text():
     connection = FakeIrcConnection()
     receiver = _make_receiver(connection)

@@ -423,6 +423,26 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         },
         permission="read-only",
     ),
+    # One topic for all three subcommands - Discord's /help dropdown is capped
+    # at 25 choices.
+    "attachments": HelpTopic(
+        summary="Choose which platform builds link previews (Discord/Stoat only)",
+        body=(
+            "A link preview (Instagram, YouTube, an article...) is relayed as the source "
+            "platform's own preview media, re-uploaded as an attachment, with the link removed "
+            "from the text. prefer <discord|stoat> <url-substr> makes that platform build its own "
+            "preview instead for links containing the text (case-insensitive; the longest match "
+            "wins): it gets the plain link and the attachment is skipped. unprefer removes a "
+            "rule; preferences lists them. Rules apply to every connector of that kind. IRC has "
+            "no previews - it always gets the plain link."
+        ),
+        syntax={
+            "discord": "/attachments prefer <kind> <url_substring> | unprefer <url_substring> | preferences",
+            "stoat": "{p}attachments prefer <discord|stoat> <url-substr> | unprefer <url-substr> | preferences",
+            "irc": None,
+        },
+        permission="Manage Server (preferences is read-only on Stoat)",
+    ),
 }
 
 # This connector's own help command, appended to the index - not itself a

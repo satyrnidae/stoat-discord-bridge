@@ -712,6 +712,48 @@ default, a number (clamped to 1000), or `all` for the entire history.
   [LIMIT:<n|all>]` and the same for `EXPORT`, DM (IRC-operator).
   `<local_channel>` is required - a DM has no current channel.
 
+## Link previews: `/attachments`
+
+**Discord and Stoat only.** When someone posts a link that gets a preview
+(Instagram, YouTube, an article...), the bridge relays the *source*
+platform's preview media as a re-uploaded attachment and removes the link
+from the text, so the preview looks the way the source platform built it.
+Some sites preview better on one platform than the other. A rule here makes
+one platform build its own preview instead: for a matching link, that
+platform gets the plain link and the attachment is skipped.
+
+- Rules match a case-insensitive piece of the link (`instagram.com`). When
+  several match, the longest one wins, so `instagram.com/reels` beats
+  `instagram.com`.
+- Rules name a platform kind (`discord` or `stoat`), not a connector id, so
+  they apply to every connector of that kind.
+- A preview whose link isn't in the message text (e.g. a bot's embed) is
+  always relayed as an attachment.
+- **IRC** has no previews and no command. It always gets the plain link, not
+  the preview media.
+
+Example: `/attachments prefer stoat instagram.com` - Instagram links from
+Discord arrive on Stoat as plain links that Stoat previews itself.
+
+### `/attachments prefer <discord|stoat> <url-substr>`
+
+Adds a rule, or replaces the rule for that same text. Manage Server.
+
+### `/attachments unprefer <url-substr>`
+
+Removes a rule. Manage Server.
+
+### `/attachments preferences`
+
+Lists every rule.
+
+- **Discord**: `/attachments prefer|unprefer|preferences` slash commands. The
+  whole group needs Manage Server, the listing included - Discord can't set
+  permissions per subcommand.
+- **Stoat**: the same as message commands. `prefer`/`unprefer` need Manage
+  Server; `preferences` is open to everyone.
+- **IRC**: not available.
+
 ## `/help` (Discord) / `/bridge-help` (Stoat) / `HELP` (IRC)
 
 With no argument, prints an index of every command this connector offers -

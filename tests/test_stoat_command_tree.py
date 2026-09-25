@@ -515,3 +515,53 @@ async def test_whitelisted_takes_an_explicit_service():
     await bot.all_commands["whitelisted"].callback(SimpleNamespace(), "discord")
 
     assert owner.whitelisted_calls == ["discord"]
+
+
+# ---------------------------------------------------------------- /attachments (issue #164)
+
+
+class _AttachmentsOwner:
+    def __init__(self):
+        self.replies = []
+        self.calls = []
+
+    async def _reply(self, ctx, text):
+        self.replies.append(text)
+
+    async def _attachments_prefer(self, ctx, kind, url_substring):
+        self.calls.append(("prefer", kind, url_substring))
+
+    async def _attachments_unprefer(self, ctx, url_substring):
+        self.calls.append(("unprefer", url_substring))
+
+    async def _attachments_preferences(self, ctx):
+        self.calls.append(("preferences",))
+
+
+def test_registers_the_attachments_group():
+    bot = _bare_bot()
+    assert sorted(bot.all_commands["attachments"].all_commands) == ["prefer", "preferences", "unprefer"]
+
+
+async def test_attachments_subcommands_forward_to_the_owner():
+    owner = _AttachmentsOwner()
+    group = _bare_bot(owner).all_commands["attachments"]
+
+    await group.all_commands["prefer"].callback(SimpleNamespace(), "stoat", "instagram.com")
+    await group.all_commands["unprefer"].callback(SimpleNamespace(), "instagram.com")
+    await group.all_commands["preferences"].callback(SimpleNamespace())
+
+    assert owner.calls == [
+        ("prefer", "stoat", "instagram.com"),
+        ("unprefer", "instagram.com"),
+        ("preferences",),
+    ]
+
+
+async def test_attachments_with_no_subcommand_replies_usage():
+    owner = _AttachmentsOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["attachments"].callback(SimpleNamespace())
+
+    assert owner.replies == ["Usage: /attachments <prefer <discord|stoat> <url-substr>|unprefer <url-substr>|preferences>"]

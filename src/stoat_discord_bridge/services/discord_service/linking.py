@@ -902,6 +902,51 @@ class DiscordLinkingMixin:
             )
         await self._reply_linker_result(interaction, coro, log_context="/whitelist")
 
+    async def _handle_attachments_prefer(
+        self, interaction: discord.Interaction, kind: str, url_substring: str
+    ) -> None:
+        if not await self._linker_configured(
+            interaction, self._attachment_preferences, "Attachment preferences aren't configured."
+        ):
+            return
+        logger.info(
+            "[discord:%s] %s ran /attachments prefer kind=%s url_substring=%s",
+            self.connector_id,
+            interaction.user.id,
+            kind,
+            url_substring,
+        )
+        await self._reply_linker_result(
+            interaction,
+            self._attachment_preferences.prefer(kind=kind, url_substring=url_substring),
+            log_context="/attachments prefer",
+        )
+
+    async def _handle_attachments_unprefer(self, interaction: discord.Interaction, url_substring: str) -> None:
+        if not await self._linker_configured(
+            interaction, self._attachment_preferences, "Attachment preferences aren't configured."
+        ):
+            return
+        logger.info(
+            "[discord:%s] %s ran /attachments unprefer url_substring=%s",
+            self.connector_id,
+            interaction.user.id,
+            url_substring,
+        )
+        await self._reply_linker_result(
+            interaction,
+            self._attachment_preferences.unprefer(url_substring=url_substring),
+            log_context="/attachments unprefer",
+        )
+
+    async def _handle_attachments_preferences(self, interaction: discord.Interaction) -> None:
+        if not await self._linker_configured(
+            interaction, self._attachment_preferences, "Attachment preferences aren't configured."
+        ):
+            return
+        summary = await self._attachment_preferences.list_preferences()
+        await interaction.response.send_message(summary, ephemeral=True)
+
     async def _handle_whitelisted(self, interaction: discord.Interaction, service: str) -> None:
         if not await self._linker_configured(interaction, self._bot_whitelist, "Bot whitelisting isn't configured."):
             return

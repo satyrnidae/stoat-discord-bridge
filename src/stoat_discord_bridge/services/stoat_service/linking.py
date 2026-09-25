@@ -643,6 +643,49 @@ class StoatLinkingMixin:
         summary = await self._bot_whitelist.list_whitelisted_bots(target_connector=target_connector)
         await self._reply(ctx, summary)
 
+    async def _attachments_prefer(self, ctx, kind: str, url_substring: str) -> None:
+        if not await self._require_admin(ctx):
+            return
+        if not await self._linker_configured(
+            ctx, self._attachment_preferences, "Attachment preferences aren't configured."
+        ):
+            return
+        logger.info(
+            "[stoat:%s] %s ran /attachments prefer kind=%s url_substring=%s",
+            self.connector_id,
+            ctx.author_id,
+            kind,
+            url_substring,
+        )
+        await self._reply_linker_result(
+            ctx,
+            self._attachment_preferences.prefer(kind=kind, url_substring=url_substring),
+            log_context="/attachments prefer",
+        )
+
+    async def _attachments_unprefer(self, ctx, url_substring: str) -> None:
+        if not await self._require_admin(ctx):
+            return
+        if not await self._linker_configured(
+            ctx, self._attachment_preferences, "Attachment preferences aren't configured."
+        ):
+            return
+        logger.info(
+            "[stoat:%s] %s ran /attachments unprefer url_substring=%s", self.connector_id, ctx.author_id, url_substring
+        )
+        await self._reply_linker_result(
+            ctx,
+            self._attachment_preferences.unprefer(url_substring=url_substring),
+            log_context="/attachments unprefer",
+        )
+
+    async def _attachments_preferences(self, ctx) -> None:
+        if not await self._linker_configured(
+            ctx, self._attachment_preferences, "Attachment preferences aren't configured."
+        ):
+            return
+        await self._reply(ctx, await self._attachment_preferences.list_preferences())
+
     def _is_admin(self, message) -> bool:
         """True if the command author has Stoat's Manage Server permission
         (mirrors the ``manage_guild`` default on Discord's command tree).

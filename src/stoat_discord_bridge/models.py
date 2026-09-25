@@ -26,6 +26,11 @@ class Attachment:
     filename: str | None = None
     content_type: str | None = None
     size_bytes: int | None = None
+    # Set when this attachment is media resolved from a link-preview embed
+    # rather than a real upload: the web page URL the preview was built from.
+    # Each receiver uses it to strip the link from the text, or to drop the
+    # attachment and let its own platform unfurl the link (issue #164).
+    source_page_url: str | None = None
 
 
 @dataclass(frozen=True)
