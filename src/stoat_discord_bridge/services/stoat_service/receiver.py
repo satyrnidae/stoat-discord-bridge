@@ -27,10 +27,12 @@ from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.formatting import (
+    LinkPreviewPreferences,
     chunk_content,
     decorate_sender_name,
     download_attachments,
     inline_attachment_urls,
+    partition_link_preview_attachments,
 )
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
@@ -85,8 +87,10 @@ class StoatReceiverService(ReceiverService):
         source_forwarding: bool = True,
         pronoun_forwarding: bool = True,
         color_forwarding: bool = True,
+        attachment_preferences: LinkPreviewPreferences | None = None,
     ) -> None:
         self.connector_id = sender.connector_id
+        self._attachment_preferences = attachment_preferences
         self._sender = sender
         self._user_mappings = user_mappings
         self._channel_mappings = channel_mappings
@@ -138,11 +142,19 @@ class StoatReceiverService(ReceiverService):
         # Re-upload the message's attachments as native Stoat files rather
         # than pasting their (often short-lived, signed) CDN URLs into the
         # text - see issue #39. Anything too large or unfetchable falls back
-        # to an inlined URL below so it's not lost.
-        files, undownloadable = await download_attachments(message.attachments)
+        # to an inlined URL below so it's not lost. A link-preview attachment
+        # an /attachments prefer rule hands to Stoat is dropped here and its
+        # link left for Stoat to unfurl (issue #164).
+        content_markdown, attachments = await partition_link_preview_attachments(
+            message.content_markdown,
+            message.attachments,
+            my_kind="stoat",
+            preferences=self._attachment_preferences,
+        )
+        files, undownloadable = await download_attachments(attachments)
         content = await self._rewrite_content(
             origin_connector_id=message.origin_connector_id,
-            content_markdown=message.content_markdown,
+            content_markdown=content_markdown,
             mentioned_users=message.mentioned_users,
             mentioned_roles=message.mentioned_roles,
             mentioned_channels=message.mentioned_channels,

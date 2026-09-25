@@ -12,7 +12,12 @@ import logging
 
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
-from stoat_discord_bridge.services.formatting import chunk_content, render_discord_timestamps, strip_markdown
+from stoat_discord_bridge.services.formatting import (
+    chunk_content,
+    partition_link_preview_attachments,
+    render_discord_timestamps,
+    strip_markdown,
+)
 from stoat_discord_bridge.services.irc_service.formatting import _LINE_LIMIT, _synthetic_message_id, format_line_tag
 from stoat_discord_bridge.services.irc_service.sender import IrcSenderService
 from stoat_discord_bridge.services.mentions import (
@@ -65,15 +70,21 @@ class IrcReceiverService(ReceiverService):
         # before anything else, while the content is still just the message
         # body (doing it after the attachment URLs are inlined would risk an
         # underscore/asterisk in a CDN link being read as emphasis).
-        content = strip_markdown(message.content_markdown)
+        # IRC has no link previews, so a link-preview attachment whose page
+        # link is in the text is dropped - the link says more than the bare
+        # preview media URL would (issue #164).
+        content_markdown, attachments = await partition_link_preview_attachments(
+            message.content_markdown, message.attachments, my_kind=None, preferences=None
+        )
+        content = strip_markdown(content_markdown)
         # IRC has no native attachments - inline each attachment URL (a
         # Discord/Stoat CDN link) as its own line so an image-only message
         # isn't relayed blank. Done inline rather than via
         # formatting.inline_attachment_urls(), whose empty-message sentinel
         # would put a zero-width space on the wire. (Discord/Stoat re-upload
         # these as native files instead - see formatting.download_attachments.)
-        if message.attachments:
-            extra = "\n".join(a.url for a in message.attachments if a.url)
+        if attachments:
+            extra = "\n".join(a.url for a in attachments if a.url)
             if extra:
                 content = f"{content}\n{extra}" if content else extra
         # Discord/Stoat <t:...> dynamic timestamps have no IRC equivalent - render
