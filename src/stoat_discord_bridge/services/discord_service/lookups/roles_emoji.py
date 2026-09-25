@@ -7,15 +7,20 @@ rest of the id<->name lookups in `names.py`.
 
 from __future__ import annotations
 
-from stoat_discord_bridge.models import CustomEmoji, EmojiCapacity
+import discord
+
+from stoat_discord_bridge.models import CustomEmoji, EmojiCapacity, RoleMetadata
 
 
 class _RolesEmojiMixin:
     """Role/emoji get-or-create half of `DiscordLookupsMixin`."""
 
-    async def ensure_role(self, name: str) -> str:
+    async def ensure_role(self, name: str, *, metadata: "RoleMetadata | None" = None) -> str:
         """Get-or-create a role named `name`, returning its id - this
-        connector's `ConnectorInfo.ensure_role` for `/mirror role`."""
+        connector's `ConnectorInfo.ensure_role` for `/mirror role`.
+        `metadata`'s color/hoist are applied only when the role is created
+        (issue #179); a color Discord can't parse (e.g. a Stoat gradient) is
+        skipped."""
         guild = self._guild_or_none()
         if guild is None:
             raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
@@ -23,8 +28,32 @@ class _RolesEmojiMixin:
         for role in guild.roles:
             if role.name.casefold() == lowered:
                 return str(role.id)
-        role = await guild.create_role(name=name, reason="bridge role mirror")
+        extra: dict = {}
+        if metadata is not None:
+            extra["hoist"] = metadata.hoist
+            if metadata.color:
+                try:
+                    extra["color"] = discord.Color.from_str(metadata.color)
+                except ValueError:
+                    pass
+        role = await guild.create_role(name=name, reason="bridge role mirror", **extra)
         return str(role.id)
+
+    async def describe_role(self, role_id: str) -> "RoleMetadata | None":
+        """A role's color/hoist, this connector's `ConnectorInfo.describe_role`
+        (issue #179). A zero color value means "no color". None if the role
+        isn't cached."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        try:
+            role = guild.get_role(int(role_id))
+        except ValueError:
+            return None
+        if role is None:
+            return None
+        value = role.color.value
+        return RoleMetadata(color=f"#{value:06x}" if value else None, hoist=role.hoist)
 
     async def get_emoji_name(self, emoji_id: str) -> str | None:
         """Best-effort emoji-id -> name lookup, this connector's

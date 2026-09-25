@@ -176,8 +176,19 @@ class RoleLinker:
         if dest_info.role_name_limit is not None:
             target_name = clip_name(target_name, dest_info.role_name_limit)
 
+        # Carry the source role's color/hoist over (issue #179). Best-effort:
+        # a missing or raising hook just means a plain name-only role.
+        metadata = None
+        source_info = self._connectors.get(local_connector)
+        if source_info is not None and source_info.describe_role is not None:
+            try:
+                metadata = await source_info.describe_role(local_id)
+            except Exception as exc:
+                logger.warning("mirror-role: %s.describe_role(%r) failed: %s", local_connector, local_id, exc)
+        extra = {"metadata": metadata} if metadata is not None else {}
+
         try:
-            destination_role_id = await dest_info.ensure_role(target_name)
+            destination_role_id = await dest_info.ensure_role(target_name, **extra)
         except Exception as exc:
             logger.warning("mirror-role: %s.ensure_role(%r) failed: %s", destination, target_name, exc)
             return f"{dest_info.label}: failed to create/find a role: {exc}"

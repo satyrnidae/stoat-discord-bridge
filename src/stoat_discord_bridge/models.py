@@ -144,6 +144,23 @@ class ChannelMetadata:
 
 
 @dataclass(frozen=True)
+class RoleMetadata:
+    """A linked role's cosmetic properties, read off the source role when
+    `/mirror role` creates its counterpart (issue #179) - the role
+    counterpart of `ChannelMetadata`, applied by each connector's
+    `ensure_role` hook *only on the create path*.
+
+    `color` is a CSS color string (`#rrggbb` from Discord; Stoat's own
+    `Role.color` as-is, which may be a gradient Discord can't take - its
+    `ensure_role` then just skips the color). `hoist` is "display members
+    separately", which both platforms have. Permissions aren't carried over.
+    """
+
+    color: str | None = None
+    hoist: bool = False
+
+
+@dataclass(frozen=True)
 class CustomEmoji:
     """A custom (non-unicode) emoji. A plain unicode emoji needs no platform
     ID translation, so it's passed around as a bare `str` instead of this."""

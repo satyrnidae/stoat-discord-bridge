@@ -26,7 +26,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypeVar, overload
 
 if TYPE_CHECKING:
-    from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, EmojiCapacity, StandardMessage
+    from stoat_discord_bridge.models import (
+        ChannelMetadata,
+        CustomEmoji,
+        EmojiCapacity,
+        RoleMetadata,
+        StandardMessage,
+    )
     from stoat_discord_bridge.services.role_sync import RolePermissionOverride
 
 logger = logging.getLogger(__name__)
@@ -654,7 +660,15 @@ class ConnectorInfo:
     # None if this connector kind can't create roles - `/mirror role` then
     # reports that connector as unsupported rather than calling this (mirrors
     # ensure_channel).
-    ensure_role: Callable[[str], Awaitable[str]] | None = None
+    # An optional `metadata` keyword (a `RoleMetadata`) is passed by
+    # `/mirror role` when the source role had any - the hook applies it only
+    # when it actually creates the role, never onto a reused one (issue #179).
+    ensure_role: Callable[..., Awaitable[str]] | None = None
+    # Best-effort read of a role's cosmetic metadata (color, hoist) as a
+    # `RoleMetadata`, or None if the role can't be resolved. `/mirror role`
+    # reads this off the *source* role and hands it to the destination's
+    # `ensure_role` (issue #179) - the role counterpart of describe_channel.
+    describe_role: Callable[[str], Awaitable["RoleMetadata | None"]] | None = None
     # Rename the role `role_id` to `new_name` on this connector - used to keep
     # linked copies coherent when a linked role is renamed on one side.
     rename_role: Callable[[str, str], Awaitable[None]] | None = None

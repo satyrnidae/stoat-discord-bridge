@@ -529,8 +529,9 @@ Server (Stoat).
 `to` ensures a linked counterpart of the local role exists on `<service>`
 (required, or every other connector if `<service>` is `all`; issue #97):
 reuses a same-named role
-there or creates a bare one (name only - color/permissions are not copied),
-then links it. `from` is the same operation run the other way - a local
+there or creates one, then links it. A newly created role takes the source
+role's color and "display separately" (hoist) setting; permissions are not
+copied, and a reused role is left as it is. `from` is the same operation run the other way - a local
 counterpart of `<service>`'s role is created-or-matched **here** and linked
 (reusing an existing bridge group). A connector that can't create roles is
 reported per-connector. Manage Server.
