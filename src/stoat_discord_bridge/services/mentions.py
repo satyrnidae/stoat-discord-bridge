@@ -286,6 +286,16 @@ _ZWSP = "\u200b"
 _PING_KEYWORD = re.compile(r"@(everyone|here)\b")
 
 
+def neutralize_mass_pings(content: str) -> str:
+    """Wedge a zero-width space in after the `@` of any `@everyone` / `@here`
+    so the target can't parse it as a live mass ping. Run by every receiver
+    over the whole relayed text: a keyword the origin treated as inert (a
+    forwarded message, a user without Mention Everyone) would otherwise ping
+    on the target, since nothing else in the pipeline touches it (issue
+    #163)."""
+    return _PING_KEYWORD.sub(rf"@{_ZWSP}\1", content)
+
+
 def _defang_mentions(text: str) -> str:
     """Neutralise anything in a `@<origin display name>` expansion that a
     target could parse as a live mention before it's spliced into relayed
@@ -295,7 +305,7 @@ def _defang_mentions(text: str) -> str:
     sigil. It still reads the same; it just can't ping. (The bridge sets no
     `allowed_mentions` on its webhook/masquerade sends, so an un-defanged
     `@everyone` in a display name would be a live mass ping.)"""
-    text = _PING_KEYWORD.sub(rf"@{_ZWSP}\1", text)
+    text = neutralize_mass_pings(text)
     return text.replace("<@", f"<{_ZWSP}@").replace("<#", f"<{_ZWSP}#").replace("<%", f"<{_ZWSP}%")
 
 

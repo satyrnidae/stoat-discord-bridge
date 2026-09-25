@@ -1,4 +1,5 @@
 from stoat_discord_bridge.services.mentions import (
+    neutralize_mass_pings,
     rewrite_channel_mentions,
     rewrite_emoji,
     rewrite_mentions,
@@ -293,6 +294,20 @@ async def test_expanded_plain_name_is_untouched(fake_db):
         target_kind="discord", user_mappings=repo, mentioned_users={"999": "Morning Witch"},
     )
     assert result == "hi @Morning Witch"
+
+
+def test_neutralize_mass_pings_defangs_everyone_and_here():
+    # issue #163: a literal @everyone/@here in relayed text must not ping.
+    zwsp = "​"
+    assert neutralize_mass_pings("Hello @everyone") == f"Hello @{zwsp}everyone"
+    assert neutralize_mass_pings("@here look") == f"@{zwsp}here look"
+    assert neutralize_mass_pings("> Hello @everyone\n>") == f"> Hello @{zwsp}everyone\n>"
+
+
+def test_neutralize_mass_pings_leaves_other_text_alone():
+    assert neutralize_mass_pings("hi @Morning Witch <@123>") == "hi @Morning Witch <@123>"
+    # `\b` keeps a longer word from matching
+    assert neutralize_mass_pings("@everyone2 @hereafter") == "@everyone2 @hereafter"
 
 
 async def test_linked_mention_still_wins_over_origin_name(fake_db):
