@@ -102,6 +102,7 @@ class ReceiverService(ABC):
     supports_replies: bool = False
     supports_deletes: bool = False
     supports_channel_rename: bool = False
+    supports_emoji_rename: bool = False
 
     @abstractmethod
     async def receive(
@@ -197,6 +198,13 @@ class ReceiverService(ABC):
         platform rejected the edit), matching this codebase's usual
         best-effort/log-and-swallow stance rather than raising. Only called
         when `supports_channel_rename`."""
+        raise NotImplementedError
+
+    async def rename_emoji(self, *, target_emoji_id: str, new_name: str) -> str | None:
+        """Rename custom emoji `target_emoji_id` to `new_name` (issue #175).
+        Idempotent. Returns the name actually applied (after this platform's
+        own name rules), or `None` if the rename didn't happen. Only called
+        when `supports_emoji_rename`."""
         raise NotImplementedError
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
