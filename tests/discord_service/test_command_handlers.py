@@ -433,6 +433,18 @@ async def test_unlink_channel_passes_all_through_as_local_channel_id():
     assert linker.unlink_channel_calls == [{"local_connector": "discord", "local_channel_id": "all", "destination": "stoat"}]
 
 
+async def test_unlink_channel_defers_before_the_linker_call():
+    # An `all` unlink can outrun Discord's 3s response window (issue #177).
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=999)
+
+    await sender._handle_unlink_channel(interaction, "all", "all")
+
+    assert interaction.deferred is True
+    assert interaction.sent == ["unlinked ok"]
+
+
 async def test_unlink_channel_without_a_configured_linker():
     sender = _make_sender(None)
     interaction = FakeInteraction()

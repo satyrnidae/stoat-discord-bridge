@@ -855,10 +855,14 @@ class DiscordLinkingMixin:
             service,
             channel_id,
         )
+        # An `all` unlink walks every group (IRC PARTs included), which can
+        # outrun Discord's 3s response window (issue #177).
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await self._reply_linker_result(
             interaction,
             self._linker.unlink_channel(local_connector=self.connector_id, local_channel_id=channel_id, destination=service),
             log_context="/unlink channel",
+            deferred=True,
         )
 
     async def _handle_unlink_user(
