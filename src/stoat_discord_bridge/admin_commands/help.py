@@ -235,8 +235,8 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         summary="Create+link a matching role elsewhere, or pull one in (Discord/Stoat only)",
         body=(
             "`to` ensures a linked counterpart of a local role exists on <service> (or all), "
-            "reusing a same-named role there or creating a bare one (name only - color/"
-            "permissions aren't copied). `from` is the reverse."
+            "reusing a same-named role there or creating one with the source role's color "
+            "and hoist (permissions aren't copied). `from` is the reverse."
         ),
         syntax={
             "discord": "/mirror role to <service|all> <local_id> [new_name] | /mirror role from <service> <external_id> [new_name]",
