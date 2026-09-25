@@ -38,6 +38,13 @@ accepts a value typed by hand — an id, or a bare name.
   `category` / `emote` subcommands, the same shape as Discord's `app_commands`
   groups. Same Manage Server / read-only split as Discord. The invoking
   message and the bot's reply are never relayed to other connectors.
+  Optional parameters are **named** `pname:value` tokens using the same name
+  as the Discord option (`new_name:lobby`, `category:Games`, `limit:all`),
+  and can go anywhere after the subcommand (issue #167). To give a
+  multi-word value, quote the whole token: `"new_name:Main Hall"`. stoat.py
+  rejects a quote that starts partway through a word, so
+  `new_name:"Main Hall"` doesn't work. A plain word left over after the
+  required arguments is an error, not an optional value.
 - **IRC**: sent as a **DM to the bot**, bare and **uppercase**, no leading
   `/` or `!` (unlike Discord/Stoat's slash commands — many IRC clients treat
   a leading `/` as a local client command and never send it as text). Most
@@ -52,7 +59,11 @@ accepts a value typed by hand — an id, or a bare name.
   otherwise default to "the channel this was run in" is always required on
   IRC instead - and, for `LINK CHANNEL` / `MIRROR CHANNEL` / `UNLINK CHANNEL`
   / `LINKED CHANNELS`, is hoisted to the first position in IRC's syntax since
-  it's the one argument IRC can't let slide.
+  it's the one argument IRC can't let slide. Optional parameters are
+  args-style **flags**: `-p VALUE` or `--param VALUE` (also
+  `--param=VALUE`), in any case and anywhere in the command (issue #167) -
+  e.g. `-n lobby` / `--new-name lobby`, `-c Games` / `--category Games`,
+  `-l all` / `--limit all`. Quote a multi-word value: `-c "Off Topic"`.
 
 ## Editing a link in place (Discord only)
 
@@ -275,8 +286,8 @@ that already exists there is still matched rather than duplicated — so it's al
 the way to point
 `/mirror channel to` / `from` at an existing destination channel that isn't
 linked yet, especially on IRC where there may be no channel to `/link` against
-(issue #44). On Discord/Stoat it's a trailing optional argument (`new_name` on
-Discord; the last positional on Stoat); on IRC it's a trailing `AS <new_name>`.
+(issue #44). On Discord it's the `new_name` option; on Stoat a
+`new_name:<name>` token; on IRC `-n <name>` / `--new-name <name>`.
 The fan-out `all` form doesn't take it (one name can't fit many destinations).
 `/mirror category`'s `new_name` titles only the Category — mirrored child
 channels still carry their own names.
@@ -297,10 +308,9 @@ a single `<service>` (not `all`); on `from` it's a **local** Category on the
 connector the command is run on. An id is resolved to its title; a name that
 doesn't match any existing Category is get-or-created. On Discord it's the
 native `category` option (autocompleted from the relevant connector's
-Categories); on Stoat and IRC — the first `/mirror channel` parameter that
-can't be positional — it's a `category:<id|name>` (Stoat) / `CATEGORY:<id|name>`
-(IRC) key/value token, placed anywhere in the argument list. A multi-word name
-must be quoted there (`category:"Off Topic"`); an unresolvable value shaped like
+Categories); on Stoat it's a `category:<id|name>` token, on IRC
+`-c <id|name>` / `--category <id|name>`. A multi-word name must be quoted
+(`"category:Off Topic"` on Stoat, `-c "Off Topic"` on IRC); an unresolvable value shaped like
 an id (all digits, or a 26-char ULID) is rejected rather than used as a new
 Category's name.
 
@@ -318,10 +328,9 @@ messages, the literal `all` backfills the entire channel history (no cap —
 this can be slow and, for a very long archive relayed through a Discord slash
 command, risks the interaction's 15-minute followup-token window, a known v1
 limitation), and omitting it defaults to 50. On Discord it's the native
-`with_history` (boolean) and `history_limit` options; on Stoat — like
-`category`, the first parameters that can't be positional — it's a bare
-`history` token (default limit) or `history:<n|all>` key/value token, placed
-anywhere in the argument list.
+`with_history` (boolean) and `history_limit` options; on Stoat it's a bare
+`history` token (default limit) or a `history:<n|all>` token, placed anywhere
+in the argument list.
 
 Only the *source* needs to support fetching history — Discord and Stoat
 always do; IRC does too (issue #141), by forcing a PART and immediate
@@ -345,7 +354,7 @@ commands don't parse a `history:`/`with_history` option themselves — reach
 IRC as either side of a backfill via Discord's or Stoat's `/mirror channel`
 naming it as the `service`/`destination`.
 
-### `/mirror channel to <service|all> [<local_id|all>] [<new_name>] [category:<id|name>] [history:<n|all>]`
+### `/mirror channel to <service|all> [<local_id|all>] [<new_name>] [<category>] [<history>]`
 
 Ensures a linked counterpart of `<local_id>` (or the invoking channel, if
 omitted) exists on `<service>` — or every other configured connector, if
@@ -375,7 +384,7 @@ If `<local_id>`'s Category is already linked (via `/link category`) to a
 Category on the destination, the counterpart channel lands in *that* linked
 Category — matched by the link, not by an exact Category-name match — and only
 falls back to creating a same-named Category when it isn't linked (issue #50).
-Passing `category:<id|name>` overrides all of that: the counterpart lands in the
+Passing a `category` overrides all of that: the counterpart lands in the
 named Category on `<service>` regardless of any Category link, and it's only
 accepted with a single `<service>`, not `all`.
 
@@ -384,7 +393,7 @@ into a stub named after the platform's hidden-channel placeholder — grant the
 bot access to the channel first. (The check is best-effort: only a definite
 "the bot lacks view permission here" blocks it.)
 
-### `/mirror channel from <service> <external_id|all> [<new_name>] [category:<id|name>] [history:<n|all>]`
+### `/mirror channel from <service> <external_id|all> [<new_name>] [<category>] [<history>]`
 
 The inbound direction: `<service>`'s `<external_id>` channel already exists,
 so a linked counterpart is created **on the connector the command is run on**
@@ -393,8 +402,8 @@ existing bridge group if `<external_id>` is already in one. "Respecting other
 linked entities": if the source channel sits in a Category that's already
 linked (via `/link category`) to a Category here, the new local channel is
 placed into *that* linked Category rather than a fresh same-named one (the
-same linked-Category resolution `to` does, issue #50). Passing
-`category:<id|name>` — a **local** Category — overrides that and places the new
+same linked-Category resolution `to` does, issue #50). Passing a
+`category` — a **local** Category — overrides that and places the new
 channel there instead.
 `<external_id>` also accepts a bare channel name. As with `to`, a source
 channel the bridge bot can't see on `<service>` is refused rather than
@@ -413,15 +422,15 @@ implemented as `to` with the connectors swapped. Not combinable with
   — from the target `service`'s Categories on `to`, from this guild's on `from`),
   and optional `with_history` (boolean) / `history_limit` options (a number or
   `all`; issue #122)
-- **Stoat**: `/mirror channel to <service|all> [<local_id|name>] [<new_name>] [category:<id|name>] [history:<n|all>]` /
-  `/mirror channel from <service> <external_id|name> [<new_name>] [category:<id|name>] [history:<n|all>]`
+- **Stoat**: `/mirror channel to <service|all> [<local_id|name>] [new_name:<name>] [category:<id|name>] [history[:<n|all>]]` /
+  `/mirror channel from <service> <external_id|name> [new_name:<name>] [category:<id|name>] [history[:<n|all>]]`
   message commands (Manage Server)
-- **IRC**: `MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>]` /
-  `MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]`, DM
+- **IRC**: `MIRROR CHANNEL TO <service|all> <local_id> [-n|--new-name <name>] [-c|--category <id|name>]` /
+  `MIRROR CHANNEL FROM <service> <external_id> [-n|--new-name <name>]`, DM
   (IRC-operator; `TO` needs both `<service|all>` and the local id — no
   "current channel" to default to, and `<service>` is required (issue #97);
-  `AS <new_name>` is honored for a single-destination `TO` and for
-  `FROM`; `CATEGORY:<id|name>` only for a single-destination `TO` — IRC, the
+  `--new-name` is honored for a single-destination `TO` and for
+  `FROM`; `--category` only for a single-destination `TO` — IRC, the
   local side of `FROM`, has no Categories; IRC's own `MIRROR CHANNEL`
   commands don't parse a `history:`/`with_history` option themselves — reach
   IRC as either side of a `with history` backfill via Discord's or Stoat's
@@ -709,7 +718,7 @@ default, a number (clamped to 1000), or `all` for the entire history.
   [limit:<n|all>]` and the same for `/export` (Manage Server). `limit:` can go
   anywhere in the argument list.
 - **IRC**: `IMPORT <service> <external_channel> <local_channel>
-  [LIMIT:<n|all>]` and the same for `EXPORT`, DM (IRC-operator).
+  [-l|--limit <n|all>]` and the same for `EXPORT`, DM (IRC-operator).
   `<local_channel>` is required - a DM has no current channel.
 
 ## Link previews: `/attachments`

@@ -116,7 +116,7 @@ def test_stoat_topic_detail_uses_the_given_prefix():
     [
         ("discord", "/import <service> <external_channel> [local_channel] [history_limit]"),
         ("stoat", "!import <service> <external_channel|name> [local_channel|name] [limit:<n|all>]"),
-        ("irc", "IMPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]"),
+        ("irc", "IMPORT <service> <external_channel> <local_channel> [-l|--limit <n|all>]"),
     ],
 )
 def test_import_topic_on_every_connector(connector, expected):

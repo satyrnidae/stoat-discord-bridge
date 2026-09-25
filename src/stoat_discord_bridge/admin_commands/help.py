@@ -222,12 +222,13 @@ HELP_TOPICS: dict[str, HelpTopic] = {
                 " | /mirror channel from <service> <external_id> [new_name] [category]"
             ),
             "stoat": (
-                "{p}mirror channel to <service|all> [local_id|name] [new_name] [category:<id|name>]"
-                " | {p}mirror channel from <service> <external_id|name> [new_name] [category:<id|name>]"
+                "{p}mirror channel to <service|all> [local_id|name] [new_name:<name>] [category:<id|name>]"
+                " [history[:<n|all>]] | {p}mirror channel from <service> <external_id|name>"
+                " [new_name:<name>] [category:<id|name>] [history[:<n|all>]]"
             ),
             "irc": (
-                "MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>]"
-                " | MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]"
+                "MIRROR CHANNEL TO <service|all> <local_id> [-n|--new-name <name>] [-c|--category <id|name>]"
+                " | MIRROR CHANNEL FROM <service> <external_id> [-n|--new-name <name>]"
             ),
         },
         permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
@@ -242,8 +243,8 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         syntax={
             "discord": "/mirror role to <service|all> <local_id> [new_name] | /mirror role from <service> <external_id> [new_name]",
             "stoat": (
-                "{p}mirror role to <service|all> <local_id|name> [new_name]"
-                " | {p}mirror role from <service> <external_id|name> [new_name]"
+                "{p}mirror role to <service|all> <local_id|name> [new_name:<name>]"
+                " | {p}mirror role from <service> <external_id|name> [new_name:<name>]"
             ),
             "irc": None,
         },
@@ -259,8 +260,8 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         syntax={
             "discord": "/mirror category to <service|all> [local_id] [new_name] | /mirror category from <service> <external_id> [new_name]",
             "stoat": (
-                "{p}mirror category to <service|all> [local_id|name] [new_name]"
-                " | {p}mirror category from <service> <external_id|name> [new_name]"
+                "{p}mirror category to <service|all> [local_id|name] [new_name:<name>]"
+                " | {p}mirror category from <service> <external_id|name> [new_name:<name>]"
             ),
             "irc": None,
         },
@@ -278,8 +279,8 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         syntax={
             "discord": "/mirror emote to <service|all> <local_id> [new_name] | /mirror emote from <service> <external_id> [new_name]",
             "stoat": (
-                "{p}mirror emote to <service|all> <local_id|name> [new_name]"
-                " | {p}mirror emote from <service> <external_id|name> [new_name]"
+                "{p}mirror emote to <service|all> <local_id|name> [new_name:<name>]"
+                " | {p}mirror emote from <service> <external_id|name> [new_name:<name>]"
             ),
             "irc": None,
         },
@@ -373,7 +374,7 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         syntax={
             "discord": "/import <service> <external_channel> [local_channel] [history_limit]",
             "stoat": "{p}import <service> <external_channel|name> [local_channel|name] [limit:<n|all>]",
-            "irc": "IMPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]",
+            "irc": "IMPORT <service> <external_channel> <local_channel> [-l|--limit <n|all>]",
         },
         permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
     ),
@@ -387,7 +388,7 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         syntax={
             "discord": "/export <service> <external_channel> [local_channel] [history_limit]",
             "stoat": "{p}export <service> <external_channel|name> [local_channel|name] [limit:<n|all>]",
-            "irc": "EXPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]",
+            "irc": "EXPORT <service> <external_channel> <local_channel> [-l|--limit <n|all>]",
         },
         permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
     ),

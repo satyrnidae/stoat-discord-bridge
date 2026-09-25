@@ -5,7 +5,7 @@ bridge-group/conflict logic isn't duplicated three times.
 
 Split into one module per linker (issue #90): `common.py` holds the shared
 hook/error/parse primitives (`ConnectorInfo`, `LinkError`, `MirrorGuard`,
-`pop_kv_option`, ...) and `channel.py` / `category.py` / `emote.py` /
+`pop_kv_option`, `pop_flag_option`, ...) and `channel.py` / `category.py` / `emote.py` /
 `user.py` / `role.py` each hold one linker class - `ChannelLinker` /
 `CategoryLinker` / `EmoteLinker` / `UserLinker` / `RoleLinker` respectively.
 This `__init__.py` re-exports every public name so every existing
@@ -25,6 +25,7 @@ from stoat_discord_bridge.admin_commands.common import (
     MirrorInProgressError,
     collect_linked_members,
     format_linked_listing,
+    pop_flag_option,
     pop_kv_option,
 )
 from stoat_discord_bridge.admin_commands.emote import EmoteLinker
@@ -49,6 +50,7 @@ __all__ = [
     "UserLinker",
     "collect_linked_members",
     "format_linked_listing",
+    "pop_flag_option",
     "pop_kv_option",
     "render_help",
     "resolve_help_key",

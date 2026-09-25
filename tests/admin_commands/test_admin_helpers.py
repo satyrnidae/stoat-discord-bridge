@@ -6,6 +6,7 @@ from stoat_discord_bridge.admin_commands import (
     LinkError,
     collect_linked_members,
     format_linked_listing,
+    pop_flag_option,
     pop_kv_option,
 )
 from stoat_discord_bridge.admin_commands.common import (
@@ -45,6 +46,72 @@ def test_pop_kv_option_single_token_quoted_value_is_unwrapped():
     remaining, value = pop_kv_option(["a", "category:'Ideas'"], "category")
     assert remaining == ["a"]
     assert value == "Ideas"
+
+
+def test_pop_kv_option_bare_key_is_an_empty_value_when_allowed():
+    remaining, value = pop_kv_option(["stoat", "HISTORY", "general"], "history", bare=True)
+    assert remaining == ["stoat", "general"]
+    assert value == ""
+
+
+def test_pop_kv_option_bare_key_is_a_plain_token_by_default():
+    # A channel named `category` must still parse positionally.
+    remaining, value = pop_kv_option(["stoat", "category"], "category")
+    assert remaining == ["stoat", "category"]
+    assert value is None
+
+
+def test_pop_kv_option_bare_mode_still_takes_a_value():
+    remaining, value = pop_kv_option(["a", "history:25"], "history", bare=True)
+    assert remaining == ["a"]
+    assert value == "25"
+
+
+# ---------------------------------------------------------------- pop_flag_option
+
+
+@pytest.mark.parametrize("flag", ["-c", "--category", "-C", "--CATEGORY"])
+def test_pop_flag_option_takes_the_next_token_as_the_value(flag):
+    remaining, value = pop_flag_option(["TO", "discord", flag, "Bot", "#general"], "c", "category")
+    assert remaining == ["TO", "discord", "#general"]
+    assert value == "Bot"
+
+
+def test_pop_flag_option_accepts_long_equals_form():
+    remaining, value = pop_flag_option(["a", "--new-name=lobby", "b"], "n", "new-name")
+    assert remaining == ["a", "b"]
+    assert value == "lobby"
+
+
+def test_pop_flag_option_absent_returns_none():
+    remaining, value = pop_flag_option(["a", "b"], "c", "category")
+    assert remaining == ["a", "b"]
+    assert value is None
+
+
+def test_pop_flag_option_reassembles_a_quoted_value():
+    remaining, value = pop_flag_option(["-c", '"Off', 'Topic"', "x"], "c", "category")
+    assert remaining == ["x"]
+    assert value == "Off Topic"
+
+
+def test_pop_flag_option_value_missing_at_end_is_empty():
+    remaining, value = pop_flag_option(["a", "--category"], "c", "category")
+    assert remaining == ["a"]
+    assert value == ""
+
+
+@pytest.mark.parametrize("tokens", [["-h", "a"], ["a", "--history"]])
+def test_pop_flag_option_valueless_flag_is_a_bool(tokens):
+    remaining, present = pop_flag_option(tokens, "h", "history", takes_value=False)
+    assert remaining == ["a"]
+    assert present is True
+
+
+def test_pop_flag_option_valueless_flag_absent_is_false():
+    remaining, present = pop_flag_option(["a"], "h", "history", takes_value=False)
+    assert remaining == ["a"]
+    assert present is False
 
 
 # ---------------------------------------------------------------- collect_linked_members
