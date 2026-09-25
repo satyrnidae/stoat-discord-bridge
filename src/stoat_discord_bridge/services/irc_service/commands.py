@@ -17,7 +17,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable
 
-from stoat_discord_bridge.admin_commands import LinkError, pop_kv_option
+from stoat_discord_bridge.admin_commands import LinkError, pop_flag_option
 
 logger = logging.getLogger(__name__)
 
@@ -142,31 +142,29 @@ class IrcAdminCommandsMixin:
             # default on omission - issue #97). The local id is always required
             # on `TO` (an IRC DM has no "current channel"), so `TO` always
             # takes exactly 2 args: service then id.
-            direction = args[0].upper() if args else ""
-            rest = args[1:]
-            # `CATEGORY:<id|name>` (issue #75) places the counterpart in a
-            # specific Category on the destination, overriding linked Categories.
-            # It's a `PARAM:value` pair (can't be positional - holds arbitrary
-            # ids/names) pulled out anywhere; only `TO <service>` (a single
-            # destination) honors it - not `all`, and not `FROM` (IRC, the
-            # local side there, has no Category concept).
-            rest, category = pop_kv_option(list(rest), "category")
-            # An optional trailing `AS <new_name>` renames the counterpart on
-            # the destination instead of carrying the source name over (issue
-            # #44) - split it off before the positional parse below. Only the
-            # single-destination TO and the FROM forms honor it (a fan-out
-            # `all` has many destinations, so one name can't apply).
-            new_name: str | None = None
-            if len(rest) >= 2 and rest[-2].upper() == "AS":
-                new_name = rest[-1]
-                rest = rest[:-2]
+            #
+            # Optional params are args-style flags (issue #167), pulled out
+            # wherever they appear:
+            # - `-c/--category <id|name>` (issue #75) places the counterpart in
+            #   a specific Category on the destination, overriding linked
+            #   Categories. Only `TO <service>` (a single destination) honors
+            #   it - not `all`, and not `FROM` (IRC, the local side there, has
+            #   no Category concept).
+            # - `-n/--new-name <name>` renames the counterpart on the
+            #   destination instead of carrying the source name over (issue
+            #   #44). The single-destination TO and the FROM forms honor it;
+            #   a fan-out `all` has many destinations, so one name can't apply.
+            rest, category = pop_flag_option(list(args), "c", "category")
+            rest, new_name = pop_flag_option(rest, "n", "new-name")
+            direction = rest[0].upper() if rest else ""
+            rest = rest[1:]
             if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
                 return
             single_to = direction == "TO" and len(rest) == 2 and rest[0].lower() != "all"
             if category and not single_to:
                 self._notify(
                     nick,
-                    "CATEGORY:<id|name> only applies to MIRROR CHANNEL TO <service> <local_id> (a single service).",
+                    "-c/--category only applies to MIRROR CHANNEL TO <service> <local_id> (a single service).",
                 )
                 return
             if direction == "TO" and len(rest) == 2 and rest[0].lower() == "all":
@@ -189,8 +187,9 @@ class IrcAdminCommandsMixin:
             else:
                 self._notify(
                     nick,
-                    "Usage: MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
-                    "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
+                    "Usage: MIRROR CHANNEL TO <service|all> <local_id> [-n|--new-name <name>] "
+                    "[-c|--category <id|name>] | MIRROR CHANNEL FROM <service> <external_id> "
+                    "[-n|--new-name <name>]",
                 )
                 return
             await self._reply_linker_result(nick, coro, log_context=command)
@@ -218,11 +217,13 @@ class IrcAdminCommandsMixin:
             )
         elif command in _ADMIN_DM_ONE_WORD_VERBS:
             # `IMPORT|EXPORT <service> <external_channel> <local_channel>
-            # [LIMIT:<n|all>]` (issue #161). The local channel is required -
-            # an IRC DM has no current channel to default to.
-            rest, limit = pop_kv_option(list(args), "limit")
+            # [-l|--limit <n|all>]` (issue #161). The local channel is
+            # required - an IRC DM has no current channel to default to.
+            rest, limit = pop_flag_option(list(args), "l", "limit")
             if len(rest) != 3:
-                self._notify(nick, f"Usage: {command} <service> <external_channel> <local_channel> [LIMIT:<n|all>]")
+                self._notify(
+                    nick, f"Usage: {command} <service> <external_channel> <local_channel> [-l|--limit <n|all>]"
+                )
                 return
             if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
                 return

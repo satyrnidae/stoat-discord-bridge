@@ -240,11 +240,26 @@ async def test_mirror_channel_to_a_single_destination():
     assert conn.notice_calls == [("alice", "mirrored ok")]
 
 
-async def test_mirror_channel_to_honors_a_trailing_as_new_name():
+_MIRROR_USAGE = (
+    "Usage: MIRROR CHANNEL TO <service|all> <local_id> [-n|--new-name <name>] [-c|--category <id|name>] | "
+    "MIRROR CHANNEL FROM <service> <external_id> [-n|--new-name <name>]"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MIRROR CHANNEL TO discord #general -n lobby",
+        "MIRROR CHANNEL TO discord #general --new-name lobby",
+        "MIRROR CHANNEL TO -N lobby discord #general",
+        "MIRROR CHANNEL TO discord #general --NEW-NAME=lobby",
+    ],
+)
+async def test_mirror_channel_to_honors_a_new_name_flag(text):
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general AS lobby")
+    await sender._handle_dm_command("alice", text)
 
     assert linker.mirror_channel_calls == [
         {
@@ -280,13 +295,18 @@ async def test_mirror_channel_to_without_a_service_sends_usage():
 
     assert linker.mirror_channel_all_calls == []
     assert linker.mirror_channel_calls == []
-    assert conn.notice_calls == [
-        (
-            "alice",
-            "Usage: MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
-            "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
-        )
-    ]
+    assert conn.notice_calls == [("alice", _MIRROR_USAGE)]
+
+
+async def test_mirror_channel_as_keyword_is_no_longer_a_new_name():
+    # issue #167: `AS <new_name>` was replaced by `-n/--new-name`.
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general AS lobby")
+
+    assert linker.mirror_channel_calls == []
+    assert conn.notice_calls == [("alice", _MIRROR_USAGE)]
 
 
 async def test_mirror_channel_from_a_remote_channel():
@@ -301,22 +321,30 @@ async def test_mirror_channel_from_a_remote_channel():
     assert conn.notice_calls == [("alice", "mirrored from ok")]
 
 
-async def test_mirror_channel_from_honors_a_trailing_as_new_name():
+async def test_mirror_channel_from_honors_a_new_name_flag():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL FROM discord 123 AS lobby")
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL FROM discord 123 --new-name lobby")
 
     assert linker.mirror_channel_from_calls == [
         {"local_connector": "irc", "source": "discord", "source_id": "123", "new_name": "lobby"}
     ]
 
 
-async def test_mirror_channel_to_honors_a_category_kv_token():
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MIRROR CHANNEL TO discord #general -c Announcements -n lobby",
+        "MIRROR CHANNEL TO discord --category Announcements #general --new-name lobby",
+        "MIRROR CHANNEL TO -n lobby discord #general --category=Announcements",
+    ],
+)
+async def test_mirror_channel_to_honors_category_and_new_name_flags(text):
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general CATEGORY:Announcements AS lobby")
+    await sender._handle_dm_command("alice", text)
 
     assert linker.mirror_channel_calls == [
         {
@@ -330,15 +358,25 @@ async def test_mirror_channel_to_honors_a_category_kv_token():
     ]
 
 
-async def test_mirror_channel_category_kv_rejected_with_all():
+async def test_mirror_channel_category_flag_rejected_with_all():
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO ALL #general CATEGORY:Announcements")
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO ALL #general -c Announcements")
 
     assert linker.mirror_channel_calls == []
     assert linker.mirror_channel_all_calls == []
-    assert conn.notice_calls and "CATEGORY:" in conn.notice_calls[0][1]
+    assert conn.notice_calls and "--category" in conn.notice_calls[0][1]
+
+
+async def test_mirror_channel_old_category_kv_token_is_not_an_option():
+    linker = FakeLinker()
+    sender, conn = _make_sender(linker=linker)
+
+    await sender._handle_dm_command("alice", "MIRROR CHANNEL TO discord #general CATEGORY:Announcements")
+
+    assert linker.mirror_channel_calls == []
+    assert conn.notice_calls == [("alice", _MIRROR_USAGE)]
 
 
 async def test_mirror_channel_wrong_arg_count_sends_usage():
@@ -346,13 +384,7 @@ async def test_mirror_channel_wrong_arg_count_sends_usage():
 
     await sender._handle_dm_command("alice", "MIRROR CHANNEL a b c")
 
-    assert conn.notice_calls == [
-        (
-            "alice",
-            "Usage: MIRROR CHANNEL TO <service|all> <local_id> [AS <new_name>] [CATEGORY:<id|name>] | "
-            "MIRROR CHANNEL FROM <service> <external_id> [AS <new_name>]",
-        )
-    ]
+    assert conn.notice_calls == [("alice", _MIRROR_USAGE)]
 
 
 # ---------------------------------------------------------------- unrecognized command
@@ -633,12 +665,14 @@ async def test_privmsg_import_export_is_scheduled(text):
     scheduled[0].close()
 
 
-@pytest.mark.parametrize("verb", ["IMPORT", "EXPORT"])
-async def test_import_export_forwards_to_transfer_history(verb):
+@pytest.mark.parametrize(
+    ("verb", "limit_flag"), [("IMPORT", "-l all"), ("EXPORT", "--limit all"), ("IMPORT", "--LIMIT=all")]
+)
+async def test_import_export_forwards_to_transfer_history(verb, limit_flag):
     linker = FakeLinker()
     sender, conn = _make_sender(linker=linker)
 
-    await sender._handle_dm_command("alice", f"{verb.lower()} discord general #chat LIMIT:all")
+    await sender._handle_dm_command("alice", f"{verb.lower()} discord general #chat {limit_flag}")
 
     assert linker.transfer_history_calls == [
         {
@@ -671,7 +705,7 @@ async def test_import_requires_a_local_channel():
 
     assert linker.transfer_history_calls == []
     assert conn.notice_calls == [
-        ("alice", "Usage: IMPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]")
+        ("alice", "Usage: IMPORT <service> <external_channel> <local_channel> [-l|--limit <n|all>]")
     ]
 
 
