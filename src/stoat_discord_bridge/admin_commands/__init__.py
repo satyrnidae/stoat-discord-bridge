@@ -13,6 +13,7 @@ This `__init__.py` re-exports every public name so every existing
 working unchanged.
 """
 
+from stoat_discord_bridge.admin_commands.attachment_preferences import AttachmentPreferenceManager
 from stoat_discord_bridge.admin_commands.bot_whitelist import BotWhitelistManager
 from stoat_discord_bridge.admin_commands.category import CategoryLinker
 from stoat_discord_bridge.admin_commands.channel import ChannelLinker
@@ -32,6 +33,7 @@ from stoat_discord_bridge.admin_commands.role import RoleLinker
 from stoat_discord_bridge.admin_commands.user import UserLinker
 
 __all__ = [
+    "AttachmentPreferenceManager",
     "BotWhitelistManager",
     "CategoryLinker",
     "ChannelLinker",
