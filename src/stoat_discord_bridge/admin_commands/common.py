@@ -23,7 +23,7 @@ import functools
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar, overload
 
 if TYPE_CHECKING:
     from stoat_discord_bridge.models import ChannelMetadata, CustomEmoji, EmojiCapacity, StandardMessage
@@ -32,41 +32,105 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def pop_kv_option(tokens: list[str], key: str) -> tuple[list[str], str | None]:
+def _read_quoted_value(tokens: list[str], i: int, raw: str) -> tuple[str, int]:
+    """Finish reading an option value that starts as ``raw`` at ``tokens[i]``.
+    A quoted value (``"two words"`` / ``'two words'``) pulls in the following
+    tokens up to the closing quote, since callers hand the option parsers a
+    list that was already split on whitespace. Returns ``(value, index of the
+    last token used)``, with the quotes removed."""
+    quote = raw[:1]
+    if quote in ('"', "'"):
+        raw = raw[1:]
+        while not raw.endswith(quote) and i + 1 < len(tokens):
+            i += 1
+            raw = f"{raw} {tokens[i]}"
+        raw = raw[:-1] if raw.endswith(quote) else raw
+    return raw, i
+
+
+def pop_kv_option(tokens: list[str], key: str, *, bare: bool = False) -> tuple[list[str], str | None]:
     """Pull the first ``key:value`` (or ``key=value``) token out of ``tokens``,
     returning ``(remaining tokens, value)`` - ``value`` is ``None`` when no such
     token is present. The key match is case-insensitive; the value keeps its
-    original case. Discord models `/mirror channel`'s ``category`` option
-    natively, but Stoat's `stoat.ext.commands` and IRC's bare DM commands parse
-    positionally - a `category` that can hold arbitrary ids/names can't be
-    positional there, so both take it as this `PARAM:value` pair anywhere in the
-    argument list (issue #75).
+    original case. This is Stoat's named-option shape (issue #167): Discord
+    options are declared by name, so Stoat takes the same name as a
+    ``pname:value`` token anywhere in the argument list. (IRC uses
+    `pop_flag_option` instead.)
 
-    A quoted value (``key:"two words"`` / ``key:'two words'``) reassembles the
-    tokens the caller's whitespace split broke it into, up to the closing quote,
-    and the surrounding quotes are stripped - the only way a multi-word value
-    survives, since both callers hand this a pre-split token list."""
-    prefix_colon = f"{key.lower()}:"
-    prefix_eq = f"{key.lower()}="
+    With ``bare=True`` a lone ``key`` token also counts, as the option given
+    with an empty value (`/mirror channel ... history` means "backfill with the
+    default limit"). Off by default so an option name can't swallow a channel
+    or role that happens to share it.
+
+    A quoted value (``key:"two words"`` / ``key:'two words'``) is reassembled
+    and unwrapped (`_read_quoted_value`)."""
+    lowered_key = key.lower()
     value: str | None = None
     remaining: list[str] = []
     i = 0
     while i < len(tokens):
         token = tokens[i]
         lowered = token.lower()
-        if value is None and (lowered.startswith(prefix_colon) or lowered.startswith(prefix_eq)):
-            raw = token[len(key) + 1 :]
-            quote = raw[:1]
-            if quote in ('"', "'"):
-                raw = raw[1:]
-                while not raw.endswith(quote) and i + 1 < len(tokens):
-                    i += 1
-                    raw = f"{raw} {tokens[i]}"
-                raw = raw[:-1] if raw.endswith(quote) else raw
-            value = raw
+        if value is None and lowered[: len(key) + 1] in (f"{lowered_key}:", f"{lowered_key}="):
+            value, i = _read_quoted_value(tokens, i, token[len(key) + 1 :])
+        elif value is None and bare and lowered == lowered_key:
+            value = ""
         else:
             remaining.append(token)
         i += 1
+    return remaining, value
+
+
+@overload
+def pop_flag_option(
+    tokens: list[str], short: str, long: str, *, takes_value: Literal[True] = ...
+) -> tuple[list[str], str | None]: ...
+
+
+@overload
+def pop_flag_option(
+    tokens: list[str], short: str, long: str, *, takes_value: Literal[False]
+) -> tuple[list[str], bool]: ...
+
+
+def pop_flag_option(
+    tokens: list[str], short: str, long: str, *, takes_value: bool = True
+) -> tuple[list[str], str | bool | None]:
+    """IRC's named-option shape (issue #167): pull the first ``-<short>
+    VALUE`` / ``--<long> VALUE`` / ``--<long>=VALUE`` out of ``tokens``
+    wherever it appears, returning ``(remaining tokens, value)``. ``short``
+    and ``long`` are given without dashes; the flag match is
+    case-insensitive (IRC commands are typed in any case) and the value keeps
+    its case. ``value`` is ``None`` when the flag is absent, and ``""`` when it
+    is the last token with nothing after it. Quoted values work as in
+    `pop_kv_option`.
+
+    With ``takes_value=False`` the flag stands alone and ``value`` is just
+    whether it was present."""
+    flags = {f"-{short.lower()}", f"--{long.lower()}"}
+    long_eq = f"--{long.lower()}="
+    found = False
+    value: str | None = None
+    remaining: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        lowered = token.lower()
+        if not found and lowered in flags:
+            found = True
+            if takes_value:
+                if i + 1 < len(tokens):
+                    value, i = _read_quoted_value(tokens, i + 1, tokens[i + 1])
+                else:
+                    value = ""
+        elif not found and takes_value and lowered.startswith(long_eq):
+            found = True
+            value, i = _read_quoted_value(tokens, i, token[len(long_eq) :])
+        else:
+            remaining.append(token)
+        i += 1
+    if not takes_value:
+        return remaining, found
     return remaining, value
 
 
