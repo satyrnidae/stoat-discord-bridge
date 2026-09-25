@@ -1,6 +1,7 @@
 import pytest
 
 from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkedMember, LinkError, RoleLinker
+from stoat_discord_bridge.models import RoleMetadata
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 
 
@@ -111,6 +112,69 @@ async def test_mirror_role_creates_or_matches_then_links(fake_db):
     # already synced -> skipped
     again = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
     assert again == "Stoat: already synced - skipped."
+
+
+def _metadata_connectors(describe_role, ensure_calls):
+    async def ensure_role(name, **kwargs):
+        ensure_calls.append((name, kwargs))
+        return f"stoat_{name}"
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    return _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", resolve_role_name=d_name, describe_role=describe_role),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=ensure_role),
+    )
+
+
+async def test_mirror_role_forwards_the_source_roles_metadata(fake_db):
+    # issue #179: color/hoist carry over to the created counterpart.
+    meta = RoleMetadata(color="#ff0000", hoist=True)
+    seen = []
+
+    async def describe_role(role_id):
+        seen.append(role_id)
+        return meta
+
+    calls = []
+    linker = _linker(fake_db, _metadata_connectors(describe_role, calls))
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert seen == ["d1"]
+    assert calls == [("Mods", {"metadata": meta})]
+
+
+async def test_mirror_role_passes_no_metadata_without_a_describe_role_hook(fake_db):
+    calls = []
+    linker = _linker(fake_db, _metadata_connectors(None, calls))
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert calls == [("Mods", {})]
+
+
+async def test_mirror_role_survives_a_raising_describe_role(fake_db):
+    async def describe_role(role_id):
+        raise RuntimeError("boom")
+
+    calls = []
+    linker = _linker(fake_db, _metadata_connectors(describe_role, calls))
+    summary = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert calls == [("Mods", {})]
+    assert summary.startswith("Linked")
+
+
+async def test_mirror_role_skips_describe_role_when_already_synced(fake_db):
+    seen = []
+
+    async def describe_role(role_id):
+        seen.append(role_id)
+        return RoleMetadata(color="#ff0000")
+
+    calls = []
+    linker = _linker(fake_db, _metadata_connectors(describe_role, calls))
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert seen == ["d1"]
+    assert len(calls) == 1
 
 
 async def test_mirror_role_new_name_is_what_ensure_role_creates(fake_db):
