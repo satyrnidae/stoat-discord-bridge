@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
 import stoat.ext.commands as stoat_commands
 
 from stoat_discord_bridge.services.stoat_service import StoatSenderService, _StoatClient
@@ -85,6 +86,8 @@ class _MirrorOwner:
         self.mirror_emote_calls = []
         self.mirror_channel_calls = []
         self.mirror_channel_from_calls = []
+        self.mirror_category_calls = []
+        self.mirror_from_calls = []
         self.replies = []
 
     async def _reply(self, ctx, text):
@@ -95,6 +98,21 @@ class _MirrorOwner:
 
     async def _mirror_emote(self, ctx, service, local_id=None, new_name=None):
         self.mirror_emote_calls.append((service, local_id, new_name))
+
+    async def _mirror_category(self, ctx, service, local_id=None, new_name=None):
+        self.mirror_category_calls.append((service, local_id, new_name))
+
+    async def _mirror_role_from(self, ctx, service, external_id, new_name=None):
+        self.mirror_from_calls.append(("role", service, external_id, new_name))
+
+    async def _mirror_emote_from(self, ctx, service, external_id, new_name=None):
+        self.mirror_from_calls.append(("emote", service, external_id, new_name))
+
+    async def _mirror_category_from(self, ctx, service, external_id, new_name=None):
+        self.mirror_from_calls.append(("category", service, external_id, new_name))
+
+    def _note_command_message(self, message_id):
+        pass
 
     async def _mirror_channel(
         self, ctx, service, local_id=None, new_name=None, category=None, with_history=False, history_limit=None
@@ -118,11 +136,13 @@ async def test_mirror_role_to_takes_service_then_role():
 
     await to.callback(SimpleNamespace(), "all", "Mods")
     await to.callback(SimpleNamespace(), "stoat", "Mods")
-    await to.callback(SimpleNamespace(), "stoat", "Mods", "Moderators")
+    await to.callback(SimpleNamespace(), "stoat", "Mods", "new_name:Moderators")
+    await to.callback(SimpleNamespace(), "new_name:Moderators", "stoat", "Mods")
 
     assert owner.mirror_role_calls == [
         ("all", "Mods", None),
         ("stoat", "Mods", None),
+        ("stoat", "Mods", "Moderators"),
         ("stoat", "Mods", "Moderators"),
     ]
 
@@ -134,7 +154,51 @@ async def test_mirror_role_and_emote_to_declare_a_required_service():
     bot = _bare_bot()
     for noun in ("role", "emote"):
         to = bot.all_commands["mirror"].all_commands[noun].all_commands["to"]
-        assert to.signature == "<service> <local_id> [new_name]"
+        assert to.signature == "<service> <local_id> [options...]"
+
+
+@pytest.mark.parametrize("noun", ["role", "emote", "category"])
+async def test_mirror_to_rejects_a_bare_trailing_new_name(noun):
+    # issue #167: new_name is `new_name:<value>` now, not a positional - a bare
+    # extra token is a usage error rather than silently becoming the new name.
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands[noun].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "stoat", "thing", "Renamed")
+
+    assert getattr(owner, f"mirror_{noun}_calls") == []
+    assert owner.replies and "new_name:<name>" in owner.replies[-1]
+
+
+async def test_mirror_category_to_takes_a_new_name_token_and_optional_local_id():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands["category"].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "stoat")
+    await to.callback(SimpleNamespace(), "stoat", "new_name:Lounge")
+    await to.callback(SimpleNamespace(), "stoat", "Games", 'new_name:"Game', 'Room"')
+
+    assert owner.mirror_category_calls == [
+        ("stoat", None, None),
+        ("stoat", None, "Lounge"),
+        ("stoat", "Games", "Game Room"),
+    ]
+
+
+@pytest.mark.parametrize("noun", ["role", "emote", "category"])
+async def test_mirror_from_takes_a_new_name_token(noun):
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    frm = bot.all_commands["mirror"].all_commands[noun].all_commands["from"]
+
+    await frm.callback(SimpleNamespace(), "discord", "d1")
+    await frm.callback(SimpleNamespace(), "discord", "d1", "NEW_NAME:Local")
+    await frm.callback(SimpleNamespace(), "discord", "d1", "Local")
+
+    assert owner.mirror_from_calls == [(noun, "discord", "d1", None), (noun, "discord", "d1", "Local")]
+    assert len(owner.replies) == 1 and "new_name:<name>" in owner.replies[0]
 
 
 async def test_mirror_emote_to_takes_service_then_emote():
@@ -143,7 +207,7 @@ async def test_mirror_emote_to_takes_service_then_emote():
     to = bot.all_commands["mirror"].all_commands["emote"].all_commands["to"]
 
     await to.callback(SimpleNamespace(), "all", "blob")
-    await to.callback(SimpleNamespace(), "stoat", "blob", "blobcat")
+    await to.callback(SimpleNamespace(), "stoat", "blob", "new_name:blobcat")
 
     assert owner.mirror_emote_calls == [
         ("all", "blob", None),
@@ -158,13 +222,38 @@ async def test_mirror_channel_to_pulls_a_category_kv_token_from_anywhere():
 
     await to.callback(SimpleNamespace(), "stoat", "general")
     await to.callback(SimpleNamespace(), "stoat", "general", "category:01ABC")
-    await to.callback(SimpleNamespace(), "stoat", "category:Bot Config", "general", "lobby")
+    await to.callback(SimpleNamespace(), "stoat", "category:Bot Config", "general", "new_name:lobby")
+    await to.callback(SimpleNamespace(), "stoat", "new_name:lobby", "history", "category:X")
 
     assert owner.mirror_channel_calls == [
         ("stoat", "general", None, None, False, None),
         ("stoat", "general", None, "01ABC", False, None),
         ("stoat", "general", "lobby", "Bot Config", False, None),
+        ("stoat", None, "lobby", "X", True, None),
     ]
+
+
+async def test_mirror_channel_to_rejects_a_bare_trailing_new_name():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    to = bot.all_commands["mirror"].all_commands["channel"].all_commands["to"]
+
+    await to.callback(SimpleNamespace(), "stoat", "general", "lobby")
+
+    assert owner.mirror_channel_calls == []
+    assert owner.replies and "new_name:<name>" in owner.replies[-1]
+
+
+async def test_mirror_channel_from_takes_a_new_name_token():
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+    frm = bot.all_commands["mirror"].all_commands["channel"].all_commands["from"]
+
+    await frm.callback(SimpleNamespace(), "discord", "d1", "new_name:lobby", "history:5")
+    await frm.callback(SimpleNamespace(), "discord", "d1", "lobby")
+
+    assert owner.mirror_channel_from_calls == [("discord", "d1", "lobby", None, True, "5")]
+    assert owner.replies and "Usage:" in owner.replies[-1]
 
 
 async def test_mirror_channel_to_declares_a_required_service():
@@ -173,7 +262,7 @@ async def test_mirror_channel_to_declares_a_required_service():
     bot = _bare_bot()
     to = bot.all_commands["mirror"].all_commands["channel"].all_commands["to"]
 
-    assert to.signature == "<service> [local_id] [new_name] [category] [history]"
+    assert to.signature == "<service> [local_id] [options...]"
 
 
 async def test_mirror_channel_to_with_only_a_category_token_replies_usage():
@@ -188,8 +277,8 @@ async def test_mirror_channel_to_with_only_a_category_token_replies_usage():
 
     assert owner.mirror_channel_calls == []
     assert owner.replies == [
-        "Usage: /mirror channel to <service|all> [local_id|name] [new_name] "
-        "[category:<id|name>] [history:<n|all>]"
+        "Usage: /mirror channel to <service|all> [local_id|name] [new_name:<name>] "
+        "[category:<id|name>] [history[:<n|all>]]"
     ]
 
 
@@ -290,6 +379,24 @@ async def test_command_with_optional_arg_supplied_parses_and_invokes():
     )
 
     assert owner.calls == [("_link_channel", "discord", "123", "mychan")]
+
+
+async def test_mirror_named_options_parse_through_the_real_argument_parser():
+    # stoat.py rejects a quote that starts mid-word (`new_name:"Main Hall"`),
+    # so a multi-word value quotes the whole token instead.
+    owner = _MirrorOwner()
+    bot = _bare_bot(owner)
+
+    await bot.process_commands(
+        _fake_message('/mirror channel to discord general "new_name:Main Hall" history', bot_author=False),
+        _FakeShard(),
+    )
+    await bot.process_commands(
+        _fake_message("/mirror role to discord Mods new_name:Moderators", bot_author=False), _FakeShard()
+    )
+
+    assert owner.mirror_channel_calls == [("discord", "general", "Main Hall", None, True, None)]
+    assert owner.mirror_role_calls == [("discord", "Mods", "Moderators")]
 
 
 def test_signature_of_a_command_with_an_optional_arg_renders():

@@ -26,16 +26,6 @@ from stoat_discord_bridge.services.stoat_service._compat import apply_stoat_comm
 apply_stoat_command_patches()
 
 
-def _normalize_bare_history_token(tokens: list[str]) -> list[str]:
-    """`/mirror channel with history` (issue #122): a bare `history` token
-    (no `:value`) means "backfill with the default limit" - rewritten to
-    `history:` here so `pop_kv_option("history")` still picks it up (it only
-    matches a `key:value`/`key=value` shape), yielding an empty-string value
-    that `_mirror_channel`/`_mirror_channel_from` treat the same as
-    `history_limit` being omitted."""
-    return ["history:" if t.lower() == "history" else t for t in tokens]
-
-
 def build_command_tree(bot, owner, prefix: str) -> None:
     """Declares the `/link`, `/unlink`, `/linked`, `/mirror` groups (+ their
     subcommands) and the flat `/status`, `/bridge-help` commands on `bot`,
@@ -130,36 +120,30 @@ def build_command_tree(bot, owner, prefix: str) -> None:
     async def mirror_channel(ctx):
         await owner._reply(ctx, f"Usage: {p}mirror channel <to|from> …")
 
-    # `category:<id|name>` (issue #75) can't be positional - it holds arbitrary
-    # ids/names - so it's a `PARAM:value` pair pulled out of the token list
-    # anywhere, matching the IRC side. The remaining tokens parse positionally
-    # as before. The extra optional slot is just capacity for that kv token.
+    # Optional params are named `pname:value` tokens (issue #167), using the
+    # same names as Discord's options, and may appear anywhere after the
+    # subcommand. The leading positionals stay declared so stoat.py still
+    # reports a missing `<service>` itself (issue #97); everything else lands
+    # in `*options`. The positional count is rechecked after the named tokens
+    # are pulled out, since one of them may have been bound to a positional
+    # slot - and so a bare trailing name (the old positional `new_name`) gets
+    # a usage reply instead of being quietly ignored.
     @mirror_channel.command(name="to")
-    async def mirror_channel_to(
-        ctx,
-        service: str,
-        local_id: typing.Optional[str] = None,
-        new_name: typing.Optional[str] = None,
-        category: typing.Optional[str] = None,
-        history: typing.Optional[str] = None,
-    ):
-        tokens = [t for t in (service, local_id, new_name, category, history) if t is not None]
-        tokens, category_value = pop_kv_option(tokens, "category")
-        tokens, history_value = pop_kv_option(_normalize_bare_history_token(tokens), "history")
-        if not tokens:
-            # `service` was consumed as a kv token - it's the only
-            # positional, and issue #97 makes it required.
+    async def mirror_channel_to(ctx, service: str, local_id: typing.Optional[str] = None, *options: str):
+        tokens = [t for t in (service, local_id, *options) if t is not None]
+        tokens, new_name = pop_kv_option(tokens, "new_name")
+        tokens, category = pop_kv_option(tokens, "category")
+        tokens, history = pop_kv_option(tokens, "history", bare=True)
+        if not 1 <= len(tokens) <= 2:
             await owner._reply(
                 ctx,
-                f"Usage: {p}mirror channel to <service|all> [local_id|name] [new_name] "
-                "[category:<id|name>] [history:<n|all>]",
+                f"Usage: {p}mirror channel to <service|all> [local_id|name] [new_name:<name>] "
+                "[category:<id|name>] [history[:<n|all>]]",
             )
             return
-        service = tokens[0]
         local_id = tokens[1] if len(tokens) > 1 else None
-        new_name = tokens[2] if len(tokens) > 2 else None
         await owner._mirror_channel(
-            ctx, service, local_id, new_name, category_value, history_value is not None, history_value or None
+            ctx, tokens[0], local_id, new_name, category, history is not None, history or None
         )
 
     @mirror_channel.command(name="from")
@@ -167,74 +151,98 @@ def build_command_tree(bot, owner, prefix: str) -> None:
         ctx,
         service: typing.Optional[str] = None,
         external_id: typing.Optional[str] = None,
-        new_name: typing.Optional[str] = None,
-        category: typing.Optional[str] = None,
-        history: typing.Optional[str] = None,
+        *options: str,
     ):
-        tokens = [t for t in (service, external_id, new_name, category, history) if t is not None]
-        tokens, category_value = pop_kv_option(tokens, "category")
-        tokens, history_value = pop_kv_option(_normalize_bare_history_token(tokens), "history")
-        if len(tokens) < 2:
+        tokens = [t for t in (service, external_id, *options) if t is not None]
+        tokens, new_name = pop_kv_option(tokens, "new_name")
+        tokens, category = pop_kv_option(tokens, "category")
+        tokens, history = pop_kv_option(tokens, "history", bare=True)
+        if len(tokens) != 2:
             await owner._reply(
                 ctx,
-                f"Usage: {p}mirror channel from <service> <external_id|name> [new_name] "
-                "[category:<local_id|name>] [history:<n|all>]",
+                f"Usage: {p}mirror channel from <service> <external_id|name> [new_name:<name>] "
+                "[category:<local_id|name>] [history[:<n|all>]]",
             )
             return
-        new_name = tokens[2] if len(tokens) > 2 else None
         await owner._mirror_channel_from(
-            ctx,
-            tokens[0],
-            tokens[1],
-            new_name,
-            category_value,
-            history_value is not None,
-            history_value or None,
+            ctx, tokens[0], tokens[1], new_name, category, history is not None, history or None
         )
+
+    async def pop_new_name(ctx, tokens: list, min_args: int, max_args: int, usage: str):
+        """Pull `new_name:<value>` out of a role/category/emote mirror's
+        tokens. Returns `(positionals, new_name)`, or None after replying
+        with `usage` if the positional count is off."""
+        tokens, new_name = pop_kv_option([t for t in tokens if t is not None], "new_name")
+        if not min_args <= len(tokens) <= max_args:
+            await owner._reply(ctx, f"Usage: {p}{usage} [new_name:<name>]")
+            return None
+        return tokens + [None] * (max_args - len(tokens)), new_name
 
     @mirror.group(name="role", invoke_without_command=True)
     async def mirror_role(ctx):
         await owner._reply(ctx, f"Usage: {p}mirror role <to|from> …")
 
     @mirror_role.command(name="to")
-    async def mirror_role_to(ctx, service: str, local_id: str, new_name: typing.Optional[str] = None):
-        # `<service|all>` is required now (issue #97), so there's no lone-arg
-        # ambiguity to resolve - stoat.py reports a missing argument for free.
-        await owner._mirror_role(ctx, service, local_id, new_name)
+    async def mirror_role_to(ctx, service: str, local_id: str, *options: str):
+        parsed = await pop_new_name(
+            ctx, [service, local_id, *options], 2, 2, "mirror role to <service|all> <local_id|name>"
+        )
+        if parsed:
+            (service, local_id), new_name = parsed
+            await owner._mirror_role(ctx, service, local_id, new_name)
 
     @mirror_role.command(name="from")
-    async def mirror_role_from(ctx, service: str, external_id: str, new_name: typing.Optional[str] = None):
-        await owner._mirror_role_from(ctx, service, external_id, new_name)
+    async def mirror_role_from(ctx, service: str, external_id: str, *options: str):
+        parsed = await pop_new_name(
+            ctx, [service, external_id, *options], 2, 2, "mirror role from <service> <external_id|name>"
+        )
+        if parsed:
+            (service, external_id), new_name = parsed
+            await owner._mirror_role_from(ctx, service, external_id, new_name)
 
     @mirror.group(name="category", invoke_without_command=True)
     async def mirror_category(ctx):
         await owner._reply(ctx, f"Usage: {p}mirror category <to|from> …")
 
     @mirror_category.command(name="to")
-    async def mirror_category_to(
-        ctx,
-        service: str,
-        local_id: typing.Optional[str] = None,
-        new_name: typing.Optional[str] = None,
-    ):
-        await owner._mirror_category(ctx, service, local_id, new_name)
+    async def mirror_category_to(ctx, service: str, local_id: typing.Optional[str] = None, *options: str):
+        parsed = await pop_new_name(
+            ctx, [service, local_id, *options], 1, 2, "mirror category to <service|all> [local_id|name]"
+        )
+        if parsed:
+            (service, local_id), new_name = parsed
+            await owner._mirror_category(ctx, service, local_id, new_name)
 
     @mirror_category.command(name="from")
-    async def mirror_category_from(ctx, service: str, external_id: str, new_name: typing.Optional[str] = None):
-        await owner._mirror_category_from(ctx, service, external_id, new_name)
+    async def mirror_category_from(ctx, service: str, external_id: str, *options: str):
+        parsed = await pop_new_name(
+            ctx, [service, external_id, *options], 2, 2, "mirror category from <service> <external_id|name>"
+        )
+        if parsed:
+            (service, external_id), new_name = parsed
+            await owner._mirror_category_from(ctx, service, external_id, new_name)
 
     @mirror.group(name="emote", invoke_without_command=True)
     async def mirror_emote(ctx):
         await owner._reply(ctx, f"Usage: {p}mirror emote <to|from> …")
 
     @mirror_emote.command(name="to")
-    async def mirror_emote_to(ctx, service: str, local_id: str, new_name: typing.Optional[str] = None):
-        # `<service|all>` is required now (issue #97) - see mirror_role_to.
-        await owner._mirror_emote(ctx, service, local_id, new_name)
+    async def mirror_emote_to(ctx, service: str, local_id: str, *options: str):
+        parsed = await pop_new_name(
+            ctx, [service, local_id, *options], 2, 2, "mirror emote to <service|all> <local_id|name>"
+        )
+        if parsed:
+            (service, local_id), new_name = parsed
+            await owner._mirror_emote(ctx, service, local_id, new_name)
 
     @mirror_emote.command(name="from")
-    async def mirror_emote_from(ctx, service: str, external_id: str, new_name: typing.Optional[str] = None):
-        await owner._mirror_emote_from(ctx, service, external_id, new_name)
+    async def mirror_emote_from(ctx, service: str, external_id: str, *options: str):
+        parsed = await pop_new_name(
+            ctx, [service, external_id, *options], 2, 2, "mirror emote from <service> <external_id|name>"
+        )
+        if parsed:
+            (service, external_id), new_name = parsed
+            await owner._mirror_emote_from(ctx, service, external_id, new_name)
 
     @bot.command(name="status")
     async def status(ctx):
