@@ -87,7 +87,7 @@ def _map_mentioned_channels(message: object) -> dict[str, str]:
     for `StandardMessage.mentioned_channels` / `StandardEdit.mentioned_channels`
     (issue #84). discord.py resolves `channel_mentions` from cache, so a miss
     (or a raw edit payload with no message) just yields fewer entries and the
-    receiver leaves that `<#id>` token as-is."""
+    receiver renders that `<#id>` token as `#unknown-channel` (issue #178)."""
     return {
         str(c.id): getattr(c, "name", str(c.id))
         for c in (getattr(message, "channel_mentions", None) or [])
