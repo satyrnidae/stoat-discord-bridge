@@ -58,6 +58,9 @@ OnChannelRolePermissionChanged = Callable[..., Awaitable[None]]
 # (origin_connector_id, channel_id, new_name) - a channel was renamed on one
 # connector (issue #152 - currently Discord threads/forum posts only).
 OnChannelRenamed = Callable[[str, str, str], Awaitable[None]]
+# (origin_connector_id, emoji_id, new_name) - a custom emoji was renamed on one
+# connector (issue #175 - Discord only; Stoat has no emoji-update event).
+OnEmojiRenamed = Callable[[str, str, str], Awaitable[None]]
 
 
 class SenderService(ABC):

@@ -39,6 +39,7 @@ class _Recorder:
         self.voice_presence: list = []
         self.voice_connector_lost: list = []
         self.channel_renames: list = []
+        self.emoji_renames: list = []
 
     async def on_message(self, message) -> None:
         self.messages.append(message)
@@ -73,6 +74,9 @@ class _Recorder:
     async def on_channel_renamed(self, connector_id, channel_id, new_name) -> None:
         self.channel_renames.append((connector_id, channel_id, new_name))
 
+    async def on_emoji_renamed(self, connector_id, emoji_id, new_name) -> None:
+        self.emoji_renames.append((connector_id, emoji_id, new_name))
+
 
 def _make_sender(
     recorder: _Recorder,
@@ -97,6 +101,7 @@ def _make_sender(
         on_voice_presence=recorder.on_voice_presence,
         on_voice_connector_lost=recorder.on_voice_connector_lost,
         on_channel_renamed=recorder.on_channel_renamed,
+        on_emoji_renamed=recorder.on_emoji_renamed,
         linker=linker,
         category_linker=category_linker,
         bot_whitelist=bot_whitelist,

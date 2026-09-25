@@ -1020,6 +1020,7 @@ async def run(config: BridgeConfig) -> None:
             on_role_deleted=role_grants.handle_role_deleted,
             on_channel_role_permission_changed=role_grants.handle_channel_role_permission,
             on_channel_renamed=coordinator.handle_channel_renamed,
+            on_emoji_renamed=coordinator.handle_emoji_renamed,
         )
         receiver = DiscordReceiverService(
             client=sender.client,

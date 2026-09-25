@@ -37,6 +37,7 @@ from stoat_discord_bridge.services.base import (
     OnEdit,
     OnEmojiCreated,
     OnEmojiDeleted,
+    OnEmojiRenamed,
     OnMemberRolesChanged,
     OnMessage,
     OnPin,
@@ -100,6 +101,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         on_role_deleted: "OnRoleDeleted | None" = None,
         on_channel_role_permission_changed: "OnChannelRolePermissionChanged | None" = None,
         on_channel_renamed: "OnChannelRenamed | None" = None,
+        on_emoji_renamed: "OnEmojiRenamed | None" = None,
     ) -> None:
         # linker/emote_linker/user_linker/category_linker/role_linker are only
         # needed to serve the corresponding `/link-*` commands; None is
@@ -132,6 +134,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         self._on_role_deleted = on_role_deleted
         self._on_channel_role_permission_changed = on_channel_role_permission_changed
         self._on_channel_renamed = on_channel_renamed
+        self._on_emoji_renamed = on_emoji_renamed
         self._commands_synced = False
         # Discord thread auto-mirror (_handle_thread_create) bookkeeping - see
         # both methods' docstrings. _pending_thread_starter maps a thread id
