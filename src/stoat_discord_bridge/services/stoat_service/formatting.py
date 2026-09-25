@@ -11,8 +11,10 @@ from __future__ import annotations
 import re
 
 import aiohttp
+import stoat
 
 from stoat_discord_bridge.models import Attachment, CustomEmoji
+from stoat_discord_bridge.services.formatting import guess_media_type, is_video_file_url
 
 # Stoat message length cap (matches Discord's 2000-char webhook limit; stoat.py
 # doesn't expose its own constant, so this mirrors the documented server-side max).
@@ -148,6 +150,43 @@ def _map_attachments(message) -> list[Attachment]:
             )
         )
     return out
+
+
+def _link_preview_embed_attachments(message) -> list[Attachment]:
+    """Stoat's own resolved link-preview media on `message`, as attachments
+    with `source_page_url` set to the previewed link (issue #164) - the
+    Stoat-side counterpart of Discord's `_link_preview_attachments`. Each
+    receiver then decides whether to re-upload it or let its own platform
+    unfurl the link. A `WebsiteEmbed` uses its video if that's a media file,
+    else its image, keyed by the link as posted (`original_url`); a bare
+    `ImageEmbed`/`VideoEmbed` (a direct media link) points at itself. Text
+    and media-less embeds are skipped. Unverified against a live server,
+    like the rest of this module."""
+    out: list[Attachment] = []
+    for embed in getattr(message, "embeds", None) or []:
+        try:
+            asset_url, page_url = _embed_asset_and_page(embed)
+        except Exception:
+            continue
+        if not asset_url:
+            continue
+        filename, content_type = guess_media_type(asset_url)
+        out.append(
+            Attachment(url=asset_url, filename=filename, content_type=content_type, source_page_url=page_url)
+        )
+    return out
+
+
+def _embed_asset_and_page(embed) -> tuple[str | None, str | None]:
+    if isinstance(embed, (stoat.ImageEmbed, stoat.VideoEmbed)):
+        return embed.url, embed.url
+    if not isinstance(embed, stoat.WebsiteEmbed):
+        return None, None
+    page_url = embed.original_url or embed.url
+    video_url = getattr(embed.video, "url", None)
+    if video_url and is_video_file_url(video_url):
+        return video_url, page_url
+    return getattr(embed.image, "url", None), page_url
 
 
 _CHANNEL_MENTION_IDS = re.compile(r"<#([0-9A-Za-z]{26}|\d+)>")

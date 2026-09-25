@@ -347,6 +347,25 @@ async def test_handle_message_dispatches_a_standard_message_with_a_cached_avatar
     assert message.message_id == "m1"
 
 
+async def test_to_standard_message_appends_link_preview_media_after_uploads():
+    # Issue #164: Stoat's own resolved preview rides along as an attachment.
+    import stoat
+
+    sender = _make_sender(_Recorder(), FakeClient())
+    msg = _stoat_message(
+        channel=FakeChannel(id="42"),
+        author=FakeAuthor(id="u1", tag="alice#0000"),
+        content="https://cdn.example/cat.png",
+        attachments=[FakeAsset("https://autumn.example/upload.png")],
+    )
+    msg.embeds = [stoat.ImageEmbed(url="https://cdn.example/cat.png", width=1, height=1, size=stoat.ImageSize.large)]
+
+    message = await sender._to_standard_message(msg)
+
+    assert [a.url for a in message.attachments] == ["https://autumn.example/upload.png", "https://cdn.example/cat.png"]
+    assert message.attachments[1].source_page_url == "https://cdn.example/cat.png"
+
+
 async def test_to_standard_message_converts_a_message_standalone():
     # _to_standard_message must be independently callable (not just reachable
     # via _handle_message's live-event path) so a history backfill (issue

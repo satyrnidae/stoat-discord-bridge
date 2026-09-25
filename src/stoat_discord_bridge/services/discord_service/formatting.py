@@ -9,13 +9,12 @@ the client.
 
 from __future__ import annotations
 
-import posixpath
 import re
-from urllib.parse import urlsplit
 
 import discord
 
 from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage, StandardReaction
+from stoat_discord_bridge.services.formatting import guess_media_type, is_video_file_url
 from stoat_discord_bridge.services.role_sync import NEUTRAL_PERMISSIONS
 
 # Discord webhook hard limits: 2000 chars per message, 1-80 char usernames,
@@ -184,7 +183,7 @@ def _link_preview_attachments(message: discord.Message) -> list[Attachment]:
         asset_url = _embed_asset_url(embed)
         if asset_url is None:
             continue
-        filename, content_type = _guess_asset_type(asset_url, is_gif=embed.type == "gifv")
+        filename, content_type = guess_media_type(asset_url, is_gif=embed.type == "gifv")
         attachments.append(
             Attachment(url=asset_url, filename=filename, content_type=content_type, source_page_url=embed.url)
         )
@@ -197,44 +196,13 @@ def _embed_asset_url(embed: discord.Embed) -> str | None:
     image, then the thumbnail. A video is only used when it's a `gifv` or
     looks like a media file - a YouTube-style `video.url` is a player page."""
     video_url = getattr(embed.video, "url", None)
-    if video_url and (embed.type == "gifv" or _url_extension(video_url) in _VIDEO_EXTENSIONS):
+    if video_url and (embed.type == "gifv" or is_video_file_url(video_url)):
         return video_url
     for media in (embed.image, embed.thumbnail):
         url = getattr(media, "url", None)
         if url:
             return url
     return None
-
-
-_VIDEO_EXTENSIONS = frozenset({".mp4", ".webm", ".mov"})
-_MEDIA_TYPES = {
-    ".gif": "image/gif",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-    ".mp4": "video/mp4",
-    ".webm": "video/webm",
-    ".mov": "video/quicktime",
-}
-
-
-def _url_extension(url: str) -> str:
-    return posixpath.splitext(urlsplit(url).path.lower())[1]
-
-
-def _guess_asset_type(asset_url: str, *, is_gif: bool) -> tuple[str, str | None]:
-    """(filename, content_type) guessed from the asset URL's path extension,
-    query string ignored. GIF-picker media is named `gif.*` and defaults to
-    gif/image when the extension is unknown; anything else is `preview.*`
-    with no content type. The 8 MiB post-download size check in
-    `download_attachments` still applies regardless of the guess."""
-    ext = _url_extension(asset_url)
-    content_type = _MEDIA_TYPES.get(ext)
-    stem = "gif" if is_gif or ext == ".gif" else "preview"
-    if content_type is None:
-        return ("gif.gif", "image/gif") if stem == "gif" else (stem, None)
-    return f"{stem}{ext}", content_type
 
 
 def _to_standard_reaction(

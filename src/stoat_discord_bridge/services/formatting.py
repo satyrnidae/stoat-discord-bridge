@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -196,6 +197,43 @@ def inline_attachment_urls(content: str, attachments: Sequence[Attachment]) -> s
     lines = [content] if content else []
     lines.extend(a.url for a in attachments if a.url)
     return "\n".join(lines) or "\u200b"
+
+
+_MEDIA_TYPES = {
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+}
+
+
+def _url_extension(url: str) -> str:
+    return posixpath.splitext(urlsplit(url).path.lower())[1]
+
+
+def is_video_file_url(url: str) -> bool:
+    """True if `url` looks like a video file rather than a player page - a
+    link preview's video URL is often an embeddable player (YouTube's is)."""
+    return (_MEDIA_TYPES.get(_url_extension(url)) or "").startswith("video/")
+
+
+def guess_media_type(asset_url: str, *, is_gif: bool = False) -> tuple[str, str | None]:
+    """(filename, content_type) for a link-preview asset, guessed from its
+    URL's path extension (query string ignored). GIF media is named `gif.*`
+    and defaults to gif/image when the extension is unknown; anything else is
+    `preview.*`, with no content type if the extension is unknown. The 8 MiB
+    post-download size check in `download_attachments` still applies
+    regardless of the guess."""
+    ext = _url_extension(asset_url)
+    content_type = _MEDIA_TYPES.get(ext)
+    stem = "gif" if is_gif or ext == ".gif" else "preview"
+    if content_type is None:
+        return ("gif.gif", "image/gif") if stem == "gif" else (stem, None)
+    return f"{stem}{ext}", content_type
 
 
 class LinkPreviewPreferences(Protocol):
