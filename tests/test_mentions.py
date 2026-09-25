@@ -391,13 +391,22 @@ async def test_channel_mention_renders_hash_channel_on_irc(fake_db):
     assert result == "see #thread"
 
 
-async def test_channel_mention_unmapped_left_untouched(fake_db):
+async def test_channel_mention_unmapped_becomes_unknown_channel(fake_db):
     repo = ChannelMappingRepository(fake_db)
     result = await rewrite_channel_mentions(
         "see <#777>", origin_connector_id="discord", target_connector_id="stoat",
         target_kind="stoat", channel_mappings=repo,
     )
-    assert result == "see <#777>"
+    assert result == "see *#unknown-channel*"
+
+
+async def test_unknown_channel_marker_is_plain_on_irc(fake_db):
+    repo = ChannelMappingRepository(fake_db)
+    result = await rewrite_channel_mentions(
+        "see <#777>", origin_connector_id="discord", target_connector_id="irc",
+        target_kind="irc", channel_mappings=repo,
+    )
+    assert result == "see #unknown-channel"
 
 
 async def test_unmapped_channel_mention_expanded_to_origin_name(fake_db):
@@ -418,13 +427,13 @@ async def test_unmapped_channel_mention_expanded_on_irc(fake_db):
     assert result == "see #off-topic"
 
 
-async def test_unmapped_channel_mention_left_untouched_when_no_name_known(fake_db):
+async def test_unmapped_channel_mention_becomes_unknown_channel_when_no_name_known(fake_db):
     repo = ChannelMappingRepository(fake_db)
     result = await rewrite_channel_mentions(
         "see <#777>", origin_connector_id="discord", target_connector_id="stoat",
         target_kind="stoat", channel_mappings=repo, mentioned_channels={"999": "elsewhere"},
     )
-    assert result == "see <#777>"
+    assert result == "see *#unknown-channel*"
 
 
 async def test_linked_channel_mention_still_wins_over_origin_name(fake_db):
