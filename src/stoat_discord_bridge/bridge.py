@@ -86,6 +86,7 @@ _EDIT_SUPPRESS_TTL = 10.0
 _HISTORY_BACKFILL_PACING = 0.35
 _DELETE_SUPPRESS_TTL = _EDIT_SUPPRESS_TTL
 _CHANNEL_RENAME_SUPPRESS_TTL = 10.0
+_EMOJI_RENAME_SUPPRESS_TTL = 10.0
 
 
 class BridgeCoordinator:
@@ -128,6 +129,9 @@ class BridgeCoordinator:
         # echoing back from that connector is dropped rather than fanned back
         # out - same two-layer loop guard pin/edit/delete sync use (issue #152).
         self._recent_channel_renames: dict[tuple[str, str, str], float] = {}
+        # Same echo guard for emote renames, keyed (connector_id, emoji_id,
+        # applied_name) (issue #175).
+        self._recent_emoji_renames: dict[tuple[str, str, str], float] = {}
 
     def register_receiver(self, receiver: ReceiverService) -> None:
         """Every bridged connector's receiver must be registered before any
@@ -658,6 +662,41 @@ class BridgeCoordinator:
         group; EmojiMappingRepository.forget() only deletes the whole group
         once every connector's copy is gone."""
         await self._emoji_mappings.forget(deleted.origin_connector_id, deleted.native_id)
+
+    async def handle_emoji_renamed(self, origin_connector_id: str, emoji_id: str, new_name: str) -> None:
+        """A custom emoji was renamed on `origin_connector_id` (issue #175). If
+        it's linked, rename every other copy whose receiver advertises
+        `supports_emoji_rename` and refresh the stored names - the emoji
+        counterpart of `handle_channel_renamed`, with the same rules: a copy
+        that can't be renamed (Stoat has no emoji-rename API) or whose rename
+        fails keeps its old stored name, and a rename we issued is recorded
+        briefly so its echo is dropped."""
+        now = time.monotonic()
+        self._recent_emoji_renames = {
+            k: v for k, v in self._recent_emoji_renames.items() if now - v < _EMOJI_RENAME_SUPPRESS_TTL
+        }
+        if self._recent_emoji_renames.pop((origin_connector_id, emoji_id, new_name), None) is not None:
+            return  # our own rename echoing back
+        group_id = await self._emoji_mappings.get_group_id(origin_connector_id, emoji_id)
+        if group_id is None:
+            return
+        for ref in await self._emoji_mappings.get_refs(group_id):
+            if ref.name == new_name:
+                continue
+            applied_name: str | None = new_name
+            if (ref.connector_id, ref.emoji_id) != (origin_connector_id, emoji_id):
+                receiver = self._receivers.get(ref.connector_id)
+                if receiver is None or not receiver.supports_emoji_rename:
+                    continue
+                try:
+                    applied_name = await receiver.rename_emoji(target_emoji_id=ref.emoji_id, new_name=new_name)
+                except Exception:
+                    logger.exception("emote rename relay from %s to %s failed", origin_connector_id, ref.connector_id)
+                    continue
+                if applied_name is None:
+                    continue
+                self._recent_emoji_renames[(ref.connector_id, ref.emoji_id, applied_name)] = time.monotonic()
+            await self._emoji_mappings.rename_ref(ref.connector_id, ref.emoji_id, applied_name)
 
 
 class RoleSyncCoordinator:

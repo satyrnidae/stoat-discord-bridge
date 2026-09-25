@@ -36,6 +36,7 @@ class FakeReceiver(ReceiverService):
         supports_replies: bool = False,
         supports_deletes: bool = False,
         supports_channel_rename: bool = False,
+        supports_emoji_rename: bool = False,
         channel_name_limit: int | None = None,
         rename_fails: bool = False,
         native_ids: list[str] | None = None,
@@ -51,6 +52,7 @@ class FakeReceiver(ReceiverService):
         self.supports_replies = supports_replies
         self.supports_deletes = supports_deletes
         self.supports_channel_rename = supports_channel_rename
+        self.supports_emoji_rename = supports_emoji_rename
         self._channel_name_limit = channel_name_limit
         self._rename_fails = rename_fails
         self._native_ids = native_ids if native_ids is not None else ["native-1"]
@@ -65,6 +67,7 @@ class FakeReceiver(ReceiverService):
         self.edits: list[tuple] = []
         self.deletes: list[tuple] = []
         self.renames: list[tuple] = []
+        self.emoji_renames: list[tuple] = []
 
     async def receive(
         self,
@@ -127,6 +130,14 @@ class FakeReceiver(ReceiverService):
         applied = new_name[: self._channel_name_limit] if self._channel_name_limit is not None else new_name
         self.renames.append((target_channel_id, applied))
         return applied
+
+    async def rename_emoji(self, *, target_emoji_id, new_name) -> str | None:
+        if self._raises is not None:
+            raise self._raises
+        if self._rename_fails:
+            return None
+        self.emoji_renames.append((target_emoji_id, new_name))
+        return new_name
 
 
 def _message(**overrides) -> StandardMessage:
