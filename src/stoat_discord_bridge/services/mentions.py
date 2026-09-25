@@ -66,12 +66,19 @@ async def rewrite_channel_mentions(
     plain `#channel-name` using `mentioned_channels` (origin native channel
     id -> its name on the origin) so the target doesn't just see a raw `<#id>`
     token that renders as a dead id (issue #84, mirroring the unlinked-user
-    rule); a mention still not covered by that map is left exactly as it
-    appeared. Both id shapes are always tried; Discord's numeric ids and
+    rule); a mention still not covered by that map becomes a generic
+    `*#unknown-channel*` (plain `#unknown-channel` on IRC - issue #178).
+    Both id shapes are always tried; Discord's numeric ids and
     Stoat's 26-char ULIDs never collide."""
     mentioned_channels = mentioned_channels or {}
+    # Resolve every token against the original text, then substitute once -
+    # otherwise the Stoat pass would re-read a `<#ULID>` the Discord pass just
+    # wrote and turn it into the unknown-channel marker.
+    replacements: dict[str, str] = {}
     for pattern in (_DISCORD_CHANNEL_MENTION, _STOAT_CHANNEL_MENTION):
-        for match in list(pattern.finditer(content)):
+        for match in pattern.finditer(content):
+            if match.group(0) in replacements:
+                continue
             channel_id = match.group(1)
             target = None
             bridge_group = await channel_mappings.get_bridge_group(origin_connector_id, channel_id)
@@ -97,9 +104,16 @@ async def rewrite_channel_mentions(
                 # no `allowed_mentions` on its sends.
                 replacement = _defang_mentions("#" + mentioned_channels[channel_id])
             else:
-                continue
-            content = content.replace(match.group(0), replacement)
-    return content
+                # Unresolvable (e.g. a since-deleted channel) - a generic
+                # marker beats a dead id (issue #178). Plain on IRC, whose
+                # markdown was already stripped before this runs.
+                replacement = "#unknown-channel" if target_kind == "irc" else "*#unknown-channel*"
+            replacements[match.group(0)] = replacement
+    if not replacements:
+        return content
+    return re.sub(
+        "|".join(re.escape(token) for token in replacements), lambda m: replacements[m.group(0)], content
+    )
 
 
 async def rewrite_role_mentions(

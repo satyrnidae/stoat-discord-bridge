@@ -799,8 +799,10 @@ the channel, carried on `StandardMessage.mentioned_channels` /
 `StandardEdit.mentioned_channels` (Discord off `Message.channel_mentions`,
 Stoat by scanning the text and resolving each id via `get_channel_name`,
 absent on IRC) — rather than relaying the raw `<#id>`, which renders as a dead
-id on the target (issue #84); an unresolvable one is left as it appeared, and
-the `#name` is run through `_defang_mentions` too. That expansion is the one place relayed
+id on the target (issue #84); an unresolvable one (typically a since-deleted
+channel in transferred history) becomes `*#unknown-channel*` (plain
+`#unknown-channel` on IRC, issue #178), and the `#name` is run through
+`_defang_mentions` too. That expansion is the one place relayed
 text picks up an `@`-prefixed token from an attacker-controlled string, so
 it's run through `mentions._defang_mentions` (a zero-width space wedged in
 after the sigil of any `@everyone` / `@here` / `<@…>` / `<#…>` / `<%…>` it
