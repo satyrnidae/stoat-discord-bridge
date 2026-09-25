@@ -780,7 +780,12 @@ after the sigil of any `@everyone` / `@here` / `<@…>` / `<#…>` / `<%…>` it
 contains) — the bridge sets no `allowed_mentions` on its webhook/masquerade
 sends, so an un-defanged `@everyone` in a display name would be a live mass
 ping. It's also applied *after* the plain-word nick scan so an injected
-name can't itself be re-read as a nick mention.
+name can't itself be re-read as a nick mention. Its keyword half,
+`mentions.neutralize_mass_pings`, is also run by every receiver (ungated)
+over the whole relayed text, on both the first relay and edit sync, so a
+literal `@everyone` / `@here` the origin treated as inert (a forwarded
+message, a user without Mention Everyone) can't ping on the target
+(issue #163).
 
 `RoleSyncCoordinator` (`bridge.py`) keeps linked roles coherent:
 

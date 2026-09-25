@@ -16,6 +16,7 @@ from stoat_discord_bridge.services.formatting import chunk_content, render_disco
 from stoat_discord_bridge.services.irc_service.formatting import _LINE_LIMIT, _synthetic_message_id, format_line_tag
 from stoat_discord_bridge.services.irc_service.sender import IrcSenderService
 from stoat_discord_bridge.services.mentions import (
+    neutralize_mass_pings,
     rewrite_channel_mentions,
     rewrite_emoji,
     rewrite_mentions,
@@ -139,6 +140,8 @@ class IrcReceiverService(ReceiverService):
                 emoji_mappings=self._emoji_mappings,
                 mentioned_emoji=message.mentioned_emoji,
             )
+        # always, unlike the rewrites above: no mapping gates a mass ping
+        content = neutralize_mass_pings(content)
         if not content.strip():
             # A synced message with no textual content (after attachment
             # inlining and mention/timestamp rewrites) has nothing to show on

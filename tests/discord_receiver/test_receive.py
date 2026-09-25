@@ -29,6 +29,22 @@ async def test_receive_posts_through_the_channels_webhook():
     assert ids == ["1000"]
 
 
+async def test_receive_and_edit_neutralize_a_literal_mass_ping():
+    # issue #163: e.g. a forwarded message quoting another server's @everyone
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(_message(content_markdown="> Hello @everyone"), target_channel_id="42")
+    await receiver.edit_message(
+        target_channel_id="42", target_message_ids=["1000"], edit=_edit(new_content_markdown="now @here")
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.sent[0]["content"] == "> Hello @​everyone"
+    assert webhook.edited[0]["content"] == "now @​here"
+
+
 async def test_edit_message_patches_the_relayed_webhook_post():
     client = FakeClient()
     channel = client.add_channel(FakeChannel(id=42))
