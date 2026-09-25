@@ -358,6 +358,39 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         },
         permission="Manage Server",
     ),
+    "import": HelpTopic(
+        summary="Copy another channel's message history into a channel here",
+        body=(
+            "Copies the history of <external_channel> on <service> into <local_channel> (or the "
+            "invoking channel, Discord/Stoat only - IRC always needs it). Both channels must "
+            "already exist; no link is made or needed, and <service> may be this same connector. "
+            "Posts the bridge relayed and bot posts are included. Copied messages land only in "
+            "<local_channel>, never in the channels it's linked to, and don't sync later edits "
+            "or reactions. history_limit works like /mirror channel's: 50 by default, a number up "
+            "to 1000, or all. Blocks /mirror into either connector while it runs. Copying from IRC "
+            "briefly leaves and rejoins the channel; copying into IRC needs chanhistory (H)."
+        ),
+        syntax={
+            "discord": "/import <service> <external_channel> [local_channel] [history_limit]",
+            "stoat": "{p}import <service> <external_channel|name> [local_channel|name] [limit:<n|all>]",
+            "irc": "IMPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]",
+        },
+        permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
+    ),
+    "export": HelpTopic(
+        summary="Copy a channel's message history here into another channel",
+        body=(
+            "The reverse of import: copies the history of <local_channel> (or the invoking "
+            "channel, Discord/Stoat only) into <external_channel> on <service>. Same rules and "
+            "limits as import."
+        ),
+        syntax={
+            "discord": "/export <service> <external_channel> [local_channel] [history_limit]",
+            "stoat": "{p}export <service> <external_channel|name> [local_channel|name] [limit:<n|all>]",
+            "irc": "EXPORT <service> <external_channel> <local_channel> [LIMIT:<n|all>]",
+        },
+        permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
+    ),
     "whitelist": HelpTopic(
         summary="Allow (or disallow) a bot's activity to relay (Discord/Stoat only)",
         body=(

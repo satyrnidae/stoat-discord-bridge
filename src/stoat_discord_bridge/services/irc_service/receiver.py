@@ -13,7 +13,7 @@ import logging
 from stoat_discord_bridge.models import StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.formatting import chunk_content, render_discord_timestamps, strip_markdown
-from stoat_discord_bridge.services.irc_service.formatting import _LINE_LIMIT, _synthetic_message_id
+from stoat_discord_bridge.services.irc_service.formatting import _LINE_LIMIT, _synthetic_message_id, format_line_tag
 from stoat_discord_bridge.services.irc_service.sender import IrcSenderService
 from stoat_discord_bridge.services.mentions import (
     rewrite_channel_mentions,
@@ -153,12 +153,11 @@ class IrcReceiverService(ReceiverService):
         # details ride in the `<...>` line tag: `<nick>` normally, and with
         # source_forwarding / pronoun_forwarding on (issue #54),
         # `<nick, Discord, she/her>`.
-        tag_parts = [sender_name]
-        if self._source_forwarding and message.source_label:
-            tag_parts.append(message.source_label)
-        if self._pronoun_forwarding and message.sender_pronouns:
-            tag_parts.append(message.sender_pronouns)
-        prefix = f"<{', '.join(tag_parts)}> "
+        prefix = format_line_tag(
+            sender_name,
+            message.source_label if self._source_forwarding else None,
+            message.sender_pronouns if self._pronoun_forwarding else None,
+        )
         limit = max(1, _LINE_LIMIT - len(prefix))
         ids: list[str] = []
         for line in content.splitlines() or [""]:

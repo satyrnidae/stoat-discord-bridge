@@ -49,6 +49,7 @@ class FakeLinker:
         self.mirror_channel_calls: list[dict] = []
         self.mirror_channel_all_calls: list[dict] = []
         self.mirror_channel_from_calls: list[dict] = []
+        self.transfer_history_calls: list[dict] = []
         self.link_channel_calls: list[dict] = []
         self.list_linked_channels_calls: list[dict] = []
         self.link_user_calls: list[dict] = []
@@ -80,6 +81,10 @@ class FakeLinker:
     async def mirror_channel_from(self, **kwargs):
         self.mirror_channel_from_calls.append(kwargs)
         return "mirrored from ok"
+
+    async def transfer_history(self, **kwargs):
+        self.transfer_history_calls.append(kwargs)
+        return "transferred ok"
 
     async def link_channel(self, **kwargs):
         self.link_channel_calls.append(kwargs)

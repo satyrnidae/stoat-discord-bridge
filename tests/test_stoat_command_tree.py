@@ -38,7 +38,45 @@ def test_registers_the_four_groups_with_discord_matching_subcommands():
     # every `/mirror <noun>` is itself a to/from group
     for noun in ("category", "channel", "emote", "role"):
         assert sorted(bot.all_commands["mirror"].all_commands[noun].all_commands) == ["from", "to"]
-    assert {"status", "bridge-help", "whitelist", "whitelisted"} <= set(bot.all_commands)
+    assert {"status", "bridge-help", "whitelist", "whitelisted", "import", "export"} <= set(bot.all_commands)
+
+
+class _TransferOwner:
+    def __init__(self):
+        self.calls = []
+        self.replies = []
+
+    async def _reply(self, ctx, text):
+        self.replies.append(text)
+
+    async def _transfer_history(self, ctx, direction, service, external_channel, local_channel=None, limit=None):
+        self.calls.append((direction, service, external_channel, local_channel, limit))
+
+
+async def test_import_and_export_parse_a_limit_kv_token_from_anywhere():
+    # issue #161
+    owner = _TransferOwner()
+    bot = _bare_bot(owner)
+
+    await bot.all_commands["import"].callback(SimpleNamespace(), "discord", "general")
+    await bot.all_commands["import"].callback(SimpleNamespace(), "discord", "general", "lobby", "limit:all")
+    await bot.all_commands["export"].callback(SimpleNamespace(), "limit:20", "irc", "#chat")
+
+    assert owner.calls == [
+        ("import", "discord", "general", None, None),
+        ("import", "discord", "general", "lobby", "all"),
+        ("export", "irc", "#chat", None, "20"),
+    ]
+
+
+async def test_import_without_a_channel_replies_with_usage():
+    owner = _TransferOwner()
+    bot = _bare_bot(owner, prefix="!")
+
+    await bot.all_commands["import"].callback(SimpleNamespace(), "discord")
+
+    assert owner.calls == []
+    assert owner.replies == ["Usage: !import <service> <external_channel> [local_channel] [limit:<n|all>]"]
 
 
 class _MirrorOwner:

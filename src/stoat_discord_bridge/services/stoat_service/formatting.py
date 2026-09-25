@@ -74,6 +74,21 @@ def _avatar_url(author) -> str | None:
     return getattr(author, "default_avatar_url", None)
 
 
+def _masquerade_identity(message) -> tuple[str | None, str | None, str | None] | None:
+    """A masqueraded message's displayed `(name, avatar_url, color)`, or None
+    when it has no masquerade. Used by `/import` / `/export` (issue #161) to
+    read a relayed post back as the identity it was shown under, not as the
+    bridge bot that authored it."""
+    masquerade = getattr(message, "masquerade", None)
+    if masquerade is None:
+        return None
+    return (
+        getattr(masquerade, "name", None) or None,
+        getattr(masquerade, "avatar", None) or None,
+        getattr(masquerade, "color", None) or None,
+    )
+
+
 def _member_color(author) -> str | None:
     """Best-effort CSS color of a Stoat member's displayed name - the color
     of their highest-priority colored role, matching how the client tints it.

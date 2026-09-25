@@ -9,6 +9,7 @@ through.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
@@ -21,6 +22,7 @@ from stoat_discord_bridge.services.base import OnMessage, SenderService
 from stoat_discord_bridge.services.irc_service.client import _IrcClient
 from stoat_discord_bridge.services.irc_service.commands import (
     _ADMIN_DM_CHANNEL_VERBS,
+    _ADMIN_DM_ONE_WORD_VERBS,
     _ADMIN_DM_TWO_WORD_NOUNS,
     IrcAdminCommandsMixin,
 )
@@ -34,6 +36,7 @@ from stoat_discord_bridge.services.irc_service.formatting import (
     _split_permanent_mode,
     _synthetic_message_id,
     normalize_channel_name,
+    parse_relayed_line,
 )
 from stoat_discord_bridge.status import HealthTracker
 
@@ -203,8 +206,8 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
     def _handle_privmsg(self, connection, event) -> None:
         # DM to the bot. `STATUS`/`HELP`/`LINKED CHANNELS`/`LINKED USERS` are
         # read-only, no permission gate. `LINK CHANNEL`/`MIRROR CHANNEL`/
-        # `UNLINK CHANNEL`/`LINK USER`/`UNLINK USER` (two-token) are oper-gated
-        # admin commands, dispatched to _handle_dm_command.
+        # `UNLINK CHANNEL`/`LINK USER`/`UNLINK USER` (two-token) and `IMPORT`/
+        # `EXPORT` are oper-gated admin commands, dispatched to _handle_dm_command.
         content = event.arguments[0]
         if content.strip().upper() == "STATUS":
             for line in self._health.render().splitlines():
@@ -226,7 +229,7 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         if two == "LINKED USERS":
             self._schedule(self._handle_linked_users_command(event.source.nick, words[2:]))
             return
-        if (
+        if words[0].upper() in _ADMIN_DM_ONE_WORD_VERBS or (
             words[0].upper() in _ADMIN_DM_CHANNEL_VERBS
             and len(words) > 1
             and words[1].upper() in _ADMIN_DM_TWO_WORD_NOUNS
@@ -401,7 +404,9 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         a bound callable (`ConnectorInfo`'s hook contract), not called."""
         return "H" in (self._config.default_channel_modes or "")
 
-    async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
+    async def fetch_history(
+        self, channel_id: str, limit: int | None, *, include_relayed: bool = False
+    ) -> list[StandardMessage]:
         """`ConnectorInfo.fetch_history` for IRC (issue #141): unlike
         Discord/Stoat, IRC has no on-demand history query, no CAP
         negotiation on this network at all, and no per-channel scrollback API
@@ -433,7 +438,12 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         Two concurrent calls for the same channel are serialized (via
         `_history_fetch_locks`) rather than run in parallel - a second
         PART+re-JOIN before the first's capture finished would clobber its
-        `_pending_history_capture` entry and orphan its future."""
+        `_pending_history_capture` entry and orphan its future.
+
+        `include_relayed` (issue #161's `/import` / `/export`) unpacks the
+        bridge's own relayed lines back into their original sender
+        (`_unpack_relayed_line`); the capture itself already holds every
+        nick's lines."""
         channel = normalize_channel_name(channel_id, self._channel_name_limit())
         key = channel.lower()
         if not self._client.connection.is_connected():
@@ -457,7 +467,23 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
                 messages = capture
         if limit is not None:
             messages = messages[-limit:] if limit > 0 else []
+        if include_relayed:
+            messages = [self._unpack_relayed_line(m) for m in messages]
         return messages
+
+    def _unpack_relayed_line(self, message: StandardMessage) -> StandardMessage:
+        """A captured line from the bridge's own nick, read back as the sender
+        it was relayed for (issue #161): `<alice, Discord> hi` becomes sender
+        `alice [Discord]` with content `hi`, and no source label so the
+        destination doesn't decorate it again. Anything else is returned
+        unchanged, including an own line with no tag."""
+        if message.sender_user_id.lower() != self._client.connection.get_nickname().lower():
+            return message
+        parsed = parse_relayed_line(message.content_markdown)
+        if parsed is None:
+            return message
+        sender, content = parsed
+        return dataclasses.replace(message, sender_name=sender, content_markdown=content, source_label=None)
 
     async def ensure_channel(
         self,

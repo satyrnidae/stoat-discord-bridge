@@ -530,3 +530,65 @@ async def test_whitelisted_without_a_configured_bot_whitelist():
     assert interaction.sent == ["Bot whitelisting isn't configured."]
 
 
+# ---------------------------------------------------------------- /import, /export (issue #161)
+
+
+@pytest.mark.parametrize("direction", ["import", "export"])
+async def test_transfer_defaults_local_channel_to_the_invoking_channel(direction):
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=555, channel_name="here")
+
+    # A same-connector transfer, with the external channel picked as a
+    # pasted `<#id>` mention.
+    await sender._handle_transfer_history(interaction, direction, "discord", "<#123>", None, "all")
+
+    assert linker.transfer_history_calls == [
+        {
+            "local_connector": "discord",
+            "service": "discord",
+            "external_channel_id": "123",
+            "local_channel_id": "555",
+            "direction": direction,
+            "history_limit": "all",
+        }
+    ]
+    assert interaction.deferred is True
+    assert interaction.sent == ["transferred ok"]
+
+
+async def test_transfer_uses_an_explicit_local_channel():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=555, app_can_view=False)
+
+    await sender._handle_transfer_history(interaction, "export", "irc", "#chat", "<#777>", None)
+
+    # An explicit channel skips the current-channel visibility check - the
+    # linker's own can_view_channel check covers it.
+    assert linker.transfer_history_calls[0]["local_channel_id"] == "777"
+    assert linker.transfer_history_calls[0]["history_limit"] is None
+
+
+async def test_transfer_refuses_the_invoking_channel_when_the_bot_cant_see_it():
+    linker = FakeLinker()
+    sender = _make_sender(linker)
+    interaction = FakeInteraction(channel_id=555, app_can_view=False)
+
+    await sender._handle_transfer_history(interaction, "import", "stoat", "s1", None, None)
+
+    assert linker.transfer_history_calls == []
+    assert "can't see this channel" in interaction.sent[0]
+
+
+def test_import_and_export_are_registered_as_manage_server_commands():
+    sender = _make_sender(FakeLinker())
+    for name in ("import", "export"):
+        command = sender.tree.get_command(name, guild=sender._guild)
+        assert command is not None
+        assert command.default_permissions.manage_guild is True
+        assert command._params["service"].required is True
+        assert command._params["external_channel"].required is True
+        assert command._params["local_channel"].required is False
+
+

@@ -166,3 +166,83 @@ async def test_backfill_history_stops_early_on_unsupported_relay_target(coordina
 
     assert len(stoat_receiver.received) == 1  # stopped after the first failure
     assert "stopped after 0 message(s)" in summary
+
+
+async def test_backfill_history_passes_include_relayed_through_to_fetch_history(coordinator_parts):
+    # /import and /export (issue #161) ask for the full history, relayed and
+    # bot posts included.
+    coordinator, *_ = coordinator_parts
+    coordinator.register_receiver(FakeReceiver("stoat"))
+    calls = []
+
+    async def fetch(channel_id, limit, *, include_relayed=False):
+        calls.append((channel_id, limit, include_relayed))
+        return []
+
+    await coordinator.backfill_history(
+        fetch_history=fetch,
+        source_channel_id="100",
+        destination_connector="stoat",
+        destination_channel_id="200",
+        limit=10,
+        include_relayed=True,
+    )
+
+    assert calls == [("100", 10, True)]
+
+
+async def test_backfill_history_default_calls_fetch_history_without_include_relayed(coordinator_parts):
+    # /mirror channel with history keeps its old two-argument call, so a
+    # fetch_history that doesn't know about include_relayed still works.
+    coordinator, *_ = coordinator_parts
+    coordinator.register_receiver(FakeReceiver("stoat"))
+    calls = []
+
+    async def fetch(channel_id, limit):
+        calls.append((channel_id, limit))
+        return []
+
+    await coordinator.backfill_history(
+        fetch_history=fetch,
+        source_channel_id="100",
+        destination_connector="stoat",
+        destination_channel_id="200",
+        limit=None,
+    )
+
+    assert calls == [("100", None)]
+
+
+async def test_backfill_history_transfer_between_linked_channels_posts_only_to_the_destination(
+    coordinator_parts, monkeypatch
+):
+    # A transfer (issue #161) whose source AND destination channels both sit
+    # in bridge groups with other members lands only on the one destination
+    # receiver - never on the destination's own linked channels.
+    monkeypatch.setattr(bridge_module, "_HISTORY_BACKFILL_PACING", 0)
+    coordinator, channel_mappings, *_ = coordinator_parts
+    from tests.bridge.conftest import _link
+
+    await _link(channel_mappings, "group-src", "discord", "100")
+    await _link(channel_mappings, "group-src", "irc", "#src")
+    await _link(channel_mappings, "group-dst", "stoat", "200")
+    await _link(channel_mappings, "group-dst", "irc", "#dst")
+    irc_receiver = FakeReceiver("irc")
+    stoat_receiver = FakeReceiver("stoat")
+    coordinator.register_receiver(irc_receiver)
+    coordinator.register_receiver(stoat_receiver)
+
+    async def fetch(channel_id, limit, *, include_relayed=False):
+        return [_message(message_id="m1"), _message(message_id="m2")]
+
+    await coordinator.backfill_history(
+        fetch_history=fetch,
+        source_channel_id="100",
+        destination_connector="stoat",
+        destination_channel_id="200",
+        limit=None,
+        include_relayed=True,
+    )
+
+    assert irc_receiver.received == []
+    assert [r[1] for r in stoat_receiver.received] == ["200", "200"]

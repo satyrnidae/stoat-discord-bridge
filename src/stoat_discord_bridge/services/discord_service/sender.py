@@ -278,7 +278,9 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             )
         )
 
-    async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
+    async def fetch_history(
+        self, channel_id: str, limit: int | None, *, include_relayed: bool = False
+    ) -> list[StandardMessage]:
         """`ConnectorInfo.fetch_history` for Discord (issue #122): `channel_id`'s
         history, converted via the same `_to_standard_message` the live relay
         path uses, always returned oldest-first so relaying it in list order
@@ -299,6 +301,9 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         (or another integration's) webhook posts, a non-whitelisted bot's
         messages, and non-content system messages (pin/thread-created rows) -
         so a backfill doesn't relay noise a live listener never would have.
+        `include_relayed` (issue #161's `/import` / `/export`) keeps webhook
+        and bot posts too; a webhook post keeps its displayed name/avatar and
+        gets no source label or pronouns, since that name is already decorated.
         Best-effort: an unresolvable/wrong-guild channel yields no messages;
         a fetch that raises partway through the walk yields whatever it
         managed to convert before that rather than discarding a long
@@ -317,11 +322,18 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         messages: list[StandardMessage] = []
         try:
             async for message in channel.history(limit=limit, oldest_first=limit is None):
-                if message.webhook_id is not None:
-                    continue
-                if message.author.bot and not await self._bot_is_whitelisted(str(message.author.id)):
-                    continue
                 if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+                    continue
+                relayed = message.webhook_id is not None
+                if not include_relayed:
+                    if relayed:
+                        continue
+                    if message.author.bot and not await self._bot_is_whitelisted(str(message.author.id)):
+                        continue
+                if relayed:
+                    # The webhook's username/avatar already are the displayed
+                    # (decorated) identity - don't decorate it a second time.
+                    messages.append(_to_standard_message(message, self.connector_id))
                     continue
                 messages.append(
                     _to_standard_message(

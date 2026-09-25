@@ -53,6 +53,7 @@ from stoat_discord_bridge.services.stoat_service.formatting import (
     _map_attachments,
     _map_mentioned_roles,
     _map_mentioned_users,
+    _masquerade_identity,
     _member_color,
     _mentioned_channel_ids,
     _mentioned_emoji_ids,
@@ -276,26 +277,45 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             )
         )
 
-    async def _to_standard_message(self, message) -> StandardMessage:
+    async def _to_standard_message(self, message, *, relayed: bool = False) -> StandardMessage:
         """Convert a native Stoat message - live (from `_handle_message`) or
         historical (from `fetch_history`, issue #122) - into a
         `StandardMessage`. Factored out of `_handle_message` so a history
         backfill can reuse the exact same sender-resolution logic without
         also running the pin/command-message filtering that only makes sense
-        for a live gateway event."""
+        for a live gateway event.
+
+        `relayed` (issue #161's `/import` / `/export`): `message` is one the
+        bridge posted itself. Its masquerade is the displayed (already
+        decorated) identity, so that's used instead of the bot author, with
+        no source label or pronouns so the destination doesn't decorate it
+        twice."""
+        if relayed:
+            name, avatar, color = _masquerade_identity(message) or (None, None, None)
+            identity = {
+                "sender_name": name or await self._resolve_sender_name(message),
+                "sender_avatar_url": avatar,
+                "source_label": None,
+                "sender_pronouns": None,
+                "sender_color": color,
+            }
+        else:
+            identity = {
+                "sender_name": await self._resolve_sender_name(message),
+                "sender_avatar_url": await self._resolve_avatar_url(message),
+                "source_label": self._config.label,
+                "sender_pronouns": await self._resolve_sender_pronouns(message),
+                "sender_color": self._resolve_sender_color(message),
+            }
         return StandardMessage(
             origin_connector_id=self.connector_id,
             origin_channel_id=str(message.channel.id),
             channel_name=getattr(message.channel, "name", str(message.channel.id)),
-            sender_name=await self._resolve_sender_name(message),
-            sender_avatar_url=await self._resolve_avatar_url(message),
             sender_user_id=str(message.author.id),
             content_markdown=message.content,
             message_id=str(message.id),
             attachments=_map_attachments(message),
-            source_label=self._config.label,
-            sender_pronouns=await self._resolve_sender_pronouns(message),
-            sender_color=self._resolve_sender_color(message),
+            **identity,
             mentioned_users=_map_mentioned_users(message),
             mentioned_roles=_map_mentioned_roles(message),
             mentioned_channels=await self._map_mentioned_channels(message.content or ""),
@@ -321,7 +341,9 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 await asyncio.sleep(exc.retry_after or _HISTORY_RATELIMIT_DEFAULT_BACKOFF)
         raise AssertionError("unreachable")  # pragma: no cover
 
-    async def fetch_history(self, channel_id: str, limit: int | None) -> list[StandardMessage]:
+    async def fetch_history(
+        self, channel_id: str, limit: int | None, *, include_relayed: bool = False
+    ) -> list[StandardMessage]:
         """`ConnectorInfo.fetch_history` for Stoat (issue #122): `channel_id`'s
         history, converted via the same `_to_standard_message` the live relay
         path uses, always returned oldest-first so relaying it in list order
@@ -352,6 +374,8 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         feed - our own masqueraded relays, a non-whitelisted bot's messages,
         and system-event rows (pin/unpin) that carry no real content - so a
         backfill doesn't relay noise a live listener never would have.
+        `include_relayed` (issue #161's `/import` / `/export`) keeps our own
+        relays (read back under their masquerade identity) and bot posts.
         Best-effort: an unresolvable channel or a page fetch that raises
         (including a `Ratelimited` that outlasts its retry budget) yields
         whatever was converted before that rather than discarding a long
@@ -385,9 +409,10 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 break
             accepted = 0
             for message in page:
-                if await self._skip_history_message(message):
+                if await self._skip_history_message(message, include_relayed=include_relayed):
                     continue
-                messages.append(await self._to_standard_message(message))
+                relayed = str(getattr(message.author, "id", "")) == self._self_id
+                messages.append(await self._to_standard_message(message, relayed=relayed))
                 accepted += 1
             cursor = page[-1].id
             if remaining is not None:
@@ -400,17 +425,21 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             messages.reverse()
         return messages
 
-    async def _skip_history_message(self, message) -> bool:
+    async def _skip_history_message(self, message, *, include_relayed: bool = False) -> bool:
         """Whether a history-fetched `message` should be dropped rather than
         converted - the non-live-event-specific subset of `_handle_message`'s
-        filtering (the command-message de-dupe doesn't apply to a fetch)."""
+        filtering (the command-message de-dupe doesn't apply to a fetch).
+        `include_relayed` (issue #161) keeps our own relays and bot posts;
+        system-event rows are always dropped."""
+        if getattr(message, "system_event", None) is not None:
+            return True
+        if include_relayed:
+            return False
         author = message.author
         author_id = str(getattr(author, "id", "")) or None
         if author_id == self._self_id:
             return True  # our own masqueraded relay - never re-relay
-        if getattr(author, "bot", False) and not await self._bot_is_whitelisted(author_id or ""):
-            return True
-        return getattr(message, "system_event", None) is not None
+        return getattr(author, "bot", False) and not await self._bot_is_whitelisted(author_id or "")
 
     async def _handle_message_update(self, event) -> None:
         """`on_message_update` (stoat.events.MessageUpdateEvent): a message

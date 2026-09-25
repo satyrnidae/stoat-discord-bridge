@@ -142,6 +142,56 @@ async def test_fetch_history_drops_system_event_rows():
     assert [m.content_markdown for m in messages] == ["real one"]
 
 
+# ---- include_relayed=True (issue #161's /import and /export)
+
+
+async def test_fetch_history_include_relayed_keeps_own_masqueraded_posts_with_the_masquerade_identity():
+    channel = FakeChannel(id="42", name="general")
+    relayed = _stoat_message(channel=channel, author=FakeAuthor(id="bridge-bot-id", bot=True), content="hi", id="m1")
+    relayed.masquerade = stoat.MessageMasquerade("alice [Discord]", "https://a/x.png", color="#ff0000")
+    channel.set_history([relayed])
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(_Recorder(), client, self_id="bridge-bot-id")
+
+    [message] = await sender.fetch_history("42", None, include_relayed=True)
+
+    assert message.content_markdown == "hi"
+    assert message.sender_name == "alice [Discord]"
+    assert message.sender_avatar_url == "https://a/x.png"
+    assert message.sender_color == "#ff0000"
+    # Already decorated - the destination receiver mustn't decorate it again.
+    assert message.source_label is None
+    assert message.sender_pronouns is None
+
+
+async def test_fetch_history_include_relayed_keeps_non_whitelisted_bot_posts():
+    channel = FakeChannel(id="42", name="general")
+    channel.set_history(
+        [_stoat_message(channel=channel, author=FakeAuthor(id="u1", bot=True), content="beep", id="m1")]
+    )
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(_Recorder(), client)
+
+    [message] = await sender.fetch_history("42", None, include_relayed=True)
+
+    assert message.content_markdown == "beep"
+    assert message.source_label is not None
+
+
+async def test_fetch_history_include_relayed_still_drops_system_event_rows():
+    channel = FakeChannel(id="42", name="general")
+    pin_row = _stoat_message(channel=channel, author=FakeAuthor(id="bridge-bot-id"), content="", id="sys1")
+    pin_row.system_event = stoat.MessagePinnedSystemEvent(pinned_message_id="pm1", internal_by="u1", message=None)
+    channel.set_history([pin_row])
+    client = FakeClient()
+    client.add_channel(channel)
+    sender = _make_sender(_Recorder(), client, self_id="bridge-bot-id")
+
+    assert await sender.fetch_history("42", None, include_relayed=True) == []
+
+
 async def test_fetch_history_returns_empty_for_an_unresolvable_channel():
     client = FakeClient()
     sender = _make_sender(_Recorder(), client)

@@ -672,6 +672,46 @@ config-seeded entries marked separately from runtime ones.
   `/whitelist`).
 - **IRC**: not available - no bot concept.
 
+## History transfer: `/import`, `/export`
+
+Copies one existing channel's message history into another existing channel.
+`/import` copies `<service>`'s `<external_channel>` into `<local_channel>`;
+`/export` copies `<local_channel>` into `<service>`'s `<external_channel>`.
+`<local_channel>` defaults to the channel the command is run in
+(Discord/Stoat). `history_limit` works like `/mirror channel`'s: 50 by
+default, a number (clamped to 1000), or `all` for the entire history.
+
+- **History only.** Nothing is created or linked, and the two channels don't
+  need to be linked already. `<service>` may be the connector the command is
+  run on, as long as the two channels differ.
+- **Full history.** Unlike `/mirror channel ... history:`, posts the bridge
+  relayed into the source channel and posts from bots are included. A relayed
+  post keeps the name it was shown under (e.g. `alice [Stoat]`).
+- **No echo.** The copied messages land only in the destination channel. They
+  aren't relayed on to the channels the destination is linked to.
+- **Shares the `/mirror` lock.** While a transfer runs, a `/mirror` into
+  either connector (and another transfer touching either) is rejected, and
+  vice versa.
+- A transfer **from IRC** briefly leaves and rejoins the channel (see
+  `/mirror channel`'s history notes); a transfer **into IRC** needs that
+  connector's `default_channel_modes` to enable chanhistory (`H`).
+- Copied messages don't sync later edits, reactions or pins, and a Discord
+  `all` transfer can outlive the 15-minute window Discord allows for the
+  command's reply.
+
+### `/import <service> <external_channel> [<local_channel>] [<history_limit>]`
+
+### `/export <service> <external_channel> [<local_channel>] [<history_limit>]`
+
+- **Discord**: `/import` / `/export` flat slash commands (Manage Server).
+  `service`, `external_channel` and `local_channel` are autocompleted.
+- **Stoat**: `/import <service> <external_channel|name> [local_channel|name]
+  [limit:<n|all>]` and the same for `/export` (Manage Server). `limit:` can go
+  anywhere in the argument list.
+- **IRC**: `IMPORT <service> <external_channel> <local_channel>
+  [LIMIT:<n|all>]` and the same for `EXPORT`, DM (IRC-operator).
+  `<local_channel>` is required - a DM has no current channel.
+
 ## `/help` (Discord) / `/bridge-help` (Stoat) / `HELP` (IRC)
 
 With no argument, prints an index of every command this connector offers -

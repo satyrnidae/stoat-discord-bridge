@@ -233,11 +233,12 @@ class BridgeCoordinator:
     async def backfill_history(
         self,
         *,
-        fetch_history: Callable[[str, int | None], Awaitable[list[StandardMessage]]],
+        fetch_history: Callable[..., Awaitable[list[StandardMessage]]],
         source_channel_id: str,
         destination_connector: str,
         destination_channel_id: str,
         limit: int | None,
+        include_relayed: bool = False,
     ) -> str:
         """`/mirror channel with history`'s (issue #122) orchestration step:
         fetch `source_channel_id`'s history via `fetch_history` (already
@@ -266,13 +267,25 @@ class BridgeCoordinator:
         Stops early on `UnsupportedRelayTargetError` - a structurally broken
         target (e.g. a Discord forum channel) fails identically on every
         remaining message, so there's no point retrying the rest one at a
-        time - and reports how much got through before that."""
+        time - and reports how much got through before that.
+
+        `include_relayed` (issue #161's `/import` / `/export`) asks
+        `fetch_history` for the *full* history, including posts the bridge
+        relayed into the source channel and posts from bots. Only passed on
+        when set, so a `fetch_history` that predates it still works for
+        `/mirror channel with history`. The single-destination rule above is
+        what keeps a transfer from echoing across the destination's own
+        linked channels: every post it makes is the bridge's own (webhook /
+        masquerade / bridge nick), which each sender's loop guard drops."""
         receiver = self._receivers.get(destination_connector)
         if receiver is None:
             logger.warning("history backfill: no receiver registered for %s", destination_connector)
             return f"no receiver registered for {destination_connector} - nothing backfilled."
         try:
-            messages = await fetch_history(source_channel_id, limit)
+            if include_relayed:
+                messages = await fetch_history(source_channel_id, limit, include_relayed=True)
+            else:
+                messages = await fetch_history(source_channel_id, limit)
         except Exception:
             logger.exception("history backfill: fetching channel %s failed", source_channel_id)
             return "history backfill failed while fetching the source channel's history."

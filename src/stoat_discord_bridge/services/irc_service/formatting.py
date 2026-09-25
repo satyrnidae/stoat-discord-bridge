@@ -132,6 +132,33 @@ def _split_permanent_mode(modes: str) -> tuple[str | None, bool]:
     return (None if stripped.strip(" +-") == "" else stripped), True
 
 
+# The `<nick[, Source][, pronouns]> ` tag IrcReceiverService puts in front of
+# every relayed line. `format_line_tag` writes it; `parse_relayed_line` reads
+# it back for `/import` / `/export` (issue #161). Kept side by side so the two
+# stay in step.
+_LINE_TAG_RE = re.compile(r"\A<([^<>]+)> (.*)\Z", re.DOTALL)
+
+
+def format_line_tag(sender_name: str, *details: str | None) -> str:
+    """`<sender_name, detail, ...> ` - the prefix on every relayed IRC line.
+    Empty details are skipped."""
+    return f"<{', '.join([sender_name, *(d for d in details if d)])}> "
+
+
+def parse_relayed_line(line: str) -> tuple[str, str] | None:
+    """Split a line the bridge relayed into IRC back into `(sender, text)`.
+    The sender comes back decorated the same way the other platforms show a
+    relayed name - `alice [Discord, she/her]` - since it was already shown
+    with those details. None when the line has no tag. A name that itself
+    contains `, ` can't be told apart from the details; that's accepted."""
+    match = _LINE_TAG_RE.match(line)
+    if match is None:
+        return None
+    name, *details = match.group(1).split(", ")
+    sender = f"{name} [{', '.join(details)}]" if details else name
+    return sender, match.group(2)
+
+
 def _synthetic_message_id(channel: str, nick: str, content: str) -> str:
     # IRC has no native message IDs. Hash the message contents (scoped by
     # channel/nick, salted with receipt time to keep repeated identical

@@ -754,6 +754,52 @@ class DiscordLinkingMixin:
             editor=editor,
         )
 
+    async def _handle_transfer_history(
+        self,
+        interaction: discord.Interaction,
+        direction: str,
+        service: str,
+        external_channel: str,
+        local_channel: str | None,
+        history_limit: str | None,
+    ) -> None:
+        """`/import` / `/export` (issue #161): copy `service`'s
+        `external_channel` history into `local_channel`, or the reverse.
+        `local_channel` defaults to the channel the command was run in."""
+        if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
+            return
+        if local_channel is not None:
+            local_channel_id = _normalize_channel_id(local_channel)
+        else:
+            local_channel_id = str(interaction.channel_id)
+            # Same current-channel check as /mirror channel (issue #33).
+            if not interaction.app_permissions.view_channel:
+                await interaction.response.send_message(
+                    f"I can't see this channel, so I can't {direction} its history - grant me access to it first.",
+                    ephemeral=True,
+                )
+                return
+        logger.info(
+            "[discord:%s] %s ran /%s service=%s external_channel=%s local_channel=%s",
+            self.connector_id,
+            interaction.user.id,
+            direction,
+            service,
+            external_channel,
+            local_channel_id,
+        )
+        # A history transfer runs far past the 3s response deadline.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        coro = self._linker.transfer_history(
+            local_connector=self.connector_id,
+            service=service,
+            external_channel_id=_normalize_channel_id(external_channel),
+            local_channel_id=local_channel_id,
+            direction=direction,
+            history_limit=history_limit,
+        )
+        await self._reply_linker_result(interaction, coro, log_context=f"/{direction}", deferred=True)
+
     async def _handle_mirror_channel_from(
         self,
         interaction: discord.Interaction,
