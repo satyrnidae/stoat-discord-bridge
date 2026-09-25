@@ -130,3 +130,19 @@ def test_export_topic_on_every_connector(connector):
     text = render_help("export", connector=connector)
     assert text.lower().lstrip("/").startswith("export <service> <external_channel")
     assert "Permission:" in text
+
+
+def test_topics_fit_discords_25_choice_cap():
+    # Discord's /help offers every topic as one static choice list.
+    assert len(HELP_TOPICS) <= 25
+
+
+@pytest.mark.parametrize("connector", ["discord", "stoat"])
+def test_attachments_topic_on_discord_and_stoat(connector):
+    text = render_help("attachments", connector=connector)
+    assert text.lstrip("/").startswith("attachments prefer")
+    assert "unprefer" in text and "preferences" in text
+
+
+def test_attachments_topic_is_not_offered_on_irc():
+    assert "attachments" not in render_help(None, connector="irc")
