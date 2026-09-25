@@ -703,6 +703,38 @@ def build_command_tree(service) -> None:
         "Channel here to copy from (defaults to the current channel)",
     )
 
+    # `/attachments` (issue #164) - which platform rebuilds a link's preview.
+    # The whole group is Manage-Server gated, listing included: Discord can't
+    # set permissions per subcommand.
+    attachments_group = app_commands.Group(
+        name="attachments", description="Choose how link previews are relayed", default_permissions=_manage
+    )
+    self.tree.add_command(attachments_group, guild=self._guild)
+
+    @attachments_group.command(
+        name="prefer", description="Let a platform build its own preview for links containing some text"
+    )
+    @app_commands.describe(
+        kind="Platform that should build the preview itself",
+        url_substring="Text to match in the link, e.g. instagram.com",
+    )
+    @app_commands.choices(
+        kind=[app_commands.Choice(name="discord", value="discord"), app_commands.Choice(name="stoat", value="stoat")]
+    )
+    async def attachments_prefer_command(
+        interaction: discord.Interaction, kind: app_commands.Choice[str], url_substring: str
+    ) -> None:
+        await self._handle_attachments_prefer(interaction, kind.value, url_substring)
+
+    @attachments_group.command(name="unprefer", description="Remove a link-preview preference")
+    @app_commands.describe(url_substring="The text the preference matches")
+    async def attachments_unprefer_command(interaction: discord.Interaction, url_substring: str) -> None:
+        await self._handle_attachments_unprefer(interaction, url_substring)
+
+    @attachments_group.command(name="preferences", description="List link-preview preferences")
+    async def attachments_preferences_command(interaction: discord.Interaction) -> None:
+        await self._handle_attachments_preferences(interaction)
+
     @self.tree.command(
         name="whitelisted", description="List whitelisted bot users on a connector", guild=self._guild
     )

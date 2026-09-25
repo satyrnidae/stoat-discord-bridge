@@ -280,6 +280,25 @@ def build_command_tree(bot, owner, prefix: str) -> None:
     async def whitelisted(ctx, service: typing.Optional[str] = None):
         await owner._whitelisted(ctx, service or "local")
 
+    # `/attachments` (issue #164) - which platform rebuilds a link's preview.
+    @bot.group(name="attachments", invoke_without_command=True)
+    async def attachments(ctx):
+        await owner._reply(
+            ctx, f"Usage: {p}attachments <prefer <discord|stoat> <url-substr>|unprefer <url-substr>|preferences>"
+        )
+
+    @attachments.command(name="prefer")
+    async def attachments_prefer(ctx, kind: str, url_substring: str):
+        await owner._attachments_prefer(ctx, kind, url_substring)
+
+    @attachments.command(name="unprefer")
+    async def attachments_unprefer(ctx, url_substring: str):
+        await owner._attachments_unprefer(ctx, url_substring)
+
+    @attachments.command(name="preferences")
+    async def attachments_preferences(ctx):
+        await owner._attachments_preferences(ctx)
+
     @bot.command(name="bridge-help")
     async def bridge_help(
         ctx, topic: typing.Optional[str] = None, noun: typing.Optional[str] = None

@@ -19,6 +19,7 @@ from collections import deque
 import stoat
 
 from stoat_discord_bridge.admin_commands import (
+    AttachmentPreferenceManager,
     BotWhitelistManager,
     CategoryLinker,
     ChannelLinker,
@@ -107,6 +108,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         category_linker: "CategoryLinker | None" = None,
         role_linker: "RoleLinker | None" = None,
         bot_whitelist: "BotWhitelistManager | None" = None,
+        attachment_preferences: "AttachmentPreferenceManager | None" = None,
         on_member_roles_changed: "OnMemberRolesChanged | None" = None,
         on_role_renamed: "OnRoleRenamed | None" = None,
         on_role_deleted: "OnRoleDeleted | None" = None,
@@ -137,6 +139,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         self._category_linker = category_linker
         self._role_linker = role_linker
         self._bot_whitelist = bot_whitelist
+        self._attachment_preferences = attachment_preferences
         self._on_voice_presence = on_voice_presence
         self._on_member_roles_changed = on_member_roles_changed
         self._on_role_renamed = on_role_renamed
