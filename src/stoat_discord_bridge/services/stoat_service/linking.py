@@ -218,7 +218,7 @@ class StoatLinkingMixin:
     async def _mirror_emote(
         self, ctx, service: str, local_id: str | None = None, new_name: str | None = None
     ) -> None:
-        """`/mirror emote to <service|all> <local_id|name> [new_name]`."""
+        """`/mirror emote to <service|all> <local_id|name> [new_name:<name>]`."""
         if not await self._require_admin(ctx):
             return
         if not await self._linker_configured(ctx, self._emote_linker, "Linking isn't configured."):
@@ -237,7 +237,7 @@ class StoatLinkingMixin:
     async def _mirror_emote_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
     ) -> None:
-        """`/mirror emote from <service> <external_id|name> [new_name]`:
+        """`/mirror emote from <service> <external_id|name> [new_name:<name>]`:
         recreate-or-match `service`'s custom emoji locally and link them."""
         if not await self._require_admin(ctx):
             return
@@ -285,7 +285,7 @@ class StoatLinkingMixin:
         with_history: bool = False,
         history_limit: str | None = None,
     ) -> None:
-        """`/mirror channel <service|all> [local_id|name] [new_name] [category:<id|name>] [history:<n|all>]`:
+        """`/mirror channel <service|all> [local_id|name] [new_name:<name>] [category:<id|name>] [history[:<n|all>]]`:
         local_id defaults to the invoking channel.
         `category` (a Category id/name on the target service) overrides linked
         Categories and needs a single service (issue #75).
@@ -387,7 +387,7 @@ class StoatLinkingMixin:
         with_history: bool = False,
         history_limit: str | None = None,
     ) -> None:
-        """`/mirror channel from <service> <external_id|name> [new_name] [category:<id|name>] [history:<n|all>]`:
+        """`/mirror channel from <service> <external_id|name> [new_name:<name>] [category:<id|name>] [history[:<n|all>]]`:
         create a local channel mirroring `service`'s and link them, landing it in
         the local counterpart of the source channel's linked Category - or in
         `category` (a local Category id/name), if given, which overrides that
@@ -467,7 +467,7 @@ class StoatLinkingMixin:
     async def _mirror_category(
         self, ctx, service: str, local_id: str | None = None, new_name: str | None = None
     ) -> None:
-        """`/mirror category <service|all> [local_id|name] [new_name]`."""
+        """`/mirror category <service|all> [local_id|name] [new_name:<name>]`."""
         if not await self._require_admin(ctx):
             return
         if not await self._linker_configured(ctx, self._category_linker, "Category linking isn't configured."):
@@ -493,7 +493,7 @@ class StoatLinkingMixin:
     async def _mirror_category_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
     ) -> None:
-        """`/mirror category from <service> <external_id|name> [new_name]`: create
+        """`/mirror category from <service> <external_id|name> [new_name:<name>]`: create
         a local Category mirroring `service`'s, link them, and relocate/mirror
         its channels into the local Category."""
         if not await self._require_admin(ctx):
@@ -581,7 +581,7 @@ class StoatLinkingMixin:
     async def _mirror_role(
         self, ctx, service: str, local_id: str | None = None, new_name: str | None = None
     ) -> None:
-        """`/mirror role to <service|all> <local_id|name> [new_name]`."""
+        """`/mirror role to <service|all> <local_id|name> [new_name:<name>]`."""
         if not await self._require_admin(ctx):
             return
         if not await self._linker_configured(ctx, self._role_linker, "Role linking isn't configured."):
@@ -600,7 +600,7 @@ class StoatLinkingMixin:
     async def _mirror_role_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
     ) -> None:
-        """`/mirror role from <service> <external_id|name> [new_name]`:
+        """`/mirror role from <service> <external_id|name> [new_name:<name>]`:
         create-or-match a local role mirroring `service`'s and link them."""
         if not await self._require_admin(ctx):
             return

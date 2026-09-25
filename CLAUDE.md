@@ -596,9 +596,12 @@ overriding `category_from_channel_id` *and* the linked-Category lookup entirely
 single service, not `all`), on `from` a local Category (routed through the same
 `destination_category`, since `mirror_channel_from` calls `mirror_channel` with
 `destination` = the local connector). Discord models it as the native `category`
-option; Stoat and IRC take it as a `category:`/`CATEGORY:` key/value token
-(`admin_commands.pop_kv_option`) - the first `/mirror channel` parameter that
-can't be positional. When `/mirror category` *creates* the
+option; Stoat takes it as a `category:` key/value token
+(`admin_commands.pop_kv_option`), IRC as a `-c`/`--category` flag
+(`admin_commands.pop_flag_option`). Each connector has one convention for
+named optional parameters (issue #167): Stoat uses `name:value` tokens named
+after Discord's options (a bare `history` is a flag), IRC uses args-style
+`-x VALUE` / `--long VALUE` flags. When `/mirror category` *creates* the
 counterpart Category, it records it (and places the source Category's child
 channels) under the title it just asked `ensure_category` for, not by
 re-resolving the id through the connector's name cache - that cache is
@@ -622,14 +625,14 @@ unset. Best-effort (a missing/raising hook is ignored) and throttled
 (`services/caching.RefreshThrottle`, 10s) so a `... all` / `/mirror
 category` fan-out that re-enters a per-destination mirror stays one network
 round-trip. Both directions of every
-`/mirror <noun>` take an optional trailing `new_name` (`admin_commands/common.py`'s
+`/mirror <noun>` take an optional `new_name` (`admin_commands/common.py`'s
 `_clean_new_name`): the name the counterpart is created/matched under on the
 destination instead of carrying the source name over - routed through the
 destination's `ensure_*` hook so it's destination-normalized and still
 get-or-creates (so a same-named existing entity is matched, not duplicated);
 the way to aim `/mirror channel` at an unlinked existing destination channel,
-IRC especially (issue #44). Not on the `all` fan-out; on IRC it's a trailing
-`AS <new_name>`; `/mirror category`'s renames only the Category, not its
+IRC especially (issue #44). Not on the `all` fan-out; on Stoat it's a
+`new_name:<name>` token, on IRC a `-n`/`--new-name` flag; `/mirror category`'s renames only the Category, not its
 mirrored child channels. Any name the linker hands `ensure_channel` /
 `ensure_category` / `ensure_role` - carried-over source name or `new_name`
 override - is first clipped (`channel_structure.clip_name`) to the destination
@@ -1078,7 +1081,7 @@ src/stoat_discord_bridge/
   models.py                    # StandardMessage - the platform-neutral message format
   channel_structure.py         # clip_name(name, limit=32) clips a mirrored channel/category/role name to a destination's limit (#99); thread_category_title adds the 🧵 # thread-group marker (#98), forum_category_title the 💬 # forum marker (#100)
   admin_commands/               # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
-    common.py                   # ConnectorInfo hook dataclass, LinkError/MirrorInProgressError, MirrorGuard, pop_kv_option, id/name-resolution + conflict-check helpers
+    common.py                   # ConnectorInfo hook dataclass, LinkError/MirrorInProgressError, MirrorGuard, pop_kv_option / pop_flag_option, id/name-resolution + conflict-check helpers
     channel.py / category.py / emote.py / user.py / role.py # one linker class per module - category.py depends on channel.py (mirrors a linked Category's child channels); the rest are independent
     help.py                     # HELP_TOPICS + render_help/resolve_help_key - shared help content for /help (Discord) / /bridge-help (Stoat) / HELP (IRC)
     __init__.py                 # re-exports every public name, so `from stoat_discord_bridge.admin_commands import <name>` still works unchanged
