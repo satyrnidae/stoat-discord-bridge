@@ -218,6 +218,17 @@ working) — it only updates `EmojiMappingRepository`'s bookkeeping via
 `forget()` for the connector it was deleted on; the cross-connector mapping
 itself drops only once every connector's copy has been deleted.
 
+**Renaming** a linked custom emoji is mirrored one way, downstream
+(`BridgeCoordinator.handle_emoji_renamed`, issue #175): Discord's
+`_handle_guild_emojis_update` reports a same-id name change, and every other
+copy whose receiver sets `supports_emoji_rename` is renamed via
+`ReceiverService.rename_emoji` (Discord only, via `Emoji.edit`). Stoat can't
+take part in either direction - stoat.py 1.2.1 has no emoji-update event and
+`ServerEmoji` has no edit method - so a Stoat copy keeps its original name and
+its stored `EmojiRef.name` is left matching it. A copy whose rename fails also
+keeps its old stored name. Loop-safe the same two ways as channel rename sync
+(idempotent hook + ~10s record of renames the bridge issued).
+
 ### Message pin sync
 
 Pinning/unpinning a message in a bridged channel is mirrored onto every other

@@ -66,6 +66,7 @@ class DiscordReceiverService(ReceiverService):
     supports_edits = True
     supports_deletes = True
     supports_channel_rename = True
+    supports_emoji_rename = True
 
     def __init__(
         self,
@@ -462,6 +463,28 @@ class DiscordReceiverService(ReceiverService):
             if _discord_reaction_matches(reaction.emoji, want):
                 return bool(reaction.me)
         return False
+
+    async def rename_emoji(self, *, target_emoji_id: str, new_name: str) -> str | None:
+        """Sanitized the same way `create_emoji` names a new emoji. Best-effort:
+        an unknown emoji or a rejected edit is logged and returns `None`."""
+        try:
+            emoji = self._client.get_emoji(int(target_emoji_id))
+        except ValueError:
+            emoji = None
+        if emoji is None:
+            logger.warning("[discord:%s] couldn't resolve emoji %s to rename it", self.connector_id, target_emoji_id)
+            return None
+        new_name = _sanitize_emoji_name(new_name)
+        if emoji.name == new_name:
+            return new_name
+        try:
+            await emoji.edit(name=new_name, reason="bridge emote rename sync")
+        except discord.HTTPException:
+            logger.warning(
+                "[discord:%s] couldn't rename emoji %s to %r", self.connector_id, target_emoji_id, new_name
+            )
+            return None
+        return new_name
 
     async def create_emoji(self, emoji: CustomEmoji) -> CustomEmoji | None:
         guild = self._client.get_guild(self._guild_id)

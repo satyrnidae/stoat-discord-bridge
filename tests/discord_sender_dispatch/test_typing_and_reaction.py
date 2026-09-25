@@ -233,5 +233,19 @@ async def test_guild_emojis_update_ignores_an_emoji_present_in_both_lists():
 
     assert recorder.emoji_created == []
     assert recorder.emoji_deleted == []
+    assert recorder.emoji_renames == []
+
+
+async def test_guild_emojis_update_reports_a_renamed_emoji():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    before = SimpleNamespace(id=1, name="smile", url="https://cdn.example/e.png", animated=False, user=None)
+    after = SimpleNamespace(id=1, name="grin", url="https://cdn.example/e.png", animated=False, user=None)
+
+    await sender._handle_guild_emojis_update(FakeGuild(id=123), [before], [after])
+
+    assert recorder.emoji_renames == [("discord", "1", "grin")]
+    assert recorder.emoji_created == []
+    assert recorder.emoji_deleted == []
 
 

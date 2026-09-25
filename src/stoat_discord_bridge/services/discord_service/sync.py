@@ -319,12 +319,12 @@ class DiscordSyncMixin:
     ) -> None:
         if guild.id != self._config.guild_id:
             return
-        before_ids = {e.id for e in before}
+        before_by_id = {e.id: e for e in before}
         after_ids = {e.id for e in after}
 
         if self._on_emoji_created is not None:
             for emoji in after:
-                if emoji.id in before_ids:
+                if emoji.id in before_by_id:
                     continue
                 if emoji.user is not None and emoji.user.bot:
                     continue  # the bridge's own mirrored emoji landing back here - drop it, don't re-mirror
@@ -344,3 +344,10 @@ class DiscordSyncMixin:
                 await self._on_emoji_deleted(
                     StandardEmojiDeleted(origin_connector_id=self.connector_id, native_id=str(emoji.id))
                 )
+
+        if self._on_emoji_renamed is not None:
+            for emoji in after:
+                previous = before_by_id.get(emoji.id)
+                if previous is None or previous.name == emoji.name:
+                    continue
+                await self._on_emoji_renamed(self.connector_id, str(emoji.id), emoji.name)
