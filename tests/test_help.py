@@ -36,7 +36,7 @@ def test_index_when_topic_is_none():
     text = render_help(None, connector="discord")
     assert text.startswith("Bridge commands (see COMMANDS.md for full detail):")
     assert "/link channel" in text
-    assert "/help [topic] - this message" in text
+    assert "/help [topic] [noun] - this message" in text
 
 
 def test_index_when_topic_is_unrecognized():
@@ -66,7 +66,7 @@ def test_stoat_index_uses_the_given_prefix():
 
 
 def test_index_ends_with_this_connectors_own_help_command():
-    assert render_help(None, connector="discord").rstrip().endswith("/help [topic] - this message")
+    assert render_help(None, connector="discord").rstrip().endswith("/help [topic] [noun] - this message")
     assert render_help(None, connector="stoat").rstrip().endswith("/bridge-help [topic] [noun] - this message")
     assert render_help(None, connector="irc").rstrip().endswith("HELP [topic] [noun] - this message")
 

@@ -19,19 +19,46 @@ from collections.abc import Callable
 import discord
 from discord import app_commands
 
-from stoat_discord_bridge.admin_commands import HELP_TOPICS, ConnectorInfo, render_help
+from stoat_discord_bridge.admin_commands import HELP_TOPICS, ConnectorInfo, render_help, resolve_help_key
 
 logger = logging.getLogger(__name__)
 
 _CHOICE_LIMIT = 25  # Discord's hard cap on autocomplete results
 
-# Every HELP_TOPICS key as a static /help choice - all of them fit under
-# Discord's 25-choice cap, so every subtopic is discoverable in one dropdown
-# rather than needing a second dependent option (issue #117).
-_HELP_CHOICES = [
-    app_commands.Choice(name=f"{key} — {entry.summary}"[:100], value=key)
-    for key, entry in HELP_TOPICS.items()
-]
+def _help_topic_choices(topics=HELP_TOPICS) -> list[app_commands.Choice[str]]:
+    """/help's static `topic` choices: the distinct verbs (first token) of
+    every HELP_TOPICS key, in first-seen order. One choice per combined key
+    would pass Discord's 25-choice cap as topics are added (issue #172); the
+    verb set only grows when a wholly new command does. A bare-verb topic
+    (`status`) shows its summary, since it has no `noun` to drill into."""
+    choices: dict[str, app_commands.Choice[str]] = {}
+    for key, entry in topics.items():
+        verb = key.split(" ", 1)[0]
+        if verb in choices:
+            continue
+        name = verb if " " in key else f"{verb} — {entry.summary}"
+        choices[verb] = app_commands.Choice(name=name[:100], value=verb)
+    return list(choices.values())
+
+
+def _help_noun_choices(
+    topic: str | None, current: str, topics=HELP_TOPICS
+) -> list[app_commands.Choice[str]]:
+    """/help's `noun` autocomplete: the nouns filed under the chosen `topic`
+    verb (`channel` for `link channel`), filtered by `current`. Empty until a
+    `topic` is picked, and for a bare-verb topic with no nouns."""
+    if not topic:
+        return []
+    current = current.strip().lower()
+    choices = []
+    for key in topics:
+        verb, _, noun = key.partition(" ")
+        if verb == topic and noun and current in noun:
+            choices.append(app_commands.Choice(name=noun, value=noun))
+    return choices[:_CHOICE_LIMIT]
+
+
+_HELP_CHOICES = _help_topic_choices()
 
 
 def _connector_autocomplete_choices(
@@ -114,16 +141,26 @@ def build_command_tree(service) -> None:
     @self.tree.command(
         name="help", description="Show bridge command help", guild=self._guild
     )
-    @app_commands.describe(topic="Drill into one command's full syntax and detail")
+    @app_commands.describe(
+        topic="Drill into one command's full syntax and detail",
+        noun="Which entity kind, for a command that has several (pick a topic first)",
+    )
     @app_commands.choices(topic=_HELP_CHOICES)
     async def help_command(
-        interaction: discord.Interaction, topic: app_commands.Choice[str] | None = None
+        interaction: discord.Interaction,
+        topic: app_commands.Choice[str] | None = None,
+        noun: str | None = None,
     ) -> None:
         # No permission gate - read-only, same as /status.
-        await interaction.response.send_message(
-            render_help(topic.value if topic is not None else None, connector="discord"),
-            ephemeral=True,
-        )
+        key = resolve_help_key(topic.value if topic is not None else None, noun)
+        await interaction.response.send_message(render_help(key, connector="discord"), ephemeral=True)
+
+    @help_command.autocomplete("noun")
+    async def help_noun_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        # The namespace holds a Choice option's raw value (the verb string).
+        return _help_noun_choices(getattr(interaction.namespace, "topic", None), current)
 
     # Channels, roles, users, Categories and emotes all use the `/link
     # <noun>`, `/unlink <noun>`, `/linked <noun>`, `/mirror <noun>`

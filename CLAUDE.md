@@ -577,8 +577,10 @@ commands `/link emote` / `/mirror emote to` / `/mirror emote from` /
 (Discord/Stoat only - IRC has no custom emoji)) and how to
 reach it on each connector is documented in
 `COMMANDS.md`, not duplicated here. Every connector also has a help command
-with the same `[topic] [noun]` drill-down - Discord's `/help [topic]`
-(a single dropdown of every subtopic), Stoat's `/bridge-help [topic] [noun]`
+with the same `[topic] [noun]` drill-down - Discord's `/help [topic] [noun]`
+(a static dropdown of verbs plus a `noun` autocompleted from the chosen verb,
+since one choice per subtopic would pass Discord's 25-choice cap - issue
+#172), Stoat's `/bridge-help [topic] [noun]`
 (kept under that name rather than `/help` to avoid colliding with other
 bots' command providers in a shared server), and IRC's `HELP [topic]
 [noun]` - all three rendered from one shared `admin_commands/help.py` table

@@ -766,8 +766,8 @@ Lists every rule.
 ## `/help` (Discord) / `/bridge-help` (Stoat) / `HELP` (IRC)
 
 With no argument, prints an index of every command this connector offers -
-one line each, syntax plus a one-line summary. With a topic (and, on
-Stoat/IRC, a noun), drills into that one command's full syntax, a longer
+one line each, syntax plus a one-line summary. With a topic (and, for a
+command with several entity kinds, a noun), drills into that one command's full syntax, a longer
 description, and its permission requirement. All three render from the same
 in-code table (`admin_commands/help.py`'s `HELP_TOPICS`), so this file, the
 three connectors' help output, and each other never drift out of sync.
@@ -775,9 +775,10 @@ Read-only, no permission gate. An unrecognized topic, or one this connector
 doesn't offer at all (role/Category/emote topics on IRC), falls back to the
 index.
 
-- **Discord**: `/help [topic]` slash command - `topic` is a single dropdown
-  listing every subtopic (e.g. "link channel", "mirror role") plus `status`,
-  so every command is discoverable without leaving the command box.
+- **Discord**: `/help [topic] [noun]` slash command - `topic` is a dropdown
+  of commands (`status`, `link`, `mirror`, …), and `noun` autocompletes the
+  entity kinds that command has (`channel`, `role`, …) once a topic is picked.
+  Kept as two options because Discord caps a dropdown at 25 choices.
 - **Stoat**: `/bridge-help [topic] [noun]` message command. Stays under this
   name rather than `/help` - a bare `/help` would collide with other bots'
   command providers in a shared Stoat server.

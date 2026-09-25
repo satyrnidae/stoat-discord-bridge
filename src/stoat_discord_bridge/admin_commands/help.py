@@ -43,10 +43,8 @@ class HelpTopic:
 
 
 # Keyed "verb noun" (e.g. "link channel"), or the bare verb for `status` -
-# the same shape Discord's single combined `topic` choice value is, and what
-# Stoat's `/bridge-help [topic] [noun]` / IRC's `HELP [topic] [noun]`
-# positional args combine into via `resolve_help_key`. Order here is the
-# order topics are listed in the index.
+# what every connector's help `[topic] [noun]` args combine into via
+# `resolve_help_key`. Order here is the order topics are listed in the index.
 HELP_TOPICS: dict[str, HelpTopic] = {
     "status": HelpTopic(
         summary="Sync target health per connector, read-only",
@@ -449,17 +447,16 @@ HELP_TOPICS: dict[str, HelpTopic] = {
 # This connector's own help command, appended to the index - not itself a
 # HELP_TOPICS entry since it takes no drill-down of its own.
 _HELP_COMMAND_SYNTAX: dict[_ConnectorKind, str] = {
-    "discord": "/help [topic]",
+    "discord": "/help [topic] [noun]",
     "stoat": "{p}bridge-help [topic] [noun]",
     "irc": "HELP [topic] [noun]",
 }
 
 
 def resolve_help_key(topic: str | None, noun: str | None = None) -> str:
-    """Combine Stoat's `/bridge-help [topic] [noun]` / IRC's `HELP [topic]
-    [noun]` positional args into one `HELP_TOPICS` lookup key (e.g. "link
-    channel") - the same shape Discord's single combined `topic` choice
-    value already is. Case/whitespace-insensitive; a missing part just
+    """Combine a help command's `[topic] [noun]` args (Discord's options,
+    Stoat/IRC's positional args) into one `HELP_TOPICS` lookup key (e.g.
+    "link channel"). Case/whitespace-insensitive; a missing part just
     yields fewer tokens (`resolve_help_key("status")` -> `"status"`,
     `resolve_help_key(None)` -> `""`, matching no topic - the index)."""
     parts = [part.strip().lower() for part in (topic, noun) if part and part.strip()]
@@ -478,8 +475,7 @@ def render_help(topic: str | None, *, connector: str, prefix: str = "/") -> str:
     asking about a role/Category/emote topic, say), otherwise that topic's
     detail. `prefix` only matters for `connector == "stoat"` (its
     configurable `command_prefix`); ignored otherwise. `topic` is expected
-    already combined via `resolve_help_key` for Stoat/IRC's two-positional-
-    arg form; Discord's single `topic` choice value is used as-is."""
+    already combined via `resolve_help_key`."""
     key = (topic or "").strip().lower()
     entry = HELP_TOPICS.get(key)
     if entry is None or _render_syntax(entry.syntax.get(connector), connector=connector, prefix=prefix) is None:
