@@ -253,12 +253,18 @@ combinable with `<new_name>`.
 Read-only. With an emote, lists its linked counterparts; with no argument,
 lists every linked-emote group.
 
-### `/unlink emote <local_id|name> [<service>|all]`
+### `/unlink emote <local_id|name|all> [<service>|all]`
 
 Removes members from the emoji's mapping group - a specific `<service>` kicks
 just that one, `all` (the default) dissolves the whole group. A kick that
 would stand a lone survivor dissolves the group instead. The emoji
 themselves are never deleted.
+
+**`local_id: all`** does this for every emote the invoking connector has
+linked, with the same rules as [`/unlink channel`'s bulk
+form](#unlink-channel-local_idall-serviceall): `service` is required,
+`all all` dissolves every group, `all <service>` kicks that service from each
+group it's in, and each group gets its own line in the reply.
 
 - **Discord**: the `/link emote` / `/mirror emote to` / `/mirror emote from` /
   `/linked emotes` / `/unlink emote` slash subcommands (Manage Server on all
@@ -491,12 +497,17 @@ means "the invoking channel's Category". Not combinable with `<new_name>`.
 Read-only listing of every Category linked to the given (or invoking) Category,
 across every connector in its bridge group.
 
-### `/unlink category [<local_id|name>] [<service>|all]`
+### `/unlink category [<local_id|name|all>] [<service>|all]`
 
 Removes members from the Category's bridge group. A specific `<service>` kicks
 just that one member out; `all` (the default) dissolves the whole group.
 Existing channels already synced into the Category are left alone either way -
 only future auto-sync stops. Manage Server.
+
+**`local_id: all`** does this for every Category the invoking connector has
+linked, with the same rules as [`/unlink channel`'s bulk
+form](#unlink-channel-local_idall-serviceall). Unlike roles and emotes, a
+kick that leaves a lone Category behind doesn't dissolve its group.
 
 - **Discord**: the `/link category` / `/mirror category to` /
   `/mirror category from` / `/linked categories` / `/unlink category` slash
@@ -547,12 +558,16 @@ with `<new_name>`.
 Read-only. With a role, lists its linked counterparts; with no argument,
 lists every linked-role group.
 
-### `/unlink role <local_id|name> [<service>|all]`
+### `/unlink role <local_id|name|all> [<service>|all]`
 
 Removes members from the role's bridge group - a specific `service` kicks
 just that one, `all` (the default) dissolves the whole group. A kick that
 would stand a lone survivor dissolves the group instead. The roles
 themselves are never deleted. Manage Server.
+
+**`local_id: all`** does this for every role the invoking connector has
+linked, with the same rules as [`/unlink channel`'s bulk
+form](#unlink-channel-local_idall-serviceall).
 
 - **Discord**: `/link role` / `/mirror role to` / `/mirror role from` /
   `/linked roles` / `/unlink role` slash subcommands (Manage Server on all
@@ -628,7 +643,7 @@ its own error line rather than stopping the rest. A channel literally named
   to - and hoisted to the first arg since it's the one id IRC can't leave
   out; `service` remains optional and comes after)
 
-## `/unlink user [service|all] [local_id|name]`
+## `/unlink user [service|all] [local_id|name|all]`
 
 Removes identities from a user's cross-connector link group. Given a
 specific `service` (a connector id), kicks just that one identity out -
@@ -636,16 +651,44 @@ the rest of the group stays linked to each other. With no `service`, or
 `all` (the default), dissolves the whole group instead. `local_id` defaults to
 whoever ran the command.
 
-- **Discord**: `/unlink user [service] [local_id]` slash subcommand (Manage
-  Server); `service`'s autocomplete includes the literal `all` choice.
-  `local_id` is a real `discord.Member`, same picker as `/link user`'s local
-  side and `/linked users`.
-- **Stoat**: `/unlink user [service|all] [local_id|name]` message command
+**`local_id: all`** does this for every user the invoking connector has
+linked, with the same rules as [`/unlink channel`'s bulk
+form](#unlink-channel-local_idall-serviceall). Unlike roles and emotes, a
+kick that leaves a lone identity behind doesn't dissolve its group.
+
+- **Discord**: `/unlink user [service|all] [local_id|all]` slash subcommand
+  (Manage Server); `service`'s autocomplete includes the literal `all`
+  choice. `local_id` is an autocompleted string (this guild's members), not
+  a member picker, so `all` can be typed into it; it also takes an id, a
+  name, or a pasted mention. `/link user` and `/linked users` keep the
+  member picker.
+- **Stoat**: `/unlink user [service|all] [local_id|name|all]` message command
   (Manage Server) - `local_id` accepts a name or an id (no member-picker
   equivalent exists there, same caveat as `/link user`'s local side).
-- **IRC**: `UNLINK USER [service|all] [local_id]`, DM
+- **IRC**: `UNLINK USER [service|all] [local_id|all]`, DM
   (IRC-operator; both arguments optional, `local_id` defaults to the
   nick running the command)
+
+## `/unlink all <service|all>`
+
+Runs the `local_id: all` form of every `/unlink` command at once - channels,
+Categories, roles, emotes and users - for the invoking connector. It's the
+one-command way to clear out a connector's links, e.g. before removing it
+from the bridge. `service` means the same as in each per-kind bulk form, and
+is required: a connector id kicks that connector out of every group this
+connector is in, `all` dissolves every such group.
+
+The reply has one section per kind. A kind with nothing to unlink (or none
+linked to `service`) is left out, and a kind that fails gets a `failed - …`
+section without stopping the rest. Each kind keeps its own rules, e.g. IRC
+still gets a notice and PART for every channel left unlinked, and only roles
+and emotes dissolve a lone survivor.
+
+- **Discord**: `/unlink all <service>` slash subcommand (Manage Server);
+  `service`'s autocomplete includes the literal `all` choice.
+- **Stoat**: `/unlink all <service|all>` message command (Manage Server).
+- **IRC**: `UNLINK ALL <service|all>`, DM (IRC-operator). IRC only has
+  channel and user links, so the reply only ever has those two sections.
 
 ## Bots: `/whitelist`, `/whitelisted`
 

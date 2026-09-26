@@ -132,9 +132,36 @@ def test_export_topic_on_every_connector(connector):
     assert "Permission:" in text
 
 
-def test_topics_fit_discords_25_choice_cap():
-    # Discord's /help offers every topic as one static choice list.
-    assert len(HELP_TOPICS) <= 25
+def test_topic_verbs_fit_discords_25_choice_cap():
+    # Discord's /help offers one static choice per verb, with the noun
+    # autocompleted (issue #172) - so only the verb count is capped.
+    assert len({key.split(" ", 1)[0] for key in HELP_TOPICS}) <= 25
+
+
+@pytest.mark.parametrize(
+    "connector, expected",
+    [
+        ("discord", "/unlink all <service|all>"),
+        ("stoat", "!unlink all <service|all>"),
+        ("irc", "UNLINK ALL <service|all>"),
+    ],
+)
+def test_unlink_all_topic_on_every_connector(connector, expected):
+    text = render_help(resolve_help_key("unlink", "all"), connector=connector, prefix="!")
+    assert text.startswith(expected)
+
+
+@pytest.mark.parametrize(
+    "noun, expected",
+    [
+        ("user", "/unlink user [service|all] [local_id|all]"),
+        ("role", "/unlink role <local_id|all> [service|all]"),
+        ("category", "/unlink category [local_id|all] [service|all]"),
+        ("emote", "/unlink emote <local_id|all> [service|all]"),
+    ],
+)
+def test_unlink_noun_syntax_offers_all_as_local_id(noun, expected):
+    assert render_help(f"unlink {noun}", connector="discord").startswith(expected)
 
 
 @pytest.mark.parametrize("connector", ["discord", "stoat"])
