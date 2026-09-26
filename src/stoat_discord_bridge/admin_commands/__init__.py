@@ -32,6 +32,7 @@ from stoat_discord_bridge.admin_commands.common import (
 from stoat_discord_bridge.admin_commands.emote import EmoteLinker
 from stoat_discord_bridge.admin_commands.help import HELP_TOPICS, HelpTopic, render_help, resolve_help_key
 from stoat_discord_bridge.admin_commands.role import RoleLinker
+from stoat_discord_bridge.admin_commands.unlink_all import unlink_all
 from stoat_discord_bridge.admin_commands.user import UserLinker
 
 __all__ = [
@@ -56,4 +57,5 @@ __all__ = [
     "pop_kv_option",
     "render_help",
     "resolve_help_key",
+    "unlink_all",
 ]

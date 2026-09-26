@@ -1075,10 +1075,10 @@ async def _unlink_all_groups(
     done = 0
     for group_id, local_name in groups.items():
         prefix = f"'{local_name}'"
-        mapped = await load_group(group_id)
-        if not dissolve and not any(m.connector_id == destination for m in mapped):
-            continue
         try:
+            mapped = await load_group(group_id)
+            if not dissolve and not any(m.connector_id == destination for m in mapped):
+                continue
             if dissolve:
                 count = await dissolve_group(group_id, mapped)
                 lines.append(f"{prefix}: dissolved its {group_word} ({count} {kind}(s) removed)")
