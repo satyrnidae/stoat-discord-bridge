@@ -128,6 +128,15 @@ so it's never lost. IRC has no native attachments, so
 `IrcReceiverService.receive` still inlines every attachment URL as its own
 line.
 
+Image alt text (issue #188) rides on `Attachment.description`. Only
+Discord has it: the sender reads `discord.Attachment.description`,
+`download_attachments` keeps it on each `DownloadedAttachment`, and the
+Discord receiver passes it to `discord.File(description=...)`. **Stoat has
+no alt-text field** anywhere in stoat.py 1.2.1 (neither its asset model nor
+its upload type), so it never sends alt text and drops it on upload. On IRC
+an image with alt text gets a `sent an image: <alt text>` line (whitespace
+collapsed) before its URL; the line tag already names the sender.
+
 A link preview (an auto-unfurled embed) is relayed as the *source*
 platform's own preview media, re-uploaded as an attachment, rather than
 letting each destination unfurl the link itself (issue #164, generalizing
