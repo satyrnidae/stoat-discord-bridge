@@ -30,6 +30,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     _run_bulk_mirror,
     _transfer_both_connectors,
+    _unlink_all_groups,
     collect_linked_members,
     format_linked_listing,
 )
@@ -976,43 +977,24 @@ class ChannelLinker:
         live channel list, so mappings to since-deleted channels get cleaned
         up too. Unlike the single-channel form, an omitted `destination` is
         rejected instead of meaning "dissolve everything". A group that fails
-        is reported as its own line rather than aborting the rest."""
-        if destination is None:
-            raise LinkError("'all' needs an explicit service - name a connector, or 'all' to dissolve every group.")
-        dissolve = _is_all_token(destination)
-        local_label = self._label(local_connector)
-
+        is reported as its own line rather than aborting the rest - see
+        `_unlink_all_groups`."""
         # one entry per bridge group, keeping the first local channel seen for display
-        local_by_group: dict[str, ChannelMapping] = {}
+        groups: dict[str, str] = {}
         for m in await self._channel_mappings.get_all_for_connector(local_connector):
-            local_by_group.setdefault(m.bridge_group, m)
-        if not local_by_group:
-            raise LinkError(f"no channels on {local_label} are linked to anything.")
-
-        lines: list[str] = []
-        done = 0
-        for bridge_group, local in local_by_group.items():
-            prefix = f"'{local.channel_name}'"
-            # re-read now, in case a concurrent command changed the group
-            mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
-            if not dissolve and not any(m.connector_id == destination for m in mapped):
-                continue
-            try:
-                if dissolve:
-                    count = await self._dissolve_group(bridge_group, mapped)
-                    lines.append(f"{prefix}: dissolved its bridge group ({count} channel(s) removed)")
-                else:
-                    target = await self._kick_from_group(mapped, destination)
-                    lines.append(f"{prefix}: unlinked {self._label(destination)} channel '{target.channel_name}'")
-                done += 1
-            except Exception as exc:  # report per group, don't abort the rest
-                logger.exception("bulk unlink failed for bridge group %s", bridge_group)
-                lines.append(f"{prefix}: failed - {exc}")
-
-        if not lines:
-            raise LinkError(f"none of {local_label}'s channels are linked to {self._label(destination)}.")
-        header = "Dissolved" if dissolve else f"Unlinked {self._label(destination)} from"
-        return f"{header} {done} bridge group(s) on {local_label}:\n" + "\n".join(lines)
+            groups.setdefault(m.bridge_group, m.channel_name)
+        return await _unlink_all_groups(
+            local_connector=local_connector,
+            destination=destination,
+            connectors=self._connectors,
+            kind="channel",
+            name_attr="channel_name",
+            group_word="bridge group",
+            groups=groups,
+            load_group=self._channel_mappings.get_mapped_channels,
+            dissolve_group=self._dissolve_group,
+            kick_member=self._kick_from_group,
+        )
 
     async def _dissolve_group(self, bridge_group: str, mapped: list[ChannelMapping]) -> int:
         """Delete every member of `bridge_group` and announce each one.

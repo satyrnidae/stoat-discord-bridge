@@ -1,6 +1,12 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, LinkedMember, LinkError
+from stoat_discord_bridge.admin_commands import (
+    ChannelLinker,
+    ConnectorInfo,
+    LinkedMember,
+    LinkError,
+    NothingLinkedError,
+)
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
 
@@ -462,6 +468,16 @@ async def test_unlink_channel_all_with_no_mappings_raises(fake_db, connectors):
     linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
     with pytest.raises(LinkError, match="no channels on Discord are linked"):
         await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="all")
+
+
+async def test_unlink_channel_all_with_nothing_to_do_raises_nothing_linked_error(fake_db, connectors):
+    # /unlink all skips a kind that raises this, rather than reporting a failure
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    with pytest.raises(NothingLinkedError):
+        await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="all")
+    await _link(linker, "stoat", "s1", "discord", "d1")
+    with pytest.raises(NothingLinkedError):
+        await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="irc")
 
 
 async def test_unlink_channel_all_is_case_insensitive(fake_db, connectors):
