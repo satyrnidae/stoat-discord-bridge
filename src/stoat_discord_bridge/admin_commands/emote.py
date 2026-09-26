@@ -182,14 +182,17 @@ class EmoteLinker:
 
         # Prefer linking to a same-named emote that already exists on the
         # destination over creating a duplicate (mirrors /mirror role's
-        # create-or-match). Name only - we can't compare images.
+        # create-or-match). Name only - we can't compare images. A match
+        # that's already linked is skipped: emoji names aren't unique on
+        # Discord, so it may be a different emote's copy (issue #182). It
+        # can't be in the source's own group - that returned above.
         if dest_info.resolve_emoji_id_by_name is not None and target_name:
             try:
                 existing_id = await dest_info.resolve_emoji_id_by_name(target_name)
             except Exception:
                 logger.debug("mirror-emote: %s.resolve_emoji_id_by_name(%r) failed", destination, target_name, exc_info=True)
                 existing_id = None
-            if existing_id:
+            if existing_id and await self._emoji_mappings.get_group_id(destination, existing_id) is None:
                 try:
                     return await self.link_emote(
                         local_connector=destination, local_id=existing_id, source=local_connector, source_id=source_id

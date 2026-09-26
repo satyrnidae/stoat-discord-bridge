@@ -338,6 +338,34 @@ async def test_mirror_emote_links_to_an_existing_same_named_emote_instead_of_dup
     assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "s-existing"
 
 
+async def test_mirror_emote_does_not_reuse_a_same_named_emote_linked_elsewhere(fake_db, emote_connectors):
+    # issue #182: Discord allows duplicate emoji names, so the name match can
+    # hit an emote already linked to a different one - create a fresh copy
+    # instead of joining that unrelated group.
+    emoji_mappings = EmojiMappingRepository(fake_db)
+
+    async def s_by_name(token):
+        return {"blob": "s-existing"}.get(token)
+
+    async def d_name(emoji_id):
+        return "blob"
+
+    emote_connectors["discord"] = dataclasses.replace(emote_connectors["discord"], resolve_emoji_name=d_name)
+    emote_connectors["stoat"] = dataclasses.replace(
+        emote_connectors["stoat"], resolve_emoji_id_by_name=s_by_name
+    )
+    linker = EmoteLinker(emoji_mappings, emote_connectors)
+    await linker.link_emote(local_connector="stoat", local_id="s-existing", source="discord", source_id="d-other")
+    other_group = await emoji_mappings.get_group_id("stoat", "s-existing")
+
+    summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    assert "Linked" in summary
+    assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "snew"
+    assert await emoji_mappings.get_group_id("discord", "dsrc") != other_group
+    assert {r.emoji_id for r in await emoji_mappings.get_refs(other_group)} == {"s-existing", "d-other"}
+
+
 async def test_mirror_emote_already_synced_is_skipped(fake_db, emote_connectors):
     emoji_mappings = EmojiMappingRepository(fake_db)
     linker = EmoteLinker(emoji_mappings, emote_connectors)
