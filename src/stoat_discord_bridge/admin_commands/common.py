@@ -186,6 +186,13 @@ class LinkError(Exception):
     """User-facing error - callers should relay str(exc) back to the admin who ran the command."""
 
 
+class NothingLinkedError(LinkError):
+    """A bulk `/unlink <noun> all` that found nothing to unlink - the
+    connector has no links of that kind, or none to the named service.
+    `/unlink all` (issue #181) skips a kind that raises this instead of
+    reporting it as a failure."""
+
+
 class MirrorInProgressError(LinkError):
     """A `/mirror <x>` (or `/import` / `/export`, issue #161) command whose
     connector is still being written to by another such run - rejected up front rather than
@@ -1024,3 +1031,66 @@ async def _kick_group_member(
     if dissolve_survivors is not None and len(survivors) <= 1:
         await dissolve_survivors(survivors)
     return target, survivors
+
+
+async def _unlink_all_groups(
+    *,
+    local_connector: str,
+    destination: str | None,
+    connectors: "dict[str, ConnectorInfo]",
+    kind: str,
+    name_attr: str,
+    group_word: str,
+    groups: dict[str, str],
+    load_group: Callable[[str], Awaitable[list]],
+    dissolve_group: Callable[[str, list], Awaitable[int]],
+    kick_member: Callable[[str, list, str], Awaitable[object]],
+    kind_plural: str | None = None,
+) -> str:
+    """The shared `/unlink <kind> all <service|all>` loop (issues #160,
+    #181). `groups` maps every group id `local_connector` has a member in to
+    the local member's display name. For each group, kick `destination`'s
+    member out (skipping groups without one), or dissolve the group when
+    `destination` is `all`. The group is re-read via `load_group` first, in
+    case a concurrent command changed it. An omitted `destination` is
+    rejected instead of meaning "dissolve everything", and a group that
+    fails is reported as its own line rather than aborting the rest.
+
+    `dissolve_group(group_id, members)` returns how many mappings it removed;
+    `kick_member(group_id, members, destination)` returns the kicked mapping, whose
+    `name_attr` is shown. `kind_plural` defaults to `kind` + "s"."""
+    plural = kind_plural or f"{kind}s"
+    if destination is None:
+        raise LinkError("'all' needs an explicit service - name a connector, or 'all' to dissolve every group.")
+    dissolve = _is_all_token(destination)
+
+    def label(connector_id: str) -> str:
+        return connectors[connector_id].label if connector_id in connectors else connector_id
+
+    local_label = label(local_connector)
+    if not groups:
+        raise NothingLinkedError(f"no {plural} on {local_label} are linked to anything.")
+
+    lines: list[str] = []
+    done = 0
+    for group_id, local_name in groups.items():
+        prefix = f"'{local_name}'"
+        try:
+            mapped = await load_group(group_id)
+            if not dissolve and not any(m.connector_id == destination for m in mapped):
+                continue
+            if dissolve:
+                count = await dissolve_group(group_id, mapped)
+                lines.append(f"{prefix}: dissolved its {group_word} ({count} {kind}(s) removed)")
+            else:
+                target = await kick_member(group_id, mapped, destination)
+                lines.append(f"{prefix}: unlinked {label(destination)} {kind} '{getattr(target, name_attr)}'")
+            done += 1
+        except Exception as exc:  # report per group, don't abort the rest
+            logger.exception("bulk unlink failed for %s %s", group_word, group_id)
+            lines.append(f"{prefix}: failed - {exc}")
+
+    if not lines:
+        raise NothingLinkedError(f"none of {local_label}'s {plural} are linked to {label(destination)}.")
+    header = "Dissolved" if dissolve else f"Unlinked {label(destination)} from"
+    return f"{header} {done} {group_word}(s) on {local_label}:\n" + "\n".join(lines)

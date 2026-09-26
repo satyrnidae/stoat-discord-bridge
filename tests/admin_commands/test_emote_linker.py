@@ -2,7 +2,7 @@ import pytest
 
 import dataclasses
 
-from stoat_discord_bridge.admin_commands import ConnectorInfo, EmoteLinker, LinkedMember, LinkError
+from stoat_discord_bridge.admin_commands import ConnectorInfo, EmoteLinker, LinkedMember, LinkError, NothingLinkedError
 from stoat_discord_bridge.models import CustomEmoji, EmojiCapacity
 from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 
@@ -126,6 +126,57 @@ async def test_unlink_emote_unlinked_raises(fake_db, connectors):
     linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
     with pytest.raises(LinkError, match="isn't linked"):
         await linker.unlink_emote(local_connector="discord", local_emote="d1", destination=None)
+
+
+# ---------------------------------------------------------------- EmoteLinker.unlink_emote (all, issue #181)
+
+
+async def test_unlink_emote_all_all_dissolves_only_the_local_connectors_groups(fake_db, connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, connectors)
+    await linker.link_emote(local_connector="stoat", local_id="s1", source="discord", source_id="d1")
+    await linker.link_emote(local_connector="stoat", local_id="s2", source="discord", source_id="d2")
+    await linker.link_emote(local_connector="irc", local_id="i3", source="discord", source_id="d3")
+
+    summary = await linker.unlink_emote(local_connector="stoat", local_emote="ALL", destination="all")
+
+    assert summary.splitlines()[0] == "Dissolved 2 mapping group(s) on Stoat:"
+    for connector_id, emoji_id in (("stoat", "s1"), ("discord", "d1"), ("stoat", "s2"), ("discord", "d2")):
+        assert await emoji_mappings.get_group_id(connector_id, emoji_id) is None
+    assert await emoji_mappings.get_group_id("discord", "d3") is not None
+
+
+async def test_unlink_emote_all_with_service_kicks_it_and_dissolves_a_lone_survivor(fake_db, connectors):
+    emoji_mappings = EmojiMappingRepository(fake_db)
+    linker = EmoteLinker(emoji_mappings, connectors)
+    # 3-way group: kicking IRC leaves Stoat+Discord linked
+    await linker.link_emote(local_connector="stoat", local_id="s1", source="discord", source_id="d1")
+    await linker.link_emote(local_connector="irc", local_id="i1", source="discord", source_id="d1")
+    # 2-way group: kicking IRC would strand Stoat alone, so it's dissolved
+    await linker.link_emote(local_connector="stoat", local_id="s2", source="irc", source_id="i2")
+    # no IRC member: skipped
+    await linker.link_emote(local_connector="stoat", local_id="s3", source="discord", source_id="d3")
+
+    summary = await linker.unlink_emote(local_connector="stoat", local_emote="all", destination="irc")
+
+    assert "'s1': unlinked IRC emote 'i1'" in summary and "'s3'" not in summary
+    assert await emoji_mappings.get_group_id("irc", "i1") is None
+    assert await emoji_mappings.find_equivalent("stoat", "s1", "discord") == "d1"
+    assert await emoji_mappings.get_group_id("stoat", "s2") is None
+    assert await emoji_mappings.get_group_id("stoat", "s3") is not None
+
+
+async def test_unlink_emote_all_with_nothing_linked_raises_nothing_linked_error(fake_db, connectors):
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+    with pytest.raises(NothingLinkedError, match="no emotes on Stoat are linked"):
+        await linker.unlink_emote(local_connector="stoat", local_emote="all", destination="all")
+
+
+async def test_unlink_emote_all_without_service_raises(fake_db, connectors):
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), connectors)
+    await linker.link_emote(local_connector="stoat", local_id="s1", source="discord", source_id="d1")
+    with pytest.raises(LinkError, match="explicit service"):
+        await linker.unlink_emote(local_connector="stoat", local_emote="all", destination=None)
 
 
 async def test_list_linked_emotes_no_argument_lists_every_group(fake_db, connectors):

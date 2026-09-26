@@ -18,7 +18,7 @@ from typing import Any
 
 import discord
 
-from stoat_discord_bridge.admin_commands import LinkError
+from stoat_discord_bridge.admin_commands import LinkError, unlink_all
 from stoat_discord_bridge.services.discord_service.editor import LinkEditorSpec, LinkEditorView
 from stoat_discord_bridge.services.discord_service.formatting import _normalize_channel_id, _normalize_role_id
 
@@ -304,6 +304,8 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
+        # an `all` unlink walks every group - defer past Discord's 3s window (issues #177, #181)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await self._reply_linker_result(
             interaction,
             self._category_linker.unlink_category(
@@ -313,6 +315,7 @@ class DiscordLinkingMixin:
                 destination=service,
             ),
             log_context="/unlink category",
+            deferred=True,
         )
 
     async def _handle_mirror_category(
@@ -427,10 +430,13 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
+        # an `all` unlink walks every group - defer past Discord's 3s window (issues #177, #181)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await self._reply_linker_result(
             interaction,
             self._role_linker.unlink_role(local_connector=self.connector_id, local_role=local_id, destination=service),
             log_context="/unlink-role",
+            deferred=True,
         )
 
     async def _handle_linked_roles(
@@ -556,10 +562,13 @@ class DiscordLinkingMixin:
             local_id,
             service,
         )
+        # an `all` unlink walks every group - defer past Discord's 3s window (issues #177, #181)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await self._reply_linker_result(
             interaction,
             self._emote_linker.unlink_emote(local_connector=self.connector_id, local_emote=local_id, destination=service),
             log_context="/unlink emote",
+            deferred=True,
         )
 
     async def _handle_linked_emotes(
@@ -866,22 +875,50 @@ class DiscordLinkingMixin:
         )
 
     async def _handle_unlink_user(
-        self, interaction: discord.Interaction, service: str | None, local_id: discord.Member | None
+        self, interaction: discord.Interaction, service: str | None, local_id: str | None
     ) -> None:
+        # `local_id` is a string (not a Member picker) so `all` can be typed
+        # (issue #181); a name, id or pasted mention is resolved by UserLinker.
         if not await self._linker_configured(interaction, self._user_linker, "User linking isn't configured."):
             return
-        target = local_id or interaction.user
+        target = local_id or str(interaction.user.id)
         logger.info(
             "[discord:%s] %s ran /unlink user service=%s local_id=%s",
             self.connector_id,
             interaction.user.id,
             service,
-            target.id,
+            target,
         )
+        # an `all` unlink walks every group - defer past Discord's 3s window (issues #177, #181)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await self._reply_linker_result(
             interaction,
-            self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=str(target.id), destination=service),
+            self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=target, destination=service),
             log_context="/unlink user",
+            deferred=True,
+        )
+
+    async def _handle_unlink_all(self, interaction: discord.Interaction, service: str | None) -> None:
+        """`/unlink all <service|all>` (issue #181): every configured kind's
+        `all` unlink at once."""
+        if not await self._linker_configured(interaction, self._linker, "Linking isn't configured."):
+            return
+        logger.info("[discord:%s] %s ran /unlink all service=%s", self.connector_id, interaction.user.id, service)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._reply_linker_result(
+            interaction,
+            unlink_all(
+                local_connector=self.connector_id,
+                destination=service,
+                connectors=self._linker.connectors,
+                channel_linker=self._linker,
+                category_linker=self._category_linker,
+                role_linker=self._role_linker,
+                emote_linker=self._emote_linker,
+                user_linker=self._user_linker,
+            ),
+            log_context="/unlink all",
+            deferred=True,
         )
 
     async def _handle_whitelist(

@@ -27,7 +27,7 @@ def _bare_bot(owner=None, *, prefix: str = "/") -> _StoatClient:
 def test_registers_the_four_groups_with_discord_matching_subcommands():
     bot = _bare_bot()
     assert sorted(bot.all_commands["link"].all_commands) == ["category", "channel", "emote", "role", "user"]
-    assert sorted(bot.all_commands["unlink"].all_commands) == ["category", "channel", "emote", "role", "user"]
+    assert sorted(bot.all_commands["unlink"].all_commands) == ["all", "category", "channel", "emote", "role", "user"]
     assert sorted(bot.all_commands["linked"].all_commands) == [
         "categories",
         "channels",

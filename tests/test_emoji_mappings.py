@@ -107,3 +107,16 @@ async def test_rename_ref_is_a_no_op_for_an_unknown_ref(fake_db):
     await repo.rename_ref("discord", "nope", "poggers")
 
     assert await repo.find_name("discord", "d1") == "pog"
+
+
+async def test_get_groups_for_connector_returns_only_groups_with_that_connector(fake_db):
+    repo = EmojiMappingRepository(fake_db)
+    both = await repo.try_reserve(EmojiRef(connector_id="discord", emoji_id="d1", name="pog"))
+    await repo.add_refs(both, [EmojiRef(connector_id="stoat", emoji_id="s1", name="pog")])
+    await repo.try_reserve(EmojiRef(connector_id="stoat", emoji_id="s2", name="kek"))
+
+    groups = await repo.get_groups_for_connector("discord")
+
+    assert list(groups) == [both]
+    assert [r.emoji_id for r in groups[both]] == ["d1", "s1"]
+    assert await repo.get_groups_for_connector("irc") == {}

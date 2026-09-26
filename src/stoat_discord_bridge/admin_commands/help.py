@@ -306,12 +306,13 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         body=(
             "Given a service, kicks just that identity out - the rest of the group stays "
             "linked. With no service, or all, dissolves the whole group. local_id defaults to "
-            "whoever ran the command."
+            "whoever ran the command. With all as the user, does this for every user this "
+            "connector has linked - the service is then required."
         ),
         syntax={
-            "discord": "/unlink user [service] [local_id]",
-            "stoat": "{p}unlink user [service|all] [local_id|name]",
-            "irc": "UNLINK USER [service|all] [local_id]",
+            "discord": "/unlink user [service|all] [local_id|all]",
+            "stoat": "{p}unlink user [service|all] [local_id|name|all]",
+            "irc": "UNLINK USER [service|all] [local_id|all]",
         },
         permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
     ),
@@ -320,11 +321,12 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         body=(
             "Given a service, kicks just that one out; with no argument, or all, dissolves the "
             "whole group. A kick that would leave a single member dissolves the group instead. "
-            "The roles themselves are never deleted."
+            "The roles themselves are never deleted. With all as the role, does this for every "
+            "role this connector has linked - the service is then required."
         ),
         syntax={
-            "discord": "/unlink role <local_id> [service|all]",
-            "stoat": "{p}unlink role <local_id|name> [service|all]",
+            "discord": "/unlink role <local_id|all> [service|all]",
+            "stoat": "{p}unlink role <local_id|name|all> [service|all]",
             "irc": None,
         },
         permission="Manage Server",
@@ -334,11 +336,12 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         body=(
             "Given a service, kicks just that member out; with no argument, or all, dissolves "
             "the whole group. Existing channels already synced into the Category are left "
-            "alone either way - only future auto-sync stops."
+            "alone either way - only future auto-sync stops. With all as the Category, does this "
+            "for every Category this connector has linked - the service is then required."
         ),
         syntax={
-            "discord": "/unlink category [local_id] [service|all]",
-            "stoat": "{p}unlink category [local_id|name] [service|all]",
+            "discord": "/unlink category [local_id|all] [service|all]",
+            "stoat": "{p}unlink category [local_id|name|all] [service|all]",
             "irc": None,
         },
         permission="Manage Server",
@@ -348,14 +351,30 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         body=(
             "Given a service, kicks just that one out; with no argument, or all, dissolves the "
             "whole group. A kick that would leave a single member dissolves the group instead. "
-            "The emoji themselves are never deleted."
+            "The emoji themselves are never deleted. With all as the emote, does this for every "
+            "emote this connector has linked - the service is then required."
         ),
         syntax={
-            "discord": "/unlink emote <local_id> [service|all]",
-            "stoat": "{p}unlink emote <local_id|name> [service|all]",
+            "discord": "/unlink emote <local_id|all> [service|all]",
+            "stoat": "{p}unlink emote <local_id|name|all> [service|all]",
             "irc": None,
         },
         permission="Manage Server",
+    ),
+    "unlink all": HelpTopic(
+        summary="Unlink everything this connector has linked, of every kind",
+        body=(
+            "Runs the all form of every unlink command at once - channels, Categories, roles, "
+            "emotes and users (IRC: channels and users only). Given a service, kicks it out of "
+            "every group this connector is in; with all, dissolves every such group. The service "
+            "is required. Kinds with nothing linked are skipped."
+        ),
+        syntax={
+            "discord": "/unlink all <service|all>",
+            "stoat": "{p}unlink all <service|all>",
+            "irc": "UNLINK ALL <service|all>",
+        },
+        permission="Manage Server (Discord/Stoat) / IRC-operator (IRC)",
     ),
     "import": HelpTopic(
         summary="Copy another channel's message history into a channel here",

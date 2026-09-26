@@ -25,6 +25,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_id,
     _resolve_entity_title,
     _run_bulk_mirror,
+    _unlink_all_groups,
     collect_linked_members,
     format_linked_listing,
 )
@@ -283,7 +284,28 @@ class RoleLinker:
         """`/unlink role`. `destination` (a connector id) kicks just that one
         member out of the role's bridge group; None/"all" (the default)
         dissolves the whole group. A kick that would strand a lone survivor
-        dissolves the group instead (a group of one isn't a bridge)."""
+        dissolves the group instead (a group of one isn't a bridge).
+
+        A literal (case-insensitive) `all` as `local_role` does this for every
+        bridge group `local_connector` is in (issue #181), with the same
+        rules as `/unlink channel all` - see `_unlink_all_groups`. A role
+        literally named `all` has to be addressed by id."""
+        if _is_all_token(local_role):
+            groups: dict[str, str] = {}
+            for m in await self._role_mappings.get_all_for_connector(local_connector):
+                groups.setdefault(m.bridge_group, m.role_name)
+            return await _unlink_all_groups(
+                local_connector=local_connector,
+                destination=destination,
+                connectors=self._connectors,
+                kind="role",
+                name_attr="role_name",
+                group_word="bridge group",
+                groups=groups,
+                load_group=self._role_mappings.get_mapped_roles,
+                dissolve_group=lambda group, _mapped: self._role_mappings.delete_bridge_group(group),
+                kick_member=lambda _group, mapped, dest: self._kick_from_group(mapped, dest),
+            )
         local_id = await self._resolve_to_id(local_connector, local_role)
         bridge_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
         if bridge_group is None:
@@ -294,6 +316,13 @@ class RoleLinker:
             return f"Unlinked this role's entire bridge group ({count} role(s) removed)."
 
         mapped = await self._role_mappings.get_mapped_roles(bridge_group)
+        target = await self._kick_from_group(mapped, destination)
+        label = self._connectors[destination].label if destination in self._connectors else destination
+        return f"Unlinked {label} role '{target.role_name}' ({target.role_id}) from this bridge group."
+
+    async def _kick_from_group(self, mapped: list[RoleMapping], destination: str) -> RoleMapping:
+        """Kick `destination`'s member out of the group `mapped` describes,
+        dissolving a lone survivor. Returns the kicked mapping."""
 
         async def _dissolve(survivors: list[RoleMapping]) -> None:
             for m in survivors:
@@ -307,8 +336,7 @@ class RoleLinker:
             delete_mapping=self._role_mappings.delete_mapping,
             dissolve_survivors=_dissolve,
         )
-        label = self._connectors[destination].label if destination in self._connectors else destination
-        return f"Unlinked {label} role '{target.role_name}' ({target.role_id}) from this bridge group."
+        return target
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         info = self._connectors.get(connector)

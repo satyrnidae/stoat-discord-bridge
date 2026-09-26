@@ -4,7 +4,7 @@ Admin commands arrive as a DM to the bot's own nick, bare and uppercase
 (no leading "/" or "!" - unlike Discord/Stoat's slash commands, since many
 IRC clients swallow a leading "/" as a local client command). The channel
 and user commands are two-token (`LINK CHANNEL` / `MIRROR CHANNEL` /
-`UNLINK CHANNEL` / `LINK USER` / `UNLINK USER`, and read-only `LINKED
+`UNLINK CHANNEL` / `LINK USER` / `UNLINK USER` / `UNLINK ALL`, and read-only `LINKED
 CHANNELS` / `LINKED USERS`), matching Discord's `/link channel` subcommand
 shape; the history transfers are single-word (`IMPORT` / `EXPORT`). IRC has no custom-emoji concept, so the emote commands aren't
 offered here at all (same as roles/categories). See
@@ -17,13 +17,13 @@ import asyncio
 import logging
 from collections.abc import Awaitable
 
-from stoat_discord_bridge.admin_commands import LinkError, pop_flag_option
+from stoat_discord_bridge.admin_commands import LinkError, pop_flag_option, unlink_all
 
 logger = logging.getLogger(__name__)
 
 _ADMIN_DM_CHANNEL_VERBS = frozenset({"LINK", "MIRROR", "UNLINK"})
 # Second tokens accepted after a verb in _ADMIN_DM_CHANNEL_VERBS.
-_ADMIN_DM_TWO_WORD_NOUNS = frozenset({"CHANNEL", "USER"})
+_ADMIN_DM_TWO_WORD_NOUNS = frozenset({"CHANNEL", "USER", "ALL"})
 # Single-word admin commands (issue #161's history transfers).
 _ADMIN_DM_ONE_WORD_VERBS = frozenset({"IMPORT", "EXPORT"})
 
@@ -86,7 +86,7 @@ class IrcAdminCommandsMixin:
             noun = parts[1].upper()
             # Channel commands keep the two-word `LINK CHANNEL` form the
             # branch bodies match on; user commands fold to `LINK_USER` /
-            # `UNLINK_USER` to match theirs.
+            # `UNLINK_USER` to match theirs, and `UNLINK ALL` to `UNLINK_ALL`.
             sep = " " if noun == "CHANNEL" else "_"
             command, args = f"{parts[0].upper()}{sep}{noun}", parts[2:]
         else:
@@ -246,7 +246,7 @@ class IrcAdminCommandsMixin:
             # running the command - IRC has no "current channel" to fall
             # back to, but it does always know who's asking.
             if len(args) > 2:
-                self._notify(nick, "Usage: UNLINK USER [service|all] [local_id|name]")
+                self._notify(nick, "Usage: UNLINK USER [service|all] [local_id|name|all]")
                 return
             service = args[0] if args else None
             local_id = args[1] if len(args) > 1 else nick
@@ -256,6 +256,25 @@ class IrcAdminCommandsMixin:
                 nick,
                 self._user_linker.unlink_user(
                     local_connector=self.connector_id, local_user_id=local_id, destination=service
+                ),
+                log_context=command,
+            )
+        elif command == "UNLINK_ALL":
+            # `UNLINK ALL <service|all>` (issue #181): every channel and user
+            # link at once - IRC has no role/Category/emote linkers.
+            if len(args) != 1:
+                self._notify(nick, "Usage: UNLINK ALL <service|all>")
+                return
+            if not self._linker_configured(nick, self._linker, "Linking isn't configured."):
+                return
+            await self._reply_linker_result(
+                nick,
+                unlink_all(
+                    local_connector=self.connector_id,
+                    destination=args[0],
+                    connectors=self._linker.connectors,
+                    channel_linker=self._linker,
+                    user_linker=self._user_linker,
                 ),
                 log_context=command,
             )
@@ -293,4 +312,5 @@ class IrcAdminCommandsMixin:
 
     def _notify(self, nick: str, text: str) -> None:
         for line in text.splitlines():
-            self.connection.notice(nick, line)
+            if line:  # an empty NOTICE is rejected by the server (ERR_NOTEXTTOSEND)
+                self.connection.notice(nick, line)

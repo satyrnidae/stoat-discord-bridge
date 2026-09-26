@@ -880,7 +880,15 @@ their channels alone. `local_id` also accepts the literal `all` (issue #160,
 group the invoking connector has a stored mapping in. It needs an explicit
 `service` (a connector, or `all` to dissolve every group), skips groups with
 no member on that service, and reports failures per group rather than
-aborting.
+aborting. That loop is `admin_commands/common._unlink_all_groups`, shared by
+`/unlink role|category|emote|user all` too (issue #181); each kind keeps its
+own lone-survivor rule (role/emote dissolve, category/user don't). Finding
+nothing to unlink raises `NothingLinkedError` (a `LinkError`), which
+`/unlink all <service|all>` (`admin_commands/unlink_all.unlink_all`) uses to
+skip an empty kind while it runs every configured linker's bulk form in one
+reply. Discord's `/unlink user` takes `local_id` as an autocompleted string
+rather than a Member picker so `all` is typeable, and every Discord `/unlink`
+handler defers first (issue #177) since a bulk run can outrun the 3s window.
 
 On IRC, a channel the bridge's own JOIN created gets
 `default_channel_modes` applied; the `P` (InspIRCd permanent-channel) mode,
@@ -1115,6 +1123,7 @@ src/stoat_discord_bridge/
   admin_commands/               # ChannelLinker / CategoryLinker / EmoteLinker / UserLinker / RoleLinker - shared linking logic
     common.py                   # ConnectorInfo hook dataclass, LinkError/MirrorInProgressError, MirrorGuard, pop_kv_option / pop_flag_option, id/name-resolution + conflict-check helpers
     channel.py / category.py / emote.py / user.py / role.py # one linker class per module - category.py depends on channel.py (mirrors a linked Category's child channels); the rest are independent
+    unlink_all.py               # unlink_all - /unlink all <service|all>, every linker's bulk `all` unlink in one reply (#181)
     help.py                     # HELP_TOPICS + render_help/resolve_help_key - shared help content for /help (Discord) / /bridge-help (Stoat) / HELP (IRC)
     __init__.py                 # re-exports every public name, so `from stoat_discord_bridge.admin_commands import <name>` still works unchanged
   bridge.py                    # BridgeCoordinator: routes StandardMessages sender -> receiver via channel mappings
