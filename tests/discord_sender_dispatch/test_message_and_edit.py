@@ -113,6 +113,25 @@ async def test_handle_message_dispatches_a_standard_message():
     assert message.message_id == "99"
     assert message.source_label == "Discord"
     assert [a.url for a in message.attachments] == ["https://cdn.example/f.png"]
+    assert message.attachments[0].description is None
+
+
+async def test_handle_message_carries_an_attachments_alt_text():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    attachment = FakeAttachment(
+        url="https://cdn.example/cat.png", filename="cat.png", content_type="image/png", size=10,
+        description="a cat asleep on a keyboard",
+    )
+
+    await sender._handle_message(
+        _discord_message(
+            channel=FakeChannel(id=42), guild=FakeGuild(id=123), author=FakeUser(id=1), attachments=[attachment]
+        )
+    )
+
+    [message] = recorder.messages
+    assert message.attachments[0].description == "a cat asleep on a keyboard"
 
 
 async def test_handle_message_carries_the_replied_to_message_id():

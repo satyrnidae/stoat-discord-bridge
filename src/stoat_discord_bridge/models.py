@@ -31,6 +31,9 @@ class Attachment:
     # Each receiver uses it to strip the link from the text, or to drop the
     # attachment and let its own platform unfurl the link (issue #164).
     source_page_url: str | None = None
+    # An image's alt text (issue #188). Only Discord has one - stoat.py's
+    # asset model has no equivalent, so it's always None from Stoat.
+    description: str | None = None
 
 
 @dataclass(frozen=True)
