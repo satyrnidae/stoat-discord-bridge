@@ -784,7 +784,9 @@ a missing or raising `describe_channel` just means no metadata is carried.
 `ChannelLinker`. Every id argument also accepts a bare role name via each
 connector's `resolve_role_id_by_name` hook; `/mirror role` matches a
 same-named role on the destination through that same hook, and otherwise
-creates one via the create-only `create_role` hook. Like `/mirror channel`'s
+creates one via the create-only `create_role` hook. A match that's already
+linked is skipped in favor of a fresh role, since role names aren't unique and
+it may be a different role's copy (issue #183, the role counterpart of #182). Like `/mirror channel`'s
 `ChannelMetadata`, a created role carries the source's `models.RoleMetadata`
 (color + hoist), read by the source's `describe_role` hook and passed as
 `create_role(metadata=...)`; a matched role is left as it is (issue #179).

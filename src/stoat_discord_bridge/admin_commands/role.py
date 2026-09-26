@@ -178,7 +178,16 @@ class RoleLinker:
         if dest_info.role_name_limit is not None:
             target_name = clip_name(target_name, dest_info.role_name_limit)
 
+        # Prefer a same-named role already on the destination over creating a
+        # duplicate - but not one that's already linked: role names aren't
+        # unique, so it may be a different role's copy (issue #183). It can't
+        # be in the source's own group - that returned above.
         destination_role_id = await self._find_role_by_name(destination, target_name)
+        if (
+            destination_role_id is not None
+            and await self._role_mappings.get_bridge_group(destination, destination_role_id) is not None
+        ):
+            destination_role_id = None
         if destination_role_id is None:
             try:
                 destination_role_id = await self._create_role(local_connector, local_id, destination, target_name)

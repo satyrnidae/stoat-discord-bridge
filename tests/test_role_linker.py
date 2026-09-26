@@ -129,6 +129,69 @@ async def test_mirror_role_matches_a_same_named_role_instead_of_creating(fake_db
     assert created == []
 
 
+def _duplicate_name_connectors(created):
+    """Discord roles d1/d2 both named "Mods"; Stoat already has one "Mods"
+    role (s_existing) that the name lookup always finds."""
+
+    async def create_role(name, **kwargs):
+        created.append(name)
+        return f"stoat_new_{len(created)}"
+
+    async def s_by_name(token):
+        return {"Mods": "s_existing"}.get(token)
+
+    async def d_name(role_id):
+        return {"d1": "Mods", "d2": "Mods"}.get(role_id)
+
+    return _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", create_role=create_role, resolve_role_id_by_name=s_by_name),
+    )
+
+
+async def test_mirror_role_wont_reuse_a_same_named_role_linked_elsewhere(fake_db):
+    # issue #183: role names aren't unique, so a same-named match that's
+    # already linked may be another role's copy - create a fresh one instead.
+    created = []
+    linker = _linker(fake_db, _duplicate_name_connectors(created))
+    repo = RoleMappingRepository(fake_db)
+    await linker.link_role(local_connector="stoat", local_role="s_existing", source="discord", source_role="d1")
+    old_group = await repo.get_bridge_group("stoat", "s_existing")
+
+    summary = await linker.mirror_role(local_connector="discord", local_role="d2", destination="stoat")
+
+    assert created == ["Mods"]
+    assert "(stoat_new_1)" in summary
+    new_group = await repo.get_bridge_group("discord", "d2")
+    assert new_group is not None and new_group != old_group
+    assert await repo.get_bridge_group("stoat", "stoat_new_1") == new_group
+    assert sorted(m.role_id for m in await repo.get_mapped_roles(old_group)) == ["d1", "s_existing"]
+
+
+async def test_mirror_role_creates_when_the_name_lookup_finds_nothing(fake_db):
+    created = []
+
+    async def create_role(name, **kwargs):
+        created.append(name)
+        return f"stoat_{name}"
+
+    async def s_by_name(token):
+        return None
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", create_role=create_role, resolve_role_id_by_name=s_by_name),
+    )
+    summary = await _linker(fake_db, connectors).mirror_role(
+        local_connector="discord", local_role="d1", destination="stoat"
+    )
+    assert created == ["Mods"]
+    assert "(stoat_Mods)" in summary
+
+
 async def test_mirror_role_creates_then_links(fake_db):
     created = {}
 
