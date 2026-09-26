@@ -115,6 +115,30 @@ def test_voice_bits_round_trip():
     assert stoat_override_to_neutral(a, d) == neutral
 
 
+def test_connect_also_sets_stoat_listen():
+    """Discord's one connect bit covers what Stoat splits into connect and
+    listen, so writing it to Stoat sets both."""
+    a, d = neutral_to_stoat_pair(RolePermissionOverride(allow=frozenset({"connect"}), deny=frozenset()), _Perms)
+    assert a.connect is True and a.listen is True
+    assert d.connect is False and d.listen is False
+
+    a, d = neutral_to_stoat_pair(RolePermissionOverride(allow=frozenset(), deny=frozenset({"connect"})), _Perms)
+    assert d.connect is True and d.listen is True
+    assert a.connect is False and a.listen is False
+
+
+def test_connect_does_not_set_discord_listen():
+    neutral = RolePermissionOverride(allow=frozenset({"connect"}), deny=frozenset())
+    a, _ = neutral_to_discord_pair(neutral, _Perms)
+    assert a.connect is True and a.listen is False
+
+
+def test_stoat_listen_is_ignored_on_read():
+    """listen is write-only: reads look at Stoat's connect bit alone."""
+    assert stoat_override_to_neutral(_Perms(connect=True, listen=False), _Perms()).allow == frozenset({"connect"})
+    assert stoat_override_to_neutral(_Perms(listen=True), _Perms()).allow == frozenset()
+
+
 def test_splice_preserves_unmapped_target_bits():
     base = RolePermissionOverride(
         allow=frozenset({"use_masquerade", "view_channel"}),  # use_masquerade is unmapped

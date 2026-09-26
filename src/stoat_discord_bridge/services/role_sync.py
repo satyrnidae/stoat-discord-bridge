@@ -48,6 +48,14 @@ NEUTRAL_PERMISSIONS: dict[str, tuple[str, str]] = {
     "move_members": ("move_members", "move_members"),
 }
 
+# neutral name -> extra Stoat attrs set to the same allow/deny value as the
+# mapped one when writing to Stoat. Discord has no bit for these, so they're
+# never read back. Discord's one `connect` bit covers what Stoat splits into
+# `connect` (join) and `listen` (hear).
+STOAT_COMPANION_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    "connect": ("listen",),
+}
+
 
 @dataclass(frozen=True)
 class RolePermissionOverride:
@@ -114,13 +122,11 @@ def stoat_override_to_neutral(allow, deny) -> RolePermissionOverride:
 
 def neutral_to_stoat_pair(override: RolePermissionOverride, permissions_cls):
     """-> (allow, deny) as stoat `Permissions` instances. Only mapped bits
-    are set."""
+    (plus their STOAT_COMPANION_PERMISSIONS) are set."""
     allow = permissions_cls.none()
     deny = permissions_cls.none()
-    for name in override.allow:
-        s_attr = NEUTRAL_PERMISSIONS[name][1]
-        setattr(allow, s_attr, True)
-    for name in override.deny:
-        s_attr = NEUTRAL_PERMISSIONS[name][1]
-        setattr(deny, s_attr, True)
+    for names, target in ((override.allow, allow), (override.deny, deny)):
+        for name in names:
+            for s_attr in (NEUTRAL_PERMISSIONS[name][1], *STOAT_COMPANION_PERMISSIONS.get(name, ())):
+                setattr(target, s_attr, True)
     return allow, deny
