@@ -279,8 +279,8 @@ def build_command_tree(service) -> None:
 
     @unlink_group.command(name="role", description="Unlink a role - one connector, or the whole group (default: all)")
     @app_commands.describe(
-        local_id="Role id or name on this connector",
-        service="Connector id to unlink, or 'all' (default: all)",
+        local_id="Role id or name on this connector, or 'all' for every linked one",
+        service="Connector id to unlink, or 'all' (default: all; required when local_id is 'all')",
     )
     @app_commands.autocomplete(service=role_service_autocomplete(include_all=True), local_id=role_local_ac)
     async def unlink_role_command(
@@ -460,14 +460,23 @@ def build_command_tree(service) -> None:
         description="Unlink a user's cross-connector identity - one connector, or the whole group (default: all)",
     )
     @app_commands.describe(
-        service="Connector id to unlink, or 'all' to dissolve the whole link group (default: all)",
-        local_id="Member to unlink (defaults to yourself)",
+        service="Connector id to unlink, or 'all' (default: all; required when local_id is 'all')",
+        local_id="User id or name on this connector, or 'all' for every linked one (default: yourself)",
     )
-    @app_commands.autocomplete(service=user_service_autocomplete(include_all=True))
+    # A string option rather than a Member picker, so `all` can be typed (issue #181).
+    @app_commands.autocomplete(service=user_service_autocomplete(include_all=True), local_id=user_local_ac)
     async def unlink_user_command(
-        interaction: discord.Interaction, service: str | None = None, local_id: discord.Member | None = None
+        interaction: discord.Interaction, service: str | None = None, local_id: str | None = None
     ) -> None:
         await self._handle_unlink_user(interaction, service, local_id)
+
+    @unlink_group.command(
+        name="all", description="Unlink every channel, Category, role, emote and user linked on this connector"
+    )
+    @app_commands.describe(service="Connector id to unlink from every group, or 'all' to dissolve every group")
+    @app_commands.autocomplete(service=channel_service_autocomplete(include_all=True))
+    async def unlink_all_command(interaction: discord.Interaction, service: str) -> None:
+        await self._handle_unlink_all(interaction, service)
 
     @linked_group.command(
         name="users", description="List cross-connector user links, for debugging - or just one member's, if given"
@@ -501,8 +510,8 @@ def build_command_tree(service) -> None:
         name="category", description="Unlink a Category's bridge - one connector, or the whole group (default: all)"
     )
     @app_commands.describe(
-        local_id="Category id or name on this connector (defaults to the current channel's Category)",
-        service="Connector id to unlink, or 'all' (default: all)",
+        local_id="Category id/name on this connector, or 'all' for every linked one (default: current Category)",
+        service="Connector id to unlink, or 'all' (default: all; required when local_id is 'all')",
     )
     @app_commands.autocomplete(
         service=category_service_autocomplete(include_all=True), local_id=category_local_ac
@@ -583,8 +592,8 @@ def build_command_tree(service) -> None:
         name="emote", description="Unlink a custom emoji - one connector, or the whole group (default: all)"
     )
     @app_commands.describe(
-        local_id="Emoji id or name on this connector",
-        service="Connector id to unlink, or 'all' (default: all)",
+        local_id="Emoji id or name on this connector, or 'all' for every linked one",
+        service="Connector id to unlink, or 'all' (default: all; required when local_id is 'all')",
     )
     @app_commands.autocomplete(service=emote_service_autocomplete(include_all=True), local_id=emote_local_ac)
     async def unlink_emote_command(

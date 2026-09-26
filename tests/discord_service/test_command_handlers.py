@@ -472,9 +472,8 @@ async def test_unlink_user_with_a_specific_destination_and_target():
     user_linker = FakeLinker()
     sender = _make_sender(FakeLinker(), user_linker=user_linker)
     interaction = FakeInteraction(user_id=111)
-    member = SimpleNamespace(id=222)
 
-    await sender._handle_unlink_user(interaction, "stoat", member)
+    await sender._handle_unlink_user(interaction, "stoat", "222")
 
     assert user_linker.unlink_user_calls == [{"local_connector": "discord", "local_user_id": "222", "destination": "stoat"}]
 
