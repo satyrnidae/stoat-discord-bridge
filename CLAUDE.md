@@ -667,7 +667,7 @@ the way to aim `/mirror channel` at an unlinked existing destination channel,
 IRC especially (issue #44). Not on the `all` fan-out; on Stoat it's a
 `new_name:<name>` token, on IRC a `-n`/`--new-name` flag; `/mirror category`'s renames only the Category, not its
 mirrored child channels. Any name the linker hands `ensure_channel` /
-`ensure_category` / `ensure_role` - carried-over source name or `new_name`
+`ensure_category` / `create_role` - carried-over source name or `new_name`
 override - is first clipped (`channel_structure.clip_name`) to the destination
 `ConnectorInfo.channel_name_limit` / `category_name_limit` / `role_name_limit`
 (Discord 100, Stoat 32, IRC's advertised `CHANNELLEN` or `RFC_CHANNEL_NAME_LIMIT`
@@ -782,11 +782,12 @@ a missing or raising `describe_channel` just means no metadata is carried.
 
 `RoleLinker` (`storage/role_mappings.py`) is the role-level counterpart of
 `ChannelLinker`. Every id argument also accepts a bare role name via each
-connector's `resolve_role_id_by_name` hook; `/mirror role` creates-or-matches
-a same-named role via the `ensure_role` hook. Like `/mirror channel`'s
+connector's `resolve_role_id_by_name` hook; `/mirror role` matches a
+same-named role on the destination through that same hook, and otherwise
+creates one via the create-only `create_role` hook. Like `/mirror channel`'s
 `ChannelMetadata`, a created role carries the source's `models.RoleMetadata`
 (color + hoist), read by the source's `describe_role` hook and passed as
-`ensure_role(metadata=...)`, applied only on the create path (issue #179).
+`create_role(metadata=...)`; a matched role is left as it is (issue #179).
 Discord passes both to `create_role`, skipping a color `Color.from_str` can't
 parse (a Stoat gradient); Stoat sets them with a best-effort follow-up
 `Role.edit`, since stoat.py's `create_role` takes only a name. Permissions

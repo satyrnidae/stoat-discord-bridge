@@ -1,4 +1,4 @@
-"""`describe_role` / `ensure_role(metadata=...)` on the Discord connector (issue #179)."""
+"""`describe_role` / `create_role(metadata=...)` on the Discord connector (issue #179)."""
 
 from __future__ import annotations
 
@@ -51,35 +51,36 @@ async def test_describe_role_returns_none_for_an_unknown_role(monkeypatch):
     assert await sender.describe_role("not-an-id") is None
 
 
-async def test_ensure_role_applies_metadata_on_create(monkeypatch):
+async def test_create_role_applies_metadata(monkeypatch):
     guild = _Guild()
     sender = _sender_with(monkeypatch, guild)
-    await sender.ensure_role("Mods", metadata=RoleMetadata(color="#ff8800", hoist=True))
+    await sender.create_role("Mods", metadata=RoleMetadata(color="#ff8800", hoist=True))
     (call,) = guild.create_calls
     assert call["color"] == discord.Color(0xFF8800)
     assert call["hoist"] is True
 
 
-async def test_ensure_role_skips_a_color_discord_cant_take(monkeypatch):
+async def test_create_role_skips_a_color_discord_cant_take(monkeypatch):
     # A Stoat source's color can be any CSS value, e.g. a gradient.
     guild = _Guild()
     sender = _sender_with(monkeypatch, guild)
-    await sender.ensure_role("Mods", metadata=RoleMetadata(color="linear-gradient(red, blue)", hoist=True))
+    await sender.create_role("Mods", metadata=RoleMetadata(color="linear-gradient(red, blue)", hoist=True))
     (call,) = guild.create_calls
     assert "color" not in call
     assert call["hoist"] is True
 
 
-async def test_ensure_role_without_metadata_creates_by_name_only(monkeypatch):
+async def test_create_role_without_metadata_creates_by_name_only(monkeypatch):
     guild = _Guild()
     sender = _sender_with(monkeypatch, guild)
-    await sender.ensure_role("Mods")
+    await sender.create_role("Mods")
     (call,) = guild.create_calls
     assert "color" not in call and "hoist" not in call
 
 
-async def test_ensure_role_leaves_a_matched_role_alone(monkeypatch):
+async def test_create_role_creates_even_if_a_same_named_role_exists(monkeypatch):
+    # Matching by name is resolve_role_id_by_name's job now (issue #183).
     guild = _Guild([_role(5, "Mods")])
     sender = _sender_with(monkeypatch, guild)
-    assert await sender.ensure_role("mods", metadata=RoleMetadata(color="#ff8800")) == "5"
-    assert guild.create_calls == []
+    assert await sender.create_role("mods") == "900"
+    assert [c["name"] for c in guild.create_calls] == ["mods"]

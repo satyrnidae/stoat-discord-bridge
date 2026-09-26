@@ -1,5 +1,5 @@
 """Role and custom-emoji get-or-create / resolve for the Discord connector -
-`ensure_role` and the emoji trio (`get_emoji_name` / `resolve_emoji_id_by_name`
+`create_role` and the emoji trio (`get_emoji_name` / `resolve_emoji_id_by_name`
 / `resolve_emoji`) behind `/mirror role` and `/mirror emote`. Plain role-name
 resolution (`get_role_name` / `resolve_role_id_by_name`) lives alongside the
 rest of the id<->name lookups in `names.py`.
@@ -15,19 +15,15 @@ from stoat_discord_bridge.models import CustomEmoji, EmojiCapacity, RoleMetadata
 class _RolesEmojiMixin:
     """Role/emoji get-or-create half of `DiscordLookupsMixin`."""
 
-    async def ensure_role(self, name: str, *, metadata: "RoleMetadata | None" = None) -> str:
-        """Get-or-create a role named `name`, returning its id - this
-        connector's `ConnectorInfo.ensure_role` for `/mirror role`.
-        `metadata`'s color/hoist are applied only when the role is created
-        (issue #179); a color Discord can't parse (e.g. a Stoat gradient) is
-        skipped."""
+    async def create_role(self, name: str, *, metadata: "RoleMetadata | None" = None) -> str:
+        """Create a new role named `name`, returning its id - this
+        connector's `ConnectorInfo.create_role` for `/mirror role`. Never
+        matches an existing role; that's `resolve_role_id_by_name`'s job
+        (issue #183). `metadata`'s color/hoist are applied (issue #179); a
+        color Discord can't parse (e.g. a Stoat gradient) is skipped."""
         guild = self._guild_or_none()
         if guild is None:
             raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
-        lowered = name.casefold()
-        for role in guild.roles:
-            if role.name.casefold() == lowered:
-                return str(role.id)
         extra: dict = {}
         if metadata is not None:
             extra["hoist"] = metadata.hoist
