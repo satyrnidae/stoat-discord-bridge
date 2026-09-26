@@ -856,8 +856,14 @@ message, a user without Mention Everyone) can't ping on the target
   on the other, via the `get_channel_role_permission` /
   `set_channel_role_permission` hooks. Only the bits in
   `services/role_sync.NEUTRAL_PERMISSIONS` (the ones that mean the same on
-  both platforms) are touched; every other bit on the target's override is
-  preserved (`RolePermissionOverride.splice_onto`).
+  both platforms: view/read history/send/manage messages, manage channel/
+  webhooks/permissions, invites, embeds, files, reactions,
+  `mention_everyone`, and the voice bits connect/speak/video/mute/deafen/
+  move) are touched; every other bit on the target's override is
+  preserved (`RolePermissionOverride.splice_onto`). Discord's `connect`
+  also sets Stoat's `listen` on write (`STOAT_COMPANION_PERMISSIONS`),
+  since Stoat splits joining and hearing into two bits; reads ignore
+  `listen` (issue #186). Member moderation and thread bits stay unmapped.
 
 All best-effort and silent (unlinked user/role/channel, missing hook, or a
 raising hook are skipped). Loop-safe two ways: each hook is idempotent (no-op

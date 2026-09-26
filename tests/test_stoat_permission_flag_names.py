@@ -14,7 +14,7 @@ correct.
 import discord
 import stoat
 
-from stoat_discord_bridge.services.role_sync import NEUTRAL_PERMISSIONS
+from stoat_discord_bridge.services.role_sync import NEUTRAL_PERMISSIONS, STOAT_COMPANION_PERMISSIONS
 
 
 def _has_flag(perms_cls, name: str) -> bool:
@@ -36,6 +36,17 @@ def test_neutral_permissions_stoat_attrs_exist():
     missing = [
         (name, s_attr)
         for name, (_, s_attr) in NEUTRAL_PERMISSIONS.items()
+        if not _has_flag(stoat.Permissions, s_attr)
+    ]
+    assert not missing, f"stoat.Permissions has no such flag(s): {missing}"
+
+
+def test_stoat_companion_permissions_attrs_exist():
+    assert set(STOAT_COMPANION_PERMISSIONS) <= set(NEUTRAL_PERMISSIONS)
+    missing = [
+        (name, s_attr)
+        for name, attrs in STOAT_COMPANION_PERMISSIONS.items()
+        for s_attr in attrs
         if not _has_flag(stoat.Permissions, s_attr)
     ]
     assert not missing, f"stoat.Permissions has no such flag(s): {missing}"

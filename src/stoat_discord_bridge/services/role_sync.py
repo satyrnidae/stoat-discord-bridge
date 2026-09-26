@@ -17,7 +17,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # neutral name -> (discord.Permissions attr, stoat Permissions attr). Only
-# bits that mean the same thing on both platforms. Both sides' attr names
+# bits that mean the same thing on both platforms and that Discord treats as
+# a channel-level setting, including the voice-channel bits. Left out on
+# purpose: member moderation (kick/ban/timeout - not a channel concern on
+# either platform), Discord's thread bits and Stoat's mention_roles /
+# use_masquerade (no counterpart), and a separate `manage_roles` entry
+# (Discord aliases it to manage_permissions). Both sides' attr names
 # are verified against the installed discord.py (2.7.1) and stoat.py (1.2.1)
 # `Permissions` flag classes - every name here exists on both, and
 # `tests/test_stoat_permission_flag_names.py` pins that against the real
@@ -34,6 +39,21 @@ NEUTRAL_PERMISSIONS: dict[str, tuple[str, str]] = {
     "embed_links": ("embed_links", "send_embeds"),
     "attach_files": ("attach_files", "upload_files"),
     "add_reactions": ("add_reactions", "react"),
+    "mention_everyone": ("mention_everyone", "mention_everyone"),
+    "connect": ("connect", "connect"),
+    "speak": ("speak", "speak"),
+    "video": ("stream", "video"),
+    "mute_members": ("mute_members", "mute_members"),
+    "deafen_members": ("deafen_members", "deafen_members"),
+    "move_members": ("move_members", "move_members"),
+}
+
+# neutral name -> extra Stoat attrs set to the same allow/deny value as the
+# mapped one when writing to Stoat. Discord has no bit for these, so they're
+# never read back. Discord's one `connect` bit covers what Stoat splits into
+# `connect` (join) and `listen` (hear).
+STOAT_COMPANION_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    "connect": ("listen",),
 }
 
 
@@ -102,13 +122,11 @@ def stoat_override_to_neutral(allow, deny) -> RolePermissionOverride:
 
 def neutral_to_stoat_pair(override: RolePermissionOverride, permissions_cls):
     """-> (allow, deny) as stoat `Permissions` instances. Only mapped bits
-    are set."""
+    (plus their STOAT_COMPANION_PERMISSIONS) are set."""
     allow = permissions_cls.none()
     deny = permissions_cls.none()
-    for name in override.allow:
-        s_attr = NEUTRAL_PERMISSIONS[name][1]
-        setattr(allow, s_attr, True)
-    for name in override.deny:
-        s_attr = NEUTRAL_PERMISSIONS[name][1]
-        setattr(deny, s_attr, True)
+    for names, target in ((override.allow, allow), (override.deny, deny)):
+        for name in names:
+            for s_attr in (NEUTRAL_PERMISSIONS[name][1], *STOAT_COMPANION_PERMISSIONS.get(name, ())):
+                setattr(target, s_attr, True)
     return allow, deny

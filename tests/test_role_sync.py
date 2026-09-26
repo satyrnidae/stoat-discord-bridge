@@ -81,15 +81,73 @@ def test_stoat_override_round_trips():
     assert d.send_messages is True
 
 
+def test_mention_everyone_round_trips():
+    neutral = RolePermissionOverride(allow=frozenset({"mention_everyone"}), deny=frozenset())
+    a, d = neutral_to_discord_pair(neutral, _Perms)
+    assert a.mention_everyone is True
+    assert discord_overwrite_to_neutral(a, d) == neutral
+    a, d = neutral_to_stoat_pair(neutral, _Perms)
+    assert a.mention_everyone is True
+    assert stoat_override_to_neutral(a, d) == neutral
+
+
+def test_video_maps_to_discord_stream():
+    """The one new entry whose attr names differ between platforms."""
+    neutral = RolePermissionOverride(allow=frozenset({"video"}), deny=frozenset())
+    a, d = neutral_to_discord_pair(neutral, _Perms)
+    assert a.stream is True and a.video is False
+    assert discord_overwrite_to_neutral(a, d) == neutral
+    a, d = neutral_to_stoat_pair(neutral, _Perms)
+    assert a.video is True and a.stream is False
+    assert stoat_override_to_neutral(a, d) == neutral
+
+
+def test_voice_bits_round_trip():
+    neutral = RolePermissionOverride(
+        allow=frozenset({"speak", "move_members"}),
+        deny=frozenset({"mute_members", "deafen_members"}),
+    )
+    a, d = neutral_to_discord_pair(neutral, _Perms)
+    assert a.speak is True and a.move_members is True
+    assert d.mute_members is True and d.deafen_members is True
+    assert discord_overwrite_to_neutral(a, d) == neutral
+    a, d = neutral_to_stoat_pair(neutral, _Perms)
+    assert stoat_override_to_neutral(a, d) == neutral
+
+
+def test_connect_also_sets_stoat_listen():
+    """Discord's one connect bit covers what Stoat splits into connect and
+    listen, so writing it to Stoat sets both."""
+    a, d = neutral_to_stoat_pair(RolePermissionOverride(allow=frozenset({"connect"}), deny=frozenset()), _Perms)
+    assert a.connect is True and a.listen is True
+    assert d.connect is False and d.listen is False
+
+    a, d = neutral_to_stoat_pair(RolePermissionOverride(allow=frozenset(), deny=frozenset({"connect"})), _Perms)
+    assert d.connect is True and d.listen is True
+    assert a.connect is False and a.listen is False
+
+
+def test_connect_does_not_set_discord_listen():
+    neutral = RolePermissionOverride(allow=frozenset({"connect"}), deny=frozenset())
+    a, _ = neutral_to_discord_pair(neutral, _Perms)
+    assert a.connect is True and a.listen is False
+
+
+def test_stoat_listen_is_ignored_on_read():
+    """listen is write-only: reads look at Stoat's connect bit alone."""
+    assert stoat_override_to_neutral(_Perms(connect=True, listen=False), _Perms()).allow == frozenset({"connect"})
+    assert stoat_override_to_neutral(_Perms(listen=True), _Perms()).allow == frozenset()
+
+
 def test_splice_preserves_unmapped_target_bits():
     base = RolePermissionOverride(
-        allow=frozenset({"connect", "view_channel"}),  # connect is unmapped
-        deny=frozenset({"speak"}),  # speak is unmapped
+        allow=frozenset({"use_masquerade", "view_channel"}),  # use_masquerade is unmapped
+        deny=frozenset({"mention_roles"}),  # mention_roles is unmapped
     )
     incoming = RolePermissionOverride(allow=frozenset(), deny=frozenset({"view_channel"}))
     out = incoming.splice_onto(base)
-    assert "connect" in out.allow  # unmapped bit kept
-    assert "speak" in out.deny  # unmapped bit kept
+    assert "use_masquerade" in out.allow  # unmapped bit kept
+    assert "mention_roles" in out.deny  # unmapped bit kept
     assert "view_channel" in out.deny  # mapped bit taken from incoming
     assert "view_channel" not in out.allow
 
