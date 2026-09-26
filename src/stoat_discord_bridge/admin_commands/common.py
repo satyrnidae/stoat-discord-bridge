@@ -926,6 +926,44 @@ async def _link_conflict_check(
     )
 
 
+# How many names `_ensure_unclaimed_by_name` tries (`name`, `name-2`, ...
+# `name-5`) before giving up.
+_MAX_NAME_CANDIDATES = 5
+
+
+async def _ensure_unclaimed_by_name(
+    ensure: Callable[[str], Awaitable[str]],
+    get_group: Callable[[str], Awaitable[str | None]],
+    name: str,
+    *,
+    own_group: str | None,
+    limit: int | None,
+) -> tuple[str, str] | None:
+    """Get-or-create an entity by name via `ensure` (a destination's
+    `ensure_channel`/`ensure_category`), skipping a match that's already
+    linked into a group other than `own_group`. Names aren't unique on
+    Discord, so a by-name match may be an unrelated entity's copy (issue
+    #184). Retries as `name-2`, `name-3`, ... (the base clipped so the suffix
+    fits `limit`) and returns `(id, name)` for the first usable one, or
+    `None` once every candidate is taken. Exceptions from `ensure` propagate."""
+    for n in range(1, _MAX_NAME_CANDIDATES + 1):
+        candidate = name
+        if n > 1:
+            suffix = f"-{n}"
+            base = name if limit is None else name[: max(limit - len(suffix), 0)]
+            candidate = f"{base.rstrip()}{suffix}"
+        entity_id = await ensure(candidate)
+        group = await get_group(entity_id)
+        if group is None or group == own_group:
+            return entity_id, candidate
+    return None
+
+
+def _all_names_taken_message(name: str) -> str:
+    """The failure text for `_ensure_unclaimed_by_name` returning `None`."""
+    return f"'{name}' through '{name}-{_MAX_NAME_CANDIDATES}' are all already linked elsewhere"
+
+
 @dataclass(frozen=True)
 class LinkedMember:
     """One connector's side of a bridge/link/mapping group - the structured

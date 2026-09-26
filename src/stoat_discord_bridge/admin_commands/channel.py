@@ -14,7 +14,9 @@ from stoat_discord_bridge.admin_commands.common import (
     LinkedMember,
     LinkError,
     MirrorGuard,
+    _all_names_taken_message,
     _clean_new_name,
+    _ensure_unclaimed_by_name,
     _guards_mirror,
     _is_all_token,
     _is_forum_channel,
@@ -527,12 +529,20 @@ class ChannelLinker:
                 )
 
         try:
-            destination_channel_id = await dest_info.ensure_channel(
-                target_name, category, is_thread_category, category_parent_channel_id, **extra
+            ensured = await self._ensure_unclaimed_channel(
+                destination,
+                target_name,
+                bridge_group,
+                lambda name: dest_info.ensure_channel(
+                    name, category, is_thread_category, category_parent_channel_id, **extra
+                ),
             )
         except Exception as exc:
             logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
             return f"{dest_info.label}: failed to create/find a channel: {exc}"
+        if ensured is None:
+            return f"{dest_info.label}: failed to create/find a channel: {_all_names_taken_message(target_name)}."
+        destination_channel_id, target_name = ensured
 
         try:
             summary = await self.link_channel(
@@ -699,10 +709,23 @@ class ChannelLinker:
         extra = {"metadata": metadata} if metadata is not None else {}
 
         try:
-            destination_channel_id = await dest_info.ensure_channel(target_name, None, True, None, **extra)
+            ensured = await self._ensure_unclaimed_channel(
+                destination,
+                target_name,
+                bridge_group,
+                lambda name: dest_info.ensure_channel(name, None, True, None, **extra),
+            )
         except Exception as exc:
             logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
             return f"{dest_info.label}: failed to create/find a channel: {exc}", None
+        if ensured is None:
+            return (
+                f"{dest_info.label}: failed to create/find a channel: {_all_names_taken_message(target_name)}.",
+                None,
+            )
+        # Rebinds the name `finish_category_placement` matches by too, so it
+        # places the channel just linked, not a same-named one (issue #184).
+        destination_channel_id, target_name = ensured
 
         try:
             summary = await self.link_channel(
@@ -1200,6 +1223,24 @@ class ChannelLinker:
             return None
         mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
         return next((m for m in mapped if m.connector_id == destination), None)
+
+    async def _ensure_unclaimed_channel(
+        self,
+        destination: str,
+        name: str,
+        own_group: str | None,
+        ensure: Callable[[str], Awaitable[str]],
+    ) -> tuple[str, str] | None:
+        """`ensure` (a bound `ensure_channel` call) by name on `destination`,
+        skipping a same-named channel already linked into another bridge
+        group - see `_ensure_unclaimed_by_name`."""
+        return await _ensure_unclaimed_by_name(
+            ensure,
+            lambda channel_id: self._channel_mappings.get_bridge_group(destination, channel_id),
+            name,
+            own_group=own_group,
+            limit=self._connectors[destination].channel_name_limit,
+        )
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         """Resolve a bare channel name to its native id so the channel

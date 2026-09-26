@@ -294,6 +294,13 @@ the way to point
 linked yet, especially on IRC where there may be no channel to `/link` against
 (issue #44). On Discord it's the `new_name` option; on Stoat a
 `new_name:<name>` token; on IRC `-n <name>` / `--new-name <name>`.
+
+For `/mirror channel` and `/mirror category`, a same-named channel or Category
+that's already linked to something else is *not* matched, since names aren't
+unique on Discord (two threads under different parents often share a title).
+The counterpart is created as `<name>-2` instead, then `-3`, and so on up to
+`-5`; if all of those are taken too, the mirror reports it and links nothing
+(issue #184).
 The fan-out `all` form doesn't take it (one name can't fit many destinations).
 `/mirror category`'s `new_name` titles only the Category — mirrored child
 channels still carry their own names.

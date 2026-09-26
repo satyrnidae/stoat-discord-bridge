@@ -16,7 +16,9 @@ from stoat_discord_bridge.admin_commands.common import (
     LinkError,
     MirrorGuard,
     MirrorInProgressError,
+    _all_names_taken_message,
     _clean_new_name,
+    _ensure_unclaimed_by_name,
     _group_conflict_check,
     _guards_mirror,
     _is_all_token,
@@ -375,10 +377,19 @@ class CategoryLinker:
             if dest_info.ensure_category is None:
                 return f"{dest_label}: doesn't support Category creation - link it manually with /link category."
             try:
-                dest_category_id = await dest_info.ensure_category(target_name)
+                ensured = await _ensure_unclaimed_by_name(
+                    dest_info.ensure_category,
+                    lambda category_id: self._category_mappings.get_bridge_group(destination, category_id),
+                    target_name,
+                    own_group=bridge_group,
+                    limit=dest_info.category_name_limit,
+                )
             except Exception as exc:
                 logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, target_name, exc)
                 return f"{dest_label}: failed to create/find a Category: {exc}"
+            if ensured is None:
+                return f"{dest_label}: failed to create/find a Category: {_all_names_taken_message(target_name)}."
+            dest_category_id, target_name = ensured
             try:
                 lines.append(
                     await self.link_category(

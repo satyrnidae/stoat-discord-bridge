@@ -393,7 +393,123 @@ async def test_mirror_channel_reports_link_conflict_instead_of_raising(fake_db):
     summary = await linker.mirror_channel(
         local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
     )
-    assert "different bridge groups" in summary  # LinkError from link_channel, caught and reported, not raised
+    # every discriminated name resolves to the same conflicting channel too,
+    # so the retry gives up and reports rather than raising (issue #184)
+    assert "already linked elsewhere" in summary
+    assert await channel_mappings.get_bridge_group("discord", "d1") != await channel_mappings.get_bridge_group(
+        "stoat", "stoat_existing"
+    )
+
+
+def _name_keyed_ensure_channel(calls):
+    """A fake ensure_channel that get-or-creates by exact name, recording
+    every name it's asked for."""
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append(name)
+        return f"stoat_{name}"
+
+    return ensure_channel
+
+
+async def _link_existing(linker, stoat_id, name, irc_source):
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id=stoat_id, local_channel_name=name,
+        source="irc", source_id=irc_source, destination_id=None,
+    )
+
+
+def _three_connectors(ensure_channel, **stoat_kwargs):
+    return {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "irc": ConnectorInfo(id="irc", label="IRC"),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel, **stoat_kwargs),
+    }
+
+
+async def test_mirror_channel_skips_a_same_named_channel_linked_elsewhere(fake_db):
+    # issue #184: Discord allows duplicate channel names, so the by-name
+    # match may already be another channel's copy - it gets a discriminated
+    # name instead of being merged into that unrelated group
+    calls = []
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _three_connectors(_name_keyed_ensure_channel(calls)))
+    await _link_existing(linker, "stoat_general", "general", "#other")
+    other_group = await channel_mappings.get_bridge_group("stoat", "stoat_general")
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert calls == ["general", "general-2"]
+    assert "Stoat channel 'general-2'" in summary
+    new_group = await channel_mappings.get_bridge_group("discord", "d1")
+    assert new_group == await channel_mappings.get_bridge_group("stoat", "stoat_general-2")
+    assert new_group != other_group
+    assert {m.channel_id for m in await channel_mappings.get_mapped_channels(other_group)} == {
+        "stoat_general", "#other"
+    }
+
+
+async def test_mirror_channel_discriminator_increments_past_a_taken_suffix(fake_db):
+    calls = []
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _three_connectors(_name_keyed_ensure_channel(calls)))
+    await _link_existing(linker, "stoat_general", "general", "#a")
+    await _link_existing(linker, "stoat_general-2", "general-2", "#b")
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert calls == ["general", "general-2", "general-3"]
+    assert await channel_mappings.get_bridge_group("discord", "d1") == await channel_mappings.get_bridge_group(
+        "stoat", "stoat_general-3"
+    )
+
+
+async def test_mirror_channel_discriminator_keeps_the_suffix_within_the_name_limit(fake_db):
+    calls = []
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(
+        channel_mappings, _three_connectors(_name_keyed_ensure_channel(calls), channel_name_limit=8)
+    )
+    await _link_existing(linker, "stoat_abcdefgh", "abcdefgh", "#a")
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="abcdefghij", destination="stoat"
+    )
+
+    assert calls == ["abcdefgh", "abcdef-2"]
+
+
+async def test_mirror_channel_discriminator_gives_up_after_a_bounded_number_of_names(fake_db):
+    calls = []
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _three_connectors(_name_keyed_ensure_channel(calls)))
+    for name in ["general", "general-2", "general-3", "general-4", "general-5", "general-6"]:
+        await _link_existing(linker, f"stoat_{name}", name, f"#{name}")
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert calls == ["general", "general-2", "general-3", "general-4", "general-5"]
+    assert summary.startswith("Stoat: failed to create/find a channel")
+    assert "already linked elsewhere" in summary
+    assert await channel_mappings.get_bridge_group("discord", "d1") is None
+
+
+async def test_mirror_channel_reuses_an_unlinked_same_named_channel_in_one_call(fake_db):
+    calls = []
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _three_connectors(_name_keyed_ensure_channel(calls)))
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert calls == ["general"]
 
 
 async def test_mirror_channel_all_skips_local_connector_and_reports_each(fake_db):
@@ -727,6 +843,60 @@ async def test_mirror_channel_for_thread_uses_the_destinations_linked_parent_nam
     # ("Bot Config", not the Discord parent's "Announcements"), prefixed with
     # the thread marker (issue #98), plus the parent's Stoat channel id.
     assert calls == [(None, None), ("🧵 #Bot Config", "stoat_parent")]
+
+
+async def test_mirror_channel_for_thread_skips_a_same_titled_thread_linked_elsewhere(fake_db):
+    # issue #184: threads under different parents commonly share a title.
+    # The second one gets a discriminated name, and the deferred placement
+    # call must reuse it so it categorizes the channel just linked rather
+    # than the first thread's copy.
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"stoat_{name}"
+
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _three_connectors(ensure_channel))
+    await _link_existing(linker, "stoat_Help", "Help", "#first-thread")
+    other_group = await channel_mappings.get_bridge_group("stoat", "stoat_Help")
+
+    summary, finish = await linker.mirror_channel_for_thread(
+        local_connector="discord",
+        local_channel_id="d-thread-2",
+        local_channel_name="Help",
+        destination="stoat",
+        local_channel_category="support",
+        category_from_channel_id="d-parent",
+    )
+    await finish()
+
+    assert "Stoat channel 'Help-2'" in summary
+    assert calls == [("Help", None), ("Help-2", None), ("Help-2", "🧵 #support")]
+    new_group = await channel_mappings.get_bridge_group("discord", "d-thread-2")
+    assert new_group == await channel_mappings.get_bridge_group("stoat", "stoat_Help-2")
+    assert new_group != other_group
+
+
+async def test_mirror_channel_for_thread_reports_when_every_name_is_taken(fake_db):
+    calls = []
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, _three_connectors(_name_keyed_ensure_channel(calls)))
+    for name in ["Help", "Help-2", "Help-3", "Help-4", "Help-5"]:
+        await _link_existing(linker, f"stoat_{name}", name, f"#{name}")
+
+    summary, finish = await linker.mirror_channel_for_thread(
+        local_connector="discord",
+        local_channel_id="d-thread",
+        local_channel_name="Help",
+        destination="stoat",
+        local_channel_category="support",
+        category_from_channel_id="d-parent",
+    )
+
+    assert "already linked elsewhere" in summary
+    assert finish is None
+    assert len(calls) == 5
 
 
 async def test_mirror_channel_for_thread_unknown_destination_raises(fake_db, connectors):
