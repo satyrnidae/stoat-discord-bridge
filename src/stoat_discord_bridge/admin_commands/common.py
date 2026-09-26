@@ -1044,7 +1044,8 @@ async def _unlink_all_groups(
     groups: dict[str, str],
     load_group: Callable[[str], Awaitable[list]],
     dissolve_group: Callable[[str, list], Awaitable[int]],
-    kick_member: Callable[[list, str], Awaitable[object]],
+    kick_member: Callable[[str, list, str], Awaitable[object]],
+    kind_plural: str | None = None,
 ) -> str:
     """The shared `/unlink <kind> all <service|all>` loop (issues #160,
     #181). `groups` maps every group id `local_connector` has a member in to
@@ -1056,8 +1057,9 @@ async def _unlink_all_groups(
     fails is reported as its own line rather than aborting the rest.
 
     `dissolve_group(group_id, members)` returns how many mappings it removed;
-    `kick_member(members, destination)` returns the kicked mapping, whose
-    `name_attr` is shown."""
+    `kick_member(group_id, members, destination)` returns the kicked mapping, whose
+    `name_attr` is shown. `kind_plural` defaults to `kind` + "s"."""
+    plural = kind_plural or f"{kind}s"
     if destination is None:
         raise LinkError("'all' needs an explicit service - name a connector, or 'all' to dissolve every group.")
     dissolve = _is_all_token(destination)
@@ -1067,7 +1069,7 @@ async def _unlink_all_groups(
 
     local_label = label(local_connector)
     if not groups:
-        raise NothingLinkedError(f"no {kind}s on {local_label} are linked to anything.")
+        raise NothingLinkedError(f"no {plural} on {local_label} are linked to anything.")
 
     lines: list[str] = []
     done = 0
@@ -1081,7 +1083,7 @@ async def _unlink_all_groups(
                 count = await dissolve_group(group_id, mapped)
                 lines.append(f"{prefix}: dissolved its {group_word} ({count} {kind}(s) removed)")
             else:
-                target = await kick_member(mapped, destination)
+                target = await kick_member(group_id, mapped, destination)
                 lines.append(f"{prefix}: unlinked {label(destination)} {kind} '{getattr(target, name_attr)}'")
             done += 1
         except Exception as exc:  # report per group, don't abort the rest
@@ -1089,6 +1091,6 @@ async def _unlink_all_groups(
             lines.append(f"{prefix}: failed - {exc}")
 
     if not lines:
-        raise NothingLinkedError(f"none of {local_label}'s {kind}s are linked to {label(destination)}.")
+        raise NothingLinkedError(f"none of {local_label}'s {plural} are linked to {label(destination)}.")
     header = "Dissolved" if dissolve else f"Unlinked {label(destination)} from"
     return f"{header} {done} {group_word}(s) on {local_label}:\n" + "\n".join(lines)

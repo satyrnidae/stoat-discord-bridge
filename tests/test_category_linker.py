@@ -1,6 +1,13 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import CategoryLinker, ChannelLinker, ConnectorInfo, LinkedMember, LinkError
+from stoat_discord_bridge.admin_commands import (
+    CategoryLinker,
+    ChannelLinker,
+    ConnectorInfo,
+    LinkedMember,
+    LinkError,
+    NothingLinkedError,
+)
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 
@@ -180,6 +187,60 @@ async def test_unlink_category_defaults_to_all(fake_db, connectors):
     )
     await linker.unlink_category(local_connector="stoat", local_category_id="s-cat", destination=None)
     assert await category_mappings.get_bridge_group("discord", "d-cat") is None
+
+
+# ---------------------------------------------------------------- CategoryLinker.unlink_category (all, issue #181)
+
+
+async def _link_cat(linker, local_connector, local_id, source, source_id):
+    await linker.link_category(
+        local_connector=local_connector, local_category_id=local_id, local_category_name=local_id,
+        source=source, source_id=source_id, destination_id=None,
+    )
+
+
+async def test_unlink_category_all_all_dissolves_only_the_local_connectors_groups(fake_db, connectors):
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await _link_cat(linker, "stoat", "s1", "discord", "d1")
+    await _link_cat(linker, "stoat", "s2", "discord", "d2")
+    await _link_cat(linker, "irc", "i3", "discord", "d3")
+
+    summary = await linker.unlink_category(
+        local_connector="stoat", local_category_id="ignored", local_category="All", destination="all"
+    )
+
+    assert summary.splitlines()[0] == "Dissolved 2 bridge group(s) on Stoat:"
+    assert "'s1': dissolved its bridge group (2 Category(s) removed)" in summary
+    for connector_id, category_id in (("stoat", "s1"), ("discord", "d1"), ("stoat", "s2"), ("discord", "d2")):
+        assert await category_mappings.get_bridge_group(connector_id, category_id) is None
+    assert await category_mappings.get_bridge_group("discord", "d3") is not None
+
+
+async def test_unlink_category_all_with_service_kicks_it_and_keeps_a_lone_survivor(fake_db, connectors):
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await _link_cat(linker, "stoat", "s1", "discord", "d1")
+    await _link_cat(linker, "stoat", "s2", "irc", "i2")  # no Discord member: skipped
+
+    summary = await linker.unlink_category(local_connector="stoat", local_category="all", destination="discord")
+
+    assert "'s1': unlinked Discord Category 'd1'" in summary and "'s2'" not in summary
+    assert await category_mappings.get_bridge_group("discord", "d1") is None
+    # unlike role/emote, a Category kick doesn't dissolve a lone survivor
+    assert await category_mappings.get_bridge_group("stoat", "s1") is not None
+    assert await category_mappings.get_bridge_group("irc", "i2") is not None
+
+
+async def test_unlink_category_all_with_nothing_linked_raises_nothing_linked_error(fake_db, connectors):
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+    with pytest.raises(NothingLinkedError, match="no Categories on Stoat are linked"):
+        await linker.unlink_category(local_connector="stoat", local_category="all", destination="all")
+
+
+async def test_unlink_category_all_without_service_raises(fake_db, connectors):
+    linker, _, _, _ = _make_linker(fake_db, connectors)
+    await _link_cat(linker, "stoat", "s1", "discord", "d1")
+    with pytest.raises(LinkError, match="explicit service"):
+        await linker.unlink_category(local_connector="stoat", local_category="all", destination=None)
 
 
 # ---------------------------------------------------------------- CategoryLinker.sync_new_channel

@@ -1,6 +1,6 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkedMember, LinkError, UserLinker
+from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkedMember, LinkError, NothingLinkedError, UserLinker
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 
@@ -233,6 +233,52 @@ async def test_unlink_user_strips_a_pasted_discord_mention(fake_db, connectors):
 
     assert "removed" in summary
     assert await user_mappings.get_link_group("irc", "Alice") is None
+
+
+# ---------------------------------------------------------------- UserLinker.unlink_user (all, issue #181)
+
+
+async def test_unlink_user_all_all_dissolves_only_the_local_connectors_groups(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+    await linker.link_user(local_connector="irc", local_user_id="Bob", source="discord", source_user_id="222")
+    await linker.link_user(local_connector="stoat", local_user_id="s3", source="discord", source_user_id="333")
+
+    summary = await linker.unlink_user(local_connector="irc", local_user_id="All", destination="all")
+
+    assert summary.splitlines()[0] == "Dissolved 2 link group(s) on IRC:"
+    for connector_id, user_id in (("irc", "Alice"), ("discord", "111"), ("irc", "Bob"), ("discord", "222")):
+        assert await user_mappings.get_link_group(connector_id, user_id) is None
+    assert await user_mappings.get_link_group("discord", "333") is not None
+
+
+async def test_unlink_user_all_with_service_kicks_it_and_keeps_a_lone_survivor(fake_db, connectors):
+    user_mappings = UserMappingRepository(fake_db)
+    linker = UserLinker(user_mappings, connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+    await linker.link_user(local_connector="irc", local_user_id="Bob", source="stoat", source_user_id="s2")
+
+    summary = await linker.unlink_user(local_connector="irc", local_user_id="all", destination="discord")
+
+    assert "'Alice': unlinked Discord user" in summary and "'Bob'" not in summary
+    assert await user_mappings.get_link_group("discord", "111") is None
+    # unlike role/emote, a user kick doesn't dissolve a lone survivor
+    assert await user_mappings.get_link_group("irc", "Alice") is not None
+    assert await user_mappings.get_link_group("stoat", "s2") is not None
+
+
+async def test_unlink_user_all_with_nothing_linked_raises_nothing_linked_error(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    with pytest.raises(NothingLinkedError, match="no users on IRC are linked"):
+        await linker.unlink_user(local_connector="irc", local_user_id="all", destination="all")
+
+
+async def test_unlink_user_all_without_service_raises(fake_db, connectors):
+    linker = UserLinker(UserMappingRepository(fake_db), connectors)
+    await linker.link_user(local_connector="irc", local_user_id="Alice", source="discord", source_user_id="111")
+    with pytest.raises(LinkError, match="explicit service"):
+        await linker.unlink_user(local_connector="irc", local_user_id="all", destination=None)
 
 
 # ---------------------------------------------------------------- UserLinker.describe_group

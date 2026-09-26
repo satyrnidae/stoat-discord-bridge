@@ -32,6 +32,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_id,
     _resolve_entity_title,
     _run_bulk_mirror,
+    _unlink_all_groups,
     collect_linked_members,
     format_linked_listing,
 )
@@ -212,7 +213,29 @@ class CategoryLinker:
     ) -> str:
         """`/unlink category`, symmetric to ChannelLinker.unlink_channel.
         `local_category` (an id or a bare name) overrides `local_category_id`
-        (the invoking channel's Category) when given."""
+        (the invoking channel's Category) when given.
+
+        A literal (case-insensitive) `all` as `local_category` does this for
+        every bridge group `local_connector` is in (issue #181), with the
+        same rules as `/unlink channel all` - see `_unlink_all_groups`. A
+        Category literally named `all` has to be addressed by id."""
+        if _is_all_token(local_category):
+            groups: dict[str, str] = {}
+            for m in await self._category_mappings.get_all_for_connector(local_connector):
+                groups.setdefault(m.bridge_group, m.category_name)
+            return await _unlink_all_groups(
+                local_connector=local_connector,
+                destination=destination,
+                connectors=self._connectors,
+                kind="Category",
+                kind_plural="Categories",
+                name_attr="category_name",
+                group_word="bridge group",
+                groups=groups,
+                load_group=self._category_mappings.get_mapped_categories,
+                dissolve_group=lambda group, _mapped: self._category_mappings.delete_bridge_group(group),
+                kick_member=lambda _group, mapped, dest: self._kick_from_group(mapped, dest),
+            )
         if local_category is not None:
             local_category_id = await self._resolve_to_id(local_connector, local_category)
         if local_category_id is None:
@@ -226,6 +249,14 @@ class CategoryLinker:
             return f"Unlinked this Category's entire bridge group ({count} Category(s) removed)."
 
         mapped = await self._category_mappings.get_mapped_categories(bridge_group)
+        target = await self._kick_from_group(mapped, destination)
+        label = self._connectors[destination].label if destination in self._connectors else destination
+        return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
+
+    async def _kick_from_group(self, mapped: list[CategoryMapping], destination: str) -> CategoryMapping:
+        """Kick `destination`'s member out of the group `mapped` describes.
+        Unlike roles/emotes, a lone survivor is left in place. Returns the
+        kicked mapping."""
         target, _survivors = await _kick_group_member(
             mapped,
             destination,
@@ -233,8 +264,7 @@ class CategoryLinker:
             not_a_member_message=f"'{destination}' isn't linked in this Category's bridge group.",
             delete_mapping=self._category_mappings.delete_mapping,
         )
-        label = self._connectors[destination].label if destination in self._connectors else destination
-        return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
+        return target
 
     @_guards_mirror(_mirror_to_destination)
     async def mirror_category(

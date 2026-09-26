@@ -1,6 +1,12 @@
 import pytest
 
-from stoat_discord_bridge.admin_commands import ConnectorInfo, LinkedMember, LinkError, RoleLinker
+from stoat_discord_bridge.admin_commands import (
+    ConnectorInfo,
+    LinkedMember,
+    LinkError,
+    NothingLinkedError,
+    RoleLinker,
+)
 from stoat_discord_bridge.models import RoleMetadata
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 
@@ -452,6 +458,56 @@ async def test_unlink_role_kick_that_strands_a_lone_survivor_dissolves(fake_db):
 async def test_unlink_role_not_linked_raises(fake_db):
     with pytest.raises(LinkError, match="isn't linked"):
         await _linker(fake_db).unlink_role(local_connector="stoat", local_role="s1", destination=None)
+
+
+# ---- unlink_role (local_role: all, issue #181)
+
+
+async def test_unlink_role_all_all_dissolves_only_the_local_connectors_groups(fake_db):
+    linker = _linker(fake_db)
+    repo = RoleMappingRepository(fake_db)
+    await linker.link_role(local_connector="stoat", local_role="s1", source="discord", source_role="d1")
+    await linker.link_role(local_connector="stoat", local_role="s2", source="discord", source_role="d2")
+    await linker.link_role(local_connector="irc", local_role="i3", source="discord", source_role="d3")
+
+    summary = await linker.unlink_role(local_connector="stoat", local_role="ALL", destination="all")
+
+    assert summary.splitlines()[0] == "Dissolved 2 bridge group(s) on Stoat:"
+    for connector_id, role_id in (("stoat", "s1"), ("discord", "d1"), ("stoat", "s2"), ("discord", "d2")):
+        assert await repo.get_bridge_group(connector_id, role_id) is None
+    assert await repo.get_bridge_group("discord", "d3") is not None
+
+
+async def test_unlink_role_all_with_service_kicks_it_and_dissolves_a_lone_survivor(fake_db):
+    linker = _linker(fake_db)
+    repo = RoleMappingRepository(fake_db)
+    # 3-way group: kicking IRC leaves Stoat+Discord linked
+    await linker.link_role(local_connector="stoat", local_role="s1", source="discord", source_role="d1")
+    await linker.link_role(local_connector="irc", local_role="i1", source="discord", source_role="d1")
+    # 2-way group: kicking IRC would strand Stoat alone, so it's dissolved
+    await linker.link_role(local_connector="stoat", local_role="s2", source="irc", source_role="i2")
+    # no IRC member: skipped
+    await linker.link_role(local_connector="stoat", local_role="s3", source="discord", source_role="d3")
+
+    summary = await linker.unlink_role(local_connector="stoat", local_role="all", destination="irc")
+
+    assert "'s1': unlinked IRC role 'i1'" in summary and "'s3'" not in summary
+    assert await repo.get_bridge_group("irc", "i1") is None
+    assert await repo.get_bridge_group("stoat", "s1") == await repo.get_bridge_group("discord", "d1")
+    assert await repo.get_bridge_group("stoat", "s2") is None
+    assert await repo.get_bridge_group("stoat", "s3") is not None
+
+
+async def test_unlink_role_all_without_service_raises(fake_db):
+    linker = _linker(fake_db)
+    await linker.link_role(local_connector="stoat", local_role="s1", source="discord", source_role="d1")
+    with pytest.raises(LinkError, match="explicit service"):
+        await linker.unlink_role(local_connector="stoat", local_role="all", destination=None)
+
+
+async def test_unlink_role_all_with_nothing_linked_raises_nothing_linked_error(fake_db):
+    with pytest.raises(NothingLinkedError, match="no roles on Stoat are linked"):
+        await _linker(fake_db).unlink_role(local_connector="stoat", local_role="all", destination="all")
 
 
 # ---- describe_group

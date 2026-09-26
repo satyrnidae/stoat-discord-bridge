@@ -993,7 +993,7 @@ class ChannelLinker:
             groups=groups,
             load_group=self._channel_mappings.get_mapped_channels,
             dissolve_group=self._dissolve_group,
-            kick_member=self._kick_from_group,
+            kick_member=lambda _group, mapped, dest: self._kick_from_group(mapped, dest),
         )
 
     async def _dissolve_group(self, bridge_group: str, mapped: list[ChannelMapping]) -> int:
