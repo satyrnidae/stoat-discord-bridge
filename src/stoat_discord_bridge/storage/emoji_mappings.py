@@ -107,8 +107,16 @@ class EmojiMappingRepository:
     async def get_all_groups(self) -> dict[str, list[EmojiRef]]:
         """Every mapping group, keyed by group id - for the no-argument
         `/linked emotes` listing."""
+        return await self._find_groups({})
+
+    async def get_groups_for_connector(self, connector_id: str) -> dict[str, list[EmojiRef]]:
+        """Every mapping group with a ref on `connector_id`, keyed by group id
+        - for `/unlink emote all` (issue #181)."""
+        return await self._find_groups({"refs": {"$elemMatch": {"platform": connector_id}}})
+
+    async def _find_groups(self, query: dict) -> dict[str, list[EmojiRef]]:
         groups: dict[str, list[EmojiRef]] = {}
-        async for doc in self._collection.find({}):
+        async for doc in self._collection.find(query):
             groups[str(doc["_id"])] = [
                 EmojiRef(connector_id=r["platform"], emoji_id=r["emoji_id"], name=r["name"]) for r in doc["refs"]
             ]
