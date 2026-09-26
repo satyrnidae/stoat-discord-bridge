@@ -610,6 +610,82 @@ async def test_mirror_category_reuses_an_existing_linked_category(fake_db):
     assert "reusing" in summary
 
 
+def _same_title_connectors(ensure_category, ensure_channel=None, children=()):
+    async def channels_in_category(cid):
+        return list(children)
+
+    return {
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", channels_in_category=channels_in_category),
+        "irc": ConnectorInfo(id="irc", label="IRC"),
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", ensure_category=ensure_category, ensure_channel=ensure_channel
+        ),
+    }
+
+
+async def _link_existing_category(linker, dest_id, name):
+    await linker.link_category(
+        local_connector="discord", local_category_id=dest_id, local_category_name=name,
+        source="irc", source_id=f"irc-{dest_id}", destination_id=None,
+    )
+
+
+async def test_mirror_category_skips_a_same_titled_category_linked_elsewhere(fake_db):
+    # issue #184: Discord allows duplicate Category titles, so the by-name
+    # match may be another Category's copy - the source gets a discriminated
+    # Category instead of being merged into that unrelated group, and its
+    # child channels are placed under that one
+    ensure_category, created = _ensure_category_fake()
+    ensure_channel_calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        ensure_channel_calls.append((name, category))
+        return f"dest-chan-{name}"
+
+    connectors = _same_title_connectors(ensure_category, ensure_channel, children=[("s-chan-1", "general")])
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await _link_existing_category(linker, "dest-Team", "Team")
+    other_group = await category_mappings.get_bridge_group("discord", "dest-Team")
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert created == ["Team", "Team-2"]
+    assert "Discord Category 'Team-2'" in summary
+    new_group = await category_mappings.get_bridge_group("stoat", "s-cat")
+    assert new_group == await category_mappings.get_bridge_group("discord", "dest-Team-2")
+    assert new_group != other_group
+    assert ensure_channel_calls == [("general", "Team-2")]
+
+
+async def test_mirror_category_reports_when_every_title_is_taken(fake_db):
+    ensure_category, created = _ensure_category_fake()
+    linker, category_mappings, _, _ = _make_linker(fake_db, _same_title_connectors(ensure_category))
+    for name in ["Team", "Team-2", "Team-3", "Team-4", "Team-5"]:
+        await _link_existing_category(linker, f"dest-{name}", name)
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert len(created) == 5
+    assert summary.startswith("Discord: failed to create/find a Category")
+    assert "already linked elsewhere" in summary
+    assert await category_mappings.get_bridge_group("stoat", "s-cat") is None
+
+
+async def test_mirror_category_reuses_an_unlinked_same_titled_category_in_one_call(fake_db):
+    ensure_category, created = _ensure_category_fake()
+    linker, _, _, _ = _make_linker(fake_db, _same_title_connectors(ensure_category))
+
+    await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert created == ["Team"]
+
+
 async def test_mirror_category_reports_a_destination_that_cant_create_categories(fake_db):
     connectors = {
         "stoat": ConnectorInfo(id="stoat", label="Stoat"),
