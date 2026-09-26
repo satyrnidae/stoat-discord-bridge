@@ -122,7 +122,27 @@ async def test_receive_reuploads_attachments_as_native_files(monkeypatch):
     assert len(webhook.sent) == 1
     assert webhook.sent[0]["content"] == "look at this"  # URL is not pasted into the text
     assert webhook.sent[0]["files"] == [("pic.png", b"img")]
+    assert webhook.sent[0]["file_descriptions"] == [None]
     assert ids == ["1000"]
+
+
+async def test_receive_reuploads_an_attachment_with_its_alt_text(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(
+            content_markdown="",
+            attachments=[
+                Attachment(url="https://cdn.example/cat.png", filename="cat.png", description="a sleeping cat")
+            ],
+        ),
+        target_channel_id="42",
+    )
+
+    assert channel.created_webhooks[0].sent[0]["file_descriptions"] == ["a sleeping cat"]
 
 
 async def test_receive_sends_a_file_only_message_with_empty_content(monkeypatch):

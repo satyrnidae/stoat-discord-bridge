@@ -8,7 +8,7 @@ import posixpath
 import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import NamedTuple, Protocol
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -309,20 +309,29 @@ def _attachment_filename(attachment: Attachment) -> str:
     return tail or "attachment"
 
 
+class DownloadedAttachment(NamedTuple):
+    """An attachment's fetched bytes, ready to re-upload. `description` is
+    the alt text, which only Discord can set on upload (issue #188)."""
+
+    filename: str
+    data: bytes
+    description: str | None = None
+
+
 async def download_attachments(
     attachments: Sequence[Attachment], *, max_bytes: int = _MAX_REUPLOAD_BYTES
-) -> tuple[list[tuple[str, bytes]], list[Attachment]]:
+) -> tuple[list[DownloadedAttachment], list[Attachment]]:
     """Fetch each attachment's bytes so a receiver can re-upload it as a
     native file instead of pasting its (often short-lived, signed) CDN URL
     into the relayed message text - see issue #39.
 
     Returns `(downloaded, undownloadable)`: `downloaded` is a list of
-    `(filename, data)` pairs ready to hand to the platform's file-upload API;
+    `DownloadedAttachment`s ready to hand to the platform's file-upload API;
     `undownloadable` is every attachment that was too large or couldn't be
     fetched, which the caller falls back to inlining as a plain URL via
     `inline_attachment_urls` so the content isn't lost. Never raises.
     """
-    downloaded: list[tuple[str, bytes]] = []
+    downloaded: list[DownloadedAttachment] = []
     undownloadable: list[Attachment] = []
     if not attachments:
         return downloaded, undownloadable
@@ -343,7 +352,7 @@ async def download_attachments(
             if len(data) > max_bytes:
                 undownloadable.append(attachment)
                 continue
-            downloaded.append((_attachment_filename(attachment), data))
+            downloaded.append(DownloadedAttachment(_attachment_filename(attachment), data, attachment.description))
     return downloaded, undownloadable
 
 

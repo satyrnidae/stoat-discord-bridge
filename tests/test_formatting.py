@@ -5,6 +5,7 @@ import pytest
 
 from stoat_discord_bridge.models import Attachment
 from stoat_discord_bridge.services.formatting import (
+    DownloadedAttachment,
     chunk_content,
     decorate_sender_name,
     download_attachments,
@@ -63,8 +64,19 @@ async def test_download_attachments_fetches_bytes_and_names_them(monkeypatch):
         [Attachment(url="https://cdn.example/x/photo.png", filename="photo.png")]
     )
 
-    assert downloaded == [("photo.png", b"png-bytes")]
+    assert downloaded == [DownloadedAttachment("photo.png", b"png-bytes")]
+    assert downloaded[0].description is None
     assert undownloadable == []
+
+
+async def test_download_attachments_keeps_the_alt_text(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"png-bytes"))
+
+    downloaded, _ = await download_attachments(
+        [Attachment(url="https://cdn.example/x/cat.png", filename="cat.png", description="a sleeping cat")]
+    )
+
+    assert downloaded == [DownloadedAttachment("cat.png", b"png-bytes", "a sleeping cat")]
 
 
 async def test_download_attachments_derives_filename_from_url_when_missing(monkeypatch):
@@ -72,7 +84,7 @@ async def test_download_attachments_derives_filename_from_url_when_missing(monke
 
     downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/a/b/pic.jpg?ex=deadbeef")])
 
-    assert downloaded == [("pic.jpg", b"x")]
+    assert downloaded == [DownloadedAttachment("pic.jpg", b"x")]
 
 
 async def test_download_attachments_falls_back_on_fetch_failure(monkeypatch):

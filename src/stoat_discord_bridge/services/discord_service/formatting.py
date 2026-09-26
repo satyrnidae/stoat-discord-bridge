@@ -140,7 +140,13 @@ def _to_standard_message(
         sender_pronouns=sender_pronouns,
         sender_color=sender_color,
         attachments=[
-            Attachment(url=a.url, filename=a.filename, content_type=a.content_type, size_bytes=a.size)
+            Attachment(
+                url=a.url,
+                filename=a.filename,
+                content_type=a.content_type,
+                size_bytes=a.size,
+                description=a.description,
+            )
             for a in attachments
         ]
         + _link_preview_attachments(message),
