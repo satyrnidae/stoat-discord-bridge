@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable
 
-from stoat_discord_bridge.admin_commands import LinkError
+from stoat_discord_bridge.admin_commands import LinkError, unlink_all
 from stoat_discord_bridge.services.stoat_service.formatting import _channel_category
 
 logger = logging.getLogger(__name__)
@@ -530,6 +530,30 @@ class StoatLinkingMixin:
             ctx,
             self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=target, destination=service),
             log_context="/unlink user",
+        )
+
+    async def _unlink_all(self, ctx, service: str | None = None) -> None:
+        """`/unlink all <service|all>` (issue #181): every configured kind's
+        `all` unlink at once. `service` is required; omitting it gets the
+        linker's "needs an explicit service" reply."""
+        if not await self._require_admin(ctx):
+            return
+        if not await self._linker_configured(ctx, self._linker, "Linking isn't configured."):
+            return
+        logger.info("[stoat:%s] %s ran /unlink all service=%s", self.connector_id, ctx.author_id, service)
+        await self._reply_linker_result(
+            ctx,
+            unlink_all(
+                local_connector=self.connector_id,
+                destination=service,
+                connectors=self._linker.connectors,
+                channel_linker=self._linker,
+                category_linker=self._category_linker,
+                role_linker=self._role_linker,
+                emote_linker=self._emote_linker,
+                user_linker=self._user_linker,
+            ),
+            log_context="/unlink all",
         )
 
     async def _link_role(self, ctx, local_id: str, service: str, external_id: str) -> None:

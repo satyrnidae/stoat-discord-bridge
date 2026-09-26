@@ -15,8 +15,10 @@ import asyncio
 
 import pytest
 
-from stoat_discord_bridge.admin_commands import LinkError
+from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, LinkError, UserLinker
 from stoat_discord_bridge.config import IrcConnectorConfig
+from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 from stoat_discord_bridge.services.irc_service import IrcSenderService
 from stoat_discord_bridge.status import HealthTracker
 from tests.fakes.fake_irc import FakeIrcConnection, FakeIrcEvent
@@ -590,7 +592,7 @@ async def test_unlink_user_too_many_args_sends_usage():
 
     await sender._handle_dm_command("alice", "UNLINK USER discord bob extra")
 
-    assert conn.notice_calls == [("alice", "Usage: UNLINK USER [service|all] [local_id|name]")]
+    assert conn.notice_calls == [("alice", "Usage: UNLINK USER [service|all] [local_id|name|all]")]
 
 
 async def test_unlink_user_without_a_configured_linker():
@@ -607,6 +609,64 @@ async def test_unlink_user_rejects_a_non_oper():
     await sender._handle_dm_command("alice", "UNLINK USER")
 
     assert conn.notice_calls == [("alice", "You need to be an IRC operator to do that.")]
+
+
+# ---------------------------------------------------------------- UNLINK ALL (issue #181)
+
+
+def _real_linkers(fake_db):
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "irc": ConnectorInfo(id="irc", label="IRC"),
+    }
+    return ChannelLinker(ChannelMappingRepository(fake_db), connectors), UserLinker(
+        UserMappingRepository(fake_db), connectors
+    )
+
+
+async def test_unlink_all_unlinks_channels_and_users_without_blank_notices(fake_db):
+    channel_linker, user_linker = _real_linkers(fake_db)
+    await channel_linker.link_channel(
+        local_connector="irc", local_channel_id="#general", local_channel_name="#general",
+        source="discord", source_id="d1", destination_id=None,
+    )
+    await user_linker.link_user(local_connector="irc", local_user_id="bob", source="discord", source_user_id="111")
+    sender, conn = _make_sender(linker=channel_linker, user_linker=user_linker)
+
+    await sender._handle_dm_command("alice", "unlink all all")
+
+    lines = [text for _nick, text in conn.notice_calls]
+    assert "Channels:" in lines and "Users:" in lines
+    assert "" not in lines  # an empty NOTICE is rejected by the server
+    assert await ChannelMappingRepository(fake_db).get_bridge_group("irc", "#general") is None
+    assert await UserMappingRepository(fake_db).get_link_group("irc", "bob") is None
+
+
+async def test_unlink_all_wrong_arg_count_sends_usage():
+    sender, conn = _make_sender(linker=FakeLinker())
+
+    await sender._handle_dm_command("alice", "UNLINK ALL")
+
+    assert conn.notice_calls == [("alice", "Usage: UNLINK ALL <service|all>")]
+
+
+async def test_unlink_all_without_a_configured_linker():
+    sender, conn = _make_sender(linker=None)
+
+    await sender._handle_dm_command("alice", "UNLINK ALL all")
+
+    assert conn.notice_calls == [("alice", "Linking isn't configured.")]
+
+
+async def test_privmsg_unlink_all_is_scheduled():
+    sender, conn = _make_sender()
+    scheduled = []
+    sender._schedule = lambda coro: scheduled.append(coro)
+
+    sender._handle_privmsg(conn, FakeIrcEvent(text="UNLINK ALL all", nick="alice"))
+
+    assert len(scheduled) == 1
+    scheduled[0].close()
 
 
 # ---------------------------------------------------------------- HELP

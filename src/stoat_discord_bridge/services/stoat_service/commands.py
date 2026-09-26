@@ -91,6 +91,10 @@ def build_command_tree(bot, owner, prefix: str) -> None:
     async def unlink_emote(ctx, local_id: str, service: typing.Optional[str] = None):
         await owner._unlink_emote(ctx, local_id, service)
 
+    @unlink.command(name="all")
+    async def unlink_all(ctx, service: typing.Optional[str] = None):
+        await owner._unlink_all(ctx, service)
+
     @linked.command(name="channels")
     async def linked_channels(ctx, local_id: typing.Optional[str] = None):
         await owner._linked_channels(ctx, local_id)
