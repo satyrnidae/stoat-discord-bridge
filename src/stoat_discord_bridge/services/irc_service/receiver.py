@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from stoat_discord_bridge.models import StandardMessage
+from stoat_discord_bridge.models import Attachment, StandardMessage
 from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
 from stoat_discord_bridge.services.formatting import (
     chunk_content,
@@ -33,6 +33,17 @@ from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
 from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _attachment_lines(attachment: Attachment) -> list[str]:
+    """An attachment's IRC lines: its URL, preceded by its alt text if it's
+    an image that has one (issue #188). The line tag already names the
+    sender, so the alt-text line doesn't repeat it. Whitespace is collapsed
+    so multi-line alt text stays on one line."""
+    alt_text = " ".join((attachment.description or "").split())
+    if alt_text and (attachment.content_type or "").startswith("image/"):
+        return [f"sent an image: {alt_text}", attachment.url]
+    return [attachment.url]
 
 
 class IrcReceiverService(ReceiverService):
@@ -85,7 +96,7 @@ class IrcReceiverService(ReceiverService):
         # would put a zero-width space on the wire. (Discord/Stoat re-upload
         # these as native files instead - see formatting.download_attachments.)
         if attachments:
-            extra = "\n".join(a.url for a in attachments if a.url)
+            extra = "\n".join(line for a in attachments if a.url for line in _attachment_lines(a))
             if extra:
                 content = f"{content}\n{extra}" if content else extra
         # Discord/Stoat <t:...> dynamic timestamps have no IRC equivalent - render

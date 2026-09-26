@@ -103,6 +103,39 @@ async def test_receive_inlines_attachment_urls_for_an_image_only_message():
     assert connection.privmsg_calls == [("#general", "<Alice> https://cdn.example/f.png")]
 
 
+async def test_receive_puts_an_images_alt_text_before_its_url():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+    image = Attachment(url="https://cdn.example/cat.png", content_type="image/png", description="a sleeping cat")
+
+    await receiver.receive(_message(content_markdown="", attachments=[image]), target_channel_id="#general")
+
+    assert connection.privmsg_calls == [
+        ("#general", "<Alice> sent an image: a sleeping cat"),
+        ("#general", "<Alice> https://cdn.example/cat.png"),
+    ]
+
+
+async def test_receive_keeps_multi_line_alt_text_on_one_line():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+    image = Attachment(url="https://cdn.example/cat.png", content_type="image/png", description="a cat\n\non a  mat ")
+
+    await receiver.receive(_message(content_markdown="", attachments=[image]), target_channel_id="#general")
+
+    assert connection.privmsg_calls[0] == ("#general", "<Alice> sent an image: a cat on a mat")
+
+
+async def test_receive_ignores_alt_text_on_a_non_image():
+    connection = FakeIrcConnection()
+    receiver = _make_receiver(connection)
+    video = Attachment(url="https://cdn.example/clip.mp4", content_type="video/mp4", description="a clip")
+
+    await receiver.receive(_message(content_markdown="", attachments=[video]), target_channel_id="#general")
+
+    assert connection.privmsg_calls == [("#general", "<Alice> https://cdn.example/clip.mp4")]
+
+
 async def test_receive_keeps_a_previewed_link_and_drops_its_media_url():
     # Issue #164: the page link is more useful on IRC than the resolved
     # preview media, and relaying both would duplicate it.
