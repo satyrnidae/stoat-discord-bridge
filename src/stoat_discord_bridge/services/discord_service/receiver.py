@@ -166,7 +166,9 @@ class DiscordReceiverService(ReceiverService):
             # A file-only message needs an empty content, not the zero-width
             # sentinel; keep the sentinel only when there's nothing to send.
             chunks = [""] if files else ["​"]
-        discord_files = [discord.File(BytesIO(data), filename=name) for name, data in files]
+        discord_files = [
+            discord.File(BytesIO(f.data), filename=f.filename, description=f.description) for f in files
+        ]
         ids: list[str] = []
         for index, chunk in enumerate(chunks):
             attach = discord_files if discord_files and index == len(chunks) - 1 else None

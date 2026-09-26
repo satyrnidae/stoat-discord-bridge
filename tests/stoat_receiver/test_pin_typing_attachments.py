@@ -114,6 +114,25 @@ async def test_receive_reuploads_attachments_as_native_files(monkeypatch):
     assert channel.sent[0]["attachments"] == [("pic.png", b"img")]
 
 
+async def test_receive_uploads_a_plain_pair_even_when_the_attachment_has_alt_text(monkeypatch):
+    # Stoat has no alt-text field, so the description can't ride along (#188).
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    receiver = _make_receiver(client)
+
+    await receiver.receive(
+        _message(
+            content_markdown="",
+            attachments=[Attachment(url="https://cdn.example/cat.png", filename="cat.png", description="a cat")],
+        ),
+        target_channel_id="42",
+    )
+
+    [upload] = channel.sent[0]["attachments"]
+    assert type(upload) is tuple and upload == ("cat.png", b"img")
+
+
 async def test_receive_sends_a_file_only_message_with_empty_content(monkeypatch):
     monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
     client = FakeClient()

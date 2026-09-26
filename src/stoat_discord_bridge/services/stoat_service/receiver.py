@@ -172,7 +172,9 @@ class StoatReceiverService(ReceiverService):
         ids: list[str] = []
         for index, chunk in enumerate(chunks):
             attach = files if files and index == len(chunks) - 1 else None
-            attach_kw = {"attachments": list(attach)} if attach else {}
+            # Stoat uploads take a bare (filename, data) pair - it has no
+            # alt-text field, so the description is dropped (issue #188).
+            attach_kw = {"attachments": [(f.filename, f.data) for f in attach]} if attach else {}
             # Only the first post of a split relay carries the reply - a
             # multi-chunk message shouldn't reply N times (issue #101).
             # mention=False so a relayed reply doesn't re-ping the original

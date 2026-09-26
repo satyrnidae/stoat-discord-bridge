@@ -155,6 +155,7 @@ class FakeWebhook:
         record = {"content": content, "username": username, "avatar_url": avatar_url, "thread": thread}
         if files:
             record["files"] = [(f.filename, f.fp.read()) for f in files]
+            record["file_descriptions"] = [f.description for f in files]
         self.sent.append(record)
         message_id = self._next_message_id
         self._next_message_id += 1
