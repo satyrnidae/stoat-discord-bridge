@@ -17,7 +17,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # neutral name -> (discord.Permissions attr, stoat Permissions attr). Only
-# bits that mean the same thing on both platforms. Both sides' attr names
+# bits that mean the same thing on both platforms and that Discord treats as
+# a channel-level setting, including the voice-channel bits. Left out on
+# purpose: member moderation (kick/ban/timeout - not a channel concern on
+# either platform), Discord's thread bits and Stoat's mention_roles /
+# use_masquerade (no counterpart), and a separate `manage_roles` entry
+# (Discord aliases it to manage_permissions). Both sides' attr names
 # are verified against the installed discord.py (2.7.1) and stoat.py (1.2.1)
 # `Permissions` flag classes - every name here exists on both, and
 # `tests/test_stoat_permission_flag_names.py` pins that against the real
@@ -34,6 +39,13 @@ NEUTRAL_PERMISSIONS: dict[str, tuple[str, str]] = {
     "embed_links": ("embed_links", "send_embeds"),
     "attach_files": ("attach_files", "upload_files"),
     "add_reactions": ("add_reactions", "react"),
+    "mention_everyone": ("mention_everyone", "mention_everyone"),
+    "connect": ("connect", "connect"),
+    "speak": ("speak", "speak"),
+    "video": ("stream", "video"),
+    "mute_members": ("mute_members", "mute_members"),
+    "deafen_members": ("deafen_members", "deafen_members"),
+    "move_members": ("move_members", "move_members"),
 }
 
 
