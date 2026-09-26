@@ -1,5 +1,5 @@
 """Role and custom-emoji get-or-create / resolve for the Stoat connector -
-`ensure_role` and the emoji trio (`_all_emojis` / `resolve_emoji` /
+`create_role` and the emoji trio (`_all_emojis` / `resolve_emoji` /
 `resolve_emoji_id_by_name` / `get_emoji_name`) behind `/mirror role` and
 `/mirror emote`. Plain role-name resolution (`get_role_name` /
 `resolve_role_id_by_name`) lives alongside the rest of the id<->name lookups
@@ -20,21 +20,19 @@ logger = logging.getLogger(__name__)
 class _RolesEmojiMixin:
     """Role/emoji get-or-create half of `StoatLookupsMixin`."""
 
-    async def ensure_role(self, name: str, *, metadata: "RoleMetadata | None" = None) -> str:
-        """Get-or-create a role named `name`, returning its id - this
-        connector's `ConnectorInfo.ensure_role` for `/mirror role`.
+    async def create_role(self, name: str, *, metadata: "RoleMetadata | None" = None) -> str:
+        """Create a new role named `name`, returning its id - this
+        connector's `ConnectorInfo.create_role` for `/mirror role`. Never
+        matches an existing role; that's `resolve_role_id_by_name`'s job
+        (issue #183).
 
-        `metadata`'s color/hoist are applied only when the role is created
-        (issue #179). stoat.py's `create_role` takes only a name, so they're
-        set by a follow-up `Role.edit`; if that fails the role is still
-        linked, just uncolored."""
+        `metadata`'s color/hoist are applied too (issue #179). stoat.py's
+        `create_role` takes only a name, so they're set by a follow-up
+        `Role.edit`; if that fails the role is still linked, just
+        uncolored."""
         server = self._client.get_server(self.server_id, partial=False)
         if not isinstance(server, stoat.Server):
             server = await self._client.fetch_server(self.server_id)
-        lowered = name.casefold()
-        for role in self._roles_of(server):
-            if str(getattr(role, "name", "")).casefold() == lowered:
-                return str(role.id)
         role = await server.create_role(name=name)
         if metadata is not None and (metadata.color or metadata.hoist):
             try:

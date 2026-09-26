@@ -92,7 +92,7 @@ async def test_mirror_role_refreshes_both_connectors(fake_db):
 
     calls, make = _refresh_recorder()
 
-    async def ensure_role(name):
+    async def create_role(name):
         assert set(calls) == {"discord", "stoat"}
         return f"s_{name}"
 
@@ -101,7 +101,7 @@ async def test_mirror_role_refreshes_both_connectors(fake_db):
             id="discord", label="Discord", resolve_role_name=_const("Mods"), refresh=make("discord")
         ),
         "stoat": ConnectorInfo(
-            id="stoat", label="Stoat", resolve_role_name=_const("Mods"), ensure_role=ensure_role, refresh=make("stoat")
+            id="stoat", label="Stoat", resolve_role_name=_const("Mods"), create_role=create_role, refresh=make("stoat")
         ),
     }
     linker = RoleLinker(RoleMappingRepository(fake_db), connectors)

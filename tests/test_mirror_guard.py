@@ -109,13 +109,13 @@ async def test_guard_all_fanout_reserves_every_other_connector():
 async def test_mirror_role_rejects_a_concurrent_run_into_the_same_destination(fake_db):
     started, gate = asyncio.Event(), asyncio.Event()
 
-    async def ensure_role(name):
+    async def create_role(name):
         started.set()
         await gate.wait()
         return "s1"
 
     connectors = _connectors(
-        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=ensure_role)
+        stoat=ConnectorInfo(id="stoat", label="Stoat", create_role=create_role)
     )
     linker = RoleLinker(RoleMappingRepository(fake_db), connectors)
 
@@ -134,17 +134,17 @@ async def test_mirror_role_rejects_a_concurrent_run_into_the_same_destination(fa
 async def test_mirror_role_still_allows_a_different_destination_concurrently(fake_db):
     started, gate = asyncio.Event(), asyncio.Event()
 
-    async def slow_ensure_role(name):
+    async def slow_create_role(name):
         started.set()
         await gate.wait()
         return "s1"
 
-    async def fast_ensure_role(name):
+    async def fast_create_role(name):
         return "i1"
 
     connectors = _connectors(
-        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=slow_ensure_role),
-        irc=ConnectorInfo(id="irc", label="IRC", ensure_role=fast_ensure_role),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", create_role=slow_create_role),
+        irc=ConnectorInfo(id="irc", label="IRC", create_role=fast_create_role),
     )
     linker = RoleLinker(RoleMappingRepository(fake_db), connectors)
 
@@ -182,18 +182,18 @@ async def test_mirror_role_all_is_rejected_wholesale_when_one_destination_is_bus
     started, gate = asyncio.Event(), asyncio.Event()
     irc_calls = []
 
-    async def stoat_ensure_role(name):
+    async def stoat_create_role(name):
         started.set()
         await gate.wait()
         return "s1"
 
-    async def irc_ensure_role(name):
+    async def irc_create_role(name):
         irc_calls.append(name)
         return "i1"
 
     connectors = _connectors(
-        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_role=stoat_ensure_role),
-        irc=ConnectorInfo(id="irc", label="IRC", ensure_role=irc_ensure_role),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", create_role=stoat_create_role),
+        irc=ConnectorInfo(id="irc", label="IRC", create_role=irc_create_role),
     )
     linker = RoleLinker(RoleMappingRepository(fake_db), connectors)
 
@@ -221,13 +221,13 @@ async def test_one_shared_guard_makes_channel_and_role_mirror_exclude_each_other
         await gate.wait()
         return "c1"
 
-    async def ensure_role(name):
+    async def create_role(name):
         return "r1"
 
     guard = MirrorGuard()
     connectors = _connectors(
         stoat=ConnectorInfo(
-            id="stoat", label="Stoat", ensure_channel=ensure_channel, ensure_role=ensure_role
+            id="stoat", label="Stoat", ensure_channel=ensure_channel, create_role=create_role
         )
     )
     channels = ChannelLinker(ChannelMappingRepository(fake_db), connectors, guard=guard)

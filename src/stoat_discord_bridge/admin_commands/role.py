@@ -119,8 +119,9 @@ class RoleLinker:
         self, *, local_connector: str, local_role: str, destination: str, new_name: str | None = None
     ) -> str:
         """Ensure `local_role` (on `local_connector`) has a linked
-        counterpart on `destination`: reuses/creates a same-named role there
-        via `destination`'s ensure_role() hook, then links it. Reports rather
+        counterpart on `destination`: reuses a same-named role there (found
+        via its resolve_role_id_by_name hook) or creates one (its
+        create_role hook), then links it. Reports rather
         than raises for an already-synced pair, a destination that can't
         create roles, or a link conflict - the bulk `mirror_role_all` caller
         shouldn't have one bad destination abort the rest.
@@ -168,7 +169,7 @@ class RoleLinker:
                 return f"{self._connectors[destination].label}: already synced - skipped."
 
         dest_info = self._connectors[destination]
-        if dest_info.ensure_role is None:
+        if dest_info.create_role is None:
             return f"{dest_info.label}: doesn't support role creation - link it manually with /link role."
 
         # Clip to the destination's role-name limit so a name that fits the
@@ -177,22 +178,22 @@ class RoleLinker:
         if dest_info.role_name_limit is not None:
             target_name = clip_name(target_name, dest_info.role_name_limit)
 
-        # Carry the source role's color/hoist over (issue #179). Best-effort:
-        # a missing or raising hook just means a plain name-only role.
-        metadata = None
-        source_info = self._connectors.get(local_connector)
-        if source_info is not None and source_info.describe_role is not None:
+        # Prefer a same-named role already on the destination over creating a
+        # duplicate - but not one that's already linked: role names aren't
+        # unique, so it may be a different role's copy (issue #183). It can't
+        # be in the source's own group - that returned above.
+        destination_role_id = await self._find_role_by_name(destination, target_name)
+        if (
+            destination_role_id is not None
+            and await self._role_mappings.get_bridge_group(destination, destination_role_id) is not None
+        ):
+            destination_role_id = None
+        if destination_role_id is None:
             try:
-                metadata = await source_info.describe_role(local_id)
+                destination_role_id = await self._create_role(local_connector, local_id, destination, target_name)
             except Exception as exc:
-                logger.warning("mirror-role: %s.describe_role(%r) failed: %s", local_connector, local_id, exc)
-        extra = {"metadata": metadata} if metadata is not None else {}
-
-        try:
-            destination_role_id = await dest_info.ensure_role(target_name, **extra)
-        except Exception as exc:
-            logger.warning("mirror-role: %s.ensure_role(%r) failed: %s", destination, target_name, exc)
-            return f"{dest_info.label}: failed to create/find a role: {exc}"
+                logger.warning("mirror-role: %s.create_role(%r) failed: %s", destination, target_name, exc)
+                return f"{dest_info.label}: failed to create a role: {exc}"
 
         try:
             return await self.link_role(
@@ -337,6 +338,34 @@ class RoleLinker:
             dissolve_survivors=_dissolve,
         )
         return target
+
+    async def _find_role_by_name(self, destination: str, name: str) -> str | None:
+        """A same-named role already on `destination` for `mirror_role` to
+        link to instead of creating a duplicate, or None. Best-effort: a
+        missing or raising lookup just means a fresh role is created."""
+        hook = self._connectors[destination].resolve_role_id_by_name
+        if hook is None or not name:
+            return None
+        try:
+            return await hook(name) or None
+        except Exception:
+            logger.debug("mirror-role: %s.resolve_role_id_by_name(%r) failed", destination, name, exc_info=True)
+            return None
+
+    async def _create_role(self, source: str, source_id: str, destination: str, name: str) -> str:
+        """Create `mirror_role`'s counterpart role on `destination`, carrying
+        the source role's color/hoist over (issue #179). Best-effort on the
+        metadata: a missing or raising describe_role just means a plain
+        name-only role."""
+        metadata = None
+        source_info = self._connectors.get(source)
+        if source_info is not None and source_info.describe_role is not None:
+            try:
+                metadata = await source_info.describe_role(source_id)
+            except Exception as exc:
+                logger.warning("mirror-role: %s.describe_role(%r) failed: %s", source, source_id, exc)
+        extra = {"metadata": metadata} if metadata is not None else {}
+        return await self._connectors[destination].create_role(name, **extra)
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         info = self._connectors.get(connector)

@@ -151,11 +151,11 @@ class RoleMetadata:
     """A linked role's cosmetic properties, read off the source role when
     `/mirror role` creates its counterpart (issue #179) - the role
     counterpart of `ChannelMetadata`, applied by each connector's
-    `ensure_role` hook *only on the create path*.
+    `create_role` hook (never onto a reused same-named role).
 
     `color` is a CSS color string (`#rrggbb` from Discord; Stoat's own
     `Role.color` as-is, which may be a gradient Discord can't take - its
-    `ensure_role` then just skips the color). `hoist` is "display members
+    `create_role` then just skips the color). `hoist` is "display members
     separately", which both platforms have. Permissions aren't carried over.
     """
 

@@ -639,7 +639,7 @@ class ConnectorInfo:
     # Idempotent get-or-create by name: ensures a Category named `name` exists
     # on this connector, returning its native id (existing or newly created).
     # None if this connector kind can't create Categories - `/mirror category`
-    # then reports that connector as unsupported (mirrors ensure_role). None
+    # then reports that connector as unsupported (mirrors create_role). None
     # on IRC.
     ensure_category: Callable[[str], Awaitable[str]] | None = None
     # native-category-id -> [(channel_id, channel_name), ...] for every channel
@@ -662,19 +662,19 @@ class ConnectorInfo:
     # expected. None/exception/falsy return all mean "treat the token as an
     # id already" (RoleLinker._resolve_to_id).
     resolve_role_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
-    # Idempotent get-or-create by name: ensures a role named `name` exists on
-    # this connector, returning its native id (existing or newly created).
-    # None if this connector kind can't create roles - `/mirror role` then
-    # reports that connector as unsupported rather than calling this (mirrors
-    # ensure_channel).
+    # Always creates a new role named `name` on this connector, returning its
+    # native id - never matches an existing one. `/mirror role` looks for a
+    # same-named role itself via resolve_role_id_by_name first, so it can
+    # refuse a match that's already linked elsewhere (issue #183). None if
+    # this connector kind can't create roles - `/mirror role` then reports
+    # that connector as unsupported.
     # An optional `metadata` keyword (a `RoleMetadata`) is passed by
-    # `/mirror role` when the source role had any - the hook applies it only
-    # when it actually creates the role, never onto a reused one (issue #179).
-    ensure_role: Callable[..., Awaitable[str]] | None = None
+    # `/mirror role` when the source role had any (issue #179).
+    create_role: Callable[..., Awaitable[str]] | None = None
     # Best-effort read of a role's cosmetic metadata (color, hoist) as a
     # `RoleMetadata`, or None if the role can't be resolved. `/mirror role`
     # reads this off the *source* role and hands it to the destination's
-    # `ensure_role` (issue #179) - the role counterpart of describe_channel.
+    # `create_role` (issue #179) - the role counterpart of describe_channel.
     describe_role: Callable[[str], Awaitable["RoleMetadata | None"]] | None = None
     # Rename the role `role_id` to `new_name` on this connector - used to keep
     # linked copies coherent when a linked role is renamed on one side.
