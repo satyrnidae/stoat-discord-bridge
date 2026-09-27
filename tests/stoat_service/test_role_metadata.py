@@ -76,6 +76,28 @@ async def test_create_role_still_returns_the_new_role_if_the_edit_fails():
     assert role_id == "role-Mods"
 
 
+async def test_apply_role_metadata_syncs_a_differing_role():
+    # issue #195: a matched role is edited to match the source.
+    role = _Role("r1", "Mods", color="#00ff00", hoist=False)
+    sender = _sender(_RoleServer(role))
+    await sender.apply_role_metadata("r1", RoleMetadata(color="linear-gradient(red, blue)", hoist=True))
+    assert role.edits == [{"color": "linear-gradient(red, blue)", "hoist": True}]
+
+
+async def test_apply_role_metadata_clears_a_color_the_source_lacks():
+    role = _Role("r1", "Mods", color="#00ff00", hoist=False)
+    sender = _sender(_RoleServer(role))
+    await sender.apply_role_metadata("r1", RoleMetadata())
+    assert role.edits == [{"color": None}]
+
+
+async def test_apply_role_metadata_is_a_noop_when_already_matching():
+    role = _Role("r1", "Mods", color="#ff8800", hoist=True)
+    sender = _sender(_RoleServer(role))
+    await sender.apply_role_metadata("r1", RoleMetadata(color="#ff8800", hoist=True))
+    assert role.edits == []
+
+
 async def test_create_role_creates_even_if_a_same_named_role_exists():
     # Matching by name is resolve_role_id_by_name's job now (issue #183).
     existing = _Role("r1", "Mods")
