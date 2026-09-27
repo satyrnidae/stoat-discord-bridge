@@ -16,9 +16,9 @@ the plain nick text.
 A mentioned user with no mapping to the target connector is expanded to a
 plain `@Display Name` (the name on the origin, carried on the
 `StandardMessage.mentioned_users` map) so the target doesn't just see a
-raw `<@id>` token (issue #56); if even that name can't be recovered the
-mention is left exactly as it appeared - never dropped or replaced with
-something meaningless. Neither regex needs to know which connector
+raw `<@id>` token (issue #56); if even that name can't be recovered it
+becomes a generic `*@unknown-user*` marker (issue #203). Neither regex
+needs to know which connector
 authored the message: Discord's numeric-id and Stoat's 26-char-ULID
 mention shapes never collide with each other, so both are always tried.
 """
@@ -107,8 +107,20 @@ async def rewrite_channel_mentions(
                 # Unresolvable (e.g. a since-deleted channel) - a generic
                 # marker beats a dead id (issue #178). Plain on IRC, whose
                 # markdown was already stripped before this runs.
-                replacement = "#unknown-channel" if target_kind == "irc" else "*#unknown-channel*"
+                replacement = _unknown_marker("#unknown-channel", target_kind)
             replacements[match.group(0)] = replacement
+    return _substitute_all(content, replacements)
+
+
+def _unknown_marker(marker: str, target_kind: str) -> str:
+    """Italicized on Discord/Stoat; plain on IRC, whose markdown was already
+    stripped before mention rewriting runs."""
+    return marker if target_kind == "irc" else f"*{marker}*"
+
+
+def _substitute_all(content: str, replacements: dict[str, str]) -> str:
+    """Replace every token in one pass, so no replacement is re-read as a
+    token."""
     if not replacements:
         return content
     return re.sub(
@@ -133,18 +145,22 @@ async def rewrite_role_mentions(
     origin. A mention of a role with no mapping to the target is expanded to a
     plain `@Role Name` using this map rather than relayed as the raw id token
     (issue #4 - the role counterpart of the issue-#56 user-mention fix); a
-    mention still not covered by the map is left exactly as it appeared. Both
-    id shapes are always tried; Discord's numeric ids and Stoat's 26-char
-    ULIDs never collide."""
+    mention still not covered by the map (e.g. a since-deleted role) becomes
+    a generic `*@unknown-role*` (plain `@unknown-role` on IRC - issue #203).
+    Both id shapes are always tried; Discord's numeric ids and Stoat's
+    26-char ULIDs never collide."""
     mentioned_roles = mentioned_roles or {}
-    # Unlinked mentions we can name are expanded only after the linked-role
-    # rewrite below, so an expanded `@Name` can't collide with a real
-    # `<%id>` / `<@&id>` we just wrote (and the expansion is defanged).
-    pending_expansions: list[tuple[str, str]] = []
+    # Resolve every token against the original text, then substitute once -
+    # otherwise the Stoat pass would re-read a `<%ULID>` the Discord pass just
+    # wrote and turn it into the unknown-role marker.
+    replacements: dict[str, str] = {}
     for pattern in (_DISCORD_ROLE_MENTION, _STOAT_ROLE_MENTION):
-        for match in list(pattern.finditer(content)):
+        for match in pattern.finditer(content):
+            if match.group(0) in replacements:
+                continue
+            role_id = match.group(1)
             target = None
-            bridge_group = await role_mappings.get_bridge_group(origin_connector_id, match.group(1))
+            bridge_group = await role_mappings.get_bridge_group(origin_connector_id, role_id)
             if bridge_group is not None:
                 target = next(
                     (
@@ -154,20 +170,19 @@ async def rewrite_role_mentions(
                     ),
                     None,
                 )
-            if target is None:
-                if match.group(1) in mentioned_roles:
-                    pending_expansions.append((match.group(0), mentioned_roles[match.group(1)]))
-                continue
-            if target_kind == "discord":
-                replacement = f"<@&{target.role_id}>"
-            elif target_kind == "stoat":
-                replacement = f"<%{target.role_id}>"
+            if target is not None:
+                if target_kind == "discord":
+                    replacement = f"<@&{target.role_id}>"
+                elif target_kind == "stoat":
+                    replacement = f"<%{target.role_id}>"
+                else:
+                    replacement = f"@{target.role_name}"
+            elif role_id in mentioned_roles:
+                replacement = _defang_mentions("@" + mentioned_roles[role_id])
             else:
-                replacement = f"@{target.role_name}"
-            content = content.replace(match.group(0), replacement)
-    for token, name in pending_expansions:
-        content = content.replace(token, _defang_mentions("@" + name))
-    return content
+                replacement = _unknown_marker("@unknown-role", target_kind)
+            replacements[match.group(0)] = replacement
+    return _substitute_all(content, replacements)
 
 
 async def rewrite_emoji(
@@ -261,21 +276,31 @@ async def rewrite_mentions(
     name on the origin. A `<@id>` mention of a user with no /link-user link
     to the target is expanded to a plain `@Display Name` using this map
     rather than relayed as the raw id token (issue #56); a mention still not
-    covered by the map is left exactly as it appeared."""
+    covered by the map (e.g. a since-deleted user) becomes a generic
+    `*@unknown-user*` (plain `@unknown-user` on IRC - issue #203)."""
     mentioned_users = mentioned_users or {}
-    # Unlinked `<@id>` mentions we can name are expanded only *after* the
-    # plain-word nick scan below, so an injected display name can't itself be
-    # re-read as a nick mention - the raw token is inert to that scan.
-    pending_expansions: list[tuple[str, str]] = []
+    # Every token is resolved against the original text, so the Stoat pass
+    # can't re-read a `<@ULID>` the Discord pass just wrote. Unlinked tokens
+    # are replaced only *after* the plain-word nick scan below, so an injected
+    # display name can't itself be re-read as a nick mention - the raw token
+    # is inert to that scan.
+    linked: dict[str, str] = {}
+    unlinked: dict[str, str] = {}
     for pattern in (_DISCORD_MENTION, _STOAT_MENTION):
-        for match in list(pattern.finditer(content)):
+        for match in pattern.finditer(content):
+            token, user_id = match.group(0), match.group(1)
+            if token in linked or token in unlinked:
+                continue
             target_id, target_name = await _resolve_target(
-                origin_connector_id, match.group(1), target_connector_id, user_mappings
+                origin_connector_id, user_id, target_connector_id, user_mappings
             )
             if target_id is not None:
-                content = content.replace(match.group(0), _render_mention(target_kind, target_id, target_name))
-            elif match.group(1) in mentioned_users:
-                pending_expansions.append((match.group(0), mentioned_users[match.group(1)]))
+                linked[token] = _render_mention(target_kind, target_id, target_name)
+            elif user_id in mentioned_users:
+                unlinked[token] = _defang_mentions("@" + mentioned_users[user_id])
+            else:
+                unlinked[token] = _unknown_marker("@unknown-user", target_kind)
+    content = _substitute_all(content, linked)
 
     # IRC-origin (and, harmlessly, any other origin) plain-word nick scan:
     # any linked identity whose *own* user_id literally appears in the text
@@ -290,10 +315,7 @@ async def rewrite_mentions(
         if target_id is not None:
             content = pattern.sub(_render_mention(target_kind, target_id, target_name), content)
 
-    for token, name in pending_expansions:
-        content = content.replace(token, _defang_mentions("@" + name))
-
-    return content
+    return _substitute_all(content, unlinked)
 
 
 _ZWSP = "\u200b"

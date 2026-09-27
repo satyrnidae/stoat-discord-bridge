@@ -807,8 +807,9 @@ rewrites; an *unlinked* role mention is expanded to a plain `@Role Name`
 `StandardEdit.mentioned_roles` — populated best-effort by the Discord/Stoat
 senders off the message's `role_mentions`, absent on IRC) rather than relayed
 as the raw token (issue #4 — the role counterpart of the issue-#56 user fix),
-and left exactly as it appeared only when even that name can't be recovered.
-Like the user expansion it's run through `mentions._defang_mentions`.
+and becomes a generic `*@unknown-role*` (plain `@unknown-role` on IRC) only
+when even that name can't be recovered - typically a since-deleted role in
+transferred history (issue #203). Like the user expansion it's run through `mentions._defang_mentions`.
 
 A user `<@id>` mention is rewritten to the target's native mention of the
 `/link-user`-linked identity where one exists; where it doesn't,
@@ -816,8 +817,8 @@ A user `<@id>` mention is rewritten to the target's native mention of the
 user's name on the origin, carried on `StandardMessage.mentioned_users` —
 populated best-effort by the Discord/Stoat senders off the message's
 `mentions`, absent on IRC which has no structured mentions) rather than
-relaying the raw `<@id>` token (issue #56). A mention the map can't name is
-still left exactly as it appeared. A `<#id>` **channel** mention of a channel
+relaying the raw `<@id>` token (issue #56). A mention the map can't name
+becomes `*@unknown-user*` (plain `@unknown-user` on IRC, issue #203). A `<#id>` **channel** mention of a channel
 that isn't `/link channel`-linked on the target is likewise expanded by
 `rewrite_channel_mentions` to a plain `#channel-name` — the origin's name for
 the channel, carried on `StandardMessage.mentioned_channels` /
