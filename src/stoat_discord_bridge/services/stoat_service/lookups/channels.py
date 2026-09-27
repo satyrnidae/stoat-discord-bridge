@@ -75,8 +75,9 @@ class _ChannelsMixin:
 
         `metadata`, when given, is the source channel's description / NSFW
         flag / icon / slowmode delay - applied *only when this call creates
-        the channel* (issue #32, #108); a mirror that matched an existing
-        channel leaves its metadata untouched. The icon and slowmode are
+        the channel* (issue #32, #108); a matched channel is left as-is here,
+        and synced by `/mirror channel` via `apply_channel_metadata` only once
+        it's confirmed not linked elsewhere (issue #195). The icon and slowmode are
         each a best-effort follow-up that never blocks the create from
         succeeding."""
         # Fetch the server fresh rather than trust the cache. Beyond needing a
@@ -113,17 +114,47 @@ class _ChannelsMixin:
             if metadata is not None and metadata.icon_url:
                 await self._apply_channel_icon(channel, metadata.icon_url)
             if metadata is not None and metadata.slowmode_delay:
-                await self._apply_channel_slowmode(server, channel_id, metadata.slowmode_delay)
+                await self._apply_channel_slowmode(server.state.http, channel_id, metadata.slowmode_delay)
         if category is not None:
             await self._ensure_channel_in_category(
                 server, channel_id, category, is_thread_category, category_parent_channel_id
             )
         return channel_id
 
+    async def apply_channel_metadata(self, channel_id: str, metadata: ChannelMetadata) -> None:
+        """Set a channel's description / NSFW flag / icon / slowmode to match
+        `metadata`, this connector's `ConnectorInfo.apply_channel_metadata` -
+        `/mirror channel` calls it on the linked destination so a matched
+        channel picks up the source's metadata too (issue #195). A full sync
+        (a field the source lacks is cleared), but only differing fields are
+        sent, so a channel `ensure_channel` just created isn't edited again.
+        The one exception is the icon: an existing one is never replaced,
+        since there's no way to tell whether it already matches the source's.
+        Reads the channel fresh, since the cache may not carry one just
+        created. Raises if the channel can't be fetched or the edit fails -
+        the caller treats that as best-effort."""
+        channel = await self._client.fetch_channel(channel_id)
+        changes: dict = {}
+        description = (metadata.description or "")[:_DESCRIPTION_LIMIT] or None
+        if (getattr(channel, "description", None) or None) != description:
+            changes["description"] = description
+        if bool(getattr(channel, "nsfw", False)) != metadata.nsfw:
+            changes["nsfw"] = metadata.nsfw
+        has_icon = getattr(channel, "icon", None) is not None
+        if has_icon and not metadata.icon_url:
+            changes["icon"] = None
+        if changes:
+            await channel.edit(**changes)
+        if metadata.icon_url and not has_icon:
+            await self._apply_channel_icon(channel, metadata.icon_url)
+        slowmode_delay = metadata.slowmode_delay or 0
+        if (await self._fetch_channel_slowmode(channel_id) or 0) != slowmode_delay:
+            await self._apply_channel_slowmode(self._client.http, channel_id, slowmode_delay)
+
     async def _apply_channel_icon(self, channel, icon_url: str) -> None:
         """Best-effort: download `icon_url` and set it as `channel`'s icon.
-        Only reached from `ensure_channel`'s create path. Never raises - a
-        mirrored channel with no icon is still a working channel."""
+        Never raises - a mirrored channel with no icon is still a working
+        channel."""
         try:
             image_bytes = await _download(icon_url)
             await channel.edit(icon=stoat.Upload.icon(image_bytes, filename="icon.png"))
@@ -183,15 +214,14 @@ class _ChannelsMixin:
             return None
         return data.get("slowmode") or None
 
-    async def _apply_channel_slowmode(self, server, channel_id: str, slowmode_delay: int) -> None:
-        """Best-effort: PATCH the newly-created channel's slowmode via a raw
-        HTTP call - stoat.py's typed client has no method for it (issue
-        #108), same raw-HTTP-fallback pattern `_place_via_server_edit` uses
-        for Category placement. Only reached from `ensure_channel`'s create
-        path; never raises - a mirrored channel with no slowmode set is
-        still a working channel."""
+    async def _apply_channel_slowmode(self, http, channel_id: str, slowmode_delay: int) -> None:
+        """Best-effort: PATCH a mirrored channel's slowmode via a raw HTTP
+        call - stoat.py's typed client has no method for it (issue #108),
+        same raw-HTTP-fallback pattern `_place_via_server_edit` uses for
+        Category placement. Never raises - a mirrored channel with no
+        slowmode set is still a working channel."""
         try:
-            await server.state.http.request(
+            await http.request(
                 stoat_routes.CHANNELS_CHANNEL_EDIT.compile(channel_id=channel_id),
                 json={"slowmode": slowmode_delay},
             )
