@@ -107,8 +107,20 @@ async def rewrite_channel_mentions(
                 # Unresolvable (e.g. a since-deleted channel) - a generic
                 # marker beats a dead id (issue #178). Plain on IRC, whose
                 # markdown was already stripped before this runs.
-                replacement = "#unknown-channel" if target_kind == "irc" else "*#unknown-channel*"
+                replacement = _unknown_marker("#unknown-channel", target_kind)
             replacements[match.group(0)] = replacement
+    return _substitute_all(content, replacements)
+
+
+def _unknown_marker(marker: str, target_kind: str) -> str:
+    """Italicized on Discord/Stoat; plain on IRC, whose markdown was already
+    stripped before mention rewriting runs."""
+    return marker if target_kind == "irc" else f"*{marker}*"
+
+
+def _substitute_all(content: str, replacements: dict[str, str]) -> str:
+    """Replace every token in one pass, so no replacement is re-read as a
+    token."""
     if not replacements:
         return content
     return re.sub(
@@ -133,18 +145,22 @@ async def rewrite_role_mentions(
     origin. A mention of a role with no mapping to the target is expanded to a
     plain `@Role Name` using this map rather than relayed as the raw id token
     (issue #4 - the role counterpart of the issue-#56 user-mention fix); a
-    mention still not covered by the map is left exactly as it appeared. Both
-    id shapes are always tried; Discord's numeric ids and Stoat's 26-char
-    ULIDs never collide."""
+    mention still not covered by the map (e.g. a since-deleted role) becomes
+    a generic `*@unknown-role*` (plain `@unknown-role` on IRC - issue #203).
+    Both id shapes are always tried; Discord's numeric ids and Stoat's
+    26-char ULIDs never collide."""
     mentioned_roles = mentioned_roles or {}
-    # Unlinked mentions we can name are expanded only after the linked-role
-    # rewrite below, so an expanded `@Name` can't collide with a real
-    # `<%id>` / `<@&id>` we just wrote (and the expansion is defanged).
-    pending_expansions: list[tuple[str, str]] = []
+    # Resolve every token against the original text, then substitute once -
+    # otherwise the Stoat pass would re-read a `<%ULID>` the Discord pass just
+    # wrote and turn it into the unknown-role marker.
+    replacements: dict[str, str] = {}
     for pattern in (_DISCORD_ROLE_MENTION, _STOAT_ROLE_MENTION):
-        for match in list(pattern.finditer(content)):
+        for match in pattern.finditer(content):
+            if match.group(0) in replacements:
+                continue
+            role_id = match.group(1)
             target = None
-            bridge_group = await role_mappings.get_bridge_group(origin_connector_id, match.group(1))
+            bridge_group = await role_mappings.get_bridge_group(origin_connector_id, role_id)
             if bridge_group is not None:
                 target = next(
                     (
@@ -154,20 +170,19 @@ async def rewrite_role_mentions(
                     ),
                     None,
                 )
-            if target is None:
-                if match.group(1) in mentioned_roles:
-                    pending_expansions.append((match.group(0), mentioned_roles[match.group(1)]))
-                continue
-            if target_kind == "discord":
-                replacement = f"<@&{target.role_id}>"
-            elif target_kind == "stoat":
-                replacement = f"<%{target.role_id}>"
+            if target is not None:
+                if target_kind == "discord":
+                    replacement = f"<@&{target.role_id}>"
+                elif target_kind == "stoat":
+                    replacement = f"<%{target.role_id}>"
+                else:
+                    replacement = f"@{target.role_name}"
+            elif role_id in mentioned_roles:
+                replacement = _defang_mentions("@" + mentioned_roles[role_id])
             else:
-                replacement = f"@{target.role_name}"
-            content = content.replace(match.group(0), replacement)
-    for token, name in pending_expansions:
-        content = content.replace(token, _defang_mentions("@" + name))
-    return content
+                replacement = _unknown_marker("@unknown-role", target_kind)
+            replacements[match.group(0)] = replacement
+    return _substitute_all(content, replacements)
 
 
 async def rewrite_emoji(

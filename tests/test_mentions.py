@@ -50,13 +50,13 @@ async def test_role_mention_to_irc_uses_name(fake_db):
     assert result == "ping @Mods"
 
 
-async def test_unmapped_role_mention_left_untouched(fake_db):
+async def test_unmapped_unnamed_role_mention_becomes_unknown_role(fake_db):
     repo = await _linked_roles(fake_db, ("g1", "discord", "111", "Mods"))
     result = await rewrite_role_mentions(
         "ping <@&111> and <@&222>", origin_connector_id="discord", target_connector_id="stoat",
         target_kind="stoat", role_mappings=repo,
     )
-    assert result == "ping <@&111> and <@&222>"
+    assert result == "ping *@unknown-role* and *@unknown-role*"
 
 
 async def test_unlinked_role_mention_expanded_to_origin_name(fake_db):
@@ -80,13 +80,24 @@ async def test_unlinked_role_mention_expanded_on_irc_too(fake_db):
     assert result == "ping @Mods"
 
 
-async def test_unlinked_role_mention_without_name_left_untouched(fake_db):
+async def test_unlinked_role_mention_without_name_becomes_unknown_role(fake_db):
+    # issue #203: a since-deleted role can't be named - a generic marker
+    # beats a dead id.
     repo = RoleMappingRepository(fake_db)
     result = await rewrite_role_mentions(
         "ping <@&222>", origin_connector_id="discord", target_connector_id="stoat",
         target_kind="stoat", role_mappings=repo, mentioned_roles={"111": "Mods"},
     )
-    assert result == "ping <@&222>"
+    assert result == "ping *@unknown-role*"
+
+
+async def test_unnamed_role_mention_to_irc_is_plain_unknown_role(fake_db):
+    repo = RoleMappingRepository(fake_db)
+    result = await rewrite_role_mentions(
+        f"ping <%{_ULID}>", origin_connector_id="stoat", target_connector_id="irc",
+        target_kind="irc", role_mappings=repo,
+    )
+    assert result == "ping @unknown-role"
 
 
 async def test_linked_role_mention_still_wins_over_origin_name(fake_db):
