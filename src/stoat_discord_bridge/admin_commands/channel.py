@@ -41,7 +41,7 @@ from stoat_discord_bridge.storage.category_mappings import CategoryMappingReposi
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
 if TYPE_CHECKING:
-    from stoat_discord_bridge.models import StandardMessage
+    from stoat_discord_bridge.models import ChannelMetadata, StandardMessage
 
 logger = logging.getLogger(__name__)
 
@@ -557,6 +557,8 @@ class ChannelLinker:
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
 
+        await self._apply_metadata(destination, destination_channel_id, metadata)
+
         if with_history:
             assert self._backfill_history is not None  # checked above
             try:
@@ -739,6 +741,8 @@ class ChannelLinker:
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}", None
+
+        await self._apply_metadata(destination, destination_channel_id, metadata)
 
         async def finish_category_placement() -> None:
             try:
@@ -1241,6 +1245,23 @@ class ChannelLinker:
             own_group=own_group,
             limit=self._connectors[destination].channel_name_limit,
         )
+
+    async def _apply_metadata(
+        self, destination: str, channel_id: str, metadata: ChannelMetadata | None
+    ) -> None:
+        """Sync the source's `metadata` onto the just-linked destination
+        channel, so a matched channel picks it up like a created one does
+        (issue #195). Best-effort: no metadata, a missing hook, or a raising
+        one leaves the link in place without it."""
+        hook = self._connectors[destination].apply_channel_metadata
+        if metadata is None or hook is None:
+            return
+        try:
+            await hook(channel_id, metadata)
+        except Exception as exc:
+            logger.warning(
+                "mirror channel: %s.apply_channel_metadata(%r) failed: %s", destination, channel_id, exc
+            )
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         """Resolve a bare channel name to its native id so the channel

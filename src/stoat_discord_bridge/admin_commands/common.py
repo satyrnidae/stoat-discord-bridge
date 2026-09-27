@@ -540,7 +540,8 @@ class ConnectorInfo:
     # maturity flag, icon URL) as a `ChannelMetadata`, or None if the channel
     # can't be resolved. `/mirror channel` reads this off the *source*
     # channel and hands it to the destination's `ensure_channel` so a
-    # freshly-mirrored channel isn't left blank (issue #32). IRC leaves it
+    # freshly-mirrored channel isn't left blank (issue #32), then to its
+    # `apply_channel_metadata` so a matched one is synced too. IRC leaves it
     # unset - IRC channels carry none of those.
     describe_channel: Callable[[str], Awaitable["ChannelMetadata | None"]] | None = None
     # Idempotent get-or-create: ensures a channel named `name` exists on
@@ -575,6 +576,15 @@ class ConnectorInfo:
     # instead of a text one. Omitted entirely on a text-channel mirror, so a
     # hook/test fake that doesn't accept the keyword at all is unaffected.
     ensure_channel: Callable[..., Awaitable[str]] | None = None
+    # Sets channel `channel_id`'s description / NSFW flag / icon / slowmode to
+    # match a `ChannelMetadata` (a full sync - a field the source lacks is
+    # cleared). `/mirror channel` calls it on the destination once the
+    # matched-or-created channel is linked, so a matched channel picks up the
+    # source's metadata too (issue #195); ensure_channel can't do it itself,
+    # since its match may still be rejected as linked elsewhere (issue #184).
+    # Idempotent: only fields that differ are edited, so a channel
+    # ensure_channel just created is left alone. Unset on IRC.
+    apply_channel_metadata: Callable[[str, "ChannelMetadata"], Awaitable[None]] | None = None
     # Best-effort channel-history fetch, already converted to
     # `StandardMessage` and always returned oldest-first (so relaying the
     # list in order reproduces the original chronology), for `/mirror
