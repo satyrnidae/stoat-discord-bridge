@@ -305,6 +305,12 @@ The fan-out `all` form doesn't take it (one name can't fit many destinations).
 `/mirror category`'s `new_name` titles only the Category — mirrored child
 channels still carry their own names.
 
+The channel `/mirror channel` links, new or matched, takes the source channel's
+description/topic, NSFW flag, slowmode and (Stoat) icon (issue #195). On a
+matched channel this overwrites what was there, clearing anything the source
+doesn't have - except that Stoat keeps an existing icon. IRC only sets a topic,
+and only on a channel the bridge just created.
+
 Only one `/mirror` may be writing into a given destination service at a time.
 A `/mirror` (of any noun, from any connector) aimed at a service another
 `/mirror` is still mirroring into is rejected immediately with *"another
@@ -547,9 +553,9 @@ Server (Stoat).
 `to` ensures a linked counterpart of the local role exists on `<service>`
 (required, or every other connector if `<service>` is `all`; issue #97):
 reuses a same-named role
-there or creates one, then links it. A newly created role takes the source
-role's color and "display separately" (hoist) setting; permissions are not
-copied, and a reused role is left as it is. `from` is the same operation run the other way - a local
+there or creates one, then links it. The linked role, new or reused, takes
+the source role's color and "display separately" (hoist) setting; permissions
+are not copied. `from` is the same operation run the other way - a local
 counterpart of `<service>`'s role is created-or-matched **here** and linked
 (reusing an existing bridge group). A connector that can't create roles is
 reported per-connector. Manage Server.
