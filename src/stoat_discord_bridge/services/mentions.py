@@ -16,9 +16,9 @@ the plain nick text.
 A mentioned user with no mapping to the target connector is expanded to a
 plain `@Display Name` (the name on the origin, carried on the
 `StandardMessage.mentioned_users` map) so the target doesn't just see a
-raw `<@id>` token (issue #56); if even that name can't be recovered the
-mention is left exactly as it appeared - never dropped or replaced with
-something meaningless. Neither regex needs to know which connector
+raw `<@id>` token (issue #56); if even that name can't be recovered it
+becomes a generic `*@unknown-user*` marker (issue #203). Neither regex
+needs to know which connector
 authored the message: Discord's numeric-id and Stoat's 26-char-ULID
 mention shapes never collide with each other, so both are always tried.
 """
@@ -276,21 +276,31 @@ async def rewrite_mentions(
     name on the origin. A `<@id>` mention of a user with no /link-user link
     to the target is expanded to a plain `@Display Name` using this map
     rather than relayed as the raw id token (issue #56); a mention still not
-    covered by the map is left exactly as it appeared."""
+    covered by the map (e.g. a since-deleted user) becomes a generic
+    `*@unknown-user*` (plain `@unknown-user` on IRC - issue #203)."""
     mentioned_users = mentioned_users or {}
-    # Unlinked `<@id>` mentions we can name are expanded only *after* the
-    # plain-word nick scan below, so an injected display name can't itself be
-    # re-read as a nick mention - the raw token is inert to that scan.
-    pending_expansions: list[tuple[str, str]] = []
+    # Every token is resolved against the original text, so the Stoat pass
+    # can't re-read a `<@ULID>` the Discord pass just wrote. Unlinked tokens
+    # are replaced only *after* the plain-word nick scan below, so an injected
+    # display name can't itself be re-read as a nick mention - the raw token
+    # is inert to that scan.
+    linked: dict[str, str] = {}
+    unlinked: dict[str, str] = {}
     for pattern in (_DISCORD_MENTION, _STOAT_MENTION):
-        for match in list(pattern.finditer(content)):
+        for match in pattern.finditer(content):
+            token, user_id = match.group(0), match.group(1)
+            if token in linked or token in unlinked:
+                continue
             target_id, target_name = await _resolve_target(
-                origin_connector_id, match.group(1), target_connector_id, user_mappings
+                origin_connector_id, user_id, target_connector_id, user_mappings
             )
             if target_id is not None:
-                content = content.replace(match.group(0), _render_mention(target_kind, target_id, target_name))
-            elif match.group(1) in mentioned_users:
-                pending_expansions.append((match.group(0), mentioned_users[match.group(1)]))
+                linked[token] = _render_mention(target_kind, target_id, target_name)
+            elif user_id in mentioned_users:
+                unlinked[token] = _defang_mentions("@" + mentioned_users[user_id])
+            else:
+                unlinked[token] = _unknown_marker("@unknown-user", target_kind)
+    content = _substitute_all(content, linked)
 
     # IRC-origin (and, harmlessly, any other origin) plain-word nick scan:
     # any linked identity whose *own* user_id literally appears in the text
@@ -305,10 +315,7 @@ async def rewrite_mentions(
         if target_id is not None:
             content = pattern.sub(_render_mention(target_kind, target_id, target_name), content)
 
-    for token, name in pending_expansions:
-        content = content.replace(token, _defang_mentions("@" + name))
-
-    return content
+    return _substitute_all(content, unlinked)
 
 
 _ZWSP = "\u200b"
