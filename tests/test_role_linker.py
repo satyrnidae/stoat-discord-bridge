@@ -281,6 +281,71 @@ async def test_mirror_role_skips_describe_role_when_already_synced(fake_db):
     assert len(calls) == 1
 
 
+def _match_connectors(applied, *, describe=True, apply_raises=None, match="s_existing"):
+    """Discord role d1 "Mods"; Stoat's name lookup finds `match` (or nothing)."""
+
+    async def create_role(name, **kwargs):
+        return f"stoat_new_{name}"
+
+    async def s_by_name(token):
+        return match if token == "Mods" else None
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    async def describe_role(role_id):
+        return RoleMetadata(color="#ff0000", hoist=True)
+
+    async def apply_role_metadata(role_id, metadata):
+        if apply_raises is not None:
+            raise apply_raises
+        applied.append((role_id, metadata))
+
+    return _connectors(
+        discord=ConnectorInfo(
+            id="discord", label="Discord", resolve_role_name=d_name, describe_role=describe_role if describe else None
+        ),
+        stoat=ConnectorInfo(
+            id="stoat",
+            label="Stoat",
+            create_role=create_role,
+            resolve_role_id_by_name=s_by_name,
+            apply_role_metadata=apply_role_metadata,
+        ),
+    )
+
+
+async def test_mirror_role_applies_source_metadata_to_a_matched_role(fake_db):
+    # issue #195: a matched role is synced to the source's color/hoist too.
+    applied = []
+    linker = _linker(fake_db, _match_connectors(applied))
+    summary = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert summary.startswith("Linked")
+    assert applied == [("s_existing", RoleMetadata(color="#ff0000", hoist=True))]
+
+
+async def test_mirror_role_does_not_reapply_metadata_to_a_created_role(fake_db):
+    # create_role already carried the metadata over (issue #179).
+    applied = []
+    linker = _linker(fake_db, _match_connectors(applied, match=None))
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert applied == []
+
+
+async def test_mirror_role_skips_apply_without_source_metadata(fake_db):
+    applied = []
+    linker = _linker(fake_db, _match_connectors(applied, describe=False))
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert applied == []
+
+
+async def test_mirror_role_survives_a_raising_apply_role_metadata(fake_db):
+    linker = _linker(fake_db, _match_connectors([], apply_raises=RuntimeError("boom")))
+    summary = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert summary.startswith("Linked")
+    assert await RoleMappingRepository(fake_db).get_bridge_group("stoat", "s_existing") is not None
+
+
 async def test_mirror_role_new_name_is_what_create_role_creates(fake_db):
     # issue #44: `new_name` replaces the source role name for the counterpart.
     seen = []

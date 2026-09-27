@@ -686,6 +686,11 @@ class ConnectorInfo:
     # reads this off the *source* role and hands it to the destination's
     # `create_role` (issue #179) - the role counterpart of describe_channel.
     describe_role: Callable[[str], Awaitable["RoleMetadata | None"]] | None = None
+    # Sets role `role_id`'s color/hoist to match a `RoleMetadata` (a full
+    # sync - no color on the source clears it). `/mirror role` calls it on a
+    # matched same-named role once it's linked, since only create_role
+    # carries metadata otherwise (issue #195).
+    apply_role_metadata: Callable[[str, "RoleMetadata"], Awaitable[None]] | None = None
     # Rename the role `role_id` to `new_name` on this connector - used to keep
     # linked copies coherent when a linked role is renamed on one side.
     rename_role: Callable[[str, str], Awaitable[None]] | None = None

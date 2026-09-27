@@ -30,6 +30,7 @@ from stoat_discord_bridge.admin_commands.common import (
     format_linked_listing,
 )
 from stoat_discord_bridge.channel_structure import clip_name
+from stoat_discord_bridge.models import RoleMetadata
 from stoat_discord_bridge.storage.role_mappings import RoleMapping, RoleMappingRepository
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,8 @@ class RoleLinker:
         """Ensure `local_role` (on `local_connector`) has a linked
         counterpart on `destination`: reuses a same-named role there (found
         via its resolve_role_id_by_name hook) or creates one (its
-        create_role hook), then links it. Reports rather
+        create_role hook), then links it. A matched role is then synced to
+        the source's color/hoist (issue #195). Reports rather
         than raises for an already-synced pair, a destination that can't
         create roles, or a link conflict - the bulk `mirror_role_all` caller
         shouldn't have one bad destination abort the rest.
@@ -188,7 +190,8 @@ class RoleLinker:
             and await self._role_mappings.get_bridge_group(destination, destination_role_id) is not None
         ):
             destination_role_id = None
-        if destination_role_id is None:
+        matched = destination_role_id is not None
+        if not matched:
             try:
                 destination_role_id = await self._create_role(local_connector, local_id, destination, target_name)
             except Exception as exc:
@@ -196,7 +199,7 @@ class RoleLinker:
                 return f"{dest_info.label}: failed to create a role: {exc}"
 
         try:
-            return await self.link_role(
+            summary = await self.link_role(
                 local_connector=destination,
                 local_role=destination_role_id,
                 source=local_connector,
@@ -204,6 +207,9 @@ class RoleLinker:
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
+        if matched:
+            await self._apply_metadata(local_connector, local_id, destination, destination_role_id)
+        return summary
 
     @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_role_all(self, *, local_connector: str, local_role: str) -> str:
@@ -352,20 +358,41 @@ class RoleLinker:
             logger.debug("mirror-role: %s.resolve_role_id_by_name(%r) failed", destination, name, exc_info=True)
             return None
 
+    async def _describe_source(self, source: str, source_id: str) -> RoleMetadata | None:
+        """The source role's color/hoist, or None if there's no describe_role
+        hook or it raises."""
+        source_info = self._connectors.get(source)
+        if source_info is None or source_info.describe_role is None:
+            return None
+        try:
+            return await source_info.describe_role(source_id)
+        except Exception as exc:
+            logger.warning("mirror-role: %s.describe_role(%r) failed: %s", source, source_id, exc)
+            return None
+
     async def _create_role(self, source: str, source_id: str, destination: str, name: str) -> str:
         """Create `mirror_role`'s counterpart role on `destination`, carrying
         the source role's color/hoist over (issue #179). Best-effort on the
         metadata: a missing or raising describe_role just means a plain
         name-only role."""
-        metadata = None
-        source_info = self._connectors.get(source)
-        if source_info is not None and source_info.describe_role is not None:
-            try:
-                metadata = await source_info.describe_role(source_id)
-            except Exception as exc:
-                logger.warning("mirror-role: %s.describe_role(%r) failed: %s", source, source_id, exc)
+        metadata = await self._describe_source(source, source_id)
         extra = {"metadata": metadata} if metadata is not None else {}
         return await self._connectors[destination].create_role(name, **extra)
+
+    async def _apply_metadata(self, source: str, source_id: str, destination: str, role_id: str) -> None:
+        """Sync the source role's color/hoist onto a matched destination role
+        (issue #195). Best-effort: no metadata, a missing hook, or a raising
+        one leaves the link in place without it."""
+        hook = self._connectors[destination].apply_role_metadata
+        if hook is None:
+            return
+        metadata = await self._describe_source(source, source_id)
+        if metadata is None:
+            return
+        try:
+            await hook(role_id, metadata)
+        except Exception as exc:
+            logger.warning("mirror-role: %s.apply_role_metadata(%r) failed: %s", destination, role_id, exc)
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         info = self._connectors.get(connector)
