@@ -224,6 +224,11 @@ class FakeInteraction:
         # under `.response` - fetches the message `response.send_message`
         # just posted (which returns None).
         self.original_response = self._original_response
+        # Replaces the deferred "is thinking..." placeholder (issue #201) - a
+        # visible reply, so it's recorded in `sent` too; `original_edits`
+        # keeps just the edits, in order.
+        self.edit_original_response = self._edit_original_response
+        self.original_edits: list[str] = []
         self.deferred = False
         # Set to an exception to make `followup.send` / `channel.send` raise
         # it instead of sending - simulates an expired interaction token
@@ -242,6 +247,16 @@ class FakeInteraction:
     async def _send_followup_message(self, content, ephemeral=False, view=None):
         if self.followup_error is not None:
             raise self.followup_error
+        self.sent.append(content)
+        self.sent_views.append(view)
+        return self._sent_message
+
+    async def _edit_original_response(self, content=None, view=None):
+        # Same interaction token as `followup.send`, so an expired token
+        # (`followup_error`) breaks both.
+        if self.followup_error is not None:
+            raise self.followup_error
+        self.original_edits.append(content)
         self.sent.append(content)
         self.sent_views.append(view)
         return self._sent_message
