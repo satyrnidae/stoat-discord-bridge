@@ -767,9 +767,14 @@ source channel's cosmetic metadata over so the new channel isn't left blank
 (`models.ChannelMetadata` — description, NSFW/maturity flag, icon URL,
 slowmode delay in seconds). The source connector's `ConnectorInfo.describe_channel`
 hook reads it, and it's passed to the destination's `ensure_channel` as a
-`metadata=` keyword which each hook applies **only on the create path** — a
-mirror that reuses/matches an existing channel leaves its metadata untouched.
-Discord (topic + NSFW + slowmode, all native — `TextChannel.slowmode_delay` /
+`metadata=` keyword which each hook applies **only on the create path**.
+A matched existing channel is synced too (issue #195), but not by
+`ensure_channel`: its match may still be rejected as linked elsewhere
+(#184), so the linker calls the destination's `ConnectorInfo.apply_channel_metadata`
+only once the channel is linked. That hook is a full sync (a field the source
+lacks is cleared) but edits only fields that differ, so a just-created channel
+isn't touched again. Stoat never replaces an existing icon, since it can't
+tell whether it already matches. Discord (topic + NSFW + slowmode, all native — `TextChannel.slowmode_delay` /
 `create_text_channel(slowmode_delay=...)`; no per-channel icon) and Stoat
 (description + NSFW + icon, the icon a best-effort `channel.edit` after
 create; slowmode via a raw HTTP GET/PATCH on `/channels/{id}`'s `slowmode`
@@ -789,7 +794,9 @@ linked is skipped in favor of a fresh role, since role names aren't unique and
 it may be a different role's copy (issue #183, the role counterpart of #182). Like `/mirror channel`'s
 `ChannelMetadata`, a created role carries the source's `models.RoleMetadata`
 (color + hoist), read by the source's `describe_role` hook and passed as
-`create_role(metadata=...)`; a matched role is left as it is (issue #179).
+`create_role(metadata=...)` (issue #179). A matched role is synced after
+linking via `ConnectorInfo.apply_role_metadata` instead (issue #195), which
+edits only differing fields and clears a color the source lacks.
 Discord passes both to `create_role`, skipping a color `Color.from_str` can't
 parse (a Stoat gradient); Stoat sets them with a best-effort follow-up
 `Role.edit`, since stoat.py's `create_role` takes only a name. Permissions

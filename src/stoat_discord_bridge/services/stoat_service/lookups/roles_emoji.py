@@ -43,6 +43,23 @@ class _RolesEmojiMixin:
                 )
         return str(role.id)
 
+    async def apply_role_metadata(self, role_id: str, metadata: "RoleMetadata") -> None:
+        """Set a role's color/hoist to match `metadata`, this connector's
+        `ConnectorInfo.apply_role_metadata` - `/mirror role` calls it on a
+        matched role (issue #195). No color on the source clears the role's.
+        Only differing fields are sent. Raises if the role isn't cached or
+        the edit fails."""
+        role = self._role_by_id(role_id)
+        if role is None:
+            raise RuntimeError(f"Stoat role {role_id} isn't cached")
+        changes: dict = {}
+        if (getattr(role, "color", None) or None) != (metadata.color or None):
+            changes["color"] = metadata.color or None
+        if bool(getattr(role, "hoist", False)) != metadata.hoist:
+            changes["hoist"] = metadata.hoist
+        if changes:
+            await role.edit(**changes)
+
     async def describe_role(self, role_id: str) -> "RoleMetadata | None":
         """A role's color/hoist, this connector's `ConnectorInfo.describe_role`
         (issue #179). `Role.color` is already a CSS string, passed as-is.

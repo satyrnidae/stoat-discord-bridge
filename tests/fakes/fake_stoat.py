@@ -568,6 +568,8 @@ class FakeClient:
             if isinstance(response, BaseException):
                 raise response
             return response
+        if method == "PATCH" and channel_id is not None:
+            return {}
         raise RuntimeError(f"no fake http response configured for {method} {path}")
 
     def add_channel(self, channel: FakeChannel) -> FakeChannel:

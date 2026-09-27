@@ -25,8 +25,13 @@ class _Guild:
         return role
 
 
+class _Role(SimpleNamespace):
+    async def edit(self, **kwargs):
+        self.edits.append(kwargs)
+
+
 def _role(role_id, name, color=0, hoist=False):
-    return SimpleNamespace(id=role_id, name=name, color=discord.Color(color), hoist=hoist)
+    return _Role(id=role_id, name=name, color=discord.Color(color), hoist=hoist, edits=[])
 
 
 def _sender_with(monkeypatch, guild):
@@ -76,6 +81,35 @@ async def test_create_role_without_metadata_creates_by_name_only(monkeypatch):
     await sender.create_role("Mods")
     (call,) = guild.create_calls
     assert "color" not in call and "hoist" not in call
+
+
+async def test_apply_role_metadata_syncs_a_differing_role(monkeypatch):
+    # issue #195: a matched role is edited to match the source.
+    role = _role(5, "Mods", color=0x00FF00, hoist=False)
+    sender = _sender_with(monkeypatch, _Guild([role]))
+    await sender.apply_role_metadata("5", RoleMetadata(color="#ff8800", hoist=True))
+    assert role.edits == [{"reason": "bridge role mirror", "color": discord.Color(0xFF8800), "hoist": True}]
+
+
+async def test_apply_role_metadata_clears_a_color_the_source_lacks(monkeypatch):
+    role = _role(5, "Mods", color=0x00FF00, hoist=True)
+    sender = _sender_with(monkeypatch, _Guild([role]))
+    await sender.apply_role_metadata("5", RoleMetadata())
+    assert role.edits == [{"reason": "bridge role mirror", "color": discord.Color(0), "hoist": False}]
+
+
+async def test_apply_role_metadata_leaves_the_color_for_one_discord_cant_take(monkeypatch):
+    role = _role(5, "Mods", color=0x00FF00, hoist=True)
+    sender = _sender_with(monkeypatch, _Guild([role]))
+    await sender.apply_role_metadata("5", RoleMetadata(color="linear-gradient(red, blue)", hoist=True))
+    assert role.edits == []
+
+
+async def test_apply_role_metadata_is_a_noop_when_already_matching(monkeypatch):
+    role = _role(5, "Mods", color=0xFF8800, hoist=True)
+    sender = _sender_with(monkeypatch, _Guild([role]))
+    await sender.apply_role_metadata("5", RoleMetadata(color="#ff8800", hoist=True))
+    assert role.edits == []
 
 
 async def test_create_role_creates_even_if_a_same_named_role_exists(monkeypatch):

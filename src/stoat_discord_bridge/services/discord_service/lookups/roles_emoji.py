@@ -12,6 +12,15 @@ import discord
 from stoat_discord_bridge.models import CustomEmoji, EmojiCapacity, RoleMetadata
 
 
+def _parse_color(color: str) -> discord.Color | None:
+    """A source role's CSS color as a `discord.Color`, or None for one
+    Discord can't take (e.g. a Stoat gradient)."""
+    try:
+        return discord.Color.from_str(color)
+    except ValueError:
+        return None
+
+
 class _RolesEmojiMixin:
     """Role/emoji get-or-create half of `DiscordLookupsMixin`."""
 
@@ -27,13 +36,30 @@ class _RolesEmojiMixin:
         extra: dict = {}
         if metadata is not None:
             extra["hoist"] = metadata.hoist
-            if metadata.color:
-                try:
-                    extra["color"] = discord.Color.from_str(metadata.color)
-                except ValueError:
-                    pass
+            color = _parse_color(metadata.color) if metadata.color else None
+            if color is not None:
+                extra["color"] = color
         role = await guild.create_role(name=name, reason="bridge role mirror", **extra)
         return str(role.id)
+
+    async def apply_role_metadata(self, role_id: str, metadata: "RoleMetadata") -> None:
+        """Set a role's color/hoist to match `metadata`, this connector's
+        `ConnectorInfo.apply_role_metadata` - `/mirror role` calls it on a
+        matched role (issue #195). No color on the source clears the role's;
+        a color Discord can't parse is left alone. Only differing fields are
+        sent. Raises if the role isn't cached or the edit fails."""
+        guild = self._guild_or_none()
+        role = guild.get_role(int(role_id)) if guild is not None else None
+        if role is None:
+            raise RuntimeError(f"Discord role {role_id} isn't cached")
+        changes: dict = {}
+        color = _parse_color(metadata.color) if metadata.color else discord.Color.default()
+        if color is not None and role.color.value != color.value:
+            changes["color"] = color
+        if role.hoist != metadata.hoist:
+            changes["hoist"] = metadata.hoist
+        if changes:
+            await role.edit(reason="bridge role mirror", **changes)
 
     async def describe_role(self, role_id: str) -> "RoleMetadata | None":
         """A role's color/hoist, this connector's `ConnectorInfo.describe_role`

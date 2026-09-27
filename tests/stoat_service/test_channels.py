@@ -199,6 +199,64 @@ async def test_ensure_channel_leaves_an_existing_channels_metadata_alone():
     assert existing.edits == []
 
 
+# ---------------------------------------------------------------- apply_channel_metadata (issue #195)
+
+
+def _sender_with_fetched_channel(channel, slowmode=None):
+    client = FakeClient()
+    client.set_fetched_channel(channel)
+    client.set_channel_fetch_response(channel.id, {"slowmode": slowmode} if slowmode else {})
+    return _make_sender(client=client), client
+
+
+async def test_apply_channel_metadata_syncs_a_differing_channel(monkeypatch):
+    async def fake_download(url):
+        return b"icon-bytes"
+
+    monkeypatch.setattr(
+        "stoat_discord_bridge.services.stoat_service.lookups.channels._download", fake_download
+    )
+    channel = FakeChannel(id="c1", name="general", description="hand-written", nsfw=False)
+    sender, client = _sender_with_fetched_channel(channel)
+
+    await sender.apply_channel_metadata(
+        "c1",
+        ChannelMetadata(
+            description="from the source", nsfw=True, icon_url="https://cdn.example/i.png", slowmode_delay=30
+        ),
+    )
+
+    assert channel.edits[0] == {"description": "from the source", "nsfw": True}
+    assert set(channel.edits[1]) == {"icon"}  # the icon follow-up
+    assert ("PATCH", "/channels/c1", {"slowmode": 30}) in client.http_calls
+
+
+async def test_apply_channel_metadata_clears_fields_the_source_lacks():
+    channel = FakeChannel(
+        id="c1", name="general", description="hand-written", nsfw=True, icon=FakeAsset("https://cdn.example/old.png")
+    )
+    sender, client = _sender_with_fetched_channel(channel, slowmode=60)
+
+    await sender.apply_channel_metadata("c1", ChannelMetadata())
+
+    assert channel.edits == [{"description": None, "nsfw": False, "icon": None}]
+    assert ("PATCH", "/channels/c1", {"slowmode": 0}) in client.http_calls
+
+
+async def test_apply_channel_metadata_is_a_noop_when_already_matching():
+    channel = FakeChannel(
+        id="c1", name="general", description="same", nsfw=True, icon=FakeAsset("https://cdn.example/i.png")
+    )
+    sender, client = _sender_with_fetched_channel(channel, slowmode=30)
+
+    await sender.apply_channel_metadata(
+        "c1", ChannelMetadata(description="same", nsfw=True, icon_url="https://cdn.example/x.png", slowmode_delay=30)
+    )
+
+    assert channel.edits == []  # an existing icon is kept - there's no way to compare the two images
+    assert [call for call in client.http_calls if call[0] == "PATCH"] == []
+
+
 async def test_describe_channel_reads_description_nsfw_and_icon():
     server = FakeServer(id="s1")
     channel = FakeChannel(

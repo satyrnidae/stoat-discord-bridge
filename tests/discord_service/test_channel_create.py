@@ -171,6 +171,67 @@ async def test_ensure_channel_matches_an_existing_channel_and_skips_metadata(mon
     assert getattr(existing, "slowmode_delay", None) is None  # slowmode not applied to a matched channel
 
 
+# ---------------------------------------------------------------- apply_channel_metadata (issue #195)
+
+
+def _sender_with_channel(monkeypatch, channel):
+    from tests.fakes.fake_discord import FakeClient as _FakeDiscordClient
+
+    sender = _make_sender(FakeLinker())
+    client = _FakeDiscordClient()
+    client.add_channel(channel)
+    monkeypatch.setattr(sender, "_client", client)
+    return sender
+
+
+async def test_apply_channel_metadata_syncs_a_differing_channel(monkeypatch):
+    from stoat_discord_bridge.models import ChannelMetadata
+
+    channel = FakeGuildChannel(id=888, name="general", guild=FakeGuild(id=123))
+    channel.topic = "old topic"
+    channel.nsfw = False
+    channel.slowmode_delay = 0
+    sender = _sender_with_channel(monkeypatch, channel)
+
+    await sender.apply_channel_metadata(
+        "888", ChannelMetadata(description="carried over", nsfw=True, slowmode_delay=30)
+    )
+
+    assert channel.edits == [
+        {"reason": "bridge channel mirror", "topic": "carried over", "nsfw": True, "slowmode_delay": 30}
+    ]
+
+
+async def test_apply_channel_metadata_clears_fields_the_source_lacks(monkeypatch):
+    from stoat_discord_bridge.models import ChannelMetadata
+
+    channel = FakeGuildChannel(id=888, name="general", guild=FakeGuild(id=123))
+    channel.topic = "old topic"
+    channel.nsfw = True
+    channel.slowmode_delay = 60
+    sender = _sender_with_channel(monkeypatch, channel)
+
+    await sender.apply_channel_metadata("888", ChannelMetadata())
+
+    assert channel.edits == [
+        {"reason": "bridge channel mirror", "topic": None, "nsfw": False, "slowmode_delay": 0}
+    ]
+
+
+async def test_apply_channel_metadata_is_a_noop_when_already_matching(monkeypatch):
+    from stoat_discord_bridge.models import ChannelMetadata
+
+    channel = FakeGuildChannel(id=888, name="general", guild=FakeGuild(id=123))
+    channel.topic = "same"
+    channel.nsfw = True
+    channel.slowmode_delay = 30
+    sender = _sender_with_channel(monkeypatch, channel)
+
+    await sender.apply_channel_metadata("888", ChannelMetadata(description="same", nsfw=True, slowmode_delay=30))
+
+    assert channel.edits == []
+
+
 # ---------------------------------------------------------------- is_voice (issue #146)
 
 

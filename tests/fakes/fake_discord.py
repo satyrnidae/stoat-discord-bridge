@@ -358,10 +358,17 @@ class FakeGuildChannel(discord.TextChannel):
         self.name = name
         self.guild = guild
         self._category = category
+        self.edits: list[dict] = []
 
     @property
     def category(self) -> FakeChannel | None:
         return self._category
+
+    async def edit(self, **kwargs) -> None:
+        self.edits.append(kwargs)
+        for key, value in kwargs.items():
+            if key != "reason":
+                setattr(self, "_category" if key == "category" else key, value)
 
 
 class FakeDiscordVoiceClient:
