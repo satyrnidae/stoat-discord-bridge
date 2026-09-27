@@ -27,22 +27,24 @@ async def watch_long_running(
     coro: Awaitable[T],
     *,
     on_slow: Callable[[], Awaitable[None]],
-    slow_after: float = SLOW_AFTER_SECONDS,
-) -> tuple[T, bool]:
+    slow_after: float | None = None,
+) -> T:
     """Await `coro`, calling `on_slow()` once if it's still running after
-    `slow_after` seconds. Returns `(result, went_slow)`; `coro`'s own
-    exception propagates, and a failing `on_slow` is logged and ignored.
-    Canceling the caller cancels `coro` too."""
+    `slow_after` seconds (default `SLOW_AFTER_SECONDS`, read at call time so
+    tests can shorten it) - `on_slow` is where a caller records that the
+    command went slow, since an error from `coro` still has to know it.
+    `coro`'s own exception propagates, and a failing `on_slow` is logged and
+    ignored. Canceling the caller cancels `coro` too."""
     task = asyncio.ensure_future(coro)
     try:
-        done, _ = await asyncio.wait({task}, timeout=slow_after)
-        went_slow = not done
-        if went_slow:
+        timeout = SLOW_AFTER_SECONDS if slow_after is None else slow_after
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if not done:
             try:
                 await on_slow()
             except Exception:
                 logger.warning("long-running status update failed", exc_info=True)
-        return await task, went_slow
+        return await task
     except asyncio.CancelledError:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
