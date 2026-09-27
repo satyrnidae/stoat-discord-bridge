@@ -50,6 +50,29 @@ class _ChannelsMixin:
             slowmode_delay=slowmode_delay,
         )
 
+    async def apply_channel_metadata(self, channel_id: str, metadata: ChannelMetadata) -> None:
+        """Set a channel's topic / NSFW flag / slowmode to match `metadata`,
+        this connector's `ConnectorInfo.apply_channel_metadata` - `/mirror
+        channel` calls it on the linked destination so a matched channel
+        picks up the source's metadata too (issue #195). A full sync (a field
+        the source lacks is cleared), but only differing fields are sent, so
+        an already-matching channel isn't edited at all. Topic is text-only;
+        there's no per-channel icon on Discord. Raises if the channel can't
+        be resolved or the edit fails - the caller treats that as best-effort."""
+        channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        changes: dict = {}
+        if isinstance(channel, discord.TextChannel):
+            topic = (metadata.description or "")[:_TOPIC_LIMIT]
+            if (getattr(channel, "topic", None) or "") != topic:
+                changes["topic"] = topic or None
+        if bool(getattr(channel, "nsfw", False)) != metadata.nsfw:
+            changes["nsfw"] = metadata.nsfw
+        slowmode_delay = metadata.slowmode_delay or 0
+        if (getattr(channel, "slowmode_delay", 0) or 0) != slowmode_delay:
+            changes["slowmode_delay"] = slowmode_delay
+        if changes:
+            await channel.edit(reason="bridge channel mirror", **changes)
+
     async def ensure_channel(
         self,
         name: str,
@@ -70,7 +93,9 @@ class _ChannelsMixin:
         same as the Stoat hook, so `/link category` later refuses it.
         `metadata`, when given, sets the new channel's topic / NSFW flag /
         slowmode delay - *only when this call creates the channel* (issue
-        #32, #108); a matched channel is left as-is. `is_voice` (issue #146),
+        #32, #108); a matched channel is left as-is here, and synced by
+        `/mirror channel` via `apply_channel_metadata` only once it's
+        confirmed not linked elsewhere (issue #195). `is_voice` (issue #146),
         when set, matches/creates against `guild.voice_channels` via
         `create_voice_channel` instead of the text-channel path - a
         same-named channel of the *other* kind never satisfies the match, so

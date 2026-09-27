@@ -1061,6 +1061,7 @@ async def run(config: BridgeConfig) -> None:
             is_forum_channel=sender.is_forum_channel,
             describe_channel=sender.describe_channel,
             ensure_channel=sender.ensure_channel,
+            apply_channel_metadata=sender.apply_channel_metadata,
             can_view_channel=sender.can_view_channel,
             resolve_user_name=sender.get_user_name,
             resolve_user_id_by_name=sender.resolve_user_id_by_name,
