@@ -89,6 +89,9 @@ _HISTORY_BACKFILL_PACING = 0.35
 _DELETE_SUPPRESS_TTL = _EDIT_SUPPRESS_TTL
 _CHANNEL_RENAME_SUPPRESS_TTL = 10.0
 _EMOJI_RENAME_SUPPRESS_TTL = 10.0
+# How long an edit waits for its origin message's relay to finish before
+# giving up (issue #207) - covers re-uploading a large attachment.
+_RELAY_WAIT_TIMEOUT = 30.0
 
 
 class BridgeCoordinator:
@@ -134,6 +137,10 @@ class BridgeCoordinator:
         # Same echo guard for emote renames, keyed (connector_id, emoji_id,
         # applied_name) (issue #175).
         self._recent_emoji_renames: dict[tuple[str, str, str], float] = {}
+        # Origin messages still being relayed, keyed (connector_id,
+        # channel_id, message_id); set once the relay is recorded, so an edit
+        # that arrives first can wait for it (issue #207).
+        self._relays_in_flight: dict[tuple[str, str, str], asyncio.Event] = {}
 
     def register_receiver(self, receiver: ReceiverService) -> None:
         """Every bridged connector's receiver must be registered before any
@@ -141,6 +148,16 @@ class BridgeCoordinator:
         self._receivers[receiver.connector_id] = receiver
 
     async def handle_incoming(self, message: StandardMessage) -> None:
+        key = (message.origin_connector_id, message.origin_channel_id, message.message_id)
+        done = self._relays_in_flight[key] = asyncio.Event()
+        try:
+            await self._relay_incoming(message)
+        finally:
+            done.set()
+            if self._relays_in_flight.get(key) is done:
+                del self._relays_in_flight[key]
+
+    async def _relay_incoming(self, message: StandardMessage) -> None:
         bridge_group = await self._channel_mappings.get_bridge_group(
             message.origin_connector_id, message.origin_channel_id
         )
@@ -454,6 +471,17 @@ class BridgeCoordinator:
             is not None
         ):
             return  # our own edit echoing back
+
+        # An update that lands while the original is still relaying (a late
+        # link-preview unfurl, issue #207) would otherwise find no group yet.
+        in_flight = self._relays_in_flight.get(
+            (edit.origin_connector_id, edit.origin_channel_id, edit.origin_message_id)
+        )
+        if in_flight is not None:
+            try:
+                await asyncio.wait_for(in_flight.wait(), _RELAY_WAIT_TIMEOUT)
+            except asyncio.TimeoutError:
+                pass
 
         group = await self._message_sync.find_group(
             edit.origin_connector_id, edit.origin_channel_id, edit.origin_message_id
