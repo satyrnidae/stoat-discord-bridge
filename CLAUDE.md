@@ -160,11 +160,30 @@ attachment and keep the link, so its own platform unfurls it. IRC
 (`my_kind=None`) always keeps the link and drops the preview media, since
 the page link is more useful there than a bare media URL. A preview whose
 link isn't in the text (a bot's rich embed) is always kept. Rules are keyed
-by kind, not connector id. **Unverified against a live server**: whether
-either platform's embed is on the message's initial payload (vs. arriving
-later via an update event the senders ignore as an auto-embed unfurl) and
-whether Stoat renders a re-uploaded `.mp4` inline the same way it does a
-`.gif`.
+by kind, not connector id.
+
+A preview often isn't on the message's initial payload. A Discord Klipy
+GIF-picker pick is unfurled by a later `MESSAGE_UPDATE` with no
+`edited_timestamp`, and Stoat unfurls through `on_message_append` (issue
+#207). The message is relayed immediately as before, and the late preview is
+**backfilled by an edit**: each sender remembers, in a
+`services/caching.LinkPreviewTracker`, which previews each message it relayed
+in the last 5 minutes already carried. A late unfurl bringing a new one
+becomes a `StandardEdit` with `new_attachments` set, so the relayed copies
+show "(edited)", which the owner accepted. Each receiver's `edit_message`
+runs it through the same `partition_link_preview_attachments` and adds it to
+the last post. Discord uses `webhook.edit_message(attachments=...)`, keeping
+the post's existing files. Stoat's `Message.edit` takes no files, so the
+media goes on as a media-only `SendableEmbed` (stoat.py uploads the
+`(filename, bytes)` pair itself), replacing the post's existing embeds. A
+rule preferring the receiver's own unfurl, or media that can't be fetched,
+leaves the post untouched. A late unfurl can land before the original relay
+is recorded, so `BridgeCoordinator.handle_edit` first waits (up to 30s) for
+an in-flight `handle_incoming` of the same origin message.
+**Unverified against a live server**: whether Stoat renders a re-uploaded
+`.mp4` inline the same way it does a `.gif`, and whether a media-only
+`SendableEmbed` on an edited masqueraded post renders like a native
+attachment.
 
 A Discord **forwarded message** carries its actual content in a separate
 `Message.message_snapshots` field, not in `.content`/`.attachments` — those
@@ -276,12 +295,14 @@ edit never routes to it (issue #62). Each sender emits a `StandardEdit`:
 Discord from `on_raw_message_edit` when the payload carries a fresh `content`
 *and* an `edited_timestamp` (the latter distinguishes a real user edit from
 an auto-embed unfurl — and from a pin toggle, which carries `pinned`
-instead); Stoat from `on_message_update` (`stoat.events.MessageUpdateEvent`,
+instead; an unfurl only becomes an edit when it backfills a late link
+preview, see the link-preview section above); Stoat from `on_message_update` (`stoat.events.MessageUpdateEvent`,
 preferring `event.after` over the partial `event.message`). The original
 relay may have been split across several native posts in one channel —
 `edit_message` gets the whole ordered list and re-renders the new text
 through the same `_rewrite_content` helper `receive()` uses (user/channel/
-role/emoji mention rewrites; attachments are *not* re-synced), matching one
+role/emoji mention rewrites; attachments are *not* re-synced, except a late
+link preview's `new_attachments`), matching one
 chunk per post; a shortened edit blanks the leftover posts (zero-width
 space), a grown one drops the overflow rather than posting new messages
 out of order. Discord edits via `webhook.edit_message`, Stoat via
