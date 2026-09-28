@@ -236,7 +236,12 @@ class StandardEdit:
     `mentioned_emoji` mirror the same-named `StandardMessage` fields — the
     origin's name for every user / role / channel / custom emoji the *edited*
     text mentions — so a receiver can re-expand an unlinked `<@id>` / `<@&id>`
-    / `<#id>` / emoji token the same way the original relay did."""
+    / `<#id>` / emoji token the same way the original relay did.
+
+    `new_attachments` is set only when the origin's link preview resolved
+    after the message was relayed (issue #207): link-preview media to add to
+    the relayed copies' last post. Empty for an ordinary content edit -
+    attachments aren't otherwise re-synced."""
 
     origin_connector_id: ConnectorId
     origin_channel_id: str
@@ -246,6 +251,7 @@ class StandardEdit:
     mentioned_roles: dict[str, str] = field(default_factory=dict)
     mentioned_channels: dict[str, str] = field(default_factory=dict)
     mentioned_emoji: dict[str, str] = field(default_factory=dict)
+    new_attachments: list[Attachment] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
