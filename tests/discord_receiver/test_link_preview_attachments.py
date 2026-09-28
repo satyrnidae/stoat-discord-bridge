@@ -8,7 +8,7 @@ import aiohttp
 
 from stoat_discord_bridge.models import Attachment
 from stoat_discord_bridge.services.discord_service import DiscordReceiverService
-from tests.discord_receiver.conftest import _FakeAiohttpResponse, _message
+from tests.discord_receiver.conftest import _edit, _FakeAiohttpResponse, _message
 from tests.fakes.fake_discord import FakeChannel, FakeClient
 
 _PAGE = "https://www.instagram.com/p/abc"
@@ -67,3 +67,75 @@ async def test_a_discord_rule_skips_the_preview_and_keeps_the_link(monkeypatch):
     assert sent["content"] == f"look {_PAGE}"
     assert "files" not in sent
     assert fetched == []
+
+
+# ------------------------------------------- late preview backfilled by an edit (issue #207)
+
+
+async def test_edit_adds_a_late_preview_to_the_last_post_and_strips_the_link(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _receiver(client)
+
+    await receiver.edit_message(
+        target_channel_id="42",
+        target_message_ids=["1000", "1001"],
+        edit=_edit(new_content_markdown=_PAGE, new_attachments=[_PREVIEW]),
+    )
+
+    webhook = channel.created_webhooks[0]
+    assert webhook.edited[0] == {"message_id": 1000, "content": "​", "thread": None}
+    assert webhook.edited[1] == {
+        "message_id": 1001, "content": "", "thread": None, "attachments": [("abc.jpg", b"img")]
+    }
+
+
+async def test_edit_keeps_the_posts_existing_attachments(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _receiver(client)
+    existing = object()
+    await receiver.edit_message(target_channel_id="42", target_message_ids=["1000"], edit=_edit())
+    webhook = channel.created_webhooks[0]
+    webhook.existing_attachments[1000] = [existing]
+
+    await receiver.edit_message(
+        target_channel_id="42",
+        target_message_ids=["1000"],
+        edit=_edit(new_content_markdown=f"look {_PAGE}", new_attachments=[_PREVIEW]),
+    )
+
+    assert webhook.edited[-1]["content"] == "look"
+    assert webhook.edited[-1]["attachments"] == [existing, ("abc.jpg", b"img")]
+
+
+async def test_edit_leaves_the_post_alone_when_a_rule_prefers_discords_own_preview(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _receiver(client, _Prefs({"instagram.com": "discord"}))
+
+    await receiver.edit_message(
+        target_channel_id="42",
+        target_message_ids=["1000"],
+        edit=_edit(new_content_markdown=_PAGE, new_attachments=[_PREVIEW]),
+    )
+
+    assert channel.created_webhooks == [] or channel.created_webhooks[0].edited == []
+
+
+async def test_edit_leaves_the_post_alone_when_the_preview_cant_be_fetched(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"", status=404))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    receiver = _receiver(client)
+
+    await receiver.edit_message(
+        target_channel_id="42",
+        target_message_ids=["1000"],
+        edit=_edit(new_content_markdown=_PAGE, new_attachments=[_PREVIEW]),
+    )
+
+    assert channel.created_webhooks == [] or channel.created_webhooks[0].edited == []
