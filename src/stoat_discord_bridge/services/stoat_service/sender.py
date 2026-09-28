@@ -44,7 +44,7 @@ from stoat_discord_bridge.services.base import (
     OnTyping,
     SenderService,
 )
-from stoat_discord_bridge.services.caching import AsyncTTLCache
+from stoat_discord_bridge.services.caching import AsyncTTLCache, LinkPreviewTracker
 from stoat_discord_bridge.services.stoat_service.client import _StoatClient
 from stoat_discord_bridge.services.stoat_service.formatting import (
     _avatar_url,
@@ -71,6 +71,10 @@ logger = logging.getLogger(__name__)
 # How long a resolved (or absent) pronoun value is cached per user before the
 # profile is fetched again - see `_resolve_sender_pronouns`.
 _PRONOUN_CACHE_TTL = 600.0
+
+# How long after relaying a message a late link-preview unfurl is still
+# backfilled onto the relayed copies (issue #207).
+_LATE_LINK_PREVIEW_WINDOW = 300.0
 
 # stoat.py caps a single `TextChannel.history()` call at 100 messages -
 # `fetch_history` (issue #122) hand-rolls pagination past that.
@@ -154,6 +158,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         # user id -> pronouns (or None); keeps the profile fetch off the hot
         # relay path - see `_resolve_sender_pronouns`.
         self._pronoun_cache: AsyncTTLCache[str | None] = AsyncTTLCache(_PRONOUN_CACHE_TTL)
+        self._link_previews = LinkPreviewTracker(_LATE_LINK_PREVIEW_WINDOW)
 
     async def _handle_ready(self, event) -> None:
         self._health.mark_connected(self.connector_id)
@@ -248,7 +253,9 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             message.channel.id,
             message.author.id,
         )
-        await self._on_message(await self._to_standard_message(message))
+        standard = await self._to_standard_message(message)
+        self._link_previews.record(standard.message_id, standard.attachments)
+        await self._on_message(standard)
 
     async def _relay_call_started_notice(self, message, system_event) -> None:
         """Post a bot-authored "<user> started a call in <service>" notice
@@ -494,6 +501,41 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 mentioned_roles=_map_mentioned_roles(after) if after is not None else {},
                 mentioned_channels=await self._map_mentioned_channels(new_content or ""),
                 mentioned_emoji=await self._map_mentioned_emoji(new_content or ""),
+            )
+        )
+
+    async def _handle_message_append(self, event) -> None:
+        """`on_message_append` (stoat.events.MessageAppendEvent): Stoat
+        appended embeds to a message - how it delivers a link unfurl that
+        resolved after the message was sent. If that brings link-preview
+        media the relay didn't have yet, emit a `StandardEdit` carrying it as
+        `new_attachments` (issue #207), once per preview and only for a
+        message `_handle_message` relayed recently (so the author was
+        already vetted there).
+
+        `event.data` holds only the appended embeds; the text comes from
+        `event.message`, the cached copy - skipped when uncached, since the
+        relayed copies can't be re-rendered without it."""
+        if self._on_edit is None:
+            return
+        data = event.data
+        message = getattr(event, "message", None)
+        if message is None or message.content is None:
+            return
+        new_attachments = self._link_previews.unseen(str(data.id), _link_preview_embed_attachments(data))
+        if not new_attachments:
+            return
+        await self._on_edit(
+            StandardEdit(
+                origin_connector_id=self.connector_id,
+                origin_channel_id=str(data.channel_id),
+                origin_message_id=str(data.id),
+                new_content_markdown=message.content,
+                mentioned_users=_map_mentioned_users(message),
+                mentioned_roles=_map_mentioned_roles(message),
+                mentioned_channels=await self._map_mentioned_channels(message.content),
+                mentioned_emoji=await self._map_mentioned_emoji(message.content),
+                new_attachments=new_attachments,
             )
         )
 

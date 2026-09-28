@@ -73,6 +73,13 @@ class _StoatClient(stoat_commands.Bot):
         # 1.2.1; live-server payload completeness unverified.
         await self._owner._handle_message_update(event)
 
+    async def on_message_append(self, event, /) -> None:
+        # stoat.events.MessageAppendEvent (event_name 'message_append'):
+        # `.data` (MessageAppendData - `.id`, `.channel_id`, the appended
+        # `.embeds`), `.message` (Optional[Message], cache-dependent).
+        # Verified against stoat.py 1.2.1; live-server timing unverified.
+        await self._owner._handle_message_append(event)
+
     async def on_message_delete(self, event, /) -> None:
         # stoat.events.MessageDeleteEvent (event_name 'message_delete'):
         # `.channel_id`, `.message_id`, `.message` (Optional[Message],
