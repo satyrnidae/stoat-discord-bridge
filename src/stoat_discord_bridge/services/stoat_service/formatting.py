@@ -14,7 +14,7 @@ import aiohttp
 import stoat
 
 from stoat_discord_bridge.models import Attachment, CustomEmoji
-from stoat_discord_bridge.services.formatting import guess_media_type, is_video_file_url
+from stoat_discord_bridge.services.formatting import format_preview_quote, guess_media_type, is_video_file_url
 
 # Stoat message length cap (matches Discord's 2000-char webhook limit; stoat.py
 # doesn't expose its own constant, so this mirrors the documented server-side max).
@@ -160,8 +160,8 @@ def _link_preview_embed_attachments(message) -> list[Attachment]:
     unfurl the link. A `WebsiteEmbed` uses its video if that's a media file,
     else its image, keyed by the link as posted (`original_url`); a bare
     `ImageEmbed`/`VideoEmbed` (a direct media link) points at itself. A
-    `WebsiteEmbed`'s description (else title) rides along as `preview_text`
-    (issue #209). Text and media-less embeds are skipped. Unverified against a live server,
+    `WebsiteEmbed`'s title and description ride along, quoted, as
+    `preview_text` (issues #209, #212). Text and media-less embeds are skipped. Unverified against a live server,
     like the rest of this module."""
     out: list[Attachment] = []
     for embed in getattr(message, "embeds", None) or []:
@@ -173,7 +173,7 @@ def _link_preview_embed_attachments(message) -> list[Attachment]:
             continue
         filename, content_type = guess_media_type(asset_url)
         # only a WebsiteEmbed has text; bare ImageEmbed/VideoEmbed have neither field
-        text = getattr(embed, "description", None) or getattr(embed, "title", None) or None
+        text = format_preview_quote(getattr(embed, "title", None), getattr(embed, "description", None))
         out.append(
             Attachment(
                 url=asset_url,

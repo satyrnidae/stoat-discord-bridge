@@ -14,7 +14,7 @@ import re
 import discord
 
 from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage, StandardReaction
-from stoat_discord_bridge.services.formatting import guess_media_type, is_video_file_url
+from stoat_discord_bridge.services.formatting import format_preview_quote, guess_media_type, is_video_file_url
 from stoat_discord_bridge.services.role_sync import NEUTRAL_PERMISSIONS
 
 # Discord webhook hard limits: 2000 chars per message, 1-80 char usernames,
@@ -181,8 +181,8 @@ def _link_preview_attachments(message: discord.Message) -> list[Attachment]:
     to the previewed page (issues #102, #164). Each receiver then decides
     whether to re-upload it (stripping the link) or leave the link for its
     own platform to unfurl - see `formatting.partition_link_preview_attachments`.
-    The embed's description (else title) rides along as `preview_text`
-    (issue #209). An embed with no media (a plain text/author embed) is skipped. `getattr`
+    The embed's title and description ride along, quoted, as `preview_text`
+    (issues #209, #212). An embed with no media (a plain text/author embed) is skipped. `getattr`
     for the same defensiveness `_map_mentioned_users` etc. use against a bare
     fake in tests / an edit payload with no `embeds`."""
     attachments = []
@@ -197,7 +197,7 @@ def _link_preview_attachments(message: discord.Message) -> list[Attachment]:
                 filename=filename,
                 content_type=content_type,
                 source_page_url=embed.url,
-                preview_text=embed.description or embed.title or None,
+                preview_text=format_preview_quote(embed.title, embed.description),
             )
         )
     return attachments

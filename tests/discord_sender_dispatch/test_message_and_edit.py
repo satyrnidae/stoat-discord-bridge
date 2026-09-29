@@ -304,15 +304,15 @@ async def _relay_texted_embed(**text):
     return attachment
 
 
-async def test_handle_message_carries_an_embeds_description_as_its_preview_text():
-    # issue #209: a fixupx-style embed's post text lives in its description
+async def test_handle_message_quotes_an_embeds_title_and_description_as_its_preview_text():
+    # issues #209/#212: a fixupx-style embed's byline is its title, the post its description
     attachment = await _relay_texted_embed(title="Alice (@a)", description="the post's text")
-    assert attachment.preview_text == "the post's text"
+    assert attachment.preview_text == "> *Alice (@a)*\n>\n> the post's text"
 
 
-async def test_handle_message_falls_back_to_an_embeds_title_for_its_preview_text():
+async def test_handle_message_quotes_a_title_only_embed():
     attachment = await _relay_texted_embed(title="Just a title")
-    assert attachment.preview_text == "Just a title"
+    assert attachment.preview_text == "> *Just a title*"
 
 
 async def test_handle_message_skips_a_video_player_url_for_the_thumbnail():
@@ -721,7 +721,7 @@ async def test_handle_raw_message_edit_backfills_a_late_previews_text():
 
     [edit] = recorder.edits
     [attachment] = edit.new_attachments
-    assert attachment.preview_text == "a cat"
+    assert attachment.preview_text == "> a cat"
 
 
 async def test_handle_raw_message_edit_backfills_a_late_link_preview_only_once():

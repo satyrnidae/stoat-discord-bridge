@@ -31,8 +31,8 @@ class Attachment:
     # Each receiver uses it to strip the link from the text, or to drop the
     # attachment and let its own platform unfurl the link (issue #164).
     source_page_url: str | None = None
-    # A link preview's own text (its embed description, else title), relayed
-    # in place of the link whenever the link is stripped (issue #209).
+    # A link preview's own text - its embed title and description as a Markdown
+    # blockquote - relayed after its embed-suppressed link (issues #209, #212).
     preview_text: str | None = None
     # An image's alt text (issue #188). Only Discord has one - stoat.py's
     # asset model has no equivalent, so it's always None from Stoat.

@@ -236,6 +236,20 @@ def guess_media_type(asset_url: str, *, is_gif: bool = False) -> tuple[str, str 
     return f"{stem}{ext}", content_type
 
 
+def format_preview_quote(title: str | None, description: str | None) -> str | None:
+    """A link preview's text as `Attachment.preview_text`: a Markdown
+    blockquote with the title as an italic byline above the description, the
+    way a quoted post reads (issue #212). None if neither has any text."""
+    title = (title or "").strip()
+    description = (description or "").strip()
+    blocks = [f"*{title}*"] if title else []
+    if description:
+        blocks.append(description)
+    if not blocks:
+        return None
+    return "\n".join(f"> {line}" if line else ">" for line in "\n\n".join(blocks).splitlines())
+
+
 class LinkPreviewPreferences(Protocol):
     """What `partition_link_preview_attachments` needs from
     `admin_commands.AttachmentPreferenceManager`."""
