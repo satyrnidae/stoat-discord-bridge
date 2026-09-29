@@ -211,6 +211,10 @@ _MEDIA_TYPES = {
 }
 
 
+# first extension listed wins, so image/jpeg is ".jpg"
+_MEDIA_EXTENSIONS = {content_type: ext for ext, content_type in reversed(_MEDIA_TYPES.items())}
+
+
 def _url_extension(url: str) -> str:
     return posixpath.splitext(urlsplit(url).path.lower())[1]
 
@@ -234,6 +238,20 @@ def guess_media_type(asset_url: str, *, is_gif: bool = False) -> tuple[str, str 
     if content_type is None:
         return ("gif.gif", "image/gif") if stem == "gif" else (stem, None)
     return f"{stem}{ext}", content_type
+
+
+def format_preview_quote(title: str | None, description: str | None) -> str | None:
+    """A link preview's text as `Attachment.preview_text`: a Markdown
+    blockquote with the title as an italic byline above the description, the
+    way a quoted post reads (issue #212). None if neither has any text."""
+    title = (title or "").strip()
+    description = (description or "").strip()
+    blocks = [f"*{title}*"] if title else []
+    if description:
+        blocks.append(description)
+    if not blocks:
+        return None
+    return "\n".join(f"> {line}" if line else ">" for line in "\n\n".join(blocks).splitlines())
 
 
 class LinkPreviewPreferences(Protocol):
@@ -322,6 +340,15 @@ def _attachment_filename(attachment: Attachment) -> str:
     return tail or "attachment"
 
 
+def _with_served_extension(filename: str, content_type: str | None) -> str:
+    """`filename` with an extension for the media type the server sent, if it
+    has none - Discord renders an extensionless upload as a plain file, and a
+    CDN URL like Bluesky's `...@jpeg` gives the URL guess nothing (issue #212)."""
+    if posixpath.splitext(filename)[1]:
+        return filename
+    return filename + _MEDIA_EXTENSIONS.get(content_type or "", "")
+
+
 class DownloadedAttachment(NamedTuple):
     """An attachment's fetched bytes, ready to re-upload. `description` is
     the alt text, which only Discord can set on upload (issue #188)."""
@@ -359,13 +386,15 @@ async def download_attachments(
                 async with session.get(attachment.url) as resp:
                     resp.raise_for_status()
                     data = await resp.read()
+                    served_type = resp.content_type
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 undownloadable.append(attachment)
                 continue
             if len(data) > max_bytes:
                 undownloadable.append(attachment)
                 continue
-            downloaded.append(DownloadedAttachment(_attachment_filename(attachment), data, attachment.description))
+            filename = _with_served_extension(_attachment_filename(attachment), served_type)
+            downloaded.append(DownloadedAttachment(filename, data, attachment.description))
     return downloaded, undownloadable
 
 

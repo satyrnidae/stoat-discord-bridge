@@ -68,22 +68,22 @@ def test_website_embed_skips_a_video_player_url_for_the_image():
     assert attachment.url == "https://cdn.example.com/still.png"
 
 
-def test_website_embed_carries_its_description_as_the_preview_text():
-    # issue #209: the post text a fixupx-style preview shows
+def test_website_embed_quotes_its_title_and_description_as_the_preview_text():
+    # issues #209/#212: the byline and post text a fixupx-style preview shows
     embed = _website(
         url="https://fixupx.com/a/status/1", title="Alice (@a)", description="the post's text",
         image=_image("https://pbs.example/1.jpg"),
     )
 
     [attachment] = _link_preview_embed_attachments(_message(embed))
-    assert attachment.preview_text == "the post's text"
+    assert attachment.preview_text == "> *Alice (@a)*\n>\n> the post's text"
 
 
-def test_website_embed_falls_back_to_its_title_for_the_preview_text():
+def test_website_embed_with_only_a_title_quotes_it():
     embed = _website(url="https://example.com/a", title="Just a title", image=_image("https://cdn.example.com/a.png"))
 
     [attachment] = _link_preview_embed_attachments(_message(embed))
-    assert attachment.preview_text == "Just a title"
+    assert attachment.preview_text == "> *Just a title*"
 
 
 def test_bare_image_and_video_embeds_point_at_themselves():

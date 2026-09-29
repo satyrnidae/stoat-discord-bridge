@@ -9,6 +9,7 @@ from stoat_discord_bridge.services.formatting import (
     chunk_content,
     decorate_sender_name,
     download_attachments,
+    format_preview_quote,
     inline_attachment_urls,
     render_discord_timestamps,
     strip_markdown,
@@ -38,10 +39,28 @@ def test_inline_attachment_urls_skips_urlless_attachments():
     assert inline_attachment_urls("hi", [Attachment(url="")]) == "hi"
 
 
+def test_format_preview_quote_quotes_the_title_as_a_byline_above_the_description():
+    # issue #212: a Bluesky post's byline is its title, the post its description
+    assert format_preview_quote("Alice (@a)", "line one\nline two") == (
+        "> *Alice (@a)*\n>\n> line one\n> line two"
+    )
+
+
+def test_format_preview_quote_quotes_either_field_alone():
+    assert format_preview_quote(None, "the post") == "> the post"
+    assert format_preview_quote("Just a title", None) == "> *Just a title*"
+
+
+def test_format_preview_quote_is_none_without_text():
+    assert format_preview_quote(None, None) is None
+    assert format_preview_quote("  ", "") is None
+
+
 class _FakeAiohttpResponse:
-    def __init__(self, body: bytes, *, status: int = 200) -> None:
+    def __init__(self, body: bytes, *, status: int = 200, content_type: str = "application/octet-stream") -> None:
         self._body = body
         self.status = status
+        self.content_type = content_type
 
     async def __aenter__(self):
         return self
@@ -85,6 +104,38 @@ async def test_download_attachments_derives_filename_from_url_when_missing(monke
     downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/a/b/pic.jpg?ex=deadbeef")])
 
     assert downloaded == [DownloadedAttachment("pic.jpg", b"x")]
+
+
+async def test_download_attachments_names_an_extensionless_file_from_its_content_type(monkeypatch):
+    # issue #212: Bluesky's CDN ends its URLs in "@jpeg", so the URL guess finds
+    # no extension, and Discord shows an extensionless upload as a binary file
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x", content_type="image/jpeg")
+    )
+
+    downloaded, _ = await download_attachments(
+        [Attachment(url="https://cdn.bsky.app/img/feed_fullsize/plain/did/bafkrei@jpeg", filename="preview")]
+    )
+
+    assert downloaded == [DownloadedAttachment("preview.jpg", b"x")]
+
+
+async def test_download_attachments_keeps_a_name_with_no_recognized_content_type(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x"))
+
+    downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/blob", filename="preview")])
+
+    assert downloaded == [DownloadedAttachment("preview", b"x")]
+
+
+async def test_download_attachments_never_renames_a_file_that_has_an_extension(monkeypatch):
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x", content_type="image/png")
+    )
+
+    downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/a.jpg", filename="a.jpg")])
+
+    assert downloaded == [DownloadedAttachment("a.jpg", b"x")]
 
 
 async def test_download_attachments_falls_back_on_fetch_failure(monkeypatch):
