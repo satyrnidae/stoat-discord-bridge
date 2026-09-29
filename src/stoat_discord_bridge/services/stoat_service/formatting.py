@@ -159,8 +159,9 @@ def _link_preview_embed_attachments(message) -> list[Attachment]:
     receiver then decides whether to re-upload it or let its own platform
     unfurl the link. A `WebsiteEmbed` uses its video if that's a media file,
     else its image, keyed by the link as posted (`original_url`); a bare
-    `ImageEmbed`/`VideoEmbed` (a direct media link) points at itself. Text
-    and media-less embeds are skipped. Unverified against a live server,
+    `ImageEmbed`/`VideoEmbed` (a direct media link) points at itself. A
+    `WebsiteEmbed`'s description (else title) rides along as `preview_text`
+    (issue #209). Text and media-less embeds are skipped. Unverified against a live server,
     like the rest of this module."""
     out: list[Attachment] = []
     for embed in getattr(message, "embeds", None) or []:
@@ -171,8 +172,16 @@ def _link_preview_embed_attachments(message) -> list[Attachment]:
         if not asset_url:
             continue
         filename, content_type = guess_media_type(asset_url)
+        # only a WebsiteEmbed has text; bare ImageEmbed/VideoEmbed have neither field
+        text = getattr(embed, "description", None) or getattr(embed, "title", None) or None
         out.append(
-            Attachment(url=asset_url, filename=filename, content_type=content_type, source_page_url=page_url)
+            Attachment(
+                url=asset_url,
+                filename=filename,
+                content_type=content_type,
+                source_page_url=page_url,
+                preview_text=text,
+            )
         )
     return out
 
