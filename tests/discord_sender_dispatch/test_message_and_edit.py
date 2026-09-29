@@ -182,8 +182,10 @@ async def test_handle_message_with_no_reference_has_no_reply_target():
 # ---------------------------------------------------------------- link-preview embeds (issues #102, #164)
 
 
-def _embed(*, type="gifv", url="https://tenor.com/view/cat-dance-123", video=None, image=None, thumbnail=None):
-    data = {"type": type, "url": url}
+def _embed(
+    *, type="gifv", url="https://tenor.com/view/cat-dance-123", video=None, image=None, thumbnail=None, **text
+):
+    data = {"type": type, "url": url, **text}
     if video:
         data["video"] = {"url": video}
     if image:
@@ -284,6 +286,33 @@ async def test_handle_message_converts_an_article_embed_with_an_image():
     assert attachment.filename == "preview.jpg"
     assert attachment.content_type == "image/jpeg"
     assert attachment.source_page_url == "https://example.com/some-article"
+    assert attachment.preview_text is None
+
+
+async def _relay_texted_embed(**text):
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    embed = _embed(type="rich", url="https://fixupx.com/a/status/1", image="https://pbs.example/1.jpg", **text)
+    await sender._handle_message(
+        _discord_message(
+            channel=FakeChannel(id=42, name="general"), guild=FakeGuild(id=123),
+            author=FakeUser(id=1, display_name="Alice"), content="https://fixupx.com/a/status/1", embeds=[embed],
+        )
+    )
+    [message] = recorder.messages
+    [attachment] = message.attachments
+    return attachment
+
+
+async def test_handle_message_carries_an_embeds_description_as_its_preview_text():
+    # issue #209: a fixupx-style embed's post text lives in its description
+    attachment = await _relay_texted_embed(title="Alice (@a)", description="the post's text")
+    assert attachment.preview_text == "the post's text"
+
+
+async def test_handle_message_falls_back_to_an_embeds_title_for_its_preview_text():
+    attachment = await _relay_texted_embed(title="Just a title")
+    assert attachment.preview_text == "Just a title"
 
 
 async def test_handle_message_skips_a_video_player_url_for_the_thumbnail():
@@ -681,6 +710,18 @@ async def test_handle_raw_message_edit_backfills_a_late_link_preview():
     [attachment] = edit.new_attachments
     assert attachment.url == "https://c.klipy.com/xyz/klipy.mp4"
     assert attachment.source_page_url == "https://klipy.com/view/xyz"
+
+
+async def test_handle_raw_message_edit_backfills_a_late_previews_text():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_klipy_link(sender)
+
+    await sender._handle_raw_message_edit(_late_embed_payload([_embed(**_KLIPY_EMBED, description="a cat")]))
+
+    [edit] = recorder.edits
+    [attachment] = edit.new_attachments
+    assert attachment.preview_text == "a cat"
 
 
 async def test_handle_raw_message_edit_backfills_a_late_link_preview_only_once():
