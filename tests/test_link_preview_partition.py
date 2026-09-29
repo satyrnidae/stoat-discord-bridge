@@ -116,6 +116,15 @@ async def test_the_previews_text_follows_the_rest_of_the_message():
     assert content == "look\n\nthe post's text"
 
 
+async def test_a_multi_image_previews_text_is_added_once():
+    # Discord sends one embed per image of a multi-image post, all on one url.
+    second = Attachment(url="https://cdn.example/def.jpg", source_page_url=_PAGE, preview_text="the post's text")
+    content, attachments = await partition_link_preview_attachments(
+        _PAGE, [_TEXTED, second], my_kind="stoat", preferences=None
+    )
+    assert (content, attachments) == ("the post's text", [_TEXTED, second])
+
+
 async def test_the_previews_text_isnt_added_where_the_link_is_kept():
     # The destination unfurls the link itself (or, on IRC, just shows it).
     for my_kind, prefs in (("stoat", _Prefs({"instagram.com": "stoat"})), (None, None)):
