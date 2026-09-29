@@ -68,6 +68,13 @@ async def test_only_the_whole_link_is_stripped_not_a_longer_one_sharing_its_pref
     assert content == f"{_PAGE}def and ."
 
 
+async def test_an_embed_suppressed_link_is_stripped_with_its_angle_brackets():
+    content, attachments = await partition_link_preview_attachments(
+        f"look <{_PAGE}> here", [_PREVIEW], my_kind="stoat", preferences=None
+    )
+    assert (content, attachments) == ("look  here", [_PREVIEW])
+
+
 async def test_a_link_only_present_as_a_prefix_of_another_is_not_in_the_text():
     content, attachments = await partition_link_preview_attachments(
         f"{_PAGE}def", [_PREVIEW], my_kind=None, preferences=None
@@ -81,6 +88,66 @@ async def test_a_preview_with_no_page_url_is_kept():
         "hi", [embed_only], my_kind=None, preferences=None
     )
     assert (content, attachments) == ("hi", [embed_only])
+
+
+# ------------------------------------------- preview text (issue #209)
+
+_TEXTED = Attachment(url="https://cdn.example/abc.jpg", source_page_url=_PAGE, preview_text="the post's text")
+
+
+async def test_a_texted_previews_link_is_kept_embed_suppressed_with_its_text():
+    # The link stays so the post can be sourced; <> stops a second unfurl.
+    content, attachments = await partition_link_preview_attachments(
+        _PAGE, [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert (content, attachments) == (f"<{_PAGE}>\n\nthe post's text", [_TEXTED])
+
+
+async def test_an_already_suppressed_texted_link_isnt_wrapped_twice():
+    content, _ = await partition_link_preview_attachments(
+        f"<{_PAGE}>", [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert content == f"<{_PAGE}>\n\nthe post's text"
+
+
+async def test_the_previews_text_follows_the_rest_of_the_message():
+    content, _ = await partition_link_preview_attachments(
+        f"look {_PAGE}", [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert content == f"look <{_PAGE}>\n\nthe post's text"
+
+
+async def test_a_multi_image_previews_text_is_added_once():
+    # Discord sends one embed per image of a multi-image post, all on one url.
+    second = Attachment(url="https://cdn.example/def.jpg", source_page_url=_PAGE, preview_text="the post's text")
+    content, attachments = await partition_link_preview_attachments(
+        _PAGE, [_TEXTED, second], my_kind="stoat", preferences=None
+    )
+    assert (content, attachments) == (f"<{_PAGE}>\n\nthe post's text", [_TEXTED, second])
+
+
+async def test_a_text_less_preview_still_has_its_link_stripped():
+    # a GIF-picker pick: the media is all there is, the link adds nothing
+    content, _ = await partition_link_preview_attachments(
+        f"look {_PAGE}", [_PREVIEW], my_kind="stoat", preferences=None
+    )
+    assert content == "look"
+
+
+async def test_the_previews_text_isnt_added_where_the_link_is_kept():
+    # The destination unfurls the link itself (or, on IRC, just shows it).
+    for my_kind, prefs in (("stoat", _Prefs({"instagram.com": "stoat"})), (None, None)):
+        content, _ = await partition_link_preview_attachments(
+            f"look {_PAGE}", [_TEXTED], my_kind=my_kind, preferences=prefs
+        )
+        assert content == f"look {_PAGE}"
+
+
+async def test_the_previews_text_isnt_added_when_its_link_isnt_in_the_text():
+    content, _ = await partition_link_preview_attachments(
+        "no link here", [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert content == "no link here"
 
 
 async def test_a_raising_preference_lookup_falls_back_to_the_default():

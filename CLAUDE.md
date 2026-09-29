@@ -151,7 +151,16 @@ video-if-media-file then image, keyed by `original_url`; a bare
 `ImageEmbed`/`VideoEmbed` points at itself). Senders leave the link in
 `content_markdown`; each receiver decides via
 `services/formatting.partition_link_preview_attachments`: by default it keeps
-the attachment and strips the link (whole-token match only). An
+the attachment and strips the link (whole-token match only; an
+embed-suppressed `<url>` goes with its brackets). A preview with its own
+text - the embed's description, else its title, carried as
+`Attachment.preview_text` by both senders - keeps its link instead, so the
+post can still be sourced: the link is rewritten to an embed-suppressed
+`<url>` (so the destination doesn't unfurl it a second time) and the text
+follows it, so a fixupx-style post isn't relayed as a bare image (issue
+#209). Where the link is kept for the destination's own unfurl, the text is
+left to that unfurl. Whether Stoat honors `<url>` suppression is
+**unverified against a live server**. An
 `/attachments prefer <discord|stoat> <url-substr>` rule
 (`admin_commands/attachment_preferences.AttachmentPreferenceManager`, Mongo
 `storage/attachment_preferences.py`, longest case-insensitive substring

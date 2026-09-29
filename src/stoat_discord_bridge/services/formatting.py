@@ -255,7 +255,10 @@ async def partition_link_preview_attachments(
     the raw link for its own platform to unfurl (issue #164).
 
     By default the media is kept and the link is stripped from `content`, so
-    the preview looks the way the source platform built it. If an
+    the preview looks the way the source platform built it. A preview with
+    its own text (issue #209) keeps its link instead, so the post can still be
+    sourced - embed-suppressed as `<url>` so it isn't unfurled a second time -
+    with the text after it. If an
     `/attachments prefer` rule names `my_kind`, the attachment is dropped and
     the link left in place. `my_kind=None` (IRC, no previews) always keeps
     the link, since the page URL is more useful there than a bare media URL.
@@ -264,6 +267,8 @@ async def partition_link_preview_attachments(
     `(content, attachments)`.
     """
     kept: list[Attachment] = []
+    # a multi-image preview is several attachments on one page url
+    texted: set[str] = set()
     for attachment in attachments:
         page_url = attachment.source_page_url
         link = _whole_link_pattern(page_url) if page_url else None
@@ -272,15 +277,23 @@ async def partition_link_preview_attachments(
             continue
         if my_kind is None or await _preferred_kind(preferences, page_url) == my_kind:
             continue
-        content = link.sub("", content).strip()
+        if attachment.preview_text:
+            if page_url not in texted:
+                suppressed = link.sub(lambda _: f"<{page_url}>", content).strip()
+                content = f"{suppressed}\n\n{attachment.preview_text}"
+                texted.add(page_url)
+        elif page_url not in texted:
+            content = link.sub("", content).strip()
         kept.append(attachment)
     return content, kept
 
 
 def _whole_link_pattern(url: str) -> re.Pattern[str]:
     """Matches `url` only as a whole token - not as the prefix of a longer
-    link. Trailing sentence punctuation right after it is allowed."""
-    return re.compile(rf"(?<![^\s<(]){re.escape(url)}(?=$|[\s>)]|[.,!?;:](?:\s|$))")
+    link. Trailing sentence punctuation right after it is allowed. An
+    embed-suppressed `<url>` is matched with its brackets, so none are left."""
+    escaped = re.escape(url)
+    return re.compile(rf"<{escaped}>|(?<![^\s<(]){escaped}(?=$|[\s>)]|[.,!?;:](?:\s|$))")
 
 
 async def _preferred_kind(preferences: LinkPreviewPreferences | None, url: str) -> str | None:

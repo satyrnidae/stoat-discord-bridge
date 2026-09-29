@@ -181,7 +181,8 @@ def _link_preview_attachments(message: discord.Message) -> list[Attachment]:
     to the previewed page (issues #102, #164). Each receiver then decides
     whether to re-upload it (stripping the link) or leave the link for its
     own platform to unfurl - see `formatting.partition_link_preview_attachments`.
-    An embed with no media (a plain text/author embed) is skipped. `getattr`
+    The embed's description (else title) rides along as `preview_text`
+    (issue #209). An embed with no media (a plain text/author embed) is skipped. `getattr`
     for the same defensiveness `_map_mentioned_users` etc. use against a bare
     fake in tests / an edit payload with no `embeds`."""
     attachments = []
@@ -191,7 +192,13 @@ def _link_preview_attachments(message: discord.Message) -> list[Attachment]:
             continue
         filename, content_type = guess_media_type(asset_url, is_gif=embed.type == "gifv")
         attachments.append(
-            Attachment(url=asset_url, filename=filename, content_type=content_type, source_page_url=embed.url)
+            Attachment(
+                url=asset_url,
+                filename=filename,
+                content_type=content_type,
+                source_page_url=embed.url,
+                preview_text=embed.description or embed.title or None,
+            )
         )
     return attachments
 

@@ -91,6 +91,24 @@ async def test_edit_adds_a_late_preview_to_the_last_post_and_strips_the_link(mon
     }
 
 
+async def test_edit_adds_a_late_previews_text_along_with_its_media(monkeypatch):
+    # issue #209: a late unfurl's text isn't lost when its link is stripped
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id=42))
+    texted = Attachment(url=_PREVIEW.url, filename="abc.jpg", source_page_url=_PAGE, preview_text="the post")
+
+    await _receiver(client).edit_message(
+        target_channel_id="42",
+        target_message_ids=["1000"],
+        edit=_edit(new_content_markdown=f"<{_PAGE}>", new_attachments=[texted]),
+    )
+
+    [edited] = channel.created_webhooks[0].edited
+    assert edited["content"] == f"<{_PAGE}>\n\nthe post"
+    assert edited["attachments"] == [("abc.jpg", b"img")]
+
+
 async def test_edit_keeps_the_posts_existing_attachments(monkeypatch):
     monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
     client = FakeClient()
