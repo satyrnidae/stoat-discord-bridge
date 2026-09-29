@@ -151,7 +151,12 @@ video-if-media-file then image, keyed by `original_url`; a bare
 `ImageEmbed`/`VideoEmbed` points at itself). Senders leave the link in
 `content_markdown`; each receiver decides via
 `services/formatting.partition_link_preview_attachments`: by default it keeps
-the attachment and strips the link (whole-token match only). An
+the attachment and strips the link (whole-token match only; an
+embed-suppressed `<url>` goes with its brackets). The preview's own text -
+the embed's description, else its title, carried as
+`Attachment.preview_text` by both senders - takes the stripped link's place,
+so a fixupx-style post isn't relayed as a bare image (issue #209); where the
+link is kept instead, the text is left for the destination's own unfurl. An
 `/attachments prefer <discord|stoat> <url-substr>` rule
 (`admin_commands/attachment_preferences.AttachmentPreferenceManager`, Mongo
 `storage/attachment_preferences.py`, longest case-insensitive substring
