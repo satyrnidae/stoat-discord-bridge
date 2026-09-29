@@ -279,8 +279,10 @@ async def partition_link_preview_attachments(
 
 def _whole_link_pattern(url: str) -> re.Pattern[str]:
     """Matches `url` only as a whole token - not as the prefix of a longer
-    link. Trailing sentence punctuation right after it is allowed."""
-    return re.compile(rf"(?<![^\s<(]){re.escape(url)}(?=$|[\s>)]|[.,!?;:](?:\s|$))")
+    link. Trailing sentence punctuation right after it is allowed. An
+    embed-suppressed `<url>` is matched with its brackets, so none are left."""
+    escaped = re.escape(url)
+    return re.compile(rf"<{escaped}>|(?<![^\s<(]){escaped}(?=$|[\s>)]|[.,!?;:](?:\s|$))")
 
 
 async def _preferred_kind(preferences: LinkPreviewPreferences | None, url: str) -> str | None:

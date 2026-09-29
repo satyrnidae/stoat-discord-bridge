@@ -68,6 +68,13 @@ async def test_only_the_whole_link_is_stripped_not_a_longer_one_sharing_its_pref
     assert content == f"{_PAGE}def and ."
 
 
+async def test_an_embed_suppressed_link_is_stripped_with_its_angle_brackets():
+    content, attachments = await partition_link_preview_attachments(
+        f"look <{_PAGE}> here", [_PREVIEW], my_kind="stoat", preferences=None
+    )
+    assert (content, attachments) == ("look  here", [_PREVIEW])
+
+
 async def test_a_link_only_present_as_a_prefix_of_another_is_not_in_the_text():
     content, attachments = await partition_link_preview_attachments(
         f"{_PAGE}def", [_PREVIEW], my_kind=None, preferences=None
