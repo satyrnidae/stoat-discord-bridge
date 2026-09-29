@@ -9,13 +9,19 @@ set later still show up, eventually.
 
 `RefreshThrottle` collapses a burst of "re-fetch the whole server" calls
 (the `/mirror` full-refresh, issue #81) down to one network round-trip.
+
+`LinkPreviewTracker` remembers which link previews each recently relayed
+message already carried, for the late-preview backfill (issue #207).
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
+
+if TYPE_CHECKING:
+    from stoat_discord_bridge.models import Attachment
 
 _V = TypeVar("_V")
 
@@ -91,3 +97,36 @@ class RefreshThrottle:
         """Record that a refresh just completed - `due()` then returns False
         until `min_interval` seconds have passed."""
         self._last = time.monotonic()
+
+
+class LinkPreviewTracker:
+    """Which link previews a sender has already relayed for each recent
+    message, so one that resolves after the message was relayed (issue #207)
+    is backfilled exactly once.
+
+    Only messages `record`ed within the last `window` seconds count - an
+    update to an older (or never-relayed) message is ignored, so something
+    like a thread being started off an old message can't re-attach its
+    preview."""
+
+    def __init__(self, window: float) -> None:
+        self._window = window
+        self._entries: dict[str, tuple[float, set[str]]] = {}
+
+    def record(self, message_id: str, attachments: list[Attachment]) -> None:
+        """Note that `message_id` was just relayed with `attachments`."""
+        now = time.monotonic()
+        self._entries = {k: v for k, v in self._entries.items() if now - v[0] < self._window}
+        self._entries[message_id] = (now, {a.source_page_url for a in attachments if a.source_page_url})
+
+    def unseen(self, message_id: str, attachments: list[Attachment]) -> list[Attachment]:
+        """The link-preview attachments in `attachments` not yet relayed for
+        `message_id`, marking them relayed. Empty if the message isn't a
+        recently recorded one."""
+        entry = self._entries.get(message_id)
+        if entry is None or time.monotonic() - entry[0] >= self._window:
+            return []
+        seen = entry[1]
+        new = [a for a in attachments if a.source_page_url and a.source_page_url not in seen]
+        seen.update(a.source_page_url for a in new)
+        return new

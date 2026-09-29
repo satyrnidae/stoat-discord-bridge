@@ -105,14 +105,17 @@ class FakeStoatMessage:
         self.unpin_calls = 0
         self.content: str | None = None
         self.edits: list[str | None] = []
+        self.edited_embeds: list[list[Any]] = []
         self.deleted = False
         # settable post-construction to make delete() raise, for testing that
         # one already-gone post doesn't stop the rest of a multi-id delete.
         self.raises_on_delete: BaseException | None = None
 
-    async def edit(self, *, content=None, **kwargs) -> "FakeStoatMessage":
+    async def edit(self, *, content=None, embeds=None, **kwargs) -> "FakeStoatMessage":
         self.content = content
         self.edits.append(content)
+        if embeds is not None:
+            self.edited_embeds.append(embeds)
         return self
 
     async def delete(self) -> None:

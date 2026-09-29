@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from stoat_discord_bridge.models import StandardDelete, StandardEdit, StandardPin, StandardTyping
-from tests.bridge.conftest import FakeReceiver, _link, _ref
+from tests.bridge.conftest import FakeReceiver, _link, _message, _ref
 
 
 # ---------------------------------------------------------------- handle_pin
@@ -195,6 +197,46 @@ async def test_edit_relay_that_raises_is_swallowed(coordinator_parts):
     )  # must not raise
 
     assert working.edits == [("300", ("i1",), "x")]
+
+
+class _GatedReceiver(FakeReceiver):
+    """A receiver whose `receive()` blocks until `gate` is set, standing in
+    for a relay still uploading when the origin's follow-up update lands."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.gate = asyncio.Event()
+
+    async def receive(self, message, *, target_channel_id, reply_to_target_message_id=None):
+        await self.gate.wait()
+        return await super().receive(
+            message, target_channel_id=target_channel_id, reply_to_target_message_id=reply_to_target_message_id
+        )
+
+
+async def test_edit_waits_for_the_original_relay_still_in_flight(coordinator_parts):
+    # A late link-preview unfurl can arrive before the original relay has
+    # finished and been recorded (issue #207) - the edit must not be lost.
+    coordinator, channel_mappings, _message_sync, _emoji_mappings, _health = coordinator_parts
+    await _link(channel_mappings, "general", "discord", "100")
+    await _link(channel_mappings, "general", "stoat", "200")
+    stoat_receiver = _GatedReceiver("stoat", supports_edits=True, native_ids=["s1"])
+    coordinator.register_receiver(stoat_receiver)
+
+    relay = asyncio.create_task(coordinator.handle_incoming(_message()))
+    await asyncio.sleep(0)
+    edit = asyncio.create_task(
+        coordinator.handle_edit(
+            StandardEdit(
+                origin_connector_id="discord", origin_channel_id="100", origin_message_id="m1", new_content_markdown="x"
+            )
+        )
+    )
+    await asyncio.sleep(0)
+    stoat_receiver.gate.set()
+    await asyncio.gather(relay, edit)
+
+    assert stoat_receiver.edits == [("200", ("s1",), "x")]
 
 
 # -------------------------------------------------------------- handle_delete

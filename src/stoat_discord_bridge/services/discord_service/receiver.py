@@ -208,8 +208,8 @@ class DiscordReceiverService(ReceiverService):
     ) -> str:
         """Run the shared user / channel / role / emoji mention rewrites over a
         relayed message's text - used by `receive()` for the first post and by
-        `edit_message()` to re-render it when the source is edited. Attachment
-        handling stays in `receive()` (an edit doesn't re-sync files)."""
+        `edit_message()` to re-render it when the source is edited. Attachments
+        are handled by the callers."""
         content = content_markdown or ""
         if self._user_mappings is not None:
             content = await rewrite_mentions(
@@ -260,24 +260,60 @@ class DiscordReceiverService(ReceiverService):
         edit). An edit that *grew* past what the existing posts hold drops the
         overflow rather than posting new messages mid-channel out of order -
         rare, and the earlier posts still update. Best-effort: a post that's
-        since been deleted just fails its one `edit_message` and is skipped."""
+        since been deleted just fails its one `edit_message` and is skipped.
+
+        A late link preview (`edit.new_attachments`, issue #207) is handled
+        like `receive()` handles one - kept and its link stripped unless a
+        rule prefers Discord's own unfurl - and added to the last post
+        alongside whatever it already carries. If nothing is left to add (a
+        rule, or the media couldn't be fetched) the posts are left as is."""
         if not target_message_ids:
             return
+        content_markdown = edit.new_content_markdown
+        files: list = []
+        undownloadable: list = []
+        if edit.new_attachments:
+            content_markdown, kept = await partition_link_preview_attachments(
+                content_markdown,
+                edit.new_attachments,
+                my_kind="discord",
+                preferences=self._attachment_preferences,
+            )
+            files, undownloadable = await download_attachments(kept)
+            if not files:
+                return
         webhook, thread = await self._get_or_create_webhook(target_channel_id)
         content = await self._rewrite_content(
             origin_connector_id=edit.origin_connector_id,
-            content_markdown=edit.new_content_markdown,
+            content_markdown=content_markdown,
             mentioned_users=edit.mentioned_users,
             mentioned_roles=edit.mentioned_roles,
             mentioned_channels=edit.mentioned_channels,
             mentioned_emoji=edit.mentioned_emoji,
         )
+        if undownloadable:
+            content = inline_attachment_urls(content, undownloadable)
         chunks = chunk_content(content, _discord_pkg._CONTENT_LIMIT) if content else []
         thread_kwarg = {"thread": thread} if thread is not None else {}
+        last = len(target_message_ids) - 1
         for index, message_id in enumerate(target_message_ids):
-            body = chunks[index] if index < len(chunks) else "​"
+            attach = files and index == last
+            body = chunks[index] if index < len(chunks) else ("" if attach else "​")
             try:
-                await webhook.edit_message(int(message_id), content=body, **thread_kwarg)
+                if attach:
+                    existing = await webhook.fetch_message(int(message_id), **thread_kwarg)
+                    new_files = [
+                        discord.File(BytesIO(f.data), filename=f.filename, description=f.description)
+                        for f in files
+                    ]
+                    await webhook.edit_message(
+                        int(message_id),
+                        content=body,
+                        attachments=[*existing.attachments, *new_files],
+                        **thread_kwarg,
+                    )
+                else:
+                    await webhook.edit_message(int(message_id), content=body, **thread_kwarg)
             except discord.HTTPException:
                 logger.warning(
                     "[discord:%s] couldn't edit relayed message %s in channel %s",

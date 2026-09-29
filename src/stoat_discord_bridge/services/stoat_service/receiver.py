@@ -250,8 +250,8 @@ class StoatReceiverService(ReceiverService):
     ) -> str:
         """Run the shared user / channel / role / emoji mention rewrites over a
         relayed message's text - used by `receive()` for the first post and by
-        `edit_message()` to re-render it when the source is edited. Attachment
-        handling stays in `receive()` (an edit doesn't re-sync files)."""
+        `edit_message()` to re-render it when the source is edited. Attachments
+        are handled by the callers."""
         content = content_markdown or ""
         if self._user_mappings is not None:
             content = await rewrite_mentions(
@@ -301,24 +301,53 @@ class StoatReceiverService(ReceiverService):
         is matched chunk-for-post; a shortened edit blanks the leftover posts
         (zero-width space); an edit that grew past the existing posts drops the
         overflow. Best-effort: a post that's since been deleted, or an edit the
-        server rejects, is skipped."""
+        server rejects, is skipped.
+
+        A late link preview (`edit.new_attachments`, issue #207) is kept and
+        its link stripped unless a rule prefers Stoat's own unfurl, like in
+        `receive()`. `Message.edit` can't add files, so each one goes on the
+        last post as a media-only `SendableEmbed` (stoat.py uploads the
+        `(filename, bytes)` pair itself); that replaces the post's existing
+        embeds - normally just Stoat's own unfurl of the link being stripped.
+        If nothing is left to add the posts are left as is."""
         if not target_message_ids:
             return
+        content_markdown = edit.new_content_markdown
+        files: list = []
+        undownloadable: list = []
+        if edit.new_attachments:
+            content_markdown, kept = await partition_link_preview_attachments(
+                content_markdown,
+                edit.new_attachments,
+                my_kind="stoat",
+                preferences=self._attachment_preferences,
+            )
+            files, undownloadable = await download_attachments(kept)
+            if not files:
+                return
         channel = self._sender.get_channel(target_channel_id, partial=True)
         content = await self._rewrite_content(
             origin_connector_id=edit.origin_connector_id,
-            content_markdown=edit.new_content_markdown,
+            content_markdown=content_markdown,
             mentioned_users=edit.mentioned_users,
             mentioned_roles=edit.mentioned_roles,
             mentioned_channels=edit.mentioned_channels,
             mentioned_emoji=edit.mentioned_emoji,
         )
+        if undownloadable:
+            content = inline_attachment_urls(content, undownloadable)
         chunks = chunk_content(content, _stoat_pkg._CONTENT_LIMIT) if content else []
+        last = len(target_message_ids) - 1
         for index, message_id in enumerate(target_message_ids):
             body = chunks[index] if index < len(chunks) else "​"
+            embeds_kw = (
+                {"embeds": [stoat.SendableEmbed(media=(f.filename, f.data)) for f in files]}
+                if files and index == last
+                else {}
+            )
             try:
                 message = await channel.fetch_message(message_id)
-                await message.edit(content=body)
+                await message.edit(content=body, **embeds_kw)
             except Exception:
                 logger.warning(
                     "[stoat:%s] couldn't edit relayed message %s in channel %s",

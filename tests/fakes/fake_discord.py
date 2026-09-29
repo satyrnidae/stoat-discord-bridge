@@ -12,6 +12,7 @@ the attributes/methods this codebase's services/discord_service.py reads.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import discord
@@ -138,6 +139,7 @@ class FakeWebhook:
         # per-message_id override, for testing that one already-gone post
         # doesn't stop the rest of a multi-id delete_message call.
         self.raise_on_delete: dict[int, BaseException] = {}
+        self.existing_attachments: dict[int, list[Any]] = {}
         self._next_message_id = 1000
 
     async def send(
@@ -161,11 +163,23 @@ class FakeWebhook:
         self._next_message_id += 1
         return FakeSentMessage(id=message_id)
 
-    async def edit_message(self, message_id: int, *, content: str, thread: Any = None) -> FakeSentMessage:
+    async def edit_message(
+        self, message_id: int, *, content: str, thread: Any = None, attachments: Any = None
+    ) -> FakeSentMessage:
         if self._raises is not None:
             raise self._raises
-        self.edited.append({"message_id": message_id, "content": content, "thread": thread})
+        record = {"message_id": message_id, "content": content, "thread": thread}
+        if attachments is not None:
+            record["attachments"] = [
+                (a.filename, a.fp.read()) if isinstance(a, discord.File) else a for a in attachments
+            ]
+        self.edited.append(record)
         return FakeSentMessage(id=message_id)
+
+    async def fetch_message(self, message_id: int, *, thread: Any = None) -> Any:
+        """A posted message's existing attachments come from
+        `existing_attachments` (keyed by message id), empty by default."""
+        return SimpleNamespace(id=message_id, attachments=self.existing_attachments.get(message_id, []))
 
     async def delete_message(self, message_id: int, *, thread: Any = None) -> None:
         if message_id in self.raise_on_delete:

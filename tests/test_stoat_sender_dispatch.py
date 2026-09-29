@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import stoat
 
 from stoat_discord_bridge.models import CustomEmoji
-from stoat_discord_bridge.services.caching import AsyncTTLCache
+from stoat_discord_bridge.services.caching import AsyncTTLCache, LinkPreviewTracker
 from stoat_discord_bridge.services.stoat_service import StoatSenderService
 from stoat_discord_bridge.status import HealthTracker
 from tests.fakes.fake_stoat import FakeAsset, FakeAuthor, FakeChannel, FakeClient, FakeEmoji, FakeServer
@@ -91,6 +91,7 @@ def _make_sender(
     sender._bot_whitelist = bot_whitelist
     sender._self_id = self_id
     sender._command_message_ids = deque(maxlen=512)
+    sender._link_previews = LinkPreviewTracker(300.0)
     sender._on_message = recorder.on_message
     sender._on_reaction = recorder.on_reaction if with_reactions else None
     sender._on_emoji_created = recorder.on_emoji_created if with_emoji else None
@@ -756,6 +757,71 @@ async def test_handle_message_update_ignores_an_update_that_didnt_change_content
 
     # a pin / reaction / embed update: the partial carries no `content` field
     await sender._handle_message_update(_update_event(message=_partial()))
+
+    assert recorder.edits == []
+
+
+# ---------------------------------------------------------------- _handle_message_append (issue #207)
+
+_LINK = "https://cdn.example/cat.gif"
+
+
+def _cat_embed():
+    return stoat.ImageEmbed(url=_LINK, width=1, height=1, size=stoat.ImageSize.large)
+
+
+async def _relay_bare_link(sender, *, embeds=()):
+    msg = _stoat_message(channel=FakeChannel(id="42"), author=FakeAuthor(id="u1", tag="alice#0000"), content=_LINK)
+    msg.embeds = list(embeds)
+    await sender._handle_message(msg)
+    return msg
+
+
+def _append_event(message, *embeds, channel_id="42", id="m1"):
+    return SimpleNamespace(data=SimpleNamespace(channel_id=channel_id, id=id, embeds=list(embeds)), message=message)
+
+
+async def test_handle_message_append_backfills_a_late_link_preview():
+    # Stoat unfurls a link after the message is sent, via MessageAppend.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    msg = await _relay_bare_link(sender)
+
+    await sender._handle_message_append(_append_event(msg, _cat_embed()))
+
+    [edit] = recorder.edits
+    assert (edit.origin_channel_id, edit.origin_message_id, edit.new_content_markdown) == ("42", "m1", _LINK)
+    [attachment] = edit.new_attachments
+    assert (attachment.url, attachment.source_page_url) == (_LINK, _LINK)
+
+
+async def test_handle_message_append_skips_a_preview_the_relay_already_carried():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    msg = await _relay_bare_link(sender, embeds=[_cat_embed()])
+
+    await sender._handle_message_append(_append_event(msg, _cat_embed()))
+
+    assert recorder.edits == []
+
+
+async def test_handle_message_append_skips_a_message_it_never_relayed():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    msg = _stoat_message(channel=FakeChannel(id="42"), author=FakeAuthor(id="u1", tag="alice#0000"), content=_LINK)
+
+    await sender._handle_message_append(_append_event(msg, _cat_embed()))
+
+    assert recorder.edits == []
+
+
+async def test_handle_message_append_skips_an_uncached_message():
+    # no cached copy means no text to re-render the relayed copies from
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_link(sender)
+
+    await sender._handle_message_append(_append_event(None, _cat_embed()))
 
     assert recorder.edits == []
 

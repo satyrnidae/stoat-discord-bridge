@@ -644,6 +644,98 @@ async def test_handle_raw_message_edit_relays_a_whitelisted_bot_authored_edit():
     assert [e.new_content_markdown for e in recorder.edits] == ["fixed typo"]
 
 
+async def _relay_bare_klipy_link(sender, *, embeds=None):
+    await sender._handle_message(
+        _discord_message(
+            channel=FakeChannel(id=42, name="general"), guild=FakeGuild(id=123),
+            author=FakeUser(id=1, display_name="Alice"), content="https://klipy.com/view/xyz", id=7,
+            embeds=embeds,
+        )
+    )
+
+
+def _late_embed_payload(embeds, **data):
+    return _edit_payload(
+        data={"content": "https://klipy.com/view/xyz", "author": {"id": "1", "bot": False}, **data},
+        message=SimpleNamespace(
+            content="https://klipy.com/view/xyz", embeds=embeds, mentions=[], role_mentions=[], channel_mentions=[]
+        ),
+    )
+
+
+_KLIPY_EMBED = dict(type="gifv", url="https://klipy.com/view/xyz", video="https://c.klipy.com/xyz/klipy.mp4")
+
+
+async def test_handle_raw_message_edit_backfills_a_late_link_preview():
+    # Discord often unfurls a GIF-picker link only after MESSAGE_CREATE, via
+    # an update with no `edited_timestamp` (issue #207).
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_klipy_link(sender)
+
+    await sender._handle_raw_message_edit(_late_embed_payload([_embed(**_KLIPY_EMBED)]))
+
+    [edit] = recorder.edits
+    assert (edit.origin_channel_id, edit.origin_message_id) == ("42", "7")
+    assert edit.new_content_markdown == "https://klipy.com/view/xyz"
+    [attachment] = edit.new_attachments
+    assert attachment.url == "https://c.klipy.com/xyz/klipy.mp4"
+    assert attachment.source_page_url == "https://klipy.com/view/xyz"
+
+
+async def test_handle_raw_message_edit_backfills_a_late_link_preview_only_once():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_klipy_link(sender)
+
+    await sender._handle_raw_message_edit(_late_embed_payload([_embed(**_KLIPY_EMBED)]))
+    await sender._handle_raw_message_edit(_late_embed_payload([_embed(**_KLIPY_EMBED)]))
+
+    assert len(recorder.edits) == 1
+
+
+async def test_handle_raw_message_edit_skips_a_preview_the_original_relay_already_carried():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_klipy_link(sender, embeds=[_embed(**_KLIPY_EMBED)])
+
+    await sender._handle_raw_message_edit(_late_embed_payload([_embed(**_KLIPY_EMBED)]))
+
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_skips_a_late_preview_for_a_message_it_never_relayed():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_late_embed_payload([_embed(**_KLIPY_EMBED)]))
+
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_skips_a_late_embed_without_media():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_klipy_link(sender)
+
+    await sender._handle_raw_message_edit(_late_embed_payload([_embed(type="link", url="https://klipy.com/view/xyz")]))
+
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_real_edit_carries_no_new_attachments():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_klipy_link(sender)
+
+    await sender._handle_raw_message_edit(
+        _late_embed_payload([_embed(**_KLIPY_EMBED)], edited_timestamp="2026-09-03T00:00:00+00:00")
+    )
+
+    [edit] = recorder.edits
+    assert edit.new_attachments == []
+
+
 # -------------------------------------------------------- _handle_raw_message_delete
 
 

@@ -49,9 +49,11 @@ from stoat_discord_bridge.services.base import (
     SenderService,
 )
 # from stoat_discord_bridge.services.caching import AsyncTTLCache  # noqa: ERA001 - re-enable with _resolve_sender_pronouns (issue #58)
+from stoat_discord_bridge.services.caching import LinkPreviewTracker
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
 from stoat_discord_bridge.services.discord_service.formatting import (
+    _link_preview_attachments,
     _map_mentioned_channels,
     _map_mentioned_roles,
     _map_mentioned_users,
@@ -74,6 +76,10 @@ logger = logging.getLogger(__name__)
 # profile endpoint is consulted again - long enough to keep a busy channel
 # from hammering it, short enough that a pronoun set later shows up soon.
 # _PRONOUN_CACHE_TTL = 600.0  # noqa: ERA001 - re-enable with _resolve_sender_pronouns (issue #58)
+
+# How long after relaying a message a late link-preview unfurl is still
+# backfilled onto the relayed copies (issue #207).
+_LATE_LINK_PREVIEW_WINDOW = 300.0
 
 
 class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSyncMixin, SenderService):
@@ -147,6 +153,7 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         # message relays normally instead of being buffered.
         self._pending_thread_starter: dict[int, "discord.Message | None"] = {}
         self._thread_ready: set[int] = set()
+        self._link_previews = LinkPreviewTracker(_LATE_LINK_PREVIEW_WINDOW)
         # Discord pronoun resolution is disabled (issue #58) - no bot-accessible
         # source exists. Restore this cache alongside `_resolve_sender_pronouns`
         # if that ever changes:
@@ -272,17 +279,17 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             message.channel.id,
             message.author.id,
         )
-        await self._on_message(
-            _to_standard_message(
-                message,
-                self.connector_id,
-                source_label=self._config.label,
-                # Discord pronoun resolution is disabled - see
-                # `_resolve_sender_pronouns` (issue #58).
-                sender_pronouns=await self._resolve_sender_pronouns(message.author.id),
-                sender_color=self._resolve_sender_color(message.author),
-            )
+        standard = _to_standard_message(
+            message,
+            self.connector_id,
+            source_label=self._config.label,
+            # Discord pronoun resolution is disabled - see
+            # `_resolve_sender_pronouns` (issue #58).
+            sender_pronouns=await self._resolve_sender_pronouns(message.author.id),
+            sender_color=self._resolve_sender_color(message.author),
         )
+        self._link_previews.record(standard.message_id, standard.attachments)
+        await self._on_message(standard)
 
     async def fetch_history(
         self, channel_id: str, limit: int | None, *, include_relayed: bool = False
@@ -426,8 +433,10 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
           fresh `content` and an `edited_timestamp`. Emitted as a
           `StandardEdit` so `BridgeCoordinator` can sync every relayed copy.
         - an **auto-embed** update (a link Discord just unfurled) - carries
-          `embeds` but no `edited_timestamp`; ignored, so a bare link paste
-          doesn't tag every destination "(edited)".
+          `embeds` but no `edited_timestamp`. Ignored unless it brings
+          link-preview media the relay didn't have yet (a GIF-picker pick
+          often unfurls only after MESSAGE_CREATE, issue #207); then it's a
+          `StandardEdit` carrying that media as `new_attachments`.
 
         A webhook-authored edit (our own relayed copy being synced) is dropped
         here - detected cache-free via the payload's `webhook_id`, so it holds
@@ -449,8 +458,21 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                     )
                 )
             return
-        if self._on_edit is None or not data.get("edited_timestamp") or "content" not in data:
+        if self._on_edit is None:
             return
+        message = getattr(payload, "message", None)
+        new_attachments = []
+        if data.get("edited_timestamp"):
+            if "content" not in data:
+                return
+        else:
+            # Checked before the author gates below: the tracker only knows
+            # messages _handle_message already let through.
+            new_attachments = self._link_previews.unseen(
+                str(payload.message_id), _link_preview_attachments(message)
+            )
+            if not new_attachments:
+                return
         if data.get("webhook_id"):
             return  # our own relayed webhook copy being edited - echo, always dropped
         author = data.get("author") or {}
@@ -461,10 +483,11 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 origin_connector_id=self.connector_id,
                 origin_channel_id=str(payload.channel_id),
                 origin_message_id=str(payload.message_id),
-                new_content_markdown=data.get("content") or "",
-                mentioned_users=_map_mentioned_users(getattr(payload, "message", None)),
-                mentioned_roles=_map_mentioned_roles(getattr(payload, "message", None)),
-                mentioned_channels=_map_mentioned_channels(getattr(payload, "message", None)),
+                new_content_markdown=data.get("content", getattr(message, "content", "")) or "",
+                mentioned_users=_map_mentioned_users(message),
+                mentioned_roles=_map_mentioned_roles(message),
+                mentioned_channels=_map_mentioned_channels(message),
+                new_attachments=new_attachments,
             )
         )
 
