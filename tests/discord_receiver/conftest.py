@@ -18,6 +18,7 @@ class _FakeAiohttpResponse:
     def __init__(self, body: bytes, *, status: int = 200) -> None:
         self._body = body
         self.status = status
+        self.content_type = "application/octet-stream"
 
     async def __aenter__(self) -> "_FakeAiohttpResponse":
         return self

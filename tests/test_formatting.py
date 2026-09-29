@@ -57,9 +57,10 @@ def test_format_preview_quote_is_none_without_text():
 
 
 class _FakeAiohttpResponse:
-    def __init__(self, body: bytes, *, status: int = 200) -> None:
+    def __init__(self, body: bytes, *, status: int = 200, content_type: str = "application/octet-stream") -> None:
         self._body = body
         self.status = status
+        self.content_type = content_type
 
     async def __aenter__(self):
         return self
@@ -103,6 +104,38 @@ async def test_download_attachments_derives_filename_from_url_when_missing(monke
     downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/a/b/pic.jpg?ex=deadbeef")])
 
     assert downloaded == [DownloadedAttachment("pic.jpg", b"x")]
+
+
+async def test_download_attachments_names_an_extensionless_file_from_its_content_type(monkeypatch):
+    # issue #212: Bluesky's CDN ends its URLs in "@jpeg", so the URL guess finds
+    # no extension, and Discord shows an extensionless upload as a binary file
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x", content_type="image/jpeg")
+    )
+
+    downloaded, _ = await download_attachments(
+        [Attachment(url="https://cdn.bsky.app/img/feed_fullsize/plain/did/bafkrei@jpeg", filename="preview")]
+    )
+
+    assert downloaded == [DownloadedAttachment("preview.jpg", b"x")]
+
+
+async def test_download_attachments_keeps_a_name_with_no_recognized_content_type(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x"))
+
+    downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/blob", filename="preview")])
+
+    assert downloaded == [DownloadedAttachment("preview", b"x")]
+
+
+async def test_download_attachments_never_renames_a_file_that_has_an_extension(monkeypatch):
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"x", content_type="image/png")
+    )
+
+    downloaded, _ = await download_attachments([Attachment(url="https://cdn.example/a.jpg", filename="a.jpg")])
+
+    assert downloaded == [DownloadedAttachment("a.jpg", b"x")]
 
 
 async def test_download_attachments_falls_back_on_fetch_failure(monkeypatch):
