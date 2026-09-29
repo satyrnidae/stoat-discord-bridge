@@ -14,6 +14,7 @@ import logging
 from collections.abc import Awaitable
 
 from stoat_discord_bridge.admin_commands import LinkError, unlink_all
+from stoat_discord_bridge.services.long_running import STILL_WORKING_TEXT, WORKING_TEXT, watch_long_running
 from stoat_discord_bridge.services.stoat_service.formatting import _channel_category
 
 logger = logging.getLogger(__name__)
@@ -57,14 +58,44 @@ class StoatLinkingMixin:
         reply(str(exc)) / else: reply(summary)` shape every mutating handler
         ends with. `empty_fallback` (the mirror handlers' "Nothing to
         mirror.") is substituted for a falsy `summary`, matching each
-        handler's own `summary or "..."` it used to write inline."""
+        handler's own `summary or "..."` it used to write inline.
+
+        Posts a `WORKING_TEXT` placeholder first and edits the result into
+        it; a command still running after a minute flips the placeholder to
+        `STILL_WORKING_TEXT` and posts the result as a new message instead
+        (issue #201)."""
         try:
-            summary = await coro
+            placeholder = await ctx.send(WORKING_TEXT)
+        except Exception:
+            # Still run the command - its result just goes out as a plain reply.
+            logger.warning("[stoat:%s] couldn't post the command placeholder", self.connector_id, exc_info=True)
+            placeholder = None
+        else:
+            self._note_command_message(str(getattr(placeholder, "id", "")))
+        went_slow = placeholder is None
+
+        async def on_slow() -> None:
+            nonlocal went_slow
+            if went_slow:
+                return
+            went_slow = True
+            await placeholder.edit(content=STILL_WORKING_TEXT)
+
+        try:
+            summary = await watch_long_running(coro, on_slow=on_slow)
         except LinkError as exc:
             logger.info("[stoat:%s] %s rejected: %s", self.connector_id, log_context, exc)
-            await self._reply(ctx, str(exc))
+            text = str(exc)
+        else:
+            text = summary if empty_fallback is None else (summary or empty_fallback)
+        if went_slow:
+            await self._reply(ctx, text)
             return
-        await self._reply(ctx, summary if empty_fallback is None else (summary or empty_fallback))
+        try:
+            await placeholder.edit(content=text)
+        except Exception:
+            logger.warning("[stoat:%s] couldn't edit the command placeholder", self.connector_id, exc_info=True)
+            await self._reply(ctx, text)
 
     async def _linked_channels(self, ctx, local_id: str | None = None) -> None:
         """`/linked channels [local_id|name]` - read-only. Defaults to the

@@ -21,6 +21,7 @@ import discord
 from stoat_discord_bridge.admin_commands import LinkError, unlink_all
 from stoat_discord_bridge.services.discord_service.editor import LinkEditorSpec, LinkEditorView
 from stoat_discord_bridge.services.discord_service.formatting import _normalize_channel_id, _normalize_role_id
+from stoat_discord_bridge.services.long_running import STILL_WORKING_TEXT, watch_long_running
 
 logger = logging.getLogger(__name__)
 
@@ -68,28 +69,48 @@ class DiscordLinkingMixin:
             return await channel.send(f"{interaction.user.mention} {content}", **fallback_kwargs)
         return None
 
+    async def _replace_placeholder(
+        self, interaction: discord.Interaction, content: str, *, view: discord.ui.View | None = None
+    ) -> discord.Message | None:
+        """Swap a deferred command's "is thinking..." placeholder for its
+        reply (issue #201) - a followup would leave the placeholder stuck.
+        Falls back to `_send_deferred` if the edit fails."""
+        try:
+            return await interaction.edit_original_response(content=content, view=view)
+        except discord.HTTPException as exc:
+            logger.warning(
+                "[discord:%s] editing the deferred reply failed (%s), sending a followup instead",
+                self.connector_id,
+                exc,
+            )
+        return await self._send_deferred(interaction, content, view=view)
+
     async def _send_linker_reply(
         self,
         interaction: discord.Interaction,
         content: str,
         *,
         deferred: bool = False,
+        went_slow: bool = False,
         editor: LinkEditorSpec | None = None,
     ) -> None:
         """Send `content` (a linker summary or read-only listing), attaching
         a `LinkEditorView` in-line editor (issue #115) when `editor` is
-        given. `deferred` picks `interaction.followup.send` over
-        `interaction.response.send_message`, same as `_reply_linker_result`.
+        given. A `deferred` reply replaces the "is thinking..." placeholder,
+        or - once the command `went_slow` and the placeholder says so - is
+        posted as a new followup (issue #201).
 
         `interaction.response.send_message` always returns None in the real
         API (the message has to be fetched back via
-        `interaction.original_response()`); `interaction.followup.send`
-        returns the sent message directly. Either way, the resulting message
-        is stashed on the view so `on_timeout` (which has no interaction of
-        its own to respond through) can still disable the panel in place."""
+        `interaction.original_response()`); the deferred paths return the
+        sent message directly. Either way, the resulting message is stashed
+        on the view so `on_timeout` (which has no interaction of its own to
+        respond through) can still disable the panel in place."""
         view = await LinkEditorView.create(editor, invoker_id=interaction.user.id, content=content) if editor else None
-        if deferred:
+        if deferred and went_slow:
             sent = await self._send_deferred(interaction, content, view=view)
+        elif deferred:
+            sent = await self._replace_placeholder(interaction, content, view=view)
         else:
             kwargs: dict[str, Any] = {"ephemeral": True}
             if view is not None:
@@ -114,26 +135,36 @@ class DiscordLinkingMixin:
     ) -> None:
         """The `try: summary = await <linker call> / except LinkError: log +
         reply(str(exc)) / else: reply(summary)` shape every mutating
-        handler ends with. `deferred` picks `interaction.followup.send`
-        (a handler that already called `interaction.response.defer()` for a
-        slow mirror) over `interaction.response.send_message`;
-        `empty_fallback` (the mirror handlers' "Nothing to mirror.") is
-        substituted for a falsy `summary`, matching each handler's own
-        `summary or "..."` it used to write inline (issue #106). `editor`,
-        when given, attaches the in-line link editor (issue #115) to a
-        successful, non-empty reply only - there's nothing to edit on an
-        error or a "Nothing to mirror" no-op."""
+        handler ends with. Every such command is deferred (issue #201 - any
+        linker call can outrun Discord's 3s window): `deferred` says the
+        handler already called `interaction.response.defer()`, otherwise
+        it's done here, before `coro` starts. Past `SLOW_AFTER_SECONDS` the
+        placeholder is flipped to a "still working" note and the result is
+        posted as a new followup. `empty_fallback` (the mirror handlers'
+        "Nothing to mirror.") is substituted for a falsy `summary`, matching
+        each handler's own `summary or "..."` it used to write inline (issue
+        #106). `editor`, when given, attaches the in-line link editor (issue
+        #115) to a successful, non-empty reply only - there's nothing to edit
+        on an error or a "Nothing to mirror" no-op."""
+        if not deferred:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        went_slow = False
+
+        async def on_slow() -> None:
+            nonlocal went_slow
+            went_slow = True
+            await interaction.edit_original_response(content=STILL_WORKING_TEXT)
+
         try:
-            summary = await coro
+            summary = await watch_long_running(coro, on_slow=on_slow)
         except LinkError as exc:
             logger.info("[discord:%s] %s rejected: %s", self.connector_id, log_context, exc)
-            if deferred:
-                await self._send_deferred(interaction, str(exc))
-            else:
-                await interaction.response.send_message(str(exc), ephemeral=True)
+            await self._send_linker_reply(interaction, str(exc), deferred=True, went_slow=went_slow)
             return
         content = summary if empty_fallback is None else (summary or empty_fallback)
-        await self._send_linker_reply(interaction, content, deferred=deferred, editor=editor if summary else None)
+        await self._send_linker_reply(
+            interaction, content, deferred=True, went_slow=went_slow, editor=editor if summary else None
+        )
 
     async def _listing_editor(
         self, interaction: discord.Interaction, kind: str, linker: Any, local_id: str

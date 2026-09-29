@@ -1,0 +1,52 @@
+"""Status-message timing for long-running admin commands (issue #201).
+
+A command reply starts as a placeholder that's edited in place with the result.
+Past `SLOW_AFTER_SECONDS` the placeholder is flipped once to `STILL_WORKING_TEXT`
+and the result is posted as a fresh message instead, since an old placeholder
+isn't reliably editable (and a fresh message notifies the operator).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+SLOW_AFTER_SECONDS = 60.0
+WORKING_TEXT = "Working on it..."
+STILL_WORKING_TEXT = "Still working on this - I'll post the result in a new message once it's done."
+
+
+async def watch_long_running(
+    coro: Awaitable[T],
+    *,
+    on_slow: Callable[[], Awaitable[None]],
+    slow_after: float | None = None,
+) -> T:
+    """Await `coro`, calling `on_slow()` once if it's still running after
+    `slow_after` seconds (default `SLOW_AFTER_SECONDS`, read at call time so
+    tests can shorten it) - `on_slow` is where a caller records that the
+    command went slow, since an error from `coro` still has to know it.
+    `coro`'s own exception propagates, and a failing `on_slow` is logged and
+    ignored. Canceling the caller cancels `coro` too."""
+    task = asyncio.ensure_future(coro)
+    try:
+        timeout = SLOW_AFTER_SECONDS if slow_after is None else slow_after
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if not done:
+            try:
+                await on_slow()
+            except Exception:
+                logger.warning("long-running status update failed", exc_info=True)
+        return await task
+    except asyncio.CancelledError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise
