@@ -95,25 +95,26 @@ async def test_a_preview_with_no_page_url_is_kept():
 _TEXTED = Attachment(url="https://cdn.example/abc.jpg", source_page_url=_PAGE, preview_text="the post's text")
 
 
-async def test_a_link_only_post_is_replaced_by_the_previews_text():
+async def test_a_texted_previews_link_is_kept_embed_suppressed_with_its_text():
+    # The link stays so the post can be sourced; <> stops a second unfurl.
     content, attachments = await partition_link_preview_attachments(
         _PAGE, [_TEXTED], my_kind="stoat", preferences=None
     )
-    assert (content, attachments) == ("the post's text", [_TEXTED])
+    assert (content, attachments) == (f"<{_PAGE}>\n\nthe post's text", [_TEXTED])
 
 
-async def test_an_embed_suppressed_link_only_post_is_replaced_by_the_previews_text():
+async def test_an_already_suppressed_texted_link_isnt_wrapped_twice():
     content, _ = await partition_link_preview_attachments(
         f"<{_PAGE}>", [_TEXTED], my_kind="stoat", preferences=None
     )
-    assert content == "the post's text"
+    assert content == f"<{_PAGE}>\n\nthe post's text"
 
 
 async def test_the_previews_text_follows_the_rest_of_the_message():
     content, _ = await partition_link_preview_attachments(
         f"look {_PAGE}", [_TEXTED], my_kind="stoat", preferences=None
     )
-    assert content == "look\n\nthe post's text"
+    assert content == f"look <{_PAGE}>\n\nthe post's text"
 
 
 async def test_a_multi_image_previews_text_is_added_once():
@@ -122,7 +123,15 @@ async def test_a_multi_image_previews_text_is_added_once():
     content, attachments = await partition_link_preview_attachments(
         _PAGE, [_TEXTED, second], my_kind="stoat", preferences=None
     )
-    assert (content, attachments) == ("the post's text", [_TEXTED, second])
+    assert (content, attachments) == (f"<{_PAGE}>\n\nthe post's text", [_TEXTED, second])
+
+
+async def test_a_text_less_preview_still_has_its_link_stripped():
+    # a GIF-picker pick: the media is all there is, the link adds nothing
+    content, _ = await partition_link_preview_attachments(
+        f"look {_PAGE}", [_PREVIEW], my_kind="stoat", preferences=None
+    )
+    assert content == "look"
 
 
 async def test_the_previews_text_isnt_added_where_the_link_is_kept():

@@ -50,7 +50,7 @@ async def test_a_previews_text_is_relayed_along_with_its_media(monkeypatch):
 
     await _receiver(client).receive(_message(content_markdown=_PAGE, attachments=[texted]), target_channel_id="42")
 
-    assert channel.sent[0]["content"] == "the post"
+    assert channel.sent[0]["content"] == f"<{_PAGE}>\n\nthe post"
     assert channel.sent[0]["attachments"] == [("abc.jpg", b"img")]
 
 
@@ -98,7 +98,7 @@ async def test_edit_adds_a_late_previews_text_along_with_its_media(monkeypatch):
     )
 
     post = await channel.fetch_message("7")
-    assert post.edits == ["the post"]
+    assert post.edits == [f"<{_PAGE}>\n\nthe post"]
     [[embed]] = post.edited_embeds
     assert embed.media == ("abc.jpg", b"img")
 

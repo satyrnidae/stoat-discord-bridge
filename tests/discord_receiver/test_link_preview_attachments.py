@@ -105,7 +105,7 @@ async def test_edit_adds_a_late_previews_text_along_with_its_media(monkeypatch):
     )
 
     [edited] = channel.created_webhooks[0].edited
-    assert edited["content"] == "the post"
+    assert edited["content"] == f"<{_PAGE}>\n\nthe post"
     assert edited["attachments"] == [("abc.jpg", b"img")]
 
 
