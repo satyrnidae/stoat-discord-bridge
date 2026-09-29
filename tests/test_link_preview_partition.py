@@ -90,6 +90,48 @@ async def test_a_preview_with_no_page_url_is_kept():
     assert (content, attachments) == ("hi", [embed_only])
 
 
+# ------------------------------------------- preview text (issue #209)
+
+_TEXTED = Attachment(url="https://cdn.example/abc.jpg", source_page_url=_PAGE, preview_text="the post's text")
+
+
+async def test_a_link_only_post_is_replaced_by_the_previews_text():
+    content, attachments = await partition_link_preview_attachments(
+        _PAGE, [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert (content, attachments) == ("the post's text", [_TEXTED])
+
+
+async def test_an_embed_suppressed_link_only_post_is_replaced_by_the_previews_text():
+    content, _ = await partition_link_preview_attachments(
+        f"<{_PAGE}>", [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert content == "the post's text"
+
+
+async def test_the_previews_text_follows_the_rest_of_the_message():
+    content, _ = await partition_link_preview_attachments(
+        f"look {_PAGE}", [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert content == "look\n\nthe post's text"
+
+
+async def test_the_previews_text_isnt_added_where_the_link_is_kept():
+    # The destination unfurls the link itself (or, on IRC, just shows it).
+    for my_kind, prefs in (("stoat", _Prefs({"instagram.com": "stoat"})), (None, None)):
+        content, _ = await partition_link_preview_attachments(
+            f"look {_PAGE}", [_TEXTED], my_kind=my_kind, preferences=prefs
+        )
+        assert content == f"look {_PAGE}"
+
+
+async def test_the_previews_text_isnt_added_when_its_link_isnt_in_the_text():
+    content, _ = await partition_link_preview_attachments(
+        "no link here", [_TEXTED], my_kind="stoat", preferences=None
+    )
+    assert content == "no link here"
+
+
 async def test_a_raising_preference_lookup_falls_back_to_the_default():
     class _Broken:
         async def preferred_kind_for(self, url):

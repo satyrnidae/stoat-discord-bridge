@@ -41,6 +41,19 @@ async def test_default_reuploads_the_preview_and_strips_the_link(monkeypatch):
     assert channel.sent[0]["attachments"] == [("abc.jpg", b"img")]
 
 
+async def test_a_previews_text_is_relayed_along_with_its_media(monkeypatch):
+    # issue #209: a fixupx-style embed's text replaces the stripped link
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    texted = Attachment(url=_PREVIEW.url, filename="abc.jpg", source_page_url=_PAGE, preview_text="the post")
+
+    await _receiver(client).receive(_message(content_markdown=_PAGE, attachments=[texted]), target_channel_id="42")
+
+    assert channel.sent[0]["content"] == "the post"
+    assert channel.sent[0]["attachments"] == [("abc.jpg", b"img")]
+
+
 async def test_a_stoat_rule_skips_the_preview_and_keeps_the_link(monkeypatch):
     fetched: list[str] = []
 
@@ -64,14 +77,30 @@ async def test_a_stoat_rule_skips_the_preview_and_keeps_the_link(monkeypatch):
 # ------------------------------------------- late preview backfilled by an edit (issue #207)
 
 
-def _late_preview_edit(content=_PAGE):
+def _late_preview_edit(content=_PAGE, preview=_PREVIEW):
     return StandardEdit(
         origin_connector_id="discord",
         origin_channel_id="d-100",
         origin_message_id="m1",
         new_content_markdown=content,
-        new_attachments=[_PREVIEW],
+        new_attachments=[preview],
     )
+
+
+async def test_edit_adds_a_late_previews_text_along_with_its_media(monkeypatch):
+    monkeypatch.setattr(aiohttp.ClientSession, "get", lambda self, url: _FakeAiohttpResponse(b"img"))
+    client = FakeClient()
+    channel = client.add_channel(FakeChannel(id="42"))
+    texted = Attachment(url=_PREVIEW.url, filename="abc.jpg", source_page_url=_PAGE, preview_text="the post")
+
+    await _receiver(client).edit_message(
+        target_channel_id="42", target_message_ids=["7"], edit=_late_preview_edit(preview=texted)
+    )
+
+    post = await channel.fetch_message("7")
+    assert post.edits == ["the post"]
+    [[embed]] = post.edited_embeds
+    assert embed.media == ("abc.jpg", b"img")
 
 
 async def test_edit_adds_a_late_preview_as_an_embed_on_the_last_post(monkeypatch):

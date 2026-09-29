@@ -255,7 +255,8 @@ async def partition_link_preview_attachments(
     the raw link for its own platform to unfurl (issue #164).
 
     By default the media is kept and the link is stripped from `content`, so
-    the preview looks the way the source platform built it. If an
+    the preview looks the way the source platform built it; the preview's own
+    text, if any, takes the link's place (issue #209). If an
     `/attachments prefer` rule names `my_kind`, the attachment is dropped and
     the link left in place. `my_kind=None` (IRC, no previews) always keeps
     the link, since the page URL is more useful there than a bare media URL.
@@ -273,6 +274,8 @@ async def partition_link_preview_attachments(
         if my_kind is None or await _preferred_kind(preferences, page_url) == my_kind:
             continue
         content = link.sub("", content).strip()
+        if attachment.preview_text:
+            content = f"{content}\n\n{attachment.preview_text}" if content else attachment.preview_text
         kept.append(attachment)
     return content, kept
 
