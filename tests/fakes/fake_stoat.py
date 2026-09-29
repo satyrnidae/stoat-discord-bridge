@@ -82,8 +82,18 @@ class FakeAuthor:
 
 
 class FakeSentMessage:
-    def __init__(self, id: str) -> None:
+    """What `FakeChannel.send` returns. `edit` rewrites the channel's `sent`
+    record in place (a placeholder turned into the reply, issue #201) and
+    keeps every edit in the record's `edits` list."""
+
+    def __init__(self, id: str, record: dict | None = None) -> None:
         self.id = id
+        self._record = record if record is not None else {}
+
+    async def edit(self, *, content=None, **_kwargs) -> "FakeSentMessage":
+        self._record["content"] = content
+        self._record.setdefault("edits", []).append(content)
+        return self
 
 
 class FakeStoatMessage:
@@ -251,7 +261,7 @@ class FakeChannel:
         self.sent.append(record)
         message_id = str(self._next_message_id)
         self._next_message_id += 1
-        return FakeSentMessage(id=message_id)
+        return FakeSentMessage(id=message_id, record=record)
 
     def get_message(self, message_id: str, *, partial: bool = True) -> FakeStoatMessage:
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
@@ -399,7 +409,7 @@ class FakePartialMessageable:
         self.sent.append(record)
         message_id = str(self._next_message_id)
         self._next_message_id += 1
-        return FakeSentMessage(id=message_id)
+        return FakeSentMessage(id=message_id, record=record)
 
     def get_message(self, message_id: str, *, partial: bool = True) -> FakeStoatMessage:
         return self._messages.setdefault(message_id, FakeStoatMessage(id=message_id))
