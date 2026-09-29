@@ -124,7 +124,10 @@ the link into the text — those signed CDN URLs expire, and a native file
 renders inline — attaching them to the last post of a split message (issue
 #39). Anything over `formatting._MAX_REUPLOAD_BYTES` (8 MiB) or that can't be
 fetched falls back to an inlined URL via `formatting.inline_attachment_urls`
-so it's never lost. IRC has no native attachments, so
+so it's never lost. A download whose name has no extension (a Bluesky
+CDN URL ends in `@jpeg`) gets one from the response's content type, since
+Discord shows an extensionless upload as a binary file (issue #212). IRC has
+no native attachments, so
 `IrcReceiverService.receive` still inlines every attachment URL as its own
 line.
 
@@ -153,8 +156,9 @@ video-if-media-file then image, keyed by `original_url`; a bare
 `services/formatting.partition_link_preview_attachments`: by default it keeps
 the attachment and strips the link (whole-token match only; an
 embed-suppressed `<url>` goes with its brackets). A preview with its own
-text - the embed's description, else its title, carried as
-`Attachment.preview_text` by both senders - keeps its link instead, so the
+text - the embed's title (italic, as a byline) and description, quoted
+together by `formatting.format_preview_quote` and carried as
+`Attachment.preview_text` by both senders (issue #212) - keeps its link instead, so the
 post can still be sourced: the link is rewritten to an embed-suppressed
 `<url>` (so the destination doesn't unfurl it a second time) and the text
 follows it, so a fixupx-style post isn't relayed as a bare image (issue
