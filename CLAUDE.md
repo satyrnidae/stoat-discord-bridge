@@ -916,6 +916,15 @@ reply. Discord's `/unlink user` takes `local_id` as an autocompleted string
 rather than a Member picker so `all` is typeable, and every Discord `/unlink`
 handler defers first (issue #177) since a bulk run can outrun the 3s window.
 
+Every mutating command's reply goes through `_reply_linker_result` on
+Discord and Stoat, which shows a placeholder and edits the result into it
+(issue #201): on Discord that's the deferred "is thinking..." message (via
+`edit_original_response`; every linker command now defers), on Stoat a
+posted `WORKING_TEXT` message. If the command is still running after
+`SLOW_AFTER_SECONDS` (60s), `services/long_running.watch_long_running`
+flips the placeholder to `STILL_WORKING_TEXT` and the result is posted as a
+new message instead. IRC has no placeholder.
+
 On IRC, a channel the bridge's own JOIN created gets
 `default_channel_modes` applied; the `P` (InspIRCd permanent-channel) mode,
 if configured, is split off and applied separately once the OPER handshake
