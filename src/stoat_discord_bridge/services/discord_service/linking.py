@@ -11,6 +11,7 @@ re-check it. Composed into `DiscordSenderService`.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable
@@ -19,9 +20,16 @@ from typing import Any
 import discord
 
 from stoat_discord_bridge.admin_commands import LinkError, unlink_all
-from stoat_discord_bridge.services.discord_service.editor import LinkEditorSpec, LinkEditorView
+from stoat_discord_bridge.admin_commands.common import _is_all_token
+from stoat_discord_bridge.services.discord_service.editor import CancelView, LinkEditorSpec, LinkEditorView
 from stoat_discord_bridge.services.discord_service.formatting import _normalize_channel_id, _normalize_role_id
-from stoat_discord_bridge.services.long_running import STILL_WORKING_TEXT, watch_long_running
+from stoat_discord_bridge.services.long_running import (
+    CANCELED_TEXT,
+    STILL_WORKING_TEXT,
+    WORKING_TEXT,
+    CommandCanceled,
+    watch_long_running,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +140,7 @@ class DiscordLinkingMixin:
         deferred: bool = False,
         empty_fallback: str | None = None,
         editor: LinkEditorSpec | None = None,
+        cancelable: bool = False,
     ) -> None:
         """The `try: summary = await <linker call> / except LinkError: log +
         reply(str(exc)) / else: reply(summary)` shape every mutating
@@ -145,10 +154,21 @@ class DiscordLinkingMixin:
         each handler's own `summary or "..."` it used to write inline (issue
         #106). `editor`, when given, attaches the in-line link editor (issue
         #115) to a successful, non-empty reply only - there's nothing to edit
-        on an error or a "Nothing to mirror" no-op."""
+        on an error or a "Nothing to mirror" no-op.
+
+        `cancelable` puts a Cancel button on the placeholder (issue #200)
+        for the commands that can run for a long time."""
         if not deferred:
             await interaction.response.defer(ephemeral=True, thinking=True)
         went_slow = False
+        task = asyncio.ensure_future(coro)
+        cancel_view = None
+        if cancelable:
+            cancel_view = CancelView(task, invoker_id=interaction.user.id)
+            try:
+                await interaction.edit_original_response(content=WORKING_TEXT, view=cancel_view)
+            except discord.HTTPException:
+                logger.warning("[discord:%s] couldn't add the Cancel button", self.connector_id, exc_info=True)
 
         async def on_slow() -> None:
             nonlocal went_slow
@@ -156,11 +176,23 @@ class DiscordLinkingMixin:
             await interaction.edit_original_response(content=STILL_WORKING_TEXT)
 
         try:
-            summary = await watch_long_running(coro, on_slow=on_slow)
+            summary = await watch_long_running(task, on_slow=on_slow)
+        except CommandCanceled:
+            logger.info("[discord:%s] %s canceled by %s", self.connector_id, log_context, interaction.user.id)
+            await self._send_linker_reply(interaction, CANCELED_TEXT, deferred=True, went_slow=went_slow)
+            return
         except LinkError as exc:
             logger.info("[discord:%s] %s rejected: %s", self.connector_id, log_context, exc)
             await self._send_linker_reply(interaction, str(exc), deferred=True, went_slow=went_slow)
             return
+        finally:
+            if cancel_view is not None:
+                cancel_view.stop()
+                if went_slow:
+                    # The result goes out as a new message, so drop the
+                    # button from the old "still working" placeholder.
+                    with contextlib.suppress(discord.HTTPException):
+                        await interaction.edit_original_response(view=None)
         content = summary if empty_fallback is None else (summary or empty_fallback)
         await self._send_linker_reply(
             interaction, content, deferred=True, went_slow=went_slow, editor=editor if summary else None
@@ -347,6 +379,7 @@ class DiscordLinkingMixin:
             ),
             log_context="/unlink category",
             deferred=True,
+            cancelable=_is_all_token(local_id),
         )
 
     async def _handle_mirror_category(
@@ -389,7 +422,7 @@ class DiscordLinkingMixin:
             )
         await self._reply_linker_result(
             interaction, coro, log_context="/mirror category", deferred=True, empty_fallback="Nothing to mirror.",
-            editor=editor,
+            editor=editor, cancelable=True,
         )
 
     async def _handle_mirror_category_from(
@@ -416,6 +449,7 @@ class DiscordLinkingMixin:
             log_context="/mirror category from",
             deferred=True,
             empty_fallback="Nothing to mirror.",
+            cancelable=True,
         )
 
     async def _handle_link_role(
@@ -468,6 +502,7 @@ class DiscordLinkingMixin:
             self._role_linker.unlink_role(local_connector=self.connector_id, local_role=local_id, destination=service),
             log_context="/unlink-role",
             deferred=True,
+            cancelable=_is_all_token(local_id),
         )
 
     async def _handle_linked_roles(
@@ -524,7 +559,7 @@ class DiscordLinkingMixin:
             )
         await self._reply_linker_result(
             interaction, coro, log_context="/mirror-role", deferred=True, empty_fallback="Nothing to mirror.",
-            editor=editor,
+            editor=editor, cancelable=_is_all_token(service) or _is_all_token(local_id),
         )
 
     async def _handle_mirror_role_from(
@@ -551,6 +586,7 @@ class DiscordLinkingMixin:
             log_context="/mirror role from",
             deferred=True,
             empty_fallback="Nothing to mirror.",
+            cancelable=_is_all_token(external_id),
         )
 
     async def _handle_link_emote(
@@ -600,6 +636,7 @@ class DiscordLinkingMixin:
             self._emote_linker.unlink_emote(local_connector=self.connector_id, local_emote=local_id, destination=service),
             log_context="/unlink emote",
             deferred=True,
+            cancelable=_is_all_token(local_id),
         )
 
     async def _handle_linked_emotes(
@@ -650,7 +687,7 @@ class DiscordLinkingMixin:
             )
         await self._reply_linker_result(
             interaction, coro, log_context="/mirror emote", deferred=True, empty_fallback="Nothing to mirror.",
-            editor=editor,
+            editor=editor, cancelable=_is_all_token(service) or _is_all_token(local_id),
         )
 
     async def _handle_mirror_emote_from(
@@ -676,6 +713,7 @@ class DiscordLinkingMixin:
             log_context="/mirror emote from",
             deferred=True,
             empty_fallback="Nothing to mirror.",
+            cancelable=_is_all_token(external_id),
         )
 
     async def _handle_link_user(
@@ -791,7 +829,7 @@ class DiscordLinkingMixin:
             )
         await self._reply_linker_result(
             interaction, coro, log_context="/mirror channel", deferred=True, empty_fallback="Nothing to mirror.",
-            editor=editor,
+            editor=editor, cancelable=with_history or _is_all_token(service) or _is_all_token(local_id),
         )
 
     async def _handle_transfer_history(
@@ -838,7 +876,7 @@ class DiscordLinkingMixin:
             direction=direction,
             history_limit=history_limit,
         )
-        await self._reply_linker_result(interaction, coro, log_context=f"/{direction}", deferred=True)
+        await self._reply_linker_result(interaction, coro, log_context=f"/{direction}", deferred=True, cancelable=True)
 
     async def _handle_mirror_channel_from(
         self,
@@ -880,6 +918,7 @@ class DiscordLinkingMixin:
             log_context="/mirror channel from",
             deferred=True,
             empty_fallback="Nothing to mirror.",
+            cancelable=with_history or _is_all_token(external_id),
         )
 
     async def _handle_unlink_channel(
@@ -903,6 +942,7 @@ class DiscordLinkingMixin:
             self._linker.unlink_channel(local_connector=self.connector_id, local_channel_id=channel_id, destination=service),
             log_context="/unlink channel",
             deferred=True,
+            cancelable=_is_all_token(local_id),
         )
 
     async def _handle_unlink_user(
@@ -927,6 +967,7 @@ class DiscordLinkingMixin:
             self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=target, destination=service),
             log_context="/unlink user",
             deferred=True,
+            cancelable=_is_all_token(local_id),
         )
 
     async def _handle_unlink_all(self, interaction: discord.Interaction, service: str | None) -> None:
@@ -950,6 +991,7 @@ class DiscordLinkingMixin:
             ),
             log_context="/unlink all",
             deferred=True,
+            cancelable=True,
         )
 
     async def _handle_whitelist(

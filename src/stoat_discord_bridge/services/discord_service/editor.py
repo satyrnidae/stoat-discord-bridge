@@ -20,6 +20,7 @@ full group editor.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
@@ -379,6 +380,35 @@ class _CounterpartModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await self._view_ref.apply_retarget(interaction, str(self.value.value))
+
+
+class CancelView(discord.ui.View):
+    """A Cancel button on a long-running command's "working" placeholder
+    (issue #200). Clicking it cancels `task`, the command's linker call;
+    the handler awaiting it then posts the canceled reply. No timeout - a
+    `history_limit=all` backfill has no upper bound, so the handler stops
+    the view itself once the command ends."""
+
+    def __init__(self, task: asyncio.Future, *, invoker_id: int) -> None:
+        super().__init__(timeout=None)
+        self.task = task
+        self.invoker_id = invoker_id
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can cancel it.", ephemeral=True
+            )
+            return
+        self.stop()
+        if self.task.done():
+            # Finished before the click landed - its result is on the way.
+            await interaction.response.edit_message(view=None)
+            return
+        # Edit before canceling, so the handler's "Canceled." edit lands last.
+        await interaction.response.edit_message(content="Canceling...", view=None)
+        self.task.cancel()
 
 
 class _UnlinkButton(discord.ui.Button):
