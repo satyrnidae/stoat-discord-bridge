@@ -54,6 +54,22 @@ async def test_guard_rejects_a_second_reservation_of_a_held_destination():
         pass
 
 
+async def test_guard_releases_a_canceled_holder():
+    # A canceled /mirror (issue #200) must not leave its destination reserved.
+    guard = MirrorGuard()
+    connectors = _connectors()
+    entered, release = asyncio.Event(), asyncio.Event()
+    task = asyncio.create_task(_hold(guard, ["stoat"], connectors, entered, release))
+    await entered.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with guard.reserve(["stoat"], connectors):
+        pass
+
+
 async def test_guard_is_reentrant_within_one_task():
     guard = MirrorGuard()
     connectors = _connectors()

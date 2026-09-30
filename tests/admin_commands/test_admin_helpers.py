@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from stoat_discord_bridge.admin_commands import (
@@ -230,6 +232,30 @@ async def test_run_bulk_mirror_runs_every_entity_and_joins_the_results():
     )
     assert seen == [("c1", "general"), ("c2", "random")]
     assert summary == "mirrored general\nmirrored random"
+
+
+async def test_run_bulk_mirror_cancel_mid_loop_propagates():
+    # Issue #200's cancel button relies on this: the per-entity `except
+    # Exception` must not swallow CancelledError.
+    seen = []
+    second_started = asyncio.Event()
+
+    async def mirror_one(entity_id, entity_name):
+        seen.append(entity_id)
+        if entity_id == "c2":
+            second_started.set()
+            await asyncio.sleep(10)
+        return f"mirrored {entity_name}"
+
+    task = asyncio.create_task(
+        _run_bulk_mirror([("c1", "a"), ("c2", "b"), ("c3", "c")], mirror_one, pacing_seconds=0)
+    )
+    await second_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert seen == ["c1", "c2"]
 
 
 async def test_run_bulk_mirror_reports_a_per_entity_linkerror_instead_of_aborting():
