@@ -572,7 +572,10 @@ class ChannelLinker:
         await self._apply_metadata(destination, destination_channel_id, metadata)
 
         if category_lookup.stale is not None:
-            heal_line = await self._relink_healed_category(destination, category, local_connector, category_lookup)
+            # Only relink by title when the channel really went under the
+            # source Category's own name (not, say, a thread-prefixed one).
+            placed_under = category if category == category_lookup.name else None
+            heal_line = await self._relink_healed_category(destination, placed_under, local_connector, category_lookup)
             summary = f"{heal_line}\n{summary}"
 
         if with_history:
@@ -941,7 +944,8 @@ class ChannelLinker:
                     title = await self._category_linker.resolve_linked_category(local)
                     if title is None:
                         return _CategoryLookup(source_category_name or None, local, source_category_id)
-                    return _CategoryLookup(title)
+                    if title:
+                        return _CategoryLookup(title)
                 if local is not None and local.category_name:
                     return _CategoryLookup(local.category_name)
         return _CategoryLookup(source_category_name or None)
