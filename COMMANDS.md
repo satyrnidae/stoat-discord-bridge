@@ -99,6 +99,24 @@ fresh panel). **v1 scope is retargeting and unlinking only** - renaming the
 panel yet and still need the plain `/mirror ... new_name` / channel-move
 paths; a future iteration may add them.
 
+## Canceling a long-running command (Discord and Stoat)
+
+Commands that can run for a long time can be canceled while they run:
+`/mirror channel ... with history` (both directions), `/import` / `/export`,
+`/mirror category` (both directions), any `/mirror <noun>` run with `all`
+(as the service or the entity), `/unlink <noun> all`, and `/unlink all`.
+
+- **Discord**: the "Working on it..." reply has a **Cancel** button. Only the
+  person who ran the command can press it.
+- **Stoat**: the "Working on it... React ❌ to cancel." message gets a ❌
+  reaction from the bot. React ❌ on it yourself to cancel; only the person
+  who ran the command can.
+
+The command stops at its next step (the message or entity in progress
+finishes first) and the reply changes to "Canceled." Anything already done
+stays: channels already mirrored stay linked, and messages already copied
+stay posted. IRC commands can't be canceled.
+
 ## `/status`
 
 Reports sync target health (`healthy` / `degraded` / `failing`) per
