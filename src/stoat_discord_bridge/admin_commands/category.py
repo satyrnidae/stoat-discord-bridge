@@ -351,12 +351,21 @@ class CategoryLinker:
         if dest_info.category_name_limit is not None:
             target_name = clip_name(target_name, dest_info.category_name_limit)
 
+        lines: list[str] = []
         bridge_group = await self._category_mappings.get_bridge_group(local_connector, local_category_id)
         dest_category_id: str | None = None
         match = None
         if bridge_group is not None:
             existing = await self._category_mappings.get_mapped_categories(bridge_group)
             match = next((m for m in existing if m.connector_id == destination), None)
+            # A linked Category deleted on `destination` without `/unlink
+            # category` is dropped here and recreated below (issue #206).
+            if match is not None and await self.resolve_linked_category(match) is None:
+                lines.append(
+                    f"{dest_label}: linked Category '{match.category_name}' ({match.category_id}) "
+                    "was gone - creating a new one."
+                )
+                match = None
             if match is not None:
                 dest_category_id = match.category_id
 
@@ -372,10 +381,13 @@ class CategoryLinker:
             resolved = await self._resolve_name(destination, dest_category_id)
             return resolved if resolved != dest_category_id else fallback
 
-        lines: list[str] = []
+        # Keeps a self-heal line (above) in front of an early-return failure.
+        def _fail(message: str) -> str:
+            return "\n".join([*lines, message])
+
         if dest_category_id is None:
             if dest_info.ensure_category is None:
-                return f"{dest_label}: doesn't support Category creation - link it manually with /link category."
+                return _fail(f"{dest_label}: doesn't support Category creation - link it manually with /link category.")
             try:
                 ensured = await _ensure_unclaimed_by_name(
                     dest_info.ensure_category,
@@ -386,9 +398,9 @@ class CategoryLinker:
                 )
             except Exception as exc:
                 logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, target_name, exc)
-                return f"{dest_label}: failed to create/find a Category: {exc}"
+                return _fail(f"{dest_label}: failed to create/find a Category: {exc}")
             if ensured is None:
-                return f"{dest_label}: failed to create/find a Category: {_all_names_taken_message(target_name)}."
+                return _fail(f"{dest_label}: failed to create/find a Category: {_all_names_taken_message(target_name)}.")
             dest_category_id, target_name = ensured
             try:
                 lines.append(
@@ -402,7 +414,7 @@ class CategoryLinker:
                     )
                 )
             except LinkError as exc:
-                return f"{dest_label}: {exc}"
+                return _fail(f"{dest_label}: {exc}")
         else:
             lines.append(f"{dest_label}: already linked - reusing '{dest_category_id}'.")
 
@@ -573,6 +585,39 @@ class CategoryLinker:
         and by StoatSenderService to decide whether to group a thread
         Category's parent channel into it."""
         return await self._thread_categories.is_thread_category(connector_id, category_id)
+
+    async def resolve_linked_category(self, mapping: CategoryMapping) -> str | None:
+        """The current title of `mapping`'s linked Category, or None if it's
+        gone from its connector - deleted there without `/unlink category`
+        (issue #206). A gone Category's stale row is dropped, so the caller
+        can fall through to its "not linked yet" path instead of trusting a
+        dead id forever.
+
+        Only a definite "not found" (the name hook answering empty) counts as
+        gone. No hook or a raising one can't tell, so the stored name is kept.
+        The hooks are best-effort themselves, so a lookup that fails inside
+        the hook still reads as "not found" - an accepted limitation."""
+        info = self._connectors.get(mapping.connector_id)
+        hook = info.resolve_category_name if info else None
+        if hook is None:
+            return mapping.category_name
+        try:
+            title = await hook(mapping.category_id)
+        except Exception:
+            logger.debug(
+                "couldn't check linked Category %r on %s", mapping.category_id, mapping.connector_id, exc_info=True
+            )
+            return mapping.category_name
+        if title:
+            return title
+        logger.info(
+            "linked Category %r (%s) is gone from %s - dropping the stale link",
+            mapping.category_name,
+            mapping.category_id,
+            mapping.connector_id,
+        )
+        await self._category_mappings.delete_mapping(mapping.connector_id, mapping.category_id)
+        return None
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         info = self._connectors.get(connector)

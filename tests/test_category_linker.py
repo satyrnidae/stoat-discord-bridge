@@ -610,6 +610,101 @@ async def test_mirror_category_reuses_an_existing_linked_category(fake_db):
     assert "reusing" in summary
 
 
+def _stale_link_connectors(resolve_category_name, ensure_channel=None, children=()):
+    ensure_category, created = _ensure_category_fake()
+
+    async def channels_in_category(cid):
+        return list(children)
+
+    connectors = {
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", channels_in_category=channels_in_category),
+        "discord": ConnectorInfo(
+            id="discord",
+            label="Discord",
+            ensure_category=ensure_category,
+            ensure_channel=ensure_channel,
+            resolve_category_name=resolve_category_name,
+        ),
+    }
+    return connectors, created
+
+
+async def test_mirror_category_recreates_a_linked_category_deleted_on_the_destination(fake_db):
+    # issue #206: d-cat was deleted on Discord without /unlink category. The
+    # stale row is dropped and a fresh Category is created and linked.
+    ensure_channel_calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        ensure_channel_calls.append((name, category))
+        return f"dest-chan-{name}"
+
+    async def resolve_category_name(cid):
+        return None  # d-cat is gone
+
+    connectors, created = _stale_link_connectors(
+        resolve_category_name, ensure_channel, children=[("s-chan-1", "general")]
+    )
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await linker.link_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team",
+        source="discord", source_id="d-cat", destination_id=None,
+    )
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert created == ["Team"]
+    assert await category_mappings.get_bridge_group("discord", "d-cat") is None
+    group = await category_mappings.get_bridge_group("stoat", "s-cat")
+    assert group is not None
+    assert group == await category_mappings.get_bridge_group("discord", "dest-Team")
+    assert ensure_channel_calls == [("general", "Team")]
+    assert "was gone" in summary
+    assert "reusing" not in summary
+
+
+async def test_mirror_category_reuses_a_linked_category_that_still_exists(fake_db):
+    async def resolve_category_name(cid):
+        return "Team" if cid == "d-cat" else None
+
+    connectors, created = _stale_link_connectors(resolve_category_name)
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await linker.link_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team",
+        source="discord", source_id="d-cat", destination_id=None,
+    )
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert created == []
+    assert "reusing" in summary
+    assert await category_mappings.get_bridge_group("discord", "d-cat") is not None
+
+
+async def test_mirror_category_keeps_the_link_when_the_destination_lookup_raises(fake_db):
+    # Only a definite "not found" counts as gone - a failing lookup can't tell.
+    async def resolve_category_name(cid):
+        raise RuntimeError("API down")
+
+    connectors, created = _stale_link_connectors(resolve_category_name)
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await linker.link_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team",
+        source="discord", source_id="d-cat", destination_id=None,
+    )
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert created == []
+    assert "reusing" in summary
+    assert await category_mappings.get_bridge_group("discord", "d-cat") is not None
+
+
 def _same_title_connectors(ensure_category, ensure_channel=None, children=()):
     async def channels_in_category(cid):
         return list(children)
