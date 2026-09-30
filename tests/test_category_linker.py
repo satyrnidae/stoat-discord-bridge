@@ -338,6 +338,78 @@ async def test_sync_new_channel_uses_destination_own_category_name_not_source_na
     assert calls == [("announcements", "Alpha Squad")]
 
 
+async def test_sync_new_channel_recreates_a_linked_category_deleted_on_the_destination(fake_db):
+    # issue #206: discord's linked Category was deleted without /unlink
+    # category. The new channel lands in a fresh, linked Category named after
+    # stoat's, not under the dead Category's stored name.
+    ensure_category, created = _ensure_category_fake()
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"created-{name}"
+
+    async def resolve_category_name(cid):
+        return {"dest-Team": "Team"}.get(cid)
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord",
+            label="Discord",
+            ensure_channel=ensure_channel,
+            ensure_category=ensure_category,
+            resolve_category_name=resolve_category_name,
+        ),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat"),
+    }
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await linker.link_category(
+        local_connector="discord", local_category_id="d-cat", local_category_name="d-cat",
+        source="stoat", source_id="s-cat", destination_id=None,
+    )
+    group = await category_mappings.get_bridge_group("stoat", "s-cat")
+
+    await linker.sync_new_channel(
+        local_connector="stoat", local_category_id="s-cat", channel_id="s-chan", channel_name="announcements"
+    )
+
+    assert created == ["s-cat"]  # stoat's own Category name (no resolver configured for it here)
+    assert calls == [("announcements", "s-cat")]
+    assert await category_mappings.get_bridge_group("discord", "d-cat") is None
+    assert await category_mappings.get_bridge_group("discord", "dest-s-cat") == group
+
+
+async def test_sync_new_channel_skips_a_deleted_category_it_cant_recreate(fake_db):
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        return f"created-{name}"
+
+    async def resolve_category_name(cid):
+        return None
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", ensure_channel=ensure_channel, resolve_category_name=resolve_category_name
+        ),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat"),
+    }
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+    await linker.link_category(
+        local_connector="discord", local_category_id="d-cat", local_category_name="Team",
+        source="stoat", source_id="s-cat", destination_id=None,
+    )
+
+    await linker.sync_new_channel(
+        local_connector="stoat", local_category_id="s-cat", channel_id="s-chan", channel_name="announcements"
+    )
+
+    # no ensure_category on discord - the channel isn't mirrored under a dead name
+    assert calls == []
+    assert await category_mappings.get_bridge_group("discord", "d-cat") is None
+
+
 # ---------------------------------------------------------------- CategoryLinker thread-category binding
 
 

@@ -369,58 +369,24 @@ class CategoryLinker:
             if match is not None:
                 dest_category_id = match.category_id
 
-        # Resolve the destination Category's name, but fall back to a known-good
-        # `fallback` rather than echoing the raw id when the lookup comes up
-        # empty. `ensure_category` just created-or-matched the Category as
-        # `target_name`, and the connector's cache won't show a brand-new one
-        # yet, so `_resolve_name` would hand back the id - which then gets
-        # stored as the Category's name and, worse, passed to child-channel
-        # placement as a Category *title*, spawning a second Category literally
-        # named after the id (issue #64).
-        async def _dest_name(fallback: str) -> str:
-            resolved = await self._resolve_name(destination, dest_category_id)
-            return resolved if resolved != dest_category_id else fallback
-
-        # Keeps a self-heal line (above) in front of an early-return failure.
-        def _fail(message: str) -> str:
-            return "\n".join([*lines, message])
-
         if dest_category_id is None:
-            if dest_info.ensure_category is None:
-                return _fail(f"{dest_label}: doesn't support Category creation - link it manually with /link category.")
             try:
-                ensured = await _ensure_unclaimed_by_name(
-                    dest_info.ensure_category,
-                    lambda category_id: self._category_mappings.get_bridge_group(destination, category_id),
-                    target_name,
-                    own_group=bridge_group,
-                    limit=dest_info.category_name_limit,
-                )
-            except Exception as exc:
-                logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, target_name, exc)
-                return _fail(f"{dest_label}: failed to create/find a Category: {exc}")
-            if ensured is None:
-                return _fail(f"{dest_label}: failed to create/find a Category: {_all_names_taken_message(target_name)}.")
-            dest_category_id, target_name = ensured
-            try:
-                lines.append(
-                    await self.link_category(
-                        local_connector=destination,
-                        local_category_id=dest_category_id,
-                        local_category_name=await _dest_name(target_name),
-                        source=local_connector,
-                        source_id=local_category_id,
-                        destination_id=None,
-                    )
+                dest_category_id, dest_category_name, summary = await self._create_linked_category(
+                    local_connector=local_connector,
+                    local_category_id=local_category_id,
+                    destination=destination,
+                    target_name=target_name,
+                    bridge_group=bridge_group,
                 )
             except LinkError as exc:
-                return _fail(f"{dest_label}: {exc}")
+                # Keeps a self-heal line (above) in front of the failure.
+                return "\n".join([*lines, f"{dest_label}: {exc}"])
+            lines.append(summary)
         else:
             lines.append(f"{dest_label}: already linked - reusing '{dest_category_id}'.")
-
-        dest_category_name = await _dest_name(
-            (match.category_name if match is not None else None) or target_name
-        )
+            dest_category_name = await self._dest_name(
+                destination, dest_category_id, match.category_name or target_name
+            )
         info = self._connectors.get(local_connector)
         if info is not None and info.channels_in_category is not None:
             try:
@@ -519,13 +485,21 @@ class CategoryLinker:
             if mapping.connector_id == local_connector:
                 continue
             try:
-                result = await self._channel_linker.mirror_channel(
-                    local_connector=local_connector,
-                    local_channel_id=channel_id,
-                    local_channel_name=channel_name,
-                    destination=mapping.connector_id,
-                    local_channel_category=mapping.category_name,
-                )
+                # Held across the self-heal too, so recreating a deleted
+                # linked Category can't race a manual `/mirror`.
+                with self._guard.reserve((mapping.connector_id,), self._connectors):
+                    category_name = await self._linked_category_for_sync(
+                        mapping, local_connector, local_category_id, bridge_group
+                    )
+                    if category_name is None:
+                        continue
+                    result = await self._channel_linker.mirror_channel(
+                        local_connector=local_connector,
+                        local_channel_id=channel_id,
+                        local_channel_name=channel_name,
+                        destination=mapping.connector_id,
+                        local_channel_category=category_name,
+                    )
             except MirrorInProgressError:
                 # A manual `/mirror` into this destination is running - it'll
                 # pick this channel up itself if it's a child of the mirrored
@@ -543,6 +517,32 @@ class CategoryLinker:
                 mapping.connector_id,
                 result,
             )
+
+    async def _linked_category_for_sync(
+        self, mapping: CategoryMapping, local_connector: str, local_category_id: str, bridge_group: str
+    ) -> str | None:
+        """The title of `mapping`'s Category to auto-sync a new channel into.
+        If it was deleted without `/unlink category` (issue #206), a fresh one
+        named after `local_category_id` is created and linked instead; None
+        (skip this destination) if that fails."""
+        title = await self.resolve_linked_category(mapping)
+        if title is not None:
+            return title
+        destination = mapping.connector_id
+        target_name = await self._resolve_name(local_connector, local_category_id)
+        try:
+            _, title, _ = await self._create_linked_category(
+                local_connector=local_connector,
+                local_category_id=local_category_id,
+                destination=destination,
+                target_name=target_name,
+                bridge_group=bridge_group,
+            )
+        except LinkError as exc:
+            logger.warning("[category-sync] couldn't recreate the linked Category on %s: %s", destination, exc)
+            return None
+        logger.info("[category-sync] recreated the linked Category on %s as %r", destination, title)
+        return title
 
     async def bind_thread_category(
         self, connector_id: str, parent_channel_id: str, category_id: str
@@ -618,6 +618,58 @@ class CategoryLinker:
         )
         await self._category_mappings.delete_mapping(mapping.connector_id, mapping.category_id)
         return None
+
+    async def _create_linked_category(
+        self,
+        *,
+        local_connector: str,
+        local_category_id: str,
+        destination: str,
+        target_name: str,
+        bridge_group: str | None,
+    ) -> tuple[str, str, str]:
+        """Get-or-create a Category titled `target_name` on `destination` (one
+        not already linked elsewhere) and link `local_category_id` to it.
+        Returns (id, title, link summary). Raises LinkError, unprefixed, when
+        `destination` can't create Categories or the create/link fails."""
+        dest_info = self._connectors[destination]
+        if dest_info.ensure_category is None:
+            raise LinkError("doesn't support Category creation - link it manually with /link category.")
+        try:
+            ensured = await _ensure_unclaimed_by_name(
+                dest_info.ensure_category,
+                lambda category_id: self._category_mappings.get_bridge_group(destination, category_id),
+                target_name,
+                own_group=bridge_group,
+                limit=dest_info.category_name_limit,
+            )
+        except Exception as exc:
+            logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, target_name, exc)
+            raise LinkError(f"failed to create/find a Category: {exc}") from exc
+        if ensured is None:
+            raise LinkError(f"failed to create/find a Category: {_all_names_taken_message(target_name)}.")
+        category_id, target_name = ensured
+        title = await self._dest_name(destination, category_id, target_name)
+        summary = await self.link_category(
+            local_connector=destination,
+            local_category_id=category_id,
+            local_category_name=title,
+            source=local_connector,
+            source_id=local_category_id,
+            destination_id=None,
+        )
+        return category_id, title, summary
+
+    async def _dest_name(self, destination: str, category_id: str, fallback: str) -> str:
+        """Resolve `category_id`'s title on `destination`, but fall back to a
+        known-good `fallback` rather than echoing the raw id when the lookup
+        comes up empty. A Category `ensure_category` just created may not be
+        in the connector's cache yet, so `_resolve_name` would hand back the
+        id - which then gets stored as the Category's name and, worse, passed
+        to child-channel placement as a Category *title*, spawning a second
+        Category literally named after the id (issue #64)."""
+        resolved = await self._resolve_name(destination, category_id)
+        return resolved if resolved != category_id else fallback
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         info = self._connectors.get(connector)
