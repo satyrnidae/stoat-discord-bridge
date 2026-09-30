@@ -141,6 +141,8 @@ class _StoatClient(stoat_commands.Bot):
         await self._owner._handle_typing(event, active=False)
 
     async def on_message_react(self, event, /) -> None:
+        if self._owner._cancel_command_by_reaction(event):
+            return  # a cancel on a running command's placeholder (issue #200) - not a relayable reaction
         await self._owner._handle_message_react(event, added=True)
 
     async def on_message_unreact(self, event, /) -> None:

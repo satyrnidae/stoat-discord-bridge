@@ -10,14 +10,26 @@ all check. Composed into `StoatSenderService`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable
 
 from stoat_discord_bridge.admin_commands import LinkError, unlink_all
-from stoat_discord_bridge.services.long_running import STILL_WORKING_TEXT, WORKING_TEXT, watch_long_running
+from stoat_discord_bridge.admin_commands.common import _is_all_token
+from stoat_discord_bridge.services.long_running import (
+    CANCELED_TEXT,
+    STILL_WORKING_TEXT,
+    WORKING_TEXT,
+    CommandCanceled,
+    watch_long_running,
+)
 from stoat_discord_bridge.services.stoat_service.formatting import _channel_category
 
 logger = logging.getLogger(__name__)
+
+# Reacting with this on a long-running command's placeholder cancels it (issue #200).
+CANCEL_EMOJI = "❌"
+_CANCEL_HINT = f" React {CANCEL_EMOJI} to cancel."
 
 
 class StoatLinkingMixin:
@@ -52,7 +64,13 @@ class StoatLinkingMixin:
         return False
 
     async def _reply_linker_result(
-        self, ctx, coro: Awaitable[str], *, log_context: str, empty_fallback: str | None = None
+        self,
+        ctx,
+        coro: Awaitable[str],
+        *,
+        log_context: str,
+        empty_fallback: str | None = None,
+        cancelable: bool = False,
     ) -> None:
         """The `try: summary = await <linker call> / except LinkError: log +
         reply(str(exc)) / else: reply(summary)` shape every mutating handler
@@ -63,9 +81,14 @@ class StoatLinkingMixin:
         Posts a `WORKING_TEXT` placeholder first and edits the result into
         it; a command still running after a minute flips the placeholder to
         `STILL_WORKING_TEXT` and posts the result as a new message instead
-        (issue #201)."""
+        (issue #201).
+
+        `cancelable` (issue #200) reacts `CANCEL_EMOJI` on the placeholder
+        and registers it, so the invoker reacting the same cancels the
+        command (`_cancel_command_by_reaction`)."""
+        hint = _CANCEL_HINT if cancelable else ""
         try:
-            placeholder = await ctx.send(WORKING_TEXT)
+            placeholder = await ctx.send(WORKING_TEXT + hint)
         except Exception:
             # Still run the command - its result just goes out as a plain reply.
             logger.warning("[stoat:%s] couldn't post the command placeholder", self.connector_id, exc_info=True)
@@ -73,21 +96,41 @@ class StoatLinkingMixin:
         else:
             self._note_command_message(str(getattr(placeholder, "id", "")))
         went_slow = placeholder is None
+        task = asyncio.ensure_future(coro)
+        placeholder_id = str(getattr(placeholder, "id", ""))
+        registered = cancelable and bool(placeholder_id)
+        if registered:
+            self._cancelable_commands[placeholder_id] = (task, str(ctx.author_id))
+            try:
+                await placeholder.react(CANCEL_EMOJI)
+            except Exception:
+                logger.warning("[stoat:%s] couldn't add the cancel reaction", self.connector_id, exc_info=True)
 
         async def on_slow() -> None:
             nonlocal went_slow
             if went_slow:
                 return
             went_slow = True
-            await placeholder.edit(content=STILL_WORKING_TEXT)
+            await placeholder.edit(content=STILL_WORKING_TEXT + hint)
 
         try:
-            summary = await watch_long_running(coro, on_slow=on_slow)
+            summary = await watch_long_running(task, on_slow=on_slow)
+        except CommandCanceled:
+            logger.info("[stoat:%s] %s canceled by %s", self.connector_id, log_context, ctx.author_id)
+            text = CANCELED_TEXT
         except LinkError as exc:
             logger.info("[stoat:%s] %s rejected: %s", self.connector_id, log_context, exc)
             text = str(exc)
         else:
             text = summary if empty_fallback is None else (summary or empty_fallback)
+        finally:
+            if registered:
+                self._cancelable_commands.pop(placeholder_id, None)
+        if registered:
+            try:
+                await placeholder.unreact(CANCEL_EMOJI)
+            except Exception:
+                logger.debug("[stoat:%s] couldn't remove the cancel reaction", self.connector_id, exc_info=True)
         if went_slow:
             await self._reply(ctx, text)
             return
@@ -96,6 +139,19 @@ class StoatLinkingMixin:
         except Exception:
             logger.warning("[stoat:%s] couldn't edit the command placeholder", self.connector_id, exc_info=True)
             await self._reply(ctx, text)
+
+    def _cancel_command_by_reaction(self, event) -> bool:
+        """A `CANCEL_EMOJI` reaction on a running command's placeholder
+        (issue #200): cancels the command if the reactor ran it. Returns True
+        for any such reaction - including the bot's own and a bystander's -
+        so it's kept out of reaction sync."""
+        entry = self._cancelable_commands.get(str(event.message_id))
+        if entry is None or event.emoji != CANCEL_EMOJI:
+            return False
+        task, invoker_id = entry
+        if str(event.user_id) == invoker_id:
+            task.cancel()
+        return True
 
     async def _linked_channels(self, ctx, local_id: str | None = None) -> None:
         """`/linked channels [local_id|name]` - read-only. Defaults to the
@@ -235,6 +291,7 @@ class StoatLinkingMixin:
             ctx,
             self._emote_linker.unlink_emote(local_connector=self.connector_id, local_emote=local_id, destination=service),
             log_context="/unlink emote",
+            cancelable=_is_all_token(local_id),
         )
 
     async def _linked_emotes(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
@@ -263,7 +320,9 @@ class StoatLinkingMixin:
             coro = self._emote_linker.mirror_emote(
                 local_connector=self.connector_id, local_emote=local_id, destination=service, new_name=new_name
             )
-        await self._reply_linker_result(ctx, coro, log_context="/mirror emote")
+        await self._reply_linker_result(
+            ctx, coro, log_context="/mirror emote", cancelable=_is_all_token(service) or _is_all_token(local_id)
+        )
 
     async def _mirror_emote_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
@@ -280,6 +339,7 @@ class StoatLinkingMixin:
                 local_connector=self.connector_id, source=service, source_emote=external_id, new_name=new_name
             ),
             log_context="/mirror emote from",
+            cancelable=_is_all_token(external_id),
         )
 
     async def _link_user(self, ctx, service: str, external_id: str, local_id: str) -> None:
@@ -370,7 +430,12 @@ class StoatLinkingMixin:
                 with_history=with_history,
                 history_limit=history_limit,
             )
-        await self._reply_linker_result(ctx, coro, log_context="/mirror channel")
+        await self._reply_linker_result(
+            ctx,
+            coro,
+            log_context="/mirror channel",
+            cancelable=with_history or _is_all_token(service) or _is_all_token(local_id),
+        )
 
     async def _transfer_history(
         self,
@@ -406,7 +471,7 @@ class StoatLinkingMixin:
             direction=direction,
             history_limit=history_limit,
         )
-        await self._reply_linker_result(ctx, coro, log_context=f"/{direction}")
+        await self._reply_linker_result(ctx, coro, log_context=f"/{direction}", cancelable=True)
 
     async def _mirror_channel_from(
         self,
@@ -440,6 +505,7 @@ class StoatLinkingMixin:
                 history_limit=history_limit,
             ),
             log_context="/mirror channel from",
+            cancelable=with_history or _is_all_token(external_id),
         )
 
     async def _unlink_channel(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
@@ -463,6 +529,7 @@ class StoatLinkingMixin:
             ctx,
             self._linker.unlink_channel(local_connector=self.connector_id, local_channel_id=channel_id, destination=service),
             log_context="/unlink channel",
+            cancelable=_is_all_token(local_id),
         )
 
     async def _unlink_category(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
@@ -493,6 +560,7 @@ class StoatLinkingMixin:
                 destination=service,
             ),
             log_context="/unlink category",
+            cancelable=_is_all_token(local_id),
         )
 
     async def _mirror_category(
@@ -518,7 +586,7 @@ class StoatLinkingMixin:
         else:
             coro = self._category_linker.mirror_category(destination=service, new_name=new_name, **kwargs)
         await self._reply_linker_result(
-            ctx, coro, log_context="/mirror category", empty_fallback="Nothing to mirror."
+            ctx, coro, log_context="/mirror category", empty_fallback="Nothing to mirror.", cancelable=True
         )
 
     async def _mirror_category_from(
@@ -538,6 +606,7 @@ class StoatLinkingMixin:
             ),
             log_context="/mirror category from",
             empty_fallback="Nothing to mirror.",
+            cancelable=True,
         )
 
     async def _unlink_user(self, ctx, service: str | None = None, local_id: str | None = None) -> None:
@@ -561,6 +630,7 @@ class StoatLinkingMixin:
             ctx,
             self._user_linker.unlink_user(local_connector=self.connector_id, local_user_id=target, destination=service),
             log_context="/unlink user",
+            cancelable=_is_all_token(local_id),
         )
 
     async def _unlink_all(self, ctx, service: str | None = None) -> None:
@@ -585,6 +655,7 @@ class StoatLinkingMixin:
                 user_linker=self._user_linker,
             ),
             log_context="/unlink all",
+            cancelable=True,
         )
 
     async def _link_role(self, ctx, local_id: str, service: str, external_id: str) -> None:
@@ -622,6 +693,7 @@ class StoatLinkingMixin:
             ctx,
             self._role_linker.unlink_role(local_connector=self.connector_id, local_role=local_id, destination=service),
             log_context="/unlink role",
+            cancelable=_is_all_token(local_id),
         )
 
     async def _linked_roles(self, ctx, local_id: str | None = None, service: str | None = None) -> None:
@@ -650,7 +722,9 @@ class StoatLinkingMixin:
             coro = self._role_linker.mirror_role(
                 local_connector=self.connector_id, local_role=local_id, destination=service, new_name=new_name
             )
-        await self._reply_linker_result(ctx, coro, log_context="/mirror role")
+        await self._reply_linker_result(
+            ctx, coro, log_context="/mirror role", cancelable=_is_all_token(service) or _is_all_token(local_id)
+        )
 
     async def _mirror_role_from(
         self, ctx, service: str, external_id: str, new_name: str | None = None
@@ -667,6 +741,7 @@ class StoatLinkingMixin:
                 local_connector=self.connector_id, source=service, source_role=external_id, new_name=new_name
             ),
             log_context="/mirror role from",
+            cancelable=_is_all_token(external_id),
         )
 
     async def _whitelist(self, ctx, action: str, target: str, bot_ref: str) -> None:
