@@ -172,6 +172,7 @@ class ChannelLinker:
 
         source_id = await self._resolve_to_id(source, source_id)
 
+        source_name = await self._resolve_name(source, source_id)
         explicit_destination = bool(destination_id and destination_id != local_channel_id)
         if not explicit_destination:
             destination_channel_id = local_channel_id
@@ -179,6 +180,16 @@ class ChannelLinker:
         else:
             destination_channel_id = await self._resolve_to_id(local_connector, destination_id)
             destination_name = await self._resolve_name(local_connector, destination_channel_id)
+            # A connector that can name channels but found nothing for this id
+            # gets the source's name rather than the raw id (issue #206). One
+            # with no name hook (IRC) keeps the id - there, it *is* the name.
+            local_info = self._connectors.get(local_connector)
+            if (
+                destination_name == destination_channel_id
+                and local_info is not None
+                and local_info.resolve_channel_name is not None
+            ):
+                destination_name = source_name
 
         # A Discord forum channel is really a Category (issue #100) - hand a
         # `/link channel` on one off to `/link category`, linking the forum to
@@ -207,7 +218,7 @@ class ChannelLinker:
         )
         bridge_group = source_group or destination_group or uuid.uuid4().hex
 
-        source_name = self._normalize_name(source, await self._resolve_name(source, source_id))
+        source_name = self._normalize_name(source, source_name)
         destination_name = self._normalize_name(local_connector, destination_name)
         await self._channel_mappings.upsert(
             ChannelMapping(bridge_group=bridge_group, connector_id=source, channel_id=source_id, channel_name=source_name)

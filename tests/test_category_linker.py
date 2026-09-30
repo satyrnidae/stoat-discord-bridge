@@ -461,6 +461,31 @@ async def test_link_category_resolves_bare_names_and_falls_back_to_id(fake_db):
     assert mapped == {"discord": "d-cat", "stoat": "s-cat"}
 
 
+async def test_link_category_never_stores_an_unresolvable_destination_id_as_its_name(fake_db):
+    # issue #206: a destination id whose title can't be found (e.g. a
+    # just-deleted Category) is stored under the source's name, not the id.
+    async def d_name(cid):
+        return {"d-cat": "Team Chat"}.get(cid)
+
+    async def s_name(cid):
+        return None
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_category_name=d_name),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", resolve_category_name=s_name),
+    }
+    linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
+
+    await linker.link_category(
+        local_connector="stoat", local_category_id="elsewhere", local_category_name="Elsewhere",
+        source="discord", source_id="d-cat", destination_id="s-dead",
+    )
+
+    group = await category_mappings.get_bridge_group("discord", "d-cat")
+    names = {m.connector_id: m.category_name for m in await category_mappings.get_mapped_categories(group)}
+    assert names == {"discord": "Team Chat", "stoat": "Team Chat"}
+
+
 # ---------------------------------------------------------------- CategoryLinker.mirror_category
 
 

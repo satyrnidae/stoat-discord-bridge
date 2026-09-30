@@ -108,12 +108,15 @@ class CategoryLinker:
         if destination_id is None and local_category_id is None:
             raise LinkError("this channel isn't inside a Category.")
 
+        source_name = await self._resolve_name(source, source_id)
         if destination_id is None or destination_id == local_category_id:
             destination_category_id = local_category_id
             destination_name = local_category_name
         else:
             destination_category_id = destination_id
-            destination_name = await self._resolve_name(local_connector, destination_id)
+            # Never store the raw id as the name - it'd later be passed on as
+            # a Category title (issue #206).
+            destination_name = await self._dest_name(local_connector, destination_id, source_name)
 
         _reject_self_link(
             source=source,
@@ -142,7 +145,6 @@ class CategoryLinker:
         )
         bridge_group = source_group or destination_group or uuid.uuid4().hex
 
-        source_name = await self._resolve_name(source, source_id)
         await self._category_mappings.upsert(
             CategoryMapping(bridge_group=bridge_group, connector_id=source, category_id=source_id, category_name=source_name)
         )
