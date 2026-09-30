@@ -675,7 +675,18 @@ re-resolving the id through the connector's name cache - that cache is
 populated at connect and blind to a brand-new Category, so re-resolving
 handed back the raw id, which then got stored as the Category name and
 passed on as a child-channel Category title, spawning a second Category
-literally named after the id (issue #64). Every `/mirror` command
+literally named after the id (issue #64). `/link category` / `/link
+channel` with an explicit destination id that doesn't resolve store the
+source's name for the same reason (IRC channels excepted - their id is
+their name). A linked Category deleted on its platform without `/unlink
+category` is caught the next time it's used (issue #206):
+`CategoryLinker.resolve_linked_category` checks it through
+`resolve_category_name` and, on a definite "not found" (not a raising or
+missing hook), drops the stale row. `/mirror category` then creates and
+links a fresh one, `/mirror channel` places the channel under the source
+Category's name and relinks the new Category by title where it can, and
+linked-Category auto-sync recreates it before mirroring the new channel.
+The `/mirror` replies add a line saying the old Category was gone. Every `/mirror` command
 (`/mirror channel|category|role|emote`, all of `to`/`from`/`all`)
 first force-refreshes both the source and destination connector's cached
 server state via `ConnectorInfo.refresh` (`_refresh_connectors` in
