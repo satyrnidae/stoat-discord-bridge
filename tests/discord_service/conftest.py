@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from stoat_discord_bridge.config import DiscordConnectorConfig
 from stoat_discord_bridge.services.discord_service import DiscordSenderService
+from stoat_discord_bridge.services.discord_service.editor import CancelView
 from stoat_discord_bridge.status import HealthTracker
 
 __all__ = [
@@ -229,6 +230,7 @@ class FakeInteraction:
         # keeps just the edits, in order.
         self.edit_original_response = self._edit_original_response
         self.original_edits: list[str] = []
+        self.placeholder_edits: list[tuple[str | None, object]] = []
         self.deferred = False
         # Set to an exception to make `followup.send` / `channel.send` raise
         # it instead of sending - simulates an expired interaction token
@@ -256,6 +258,11 @@ class FakeInteraction:
         # (`followup_error`) breaks both.
         if self.followup_error is not None:
             raise self.followup_error
+        if isinstance(view, CancelView) or content is None:
+            # Adding or clearing a long-running command's Cancel button
+            # (issue #200) - not a reply, so kept out of `sent`.
+            self.placeholder_edits.append((content, view))
+            return self._sent_message
         self.original_edits.append(content)
         self.sent.append(content)
         self.sent_views.append(view)

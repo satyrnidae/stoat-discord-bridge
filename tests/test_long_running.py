@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from stoat_discord_bridge.services.long_running import watch_long_running
+from stoat_discord_bridge.services.long_running import CommandCanceled, watch_long_running
 
 
 class _Recorder:
@@ -81,3 +81,40 @@ async def test_cancelling_the_watcher_cancels_the_operation():
     with pytest.raises(asyncio.CancelledError):
         await watcher
     assert canceled.is_set()
+
+
+async def test_cancelling_the_operation_raises_command_canceled():
+    # Issue #200: the operator's cancel button cancels the operation's own
+    # task, which the watcher reports as CommandCanceled, not CancelledError.
+    started = asyncio.Event()
+
+    async def blocker() -> str:
+        started.set()
+        await asyncio.sleep(10)
+        return "unreachable"
+
+    task = asyncio.ensure_future(blocker())
+    watcher = asyncio.ensure_future(watch_long_running(task, on_slow=_Recorder(), slow_after=5))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(CommandCanceled):
+        await watcher
+
+
+async def test_cancelling_a_slow_operation_raises_command_canceled():
+    started = asyncio.Event()
+    on_slow = _Recorder()
+
+    async def blocker() -> str:
+        started.set()
+        await asyncio.sleep(10)
+        return "unreachable"
+
+    task = asyncio.ensure_future(blocker())
+    watcher = asyncio.ensure_future(watch_long_running(task, on_slow=on_slow, slow_after=0.01))
+    await started.wait()
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(CommandCanceled):
+        await watcher
+    assert on_slow.calls == 1

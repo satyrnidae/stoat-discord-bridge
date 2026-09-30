@@ -21,6 +21,12 @@ T = TypeVar("T")
 SLOW_AFTER_SECONDS = 60.0
 WORKING_TEXT = "Working on it..."
 STILL_WORKING_TEXT = "Still working on this - I'll post the result in a new message once it's done."
+CANCELED_TEXT = "Canceled. Anything already done before the cancel stays in place."
+
+
+class CommandCanceled(Exception):
+    """The operator canceled a long-running command (issue #200) - its
+    operation task was canceled while the caller itself wasn't."""
 
 
 async def watch_long_running(
@@ -34,7 +40,10 @@ async def watch_long_running(
     tests can shorten it) - `on_slow` is where a caller records that the
     command went slow, since an error from `coro` still has to know it.
     `coro`'s own exception propagates, and a failing `on_slow` is logged and
-    ignored. Canceling the caller cancels `coro` too."""
+    ignored. Canceling the caller cancels `coro` too.
+
+    `coro` may be an already-started task, so a cancel control can hold it:
+    canceling that task (rather than the caller) raises `CommandCanceled`."""
     task = asyncio.ensure_future(coro)
     try:
         timeout = SLOW_AFTER_SECONDS if slow_after is None else slow_after
@@ -46,6 +55,9 @@ async def watch_long_running(
                 logger.warning("long-running status update failed", exc_info=True)
         return await task
     except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if task.cancelled() and not (current is not None and current.cancelling()):
+            raise CommandCanceled from None
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task

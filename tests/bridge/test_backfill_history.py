@@ -6,6 +6,10 @@ destination only (never fanned out via handle_incoming).
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 import stoat_discord_bridge.bridge as bridge_module
 from stoat_discord_bridge.services.base import PartialRelayError, UnsupportedRelayTargetError
 from tests.bridge.conftest import FakeReceiver, _message
@@ -246,3 +250,38 @@ async def test_backfill_history_transfer_between_linked_channels_posts_only_to_t
 
     assert irc_receiver.received == []
     assert [r[1] for r in stoat_receiver.received] == ["200", "200"]
+
+
+async def test_backfill_history_cancel_mid_loop_propagates(coordinator_parts, monkeypatch):
+    # Issue #200's cancel button relies on this: the per-message `except
+    # Exception` must not swallow CancelledError.
+    monkeypatch.setattr(bridge_module, "_HISTORY_BACKFILL_PACING", 0)
+    coordinator, *_ = coordinator_parts
+    stoat_receiver = FakeReceiver("stoat")
+    coordinator.register_receiver(stoat_receiver)
+    second_started = asyncio.Event()
+    real_receive = stoat_receiver.receive
+
+    async def receive(message, **kwargs):
+        if message.message_id == "m2":
+            second_started.set()
+            await asyncio.sleep(10)
+        return await real_receive(message, **kwargs)
+
+    stoat_receiver.receive = receive
+    messages = [_message(message_id=f"m{i}") for i in range(1, 4)]
+    task = asyncio.create_task(
+        coordinator.backfill_history(
+            fetch_history=_fetch_history(messages),
+            source_channel_id="100",
+            destination_connector="stoat",
+            destination_channel_id="200",
+            limit=None,
+        )
+    )
+    await second_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [r[0].message_id for r in stoat_receiver.received] == ["m1"]

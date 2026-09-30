@@ -95,6 +95,13 @@ class FakeSentMessage:
         self._record.setdefault("edits", []).append(content)
         return self
 
+    async def react(self, emoji) -> None:
+        # a long-running command's cancel reaction (issue #200)
+        self._record.setdefault("reactions", []).append(emoji)
+
+    async def unreact(self, emoji) -> None:
+        self._record.setdefault("unreactions", []).append(emoji)
+
 
 class FakeStoatMessage:
     """Stands in for a stoat.Message with a live react/unreact handle - what

@@ -155,6 +155,10 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         # command (`/link channel …`, `/status`, …) plus the bot's own command
         # replies - `_handle_message` drops these instead of relaying them.
         self._command_message_ids: deque[str] = deque(maxlen=512)
+        # placeholder message id -> (running command task, invoker id) for
+        # commands a ❌ reaction can cancel (issue #200) - see
+        # `_cancel_command_by_reaction`.
+        self._cancelable_commands: dict[str, tuple[asyncio.Future, str]] = {}
         # user id -> pronouns (or None); keeps the profile fetch off the hot
         # relay path - see `_resolve_sender_pronouns`.
         self._pronoun_cache: AsyncTTLCache[str | None] = AsyncTTLCache(_PRONOUN_CACHE_TTL)

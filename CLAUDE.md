@@ -959,6 +959,18 @@ posted `WORKING_TEXT` message. If the command is still running after
 flips the placeholder to `STILL_WORKING_TEXT` and the result is posted as a
 new message instead. IRC has no placeholder.
 
+The commands that can run long (`with history` mirrors, `/import` /
+`/export`, `/mirror category`, any `all` mirror or unlink, `/unlink all`)
+pass `cancelable=True` there (issue #200). The linker call runs as its own
+task. Discord puts a `CancelView` button (`discord_service/editor.py`) on
+the placeholder, and Stoat reacts `CANCEL_EMOJI` (❌) on it and registers it
+in `_cancelable_commands`, which `on_message_react` checks before reaction
+sync. Either way only the invoker can cancel. Canceling the task makes
+`watch_long_running` raise `CommandCanceled`, and the reply becomes
+`CANCELED_TEXT`. No linker changes were needed: the fan-out loops'
+`except Exception` doesn't catch `CancelledError`, and `MirrorGuard`
+releases in a `finally`. Work already done is kept.
+
 On IRC, a channel the bridge's own JOIN created gets
 `default_channel_modes` applied; the `P` (InspIRCd permanent-channel) mode,
 if configured, is split off and applied separately once the OPER handshake

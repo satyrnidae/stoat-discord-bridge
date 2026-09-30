@@ -211,6 +211,7 @@ def _make_sender(
     sender.server_id = server_id
     sender._self_id = self_id
     sender._command_message_ids = deque(maxlen=512)
+    sender._cancelable_commands = {}
     if client is not None:
         sender._client = client
     return sender
