@@ -138,6 +138,38 @@ async def test_link_channel_resolves_bare_names_and_falls_back_to_id(fake_db):
     assert await channel_mappings.get_bridge_group("discord", "raw-token") is not None
 
 
+async def test_link_channel_never_stores_an_unresolvable_destination_id_as_its_name(fake_db):
+    # issue #206: an explicit destination id whose name can't be found is
+    # stored under the source channel's name, not the raw id.
+    async def d_name(cid):
+        return {"d1": "general"}.get(cid)
+
+    async def s_name(cid):
+        return None
+
+    connectors = {
+        "discord": ConnectorInfo(id="discord", label="Discord", resolve_channel_name=d_name),
+        "stoat": ConnectorInfo(id="stoat", label="Stoat", resolve_channel_name=s_name),
+        "irc": ConnectorInfo(id="irc", label="IRC"),
+    }
+    channel_mappings = ChannelMappingRepository(fake_db)
+    linker = ChannelLinker(channel_mappings, connectors)
+
+    await linker.link_channel(
+        local_connector="stoat", local_channel_id="cur", local_channel_name="cur",
+        source="discord", source_id="d1", destination_id="s-dead",
+    )
+    # IRC has no name hook - a channel's id there *is* its name, so it's kept
+    await linker.link_channel(
+        local_connector="irc", local_channel_id="#cur", local_channel_name="#cur",
+        source="discord", source_id="d1", destination_id="#news",
+    )
+
+    group = await channel_mappings.get_bridge_group("discord", "d1")
+    names = {m.connector_id: m.channel_name for m in await channel_mappings.get_mapped_channels(group)}
+    assert names == {"discord": "general", "stoat": "general", "irc": "#news"}
+
+
 # ---------------------------------------------------------------- ChannelLinker.list_linked_channels
 
 

@@ -1,8 +1,14 @@
+from dataclasses import replace
+
 import pytest
 
-from stoat_discord_bridge.admin_commands import ChannelLinker, ConnectorInfo, LinkError
+from stoat_discord_bridge.admin_commands import CategoryLinker, ChannelLinker, ConnectorInfo, LinkError
 from stoat_discord_bridge.models import ChannelMetadata
-from stoat_discord_bridge.storage.category_mappings import CategoryMapping, CategoryMappingRepository
+from stoat_discord_bridge.storage.category_mappings import (
+    CategoryMapping,
+    CategoryMappingRepository,
+    ThreadCategoryRepository,
+)
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
 
 
@@ -161,6 +167,120 @@ async def test_mirror_channel_all_uses_each_destinations_linked_category(fake_db
         local_channel_category="Discord Team",
     )
     assert calls == [("general", "Stoat Team")]
+
+
+# The raw Stoat id the screenshot on issue #206 shows as a Category title.
+_DEAD_ID = "01M1JNZ3CJGQV3DX8BKBQ0SAMB"
+
+
+async def _stale_category_setup(fake_db, *, stoat_categories, backfill=None):
+    """Discord's `dcat` is linked to a Stoat Category that was deleted by
+    hand without `/unlink category` (issue #206). `stoat_categories` is the
+    Stoat server's live {id: title} Category list."""
+    calls = []
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        calls.append((name, category))
+        if category is not None and category not in stoat_categories.values():
+            stoat_categories[f"new-{category}"] = category
+        return f"stoat_{name}"
+
+    async def resolve_channel_category(cid):
+        return ("dcat", "Discord Team")
+
+    async def resolve_category_name(cid):
+        return stoat_categories.get(cid)
+
+    async def resolve_category_id_by_name(token):
+        return next((cid for cid, title in stoat_categories.items() if title == token), None)
+
+    async def fetch_history(channel_id, limit):
+        return []
+
+    connectors = {
+        "discord": ConnectorInfo(
+            id="discord", label="Discord", resolve_channel_category=resolve_channel_category, fetch_history=fetch_history
+        ),
+        "stoat": ConnectorInfo(
+            id="stoat",
+            label="Stoat",
+            ensure_channel=ensure_channel,
+            resolve_category_name=resolve_category_name,
+            resolve_category_id_by_name=resolve_category_id_by_name,
+        ),
+    }
+    category_mappings = CategoryMappingRepository(fake_db)
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="discord", category_id="dcat", category_name="Discord Team")
+    )
+    await category_mappings.upsert(
+        CategoryMapping(bridge_group="g1", connector_id="stoat", category_id=_DEAD_ID, category_name=_DEAD_ID)
+    )
+    linker = ChannelLinker(
+        ChannelMappingRepository(fake_db), connectors, category_mappings, backfill_history=backfill
+    )
+    CategoryLinker(category_mappings, ThreadCategoryRepository(fake_db), linker, connectors)
+    return linker, category_mappings, calls
+
+
+async def test_mirror_channel_with_history_heals_a_deleted_linked_category(fake_db):
+    # issue #206's repro: every Stoat Category and channel was deleted by hand
+    # with the /unlink category step missed, then
+    # `/mirror channel to stoat ... with_history:True history_limit:all`.
+    backfills = []
+
+    async def backfill(**kwargs):
+        backfills.append(kwargs)
+        return "relayed 3 message(s)."
+
+    linker, category_mappings, calls = await _stale_category_setup(fake_db, stoat_categories={}, backfill=backfill)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        with_history=True,
+        history_limit="all",
+    )
+
+    # never the dead id as a title
+    assert calls == [("general", "Discord Team")]
+    assert await category_mappings.get_bridge_group("stoat", _DEAD_ID) is None
+    # the freshly created Category is linked back into the group
+    assert await category_mappings.get_bridge_group("stoat", "new-Discord Team") == "g1"
+    assert len(backfills) == 1
+    assert backfills[0]["destination_channel_id"] == "stoat_general"
+    assert "was gone" in summary
+    assert "relayed 3 message(s)." in summary
+
+
+async def test_mirror_channel_reports_a_deleted_linked_category_it_cant_relink(fake_db):
+    linker, category_mappings, calls = await _stale_category_setup(fake_db, stoat_categories={})
+    linker._connectors["stoat"] = replace(linker._connectors["stoat"], resolve_category_id_by_name=None)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert calls == [("general", "Discord Team")]
+    assert await category_mappings.get_bridge_group("stoat", _DEAD_ID) is None
+    assert "was gone - unlinked it; run /mirror category" in summary
+    assert "Linked Discord channel" in summary
+
+
+async def test_mirror_channel_uses_the_current_title_of_a_linked_category(fake_db):
+    linker, category_mappings, calls = await _stale_category_setup(
+        fake_db, stoat_categories={_DEAD_ID: "Stoat Team"}
+    )
+
+    summary = await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert calls == [("general", "Stoat Team")]
+    assert await category_mappings.get_bridge_group("stoat", _DEAD_ID) == "g1"
+    assert "was gone" not in summary
 
 
 async def test_mirror_channel_reads_source_metadata_and_forwards_it_to_ensure_channel(fake_db):

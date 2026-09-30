@@ -7,7 +7,7 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
@@ -37,7 +37,7 @@ from stoat_discord_bridge.admin_commands.common import (
     format_linked_listing,
 )
 from stoat_discord_bridge.channel_structure import clip_name, forum_category_title, thread_category_title
-from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository
+from stoat_discord_bridge.storage.category_mappings import CategoryMapping, CategoryMappingRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMapping, ChannelMappingRepository
 
 if TYPE_CHECKING:
@@ -89,6 +89,17 @@ def _resolve_history_limit(raw: int | str | None) -> int | None:
     if value <= 0:
         raise LinkError("history limit must be a positive number, or 'all' for the entire history.")
     return min(value, _MAX_HISTORY_LIMIT)
+
+
+class _CategoryLookup(NamedTuple):
+    """`ChannelLinker._local_category_for_source_channel`'s result: the
+    Category title to place a mirrored channel under, plus - when the linked
+    Category turned out to be gone and was unlinked (issue #206) - its stale
+    mapping and the source Category's id, for the reply line and a relink."""
+
+    name: str | None
+    stale: CategoryMapping | None = None
+    source_category_id: str | None = None
 
 
 def _hash(channel_name: str) -> str:
@@ -161,6 +172,7 @@ class ChannelLinker:
 
         source_id = await self._resolve_to_id(source, source_id)
 
+        source_name = await self._resolve_name(source, source_id)
         explicit_destination = bool(destination_id and destination_id != local_channel_id)
         if not explicit_destination:
             destination_channel_id = local_channel_id
@@ -168,6 +180,16 @@ class ChannelLinker:
         else:
             destination_channel_id = await self._resolve_to_id(local_connector, destination_id)
             destination_name = await self._resolve_name(local_connector, destination_channel_id)
+            # A connector that can name channels but found nothing for this id
+            # gets the source's name rather than the raw id (issue #206). One
+            # with no name hook (IRC) keeps the id - there, it *is* the name.
+            local_info = self._connectors.get(local_connector)
+            if (
+                destination_name == destination_channel_id
+                and local_info is not None
+                and local_info.resolve_channel_name is not None
+            ):
+                destination_name = source_name
 
         # A Discord forum channel is really a Category (issue #100) - hand a
         # `/link channel` on one off to `/link category`, linking the forum to
@@ -196,7 +218,7 @@ class ChannelLinker:
         )
         bridge_group = source_group or destination_group or uuid.uuid4().hex
 
-        source_name = self._normalize_name(source, await self._resolve_name(source, source_id))
+        source_name = self._normalize_name(source, source_name)
         destination_name = self._normalize_name(local_connector, destination_name)
         await self._channel_mappings.upsert(
             ChannelMapping(bridge_group=bridge_group, connector_id=source, channel_id=source_id, channel_name=source_name)
@@ -454,6 +476,7 @@ class ChannelLinker:
 
         category = local_channel_category
         category_parent_channel_id: str | None = None
+        category_lookup = _CategoryLookup(None)
         explicit_category = _clean_new_name(destination_category)
         if explicit_category is not None:
             # An explicit Category on `destination` wins over every other
@@ -472,11 +495,11 @@ class ChannelLinker:
             # `local_connector` is already linked to one on `destination`,
             # land the mirrored channel in that linked Category (by its name
             # on `destination`) instead of a fresh same-named one (issue #50).
-            linked_category = await self._local_category_for_source_channel(
+            category_lookup = await self._local_category_for_source_channel(
                 destination, local_connector, local_channel_id
             )
-            if linked_category is not None:
-                category = linked_category
+            if category_lookup.name is not None:
+                category = category_lookup.name
 
         # A bridge-generated thread group's Category is titled with a marker
         # prefix (thread emoji + `#`) so it stands out from an ordinary
@@ -558,6 +581,13 @@ class ChannelLinker:
             return f"{dest_info.label}: {exc}"
 
         await self._apply_metadata(destination, destination_channel_id, metadata)
+
+        if category_lookup.stale is not None:
+            # Only relink by title when the channel really went under the
+            # source Category's own name (not, say, a thread-prefixed one).
+            placed_under = category if category == category_lookup.name else None
+            heal_line = await self._relink_healed_category(destination, placed_under, local_connector, category_lookup)
+            summary = f"{heal_line}\n{summary}"
 
         if with_history:
             assert self._backfill_history is not None  # checked above
@@ -890,7 +920,7 @@ class ChannelLinker:
 
     async def _local_category_for_source_channel(
         self, local_connector: str, source: str, source_channel_id: str
-    ) -> str | None:
+    ) -> _CategoryLookup:
         """The name, on `local_connector`, of the Category that
         `source_channel_id`'s Category (on `source`) is linked to via
         `/link category` - so `mirror_channel` / `mirror_channel_from` land the
@@ -898,26 +928,68 @@ class ChannelLinker:
         linked, or None if the source channel is uncategorized / unresolvable.
         `source` and `local_connector` are just "the connector the channel is
         on" and "the connector we want the linked Category name on"; either
-        direction of `/mirror channel` fills them in."""
+        direction of `/mirror channel` fills them in.
+
+        A linked Category that's gone from `local_connector` (deleted there
+        without `/unlink category`) is unlinked and reported on `stale`, and
+        the source Category's name is used instead - so its stored name, which
+        may even be a raw id, is never handed to `ensure_channel` as a title
+        (issue #206). Only checked when a CategoryLinker is wired."""
         info = self._connectors.get(source)
         if info is None or info.resolve_channel_category is None:
-            return None
+            return _CategoryLookup(None)
         try:
             resolved = await info.resolve_channel_category(source_channel_id)
         except Exception:
             logger.debug("couldn't resolve category for channel %s on %s", source_channel_id, source, exc_info=True)
-            return None
+            return _CategoryLookup(None)
         if not resolved:
-            return None
+            return _CategoryLookup(None)
         source_category_id, source_category_name = resolved
         if self._category_mappings is not None:
             group = await self._category_mappings.get_bridge_group(source, source_category_id)
             if group is not None:
                 mapped = await self._category_mappings.get_mapped_categories(group)
                 local = next((m for m in mapped if m.connector_id == local_connector), None)
+                if local is not None and self._category_linker is not None:
+                    title = await self._category_linker.resolve_linked_category(local)
+                    if title is None:
+                        return _CategoryLookup(source_category_name or None, local, source_category_id)
+                    if title:
+                        return _CategoryLookup(title)
                 if local is not None and local.category_name:
-                    return local.category_name
-        return source_category_name or None
+                    return _CategoryLookup(local.category_name)
+        return _CategoryLookup(source_category_name or None)
+
+    async def _relink_healed_category(
+        self, destination: str, title: str | None, source: str, lookup: _CategoryLookup
+    ) -> str:
+        """The reply line for a linked Category `_local_category_for_source_channel`
+        found gone. Best-effort relinks the source Category to the one
+        `ensure_channel` just placed the channel under, found by `title`."""
+        assert lookup.stale is not None and lookup.source_category_id is not None
+        dest_info = self._connectors[destination]
+        line = f"{dest_info.label}: linked Category '{lookup.stale.category_name}' ({lookup.stale.category_id}) was gone"
+        new_id = None
+        if title and dest_info.resolve_category_id_by_name is not None and self._category_linker is not None:
+            try:
+                new_id = await dest_info.resolve_category_id_by_name(title)
+            except Exception:
+                logger.debug("couldn't find the new Category %r on %s", title, destination, exc_info=True)
+        if new_id:
+            try:
+                await self._category_linker.link_category(
+                    local_connector=destination,
+                    local_category_id=new_id,
+                    local_category_name=title,
+                    source=source,
+                    source_id=lookup.source_category_id,
+                    destination_id=None,
+                )
+                return f"{line} - linked the new '{title}' ({new_id}) instead."
+            except LinkError as exc:
+                logger.info("couldn't relink Category %r on %s: %s", title, destination, exc)
+        return f"{line} - unlinked it; run /mirror category to link a new one."
 
     async def describe_group(
         self, *, local_connector: str, local_id: str
