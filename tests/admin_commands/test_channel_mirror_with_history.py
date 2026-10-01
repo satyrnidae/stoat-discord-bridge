@@ -255,6 +255,121 @@ async def test_mirror_channel_with_history_on_a_forum_carries_on_past_a_failed_t
     assert "'first-post' failed to create/find a channel: no room for it" in summary
 
 
+def _threaded_linker(fake_db, events, *, threads_in_channel=None, fail_thread=None):
+    """A Discord text channel `d1` ('general') with threads `t1`/`t2`,
+    mirrored to Stoat. `events` records every ensure_channel and backfill
+    call in order."""
+    threads = {"t1": "first-thread", "t2": "second-thread"}
+
+    async def default_threads_in_channel(channel_id):
+        return list(threads.items()) if channel_id == "d1" else []
+
+    async def resolve_thread_parent(channel_id):
+        return ("d1", "general") if channel_id in threads else None
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        events.append(("ensure", name, category))
+        if name == fail_thread:
+            raise LinkError("no room for it")
+        return f"stoat_{name}", True
+
+    async def backfill(*, fetch_history, source_channel_id, destination_connector, destination_channel_id, limit):
+        events.append(("backfill", source_channel_id, destination_channel_id, limit))
+        return f"relayed history of {source_channel_id}."
+
+    connectors = _history_connectors()
+    connectors["discord"] = ConnectorInfo(
+        id="discord",
+        label="Discord",
+        fetch_history=_fetch_history,
+        resolve_thread_parent=resolve_thread_parent,
+        threads_in_channel=threads_in_channel or default_threads_in_channel,
+    )
+    connectors["stoat"] = ConnectorInfo(
+        id="stoat", label="Stoat", ensure_channel=ensure_channel, fetch_history=_fetch_history
+    )
+    return ChannelLinker(ChannelMappingRepository(fake_db), connectors, backfill_history=backfill)
+
+
+async def _mirror_general(linker, **kwargs):
+    return await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="general",
+        destination="stoat",
+        with_history=True,
+        **kwargs,
+    )
+
+
+async def test_mirror_channel_with_history_mirrors_and_backfills_child_threads(fake_db):
+    # issue #225: every thread is created before any history is copied, so a
+    # thread mention in the main channel's history already resolves.
+    events = []
+    linker = _threaded_linker(fake_db, events)
+
+    summary = await _mirror_general(linker, history_limit=10)
+
+    ensures = [e for e in events if e[0] == "ensure"]
+    assert [e[1] for e in ensures] == ["general", "first-thread", "second-thread"]
+    assert all(e[2] == "🧵 #general" for e in ensures[1:])
+    assert events[3:] == [
+        ("backfill", "d1", "stoat_general", 10),
+        ("backfill", "t1", "stoat_first-thread", 10),
+        ("backfill", "t2", "stoat_second-thread", 10),
+    ]
+    for source in ("d1", "t1", "t2"):
+        assert f"relayed history of {source}." in summary
+
+
+async def test_mirror_channel_with_history_skips_an_already_linked_thread(fake_db):
+    events = []
+    linker = _threaded_linker(fake_db, events)
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="t1", local_channel_name="first-thread", destination="stoat"
+    )
+    events.clear()
+
+    summary = await _mirror_general(linker)
+
+    assert [e[1] for e in events if e[0] == "backfill"] == ["d1", "t2"]
+    assert "'first-thread' already synced - skipped." in summary
+
+
+async def test_mirror_channel_with_history_backfills_only_the_main_channel_when_threads_cant_be_listed(fake_db):
+    async def threads_in_channel(channel_id):
+        raise RuntimeError("boom")
+
+    events = []
+    linker = _threaded_linker(fake_db, events, threads_in_channel=threads_in_channel)
+
+    summary = await _mirror_general(linker)
+
+    assert [e[1] for e in events if e[0] == "backfill"] == ["d1"]
+    assert "relayed history of d1." in summary
+
+
+async def test_mirror_channel_with_history_carries_on_past_a_failed_thread(fake_db):
+    events = []
+    linker = _threaded_linker(fake_db, events, fail_thread="first-thread")
+
+    summary = await _mirror_general(linker)
+
+    assert [e[1] for e in events if e[0] == "backfill"] == ["d1", "t2"]
+    assert "'first-thread' failed to create/find a channel: no room for it" in summary
+
+
+async def test_mirror_channel_without_history_leaves_child_threads_alone(fake_db):
+    events = []
+    linker = _threaded_linker(fake_db, events)
+
+    await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
+    )
+
+    assert events == [("ensure", "general", None)]
+
+
 async def test_mirror_channel_with_history_allows_irc_destination_with_no_extra_check_wired(fake_db):
     # An IRC (or any) destination with no supports_history_destination hook
     # at all imposes no extra restriction - only IRC wires that hook, and
