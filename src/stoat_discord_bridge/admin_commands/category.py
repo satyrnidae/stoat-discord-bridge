@@ -287,6 +287,8 @@ class CategoryLinker:
         local_category_name: str | None = None,
         destination: str,
         new_name: str | None = None,
+        with_history: bool = False,
+        history_limit: int | str | None = None,
     ) -> str:
         """Ensure `local_category` (id or bare name, on `local_connector`) has
         a linked counterpart Category on `destination`: reuses the existing
@@ -302,6 +304,12 @@ class CategoryLinker:
         `new_name`, if given, is the title to create/find the counterpart
         Category under on `destination` instead of the source Category's title
         (issue #44); it doesn't rename any mirrored child channels.
+
+        `with_history` / `history_limit` are passed to each child's
+        `mirror_channel`, so every freshly mirrored child is backfilled with
+        its own history. A moved child is already linked and isn't backfilled.
+        Only reached through a Discord forum's `/mirror channel ... with
+        history` redirect (issue #202), not a `/mirror category` option.
 
         `local_category == "all"` (case-insensitive, and only that literal
         token - never inferred from an omitted argument) mirrors every
@@ -418,6 +426,8 @@ class CategoryLinker:
                                 local_channel_name=cname,
                                 destination=destination,
                                 local_channel_category=dest_category_name,
+                                with_history=with_history,
+                                history_limit=history_limit,
                             )
                         )
                 except Exception as exc:
