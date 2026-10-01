@@ -103,10 +103,12 @@ def _forwarded_content(message: discord.Message) -> str:
     one message at a time today; iterating defensively in case that changes),
     so relaying no longer loses the forwarded text. Embeds aren't modeled by
     `StandardMessage` at all (a separate, pre-existing gap), so a forwarded
-    embed is still dropped - just no worse than before."""
+    embed is still dropped - just no worse than before. Every line, blank ones
+    included, gets a `> ` prefix: a bare `>` ends the quote block on Stoat
+    (issue #205)."""
     caption = message.content
     quoted = "\n".join(
-        f"> {line}" if line else ">"
+        f"> {line}"
         for snapshot in message.message_snapshots
         for line in (snapshot.content or "").splitlines()
     )

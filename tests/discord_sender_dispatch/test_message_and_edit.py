@@ -442,7 +442,8 @@ async def test_handle_message_forward_quotes_every_line_of_multiline_content():
     )
 
     [message] = recorder.messages
-    assert message.content_markdown == "> line one\n>\n> line three"
+    # A blank line keeps its trailing space, or Stoat splits the quote in two (issue #205).
+    assert message.content_markdown == "> line one\n> \n> line three"
 
 
 async def test_handle_message_forward_carries_over_the_snapshots_attachments():
