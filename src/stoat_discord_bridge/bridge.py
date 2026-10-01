@@ -41,6 +41,7 @@ from stoat_discord_bridge.models import (
 from stoat_discord_bridge.services.base import (
     PartialRelayError,
     ReceiverService,
+    RelayTargetGoneError,
     UnsupportedRelayTargetError,
 )
 from stoat_discord_bridge.services.discord_service import (
@@ -104,12 +105,16 @@ class BridgeCoordinator:
         message_sync: MessageSyncRepository,
         emoji_mappings: EmojiMappingRepository,
         health: HealthTracker,
+        connectors: dict[str, ConnectorInfo] | None = None,
     ) -> None:
         self._receivers: dict[str, ReceiverService] = {}
         self._channel_mappings = channel_mappings
         self._message_sync = message_sync
         self._emoji_mappings = emoji_mappings
         self._health = health
+        # The shared ConnectorInfo hooks, for dropping links to entities
+        # deleted on their platform (issue #217).
+        self._connectors = connectors if connectors is not None else {}
         # A ~10s record of pin writes we just issued, keyed
         # (connector_id, channel_id, message_id, pinned), so the pin/unpin
         # event our own set_pinned() triggers is dropped rather than fanned
@@ -216,6 +221,10 @@ class BridgeCoordinator:
             )
             self._health.record_error(target.connector_id)
             return []
+        except RelayTargetGoneError as exc:
+            self._health.record_error(target.connector_id)
+            await self._drop_gone_channel(target.connector_id, target.channel_id, exc)
+            return []
         except Exception:
             logger.exception("relay from %s to %s failed", message.origin_connector_id, target.connector_id)
             self._health.record_error(target.connector_id)
@@ -233,6 +242,35 @@ class BridgeCoordinator:
             MessageRef(connector_id=target.connector_id, channel_id=target.channel_id, message_id=native_id)
             for native_id in native_ids
         ]
+
+    async def _drop_gone_channel(self, connector_id: str, channel_id: str, exc: RelayTargetGoneError) -> None:
+        """Drop the link to a channel deleted on its platform without
+        `/unlink` (issue #217), so later messages don't fail the same way. A
+        group left with one member is dissolved, like `/unlink channel` does,
+        and the survivor told (IRC PARTs). The group is re-read after the
+        delete so two targets gone in the same fan-out still dissolve it."""
+        logger.warning("%s channel %s was deleted - dropping its stale link (%s)", connector_id, channel_id, exc)
+        bridge_group = await self._channel_mappings.get_bridge_group(connector_id, channel_id)
+        if bridge_group is None:
+            return  # already dropped
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+        gone = next((m for m in mapped if (m.connector_id, m.channel_id) == (connector_id, channel_id)), None)
+        if gone is None:
+            return
+        await self._channel_mappings.delete_mapping(connector_id, channel_id)
+        survivors = await self._channel_mappings.get_mapped_channels(bridge_group)
+        if len(survivors) > 1:
+            return
+        info = self._connectors.get(connector_id)
+        unlinked_from = f"{info.label if info else connector_id} '{gone.channel_name}'"
+        for m in survivors:
+            await self._channel_mappings.delete_mapping(m.connector_id, m.channel_id)
+            survivor_info = self._connectors.get(m.connector_id)
+            if survivor_info is not None and survivor_info.on_channel_unlinked is not None:
+                try:
+                    await survivor_info.on_channel_unlinked(m.channel_id, unlinked_from)
+                except Exception:
+                    logger.exception("on_channel_unlinked(%s) failed on %s", m.channel_id, m.connector_id)
 
     async def _resolve_reply_target(self, message: StandardMessage, target: ChannelMapping) -> str | None:
         """Resolve `message.reply_to_message_id` (the origin connector's own
@@ -326,7 +364,7 @@ class BridgeCoordinator:
                 # Some (not all) of a split message's posts got through -
                 # counted separately from a full success, not folded into it.
                 partial += 1
-            except UnsupportedRelayTargetError as exc:
+            except (UnsupportedRelayTargetError, RelayTargetGoneError) as exc:
                 logger.warning("history backfill to %s dropped: %s", destination_connector, exc)
                 return (
                     f"history backfill stopped after {relayed} message(s): "
@@ -412,6 +450,8 @@ class BridgeCoordinator:
                     await receiver.remove_reaction(
                         target_channel_id=ref.channel_id, target_message_id=ref.message_id, emoji=emoji
                     )
+            except RelayTargetGoneError as exc:
+                await self._drop_gone_channel(ref.connector_id, ref.channel_id, exc)
             except Exception:
                 logger.exception("reaction relay from %s to %s failed", reaction.origin_connector_id, ref.connector_id)
 
@@ -452,6 +492,8 @@ class BridgeCoordinator:
                 await receiver.set_pinned(
                     target_channel_id=ref.channel_id, target_message_id=ref.message_id, pinned=pin.pinned
                 )
+            except RelayTargetGoneError as exc:
+                await self._drop_gone_channel(ref.connector_id, ref.channel_id, exc)
             except Exception:
                 logger.exception("pin relay from %s to %s failed", pin.origin_connector_id, ref.connector_id)
 
@@ -511,6 +553,8 @@ class BridgeCoordinator:
                 logger.warning(
                     "edit relay from %s to %s dropped: %s", edit.origin_connector_id, connector_id, exc
                 )
+            except RelayTargetGoneError as exc:
+                await self._drop_gone_channel(connector_id, channel_id, exc)
             except Exception:
                 logger.exception("edit relay from %s to %s failed", edit.origin_connector_id, connector_id)
 
@@ -558,6 +602,8 @@ class BridgeCoordinator:
                 logger.warning(
                     "delete relay from %s to %s dropped: %s", delete.origin_connector_id, connector_id, exc
                 )
+            except RelayTargetGoneError as exc:
+                await self._drop_gone_channel(connector_id, channel_id, exc)
             except Exception:
                 logger.exception("delete relay from %s to %s failed", delete.origin_connector_id, connector_id)
 
@@ -981,12 +1027,12 @@ async def run(config: BridgeConfig) -> None:
     )
     health = HealthTracker({c.id: c.label for c in all_connectors})
 
-    coordinator = BridgeCoordinator(channel_mappings, message_sync, emoji_mappings, health)
-
     # Populated in place as each sender/receiver below is constructed;
-    # ChannelLinker only reads this once a command fires (well after `run()`
-    # finishes wiring), so construction order doesn't matter.
+    # ChannelLinker and BridgeCoordinator only read this once a command or
+    # event fires (well after `run()` finishes wiring), so construction order
+    # doesn't matter.
     connector_infos: dict[str, ConnectorInfo] = {}
+    coordinator = BridgeCoordinator(channel_mappings, message_sync, emoji_mappings, health, connector_infos)
     # One guard shared by every linker so concurrent `/mirror` runs and bulk
     # unlinks touching the same connector are serialized (issues #79, #197).
     mirror_guard = MirrorGuard()
