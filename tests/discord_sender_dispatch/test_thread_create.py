@@ -20,12 +20,12 @@ from tests.discord_sender_dispatch.conftest import _Recorder, _discord_message, 
 # ---------------------------------------------------------------- _handle_thread_create
 
 
-async def _stoat_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False, category_parent_channel_id: str | None = None) -> str:
-    return f"stoat_{name}"
+async def _stoat_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False, category_parent_channel_id: str | None = None) -> tuple[str, bool]:
+    return f"stoat_{name}", True
 
 
-async def _irc_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False, category_parent_channel_id: str | None = None) -> str:
-    return f"irc_{name}"
+async def _irc_ensure_channel(name: str, category: str | None = None, is_thread_category: bool = False, category_parent_channel_id: str | None = None) -> tuple[str, bool]:
+    return f"irc_{name}", True
 
 
 def _linked_connectors():
@@ -128,7 +128,7 @@ async def test_handle_thread_create_relays_and_pins_the_starter_before_categoriz
     async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         if category is not None:
             events.append("categorize")
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
@@ -194,7 +194,7 @@ async def test_handle_thread_create_names_category_after_the_destinations_linked
 
     async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category, category_parent_channel_id))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_name(channel_id):
         return {"s-general": "Bot Config"}.get(channel_id)
@@ -237,7 +237,7 @@ async def test_handle_thread_create_marks_destination_category_as_thread_categor
 
     async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append(is_thread_category)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
@@ -402,7 +402,7 @@ async def test_handle_thread_create_routes_a_forum_post_into_the_linked_forum_ca
 
     async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def is_forum_channel(channel_id):
         return channel_id == "500"

@@ -18,18 +18,18 @@ logger = logging.getLogger(__name__)
 class _CategoriesMixin:
     """Category get-or-create/membership half of `DiscordLookupsMixin`."""
 
-    async def ensure_category(self, name: str) -> str:
-        """Get-or-create a Category named `name`, returning its id - this
-        connector's `ConnectorInfo.ensure_category` for `/mirror category`."""
+    async def ensure_category(self, name: str) -> tuple[str, bool]:
+        """Get-or-create a Category named `name`, returning `(id, created)` -
+        this connector's `ConnectorInfo.ensure_category` for `/mirror category`."""
         guild = self._guild_or_none()
         if guild is None:
             raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
         lowered = name.casefold()
         for category in guild.categories:
             if category.name.casefold() == lowered:
-                return str(category.id)
+                return str(category.id), False
         category = await guild.create_category(name, reason="bridge category mirror")
-        return str(category.id)
+        return str(category.id), True
 
     async def channels_in_category(self, category_id: str) -> list[tuple[str, str]]:
         """Every channel inside Category `category_id`, as (id, name) pairs -

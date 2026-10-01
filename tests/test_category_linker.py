@@ -259,7 +259,7 @@ async def test_sync_new_channel_mirrors_onto_every_other_linked_category_by_its_
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
@@ -291,7 +291,7 @@ async def test_sync_new_channel_skips_the_local_connector(fake_db):
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
@@ -318,7 +318,7 @@ async def test_sync_new_channel_uses_destination_own_category_name_not_source_na
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
@@ -347,7 +347,7 @@ async def test_sync_new_channel_recreates_a_linked_category_deleted_on_the_desti
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     async def resolve_category_name(cid):
         return {"dest-Team": "Team"}.get(cid)
@@ -384,7 +384,7 @@ async def test_sync_new_channel_skips_a_deleted_category_it_cant_recreate(fake_d
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     async def resolve_category_name(cid):
         return None
@@ -494,7 +494,7 @@ def _ensure_category_fake():
 
     async def ensure_category(name):
         created.append(name)
-        return f"dest-{name}"
+        return f"dest-{name}", True
 
     return ensure_category, created
 
@@ -506,7 +506,7 @@ async def test_mirror_category_creates_links_and_mirrors_child_channels(fake_db)
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def channels_in_category(cid):
         assert cid == "s-cat"
@@ -551,7 +551,7 @@ async def test_mirror_category_new_name_titles_the_counterpart_only(fake_db):
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def channels_in_category(cid):
         return [("s-chan-1", "general")]
@@ -624,7 +624,7 @@ async def test_mirror_category_stores_the_name_not_the_id_when_the_cache_is_stal
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def channels_in_category(cid):
         return [("s-chan-1", "general")]
@@ -733,7 +733,7 @@ async def test_mirror_category_recreates_a_linked_category_deleted_on_the_destin
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def resolve_category_name(cid):
         return None  # d-cat is gone
@@ -832,7 +832,7 @@ async def test_mirror_category_skips_a_same_titled_category_linked_elsewhere(fak
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     connectors = _same_title_connectors(ensure_category, ensure_channel, children=[("s-chan-1", "general")])
     linker, category_mappings, _, _ = _make_linker(fake_db, connectors)

@@ -587,7 +587,9 @@ class ConnectorInfo:
     # (issue #146) - the hook should match/create a voice-capable channel
     # instead of a text one. Omitted entirely on a text-channel mirror, so a
     # hook/test fake that doesn't accept the keyword at all is unaffected.
-    ensure_channel: Callable[..., Awaitable[str]] | None = None
+    # Returns `(channel_id, created)` - `created` False for a matched existing
+    # channel - so `/mirror channel` can say which it was (issue #198).
+    ensure_channel: Callable[..., Awaitable[tuple[str, bool]]] | None = None
     # Sets channel `channel_id`'s description / NSFW flag / icon / slowmode to
     # match a `ChannelMetadata` (a full sync - a field the source lacks is
     # cleared). `/mirror channel` calls it on the destination once the
@@ -659,11 +661,11 @@ class ConnectorInfo:
     # (CategoryLinker._resolve_to_id). None on IRC.
     resolve_category_id_by_name: Callable[[str], Awaitable[str | None]] | None = None
     # Idempotent get-or-create by name: ensures a Category named `name` exists
-    # on this connector, returning its native id (existing or newly created).
-    # None if this connector kind can't create Categories - `/mirror category`
-    # then reports that connector as unsupported (mirrors create_role). None
-    # on IRC.
-    ensure_category: Callable[[str], Awaitable[str]] | None = None
+    # on this connector, returning `(native id, created)` - `created` False for
+    # an existing one (issue #198). None if this connector kind can't create
+    # Categories - `/mirror category` then reports that connector as
+    # unsupported (mirrors create_role). None on IRC.
+    ensure_category: Callable[[str], Awaitable[tuple[str, bool]]] | None = None
     # native-category-id -> [(channel_id, channel_name), ...] for every channel
     # inside that Category, used by `/mirror category` to enumerate the source
     # Category's channels. None on IRC.
@@ -959,30 +961,31 @@ _MAX_NAME_CANDIDATES = 5
 
 
 async def _ensure_unclaimed_by_name(
-    ensure: Callable[[str], Awaitable[str]],
+    ensure: Callable[[str], Awaitable[tuple[str, bool]]],
     get_group: Callable[[str], Awaitable[str | None]],
     name: str,
     *,
     own_group: str | None,
     limit: int | None,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, bool] | None:
     """Get-or-create an entity by name via `ensure` (a destination's
     `ensure_channel`/`ensure_category`), skipping a match that's already
     linked into a group other than `own_group`. Names aren't unique on
     Discord, so a by-name match may be an unrelated entity's copy (issue
     #184). Retries as `name-2`, `name-3`, ... (the base clipped so the suffix
-    fits `limit`) and returns `(id, name)` for the first usable one, or
-    `None` once every candidate is taken. Exceptions from `ensure` propagate."""
+    fits `limit`) and returns `(id, name, created)` for the first usable one,
+    or `None` once every candidate is taken. Exceptions from `ensure`
+    propagate."""
     for n in range(1, _MAX_NAME_CANDIDATES + 1):
         candidate = name
         if n > 1:
             suffix = f"-{n}"
             base = name if limit is None else name[: max(limit - len(suffix), 0)]
             candidate = f"{base.rstrip()}{suffix}"
-        entity_id = await ensure(candidate)
+        entity_id, created = await ensure(candidate)
         group = await get_group(entity_id)
         if group is None or group == own_group:
-            return entity_id, candidate
+            return entity_id, candidate, created
     return None
 
 

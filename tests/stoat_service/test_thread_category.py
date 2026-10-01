@@ -111,7 +111,7 @@ async def test_ensure_channel_dedupes_against_a_freshly_fetched_channel_list():
 
     channel_id = await sender.ensure_channel("general")
 
-    assert channel_id == "chan-existing"
+    assert channel_id == ("chan-existing", False)
     assert fresh.created_channels == []
 
 

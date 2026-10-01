@@ -23,8 +23,9 @@ def _connectors(*, forum_ids=("forum1",), stoat_threads=None, discord_channel_na
         return discord_channel_names.get(channel_id)
 
     async def stoat_ensure_category(name):
+        created = name not in created_categories
         cid = created_categories.setdefault(name, f"scat-{len(created_categories)}")
-        return cid
+        return cid, created
 
     async def stoat_resolve_category_name(category_id):
         for name, cid in created_categories.items():
@@ -36,7 +37,7 @@ def _connectors(*, forum_ids=("forum1",), stoat_threads=None, discord_channel_na
 
     async def stoat_ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"schan-{name}"
+        return f"schan-{name}", True
 
     async def discord_channels_in_category(category_id):
         return list(stoat_threads or [])

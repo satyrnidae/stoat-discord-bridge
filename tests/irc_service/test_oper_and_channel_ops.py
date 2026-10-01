@@ -249,7 +249,7 @@ async def test_permanent_mode_skipped_for_thread_channels(monkeypatch):
 
     channel = await sender.ensure_channel("My Thread", is_thread_category=True)
 
-    assert channel == "#my-thread"
+    assert channel == ("#my-thread", True)
     assert conn.mode_calls == [("#my-thread", "+nt")]  # no +P
     assert sender._pending_permanent_modes == set()
 

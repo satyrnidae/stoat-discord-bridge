@@ -11,7 +11,7 @@ from stoat_discord_bridge.storage.channel_mappings import ChannelMappingReposito
 def _channel_from_connectors(*, ensure_calls, source_category=None):
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_name(cid):
         return {"d1": "general"}.get(cid, cid)
@@ -96,7 +96,7 @@ async def test_mirror_channel_from_all_is_never_resolved_as_a_literal_channel_na
         return "s-literal-all" if name.lower() == "all" else None
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
-        return f"discord_{name}"
+        return f"discord_{name}", True
 
     async def list_channels():
         return [("s1", "general"), ("s2", "random")]
@@ -123,7 +123,7 @@ async def test_mirror_channel_from_all_pulls_in_every_source_channel(fake_db):
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_calls.append(name)
-        return f"discord_{name}"
+        return f"discord_{name}", True
 
     async def list_channels():
         return [("s1", "general"), ("s2", "random")]

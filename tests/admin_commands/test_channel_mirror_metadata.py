@@ -13,7 +13,7 @@ def _connectors(applied, *, describe=True, apply_raises=None):
         return _META
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, **_kw):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def apply_channel_metadata(channel_id, metadata):
         if apply_raises is not None:

@@ -572,7 +572,7 @@ class ChannelLinker:
                 f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: "
                 f"{_all_names_taken_message(target_name)}."
             )
-        destination_channel_id, target_name = ensured
+        destination_channel_id, target_name, _created = ensured
 
         try:
             summary = await self.link_channel(
@@ -766,7 +766,7 @@ class ChannelLinker:
             )
         # Rebinds the name `finish_category_placement` matches by too, so it
         # places the channel just linked, not a same-named one (issue #184).
-        destination_channel_id, target_name = ensured
+        destination_channel_id, target_name, _created = ensured
 
         try:
             summary = await self.link_channel(
@@ -1315,8 +1315,8 @@ class ChannelLinker:
         destination: str,
         name: str,
         own_group: str | None,
-        ensure: Callable[[str], Awaitable[str]],
-    ) -> tuple[str, str] | None:
+        ensure: Callable[[str], Awaitable[tuple[str, bool]]],
+    ) -> tuple[str, str, bool] | None:
         """`ensure` (a bound `ensure_channel` call) by name on `destination`,
         skipping a same-named channel already linked into another bridge
         group - see `_ensure_unclaimed_by_name`."""

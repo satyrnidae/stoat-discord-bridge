@@ -494,7 +494,7 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         *,
         metadata: ChannelMetadata | None = None,
         is_voice: bool = False,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """IRC has no separate channel-creation call - JOINing a channel
         that doesn't exist yet creates it (see join_channel, which already
         handles that + applying default_channel_modes to a freshly-created
@@ -518,11 +518,16 @@ class IrcSenderService(IrcAdminCommandsMixin, SenderService):
         IRC still lands as an ordinary flat channel rather than raising for
         an unexpected keyword. The `#name` is truncated to the
         server's CHANNELLEN (or the RFC default) as a backstop, since a name
-        can reach here from paths other than `/mirror` - issue #99."""
+        can reach here from paths other than `/mirror` - issue #99.
+
+        Returns `(channel, created)`, where `created` means the bridge wasn't
+        already in the channel - the same test join_channel uses. IRC can't
+        tell whether other users were already in it."""
         channel = normalize_channel_name(name, self._channel_name_limit())
         topic = metadata.description if metadata is not None else None
+        created = channel not in self._channels
         await self.join_channel(channel, permanent=not is_thread_category, topic=topic)
-        return channel
+        return channel, created
 
     async def resolve_channel_id_by_name(self, token: str) -> str | None:
         """Wired into `ConnectorInfo.resolve_channel_id_by_name` so every

@@ -291,9 +291,9 @@ class _CategoriesMixin:
             return None
         return None
 
-    async def ensure_category(self, name: str) -> str:
-        """Get-or-create a Category titled `name`, returning its id - this
-        connector's `ConnectorInfo.ensure_category` for `/mirror category`.
+    async def ensure_category(self, name: str) -> tuple[str, bool]:
+        """Get-or-create a Category titled `name`, returning `(id, created)` -
+        this connector's `ConnectorInfo.ensure_category` for `/mirror category`.
         Same dedicated-endpoint-then-raw-PATCH fallback as _place_in_category
         (see its docstring); the raw-PATCH list comes from `_full_category_list`
         - a fresh fetch, not the cache - so it can't revert the layout
@@ -305,11 +305,11 @@ class _CategoriesMixin:
             None,
         )
         if existing is not None:
-            return str(existing["id"])
+            return str(existing["id"]), False
         try:
             category = await server.create_category(name, channels=[])
             self._invalidate_category_cache()
-            return str(category.id)
+            return str(category.id), True
         except stoat.HTTPException:
             new_id = ulid_new()
             raw_categories.append({"id": new_id, "title": name, "channels": []})
@@ -318,7 +318,7 @@ class _CategoriesMixin:
                 json={"categories": raw_categories},
             )
             self._invalidate_category_cache()
-            return str(new_id)
+            return str(new_id), True
 
     async def channels_in_category(self, category_id: str) -> list[tuple[str, str]]:
         """Every channel inside Category `category_id`, as (id, name) pairs -

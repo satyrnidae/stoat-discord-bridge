@@ -14,7 +14,7 @@ async def _fetch_history(channel_id, limit):
 
 
 async def _ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
-    return f"stoat_{name}"
+    return f"stoat_{name}", True
 
 
 def _history_connectors(*, backfill=None):

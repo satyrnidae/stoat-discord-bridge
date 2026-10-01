@@ -51,10 +51,11 @@ class _ChannelsMixin:
         *,
         metadata: ChannelMetadata | None = None,
         is_voice: bool = False,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Idempotent get-or-create by name, for `/mirror channel`'s
         `ConnectorInfo.ensure_channel` hook - matches an existing channel of
-        the requested kind by name, else creates one. `is_voice` (issue
+        the requested kind by name, else creates one, returning `(channel id,
+        created)`. `is_voice` (issue
         #146), when set, only matches a channel whose `.voice` metadata is
         already set (a modern Stoat voice channel - see
         `services/stoat_service/lookups/names.py`'s `_channel_supports_voice`)
@@ -101,11 +102,13 @@ class _ChannelsMixin:
             server = self._client.get_server(self.server_id, partial=False)
             if not isinstance(server, stoat.Server):
                 server = self._client.get_server(self.server_id, partial=True)
+        created = False
         for channel in getattr(server, "channels", []):
             if channel.name == name and bool(getattr(channel, "voice", None) is not None) == is_voice:
                 channel_id = channel.id
                 break
         else:
+            created = True
             create_kwargs = _create_channel_metadata_kwargs(metadata)
             if is_voice:
                 create_kwargs["voice"] = stoat.ChannelVoiceMetadata()
@@ -119,7 +122,7 @@ class _ChannelsMixin:
             await self._ensure_channel_in_category(
                 server, channel_id, category, is_thread_category, category_parent_channel_id
             )
-        return channel_id
+        return channel_id, created
 
     async def apply_channel_metadata(self, channel_id: str, metadata: ChannelMetadata) -> None:
         """Set a channel's description / NSFW flag / icon / slowmode to match

@@ -13,7 +13,7 @@ async def test_ensure_channel_adds_hash_prefix_if_missing(monkeypatch):
 
     result = await sender.ensure_channel("general")
 
-    assert result == "#general"
+    assert result == ("#general", True)
     assert conn.join_calls == ["#general"]
 
 
@@ -24,7 +24,7 @@ async def test_ensure_channel_leaves_existing_hash_prefix_alone(monkeypatch):
 
     result = await sender.ensure_channel("#general")
 
-    assert result == "#general"
+    assert result == ("#general", True)
     assert conn.join_calls == ["#general"]
 
 
@@ -39,7 +39,7 @@ async def test_ensure_channel_accepts_and_ignores_is_voice(monkeypatch):
 
     result = await sender.ensure_channel("general", is_voice=True)
 
-    assert result == "#general"
+    assert result == ("#general", True)
     assert conn.join_calls == ["#general"]
 
 
@@ -53,7 +53,7 @@ async def test_ensure_channel_lowercases_and_hyphenates_a_thread_style_name(monk
 
     result = await sender.ensure_channel("Test Thread")
 
-    assert result == "#test-thread"
+    assert result == ("#test-thread", True)
     assert conn.join_calls == ["#test-thread"]
 
 
@@ -64,7 +64,7 @@ async def test_ensure_channel_strips_characters_irc_channel_names_cant_hold(monk
 
     result = await sender.ensure_channel("gen,er:al")
 
-    assert result == "#general"
+    assert result == ("#general", True)
     assert conn.join_calls == ["#general"]
 
 
@@ -89,8 +89,9 @@ async def test_ensure_channel_does_not_set_topic_when_the_channel_already_existe
     _patch_connection(monkeypatch, sender, conn)
     sender._channels.append("#general")  # already joined/known
 
-    await sender.ensure_channel("general", metadata=ChannelMetadata(description="topic"))
+    result = await sender.ensure_channel("general", metadata=ChannelMetadata(description="topic"))
 
+    assert result == ("#general", False)  # matched, not created (issue #198)
     assert conn.topic_calls == []
 
 
@@ -104,7 +105,7 @@ async def test_ensure_channel_truncates_an_over_long_name_to_the_rfc_default(mon
 
     result = await sender.ensure_channel("a" * 80)
 
-    assert result == "#" + "a" * 49
+    assert result == ("#" + "a" * 49, True)
     assert conn.join_calls == ["#" + "a" * 49]
 
 
@@ -118,7 +119,7 @@ async def test_ensure_channel_honors_a_stricter_server_advertised_channellen(mon
 
     result = await sender.ensure_channel("a" * 80)
 
-    assert result == "#" + "a" * 9
+    assert result == ("#" + "a" * 9, True)
 
 
 async def test_normalize_channel_name_truncates_to_channellen(monkeypatch):

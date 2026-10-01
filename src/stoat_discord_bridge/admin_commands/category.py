@@ -662,7 +662,7 @@ class CategoryLinker:
             raise LinkError(
                 f"'{source_name}' failed to create/find a Category: {_all_names_taken_message(target_name)}."
             )
-        category_id, target_name = ensured
+        category_id, target_name, _created = ensured
         title = await self._dest_name(destination, category_id, target_name)
         summary = await self.link_category(
             local_connector=destination,
