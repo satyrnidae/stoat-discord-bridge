@@ -11,6 +11,18 @@ carries a `bug`/`feat`/`chore` label and a recorded plan) from a clean
 worktree to an open pull request, working the plan one phase at a time under
 strict TDD, with a review checkpoint and a single-scope commit per phase.
 
+## Posting identity
+
+Everything this skill writes to GitHub (labels, comments, the PR) goes out
+as the **satyrnidaebot** GitHub App, not the repo owner's account. In the
+headless pipeline runs, `gh` already is the app's wrapper
+(`/home/claude/triage-webhook/bin/gh`, first on PATH). In an interactive
+session, check `command -v gh`: if it isn't that wrapper but the wrapper
+exists, call the wrapper by its full path for every `gh` command below. If
+the wrapper doesn't exist (another machine or user), plain `gh` posts as
+whoever is logged in - say so when you report back. `git push` is unaffected
+(it uses the SSH key, not `gh`).
+
 ## 0. Resolve the issue and its plan
 
 - Issue number comes from the argument. If omitted, try to infer it from the
