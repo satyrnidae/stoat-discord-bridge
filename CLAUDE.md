@@ -1203,7 +1203,11 @@ differently from an ordinary Category or a `🧵 #` thread group;
 `CategoryLinker.mirror_category` enumerates a forum source's children via
 `channels_in_category`, which for a `ForumChannel` returns its **active**
 threads only (`forum.threads`) — archived posts are numerous and low-value and
-still mirror lazily via `_handle_thread_create`.
+still mirror lazily via `_handle_thread_create`. `with_history` /
+`history_limit` ride the redirect (issue #202): each thread `mirror_category`
+freshly mirrors gets its own backfill; a thread that's already linked and only
+moved into the Category doesn't. Fetching a thread's history this way is
+**unverified against a live server**.
 
 Once the forum is Category-linked, `_handle_thread_create` fires for its posts
 even though the forum isn't in the channel mappings — its gate also checks

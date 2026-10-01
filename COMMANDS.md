@@ -151,8 +151,9 @@ a `ForumChannel`'s id behaves as `/link category` / `/mirror category` instead
 as its own channel), so it links/creates a **Stoat Category** (`💬 #<forum>`)
 and its posts route into it. `/link channel` on a forum needs an explicit
 Category target on the other side; `/mirror channel` toward IRC (no Category
-concept) falls back to a flat link. See CLAUDE.md's "Discord forum channels as
-Categories".
+concept) falls back to a flat link. `/mirror channel ... with history` on a
+forum backfills each of its active posts into its new counterpart channel, all
+in one command. See CLAUDE.md's "Discord forum channels as Categories".
 
 - **Discord**: `/link channel` slash subcommand under the `/link` group
   (Manage Server). Discord lists required options first, so its option order
