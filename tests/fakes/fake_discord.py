@@ -366,17 +366,28 @@ class FakeGuildChannel(discord.TextChannel):
     """
 
     def __init__(
-        self, id: int, *, name: str = "general", guild: FakeGuild | None = None, category: FakeChannel | None = None
+        self,
+        id: int,
+        *,
+        name: str = "general",
+        guild: FakeGuild | None = None,
+        category: FakeChannel | None = None,
+        threads: list[Any] | None = None,
     ) -> None:
         self.id = id
         self.name = name
         self.guild = guild
         self._category = category
+        self._threads = threads or []
         self.edits: list[dict] = []
 
     @property
     def category(self) -> FakeChannel | None:
         return self._category
+
+    @property
+    def threads(self) -> list[Any]:
+        return self._threads
 
     async def edit(self, **kwargs) -> None:
         self.edits.append(kwargs)

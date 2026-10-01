@@ -8,8 +8,10 @@ from tests.fakes.fake_discord import (
     FakeClient,
     FakeForumChannel,
     FakeGuild,
+    FakeGuildChannel,
     FakeThread,
     FakeUser,
+    FakeVoiceChannel,
 )
 from tests.discord_sender_dispatch.conftest import _Recorder, _make_sender
 
@@ -142,6 +144,46 @@ async def test_channels_in_category_returns_empty_for_a_non_category_non_forum(m
     )
 
     assert await sender.channels_in_category("42") == []
+
+
+# ---------------------------------------------------------------- threads_in_channel (issue #225)
+
+
+def _guild_with(sender, monkeypatch, channel):
+    monkeypatch.setattr(
+        sender, "_guild_or_none", lambda: SimpleNamespace(get_channel=lambda cid: channel if cid == 42 else None)
+    )
+
+
+async def test_threads_in_channel_returns_a_text_channels_active_threads(monkeypatch):
+    sender = _make_sender(_Recorder(), FakeClient())
+    channel = FakeGuildChannel(
+        id=42, threads=[SimpleNamespace(id=1, name="first"), SimpleNamespace(id=2, name="second")]
+    )
+    _guild_with(sender, monkeypatch, channel)
+
+    assert await sender.threads_in_channel("42") == [("1", "first"), ("2", "second")]
+
+
+async def test_threads_in_channel_returns_empty_for_a_voice_or_forum_channel(monkeypatch):
+    sender = _make_sender(_Recorder(), FakeClient())
+    _guild_with(sender, monkeypatch, FakeVoiceChannel(id=42))
+    assert await sender.threads_in_channel("42") == []
+
+    forum = FakeForumChannel(id=42, threads=[SimpleNamespace(id=1, name="post")])
+    _guild_with(sender, monkeypatch, forum)
+    assert await sender.threads_in_channel("42") == []
+
+
+async def test_threads_in_channel_returns_empty_for_an_unresolvable_id(monkeypatch):
+    sender = _make_sender(_Recorder(), FakeClient())
+    _guild_with(sender, monkeypatch, None)
+
+    assert await sender.threads_in_channel("999") == []
+    assert await sender.threads_in_channel("not-a-number") == []
+
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: None)
+    assert await sender.threads_in_channel("42") == []
 
 
 # ---------------------------------------------------------------- emoji_capacity (issue #157)

@@ -1,6 +1,7 @@
 """Category get-or-create / membership / move for the Discord connector -
 `ensure_category`, `channels_in_category`, `move_channel_to_category`, the
-`ConnectorInfo` hooks behind `/mirror category`. Discord's guild cache is
+`ConnectorInfo` hooks behind `/mirror category` - plus `threads_in_channel`,
+the same kind of child listing for a text channel's threads. Discord's guild cache is
 kept live by gateway events (unlike Stoat's - see CLAUDE.md), so unlike
 `stoat_service/lookups/categories.py` there's no separate freshness/refresh
 concern to split out here.
@@ -52,6 +53,23 @@ class _CategoriesMixin:
         if not isinstance(category, discord.CategoryChannel):
             return []
         return [(str(c.id), c.name) for c in category.channels]
+
+    async def threads_in_channel(self, channel_id: str) -> list[tuple[str, str]]:
+        """A text channel's *active* threads, as (id, name) pairs - this
+        connector's `ConnectorInfo.threads_in_channel` (issue #225). Archived
+        threads are left out, as in `channels_in_category`. Anything that
+        isn't a `TextChannel` yields `[]`: voice channels can't have threads,
+        and a forum's posts go through `channels_in_category` instead."""
+        guild = self._guild_or_none()
+        if guild is None:
+            return []
+        try:
+            channel = guild.get_channel(int(channel_id))
+        except ValueError:
+            return []
+        if not isinstance(channel, discord.TextChannel):
+            return []
+        return [(str(t.id), t.name) for t in channel.threads]
 
     async def move_channel_to_category(self, channel_id: str, category_id: str) -> None:
         """Move channel `channel_id` into Category `category_id` - idempotent,
