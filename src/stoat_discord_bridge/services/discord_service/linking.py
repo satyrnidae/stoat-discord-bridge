@@ -99,14 +99,13 @@ class DiscordLinkingMixin:
         content: str,
         *,
         deferred: bool = False,
-        went_slow: bool = False,
         editor: LinkEditorSpec | None = None,
     ) -> None:
         """Send `content` (a linker summary or read-only listing), attaching
         a `LinkEditorView` in-line editor (issue #115) when `editor` is
-        given. A `deferred` reply replaces the "is thinking..." placeholder,
-        or - once the command `went_slow` and the placeholder says so - is
-        posted as a new followup (issue #201).
+        given. A `deferred` reply replaces the "is thinking..." placeholder
+        (issue #201), even one already flipped to "still working" (issue
+        #197).
 
         `interaction.response.send_message` always returns None in the real
         API (the message has to be fetched back via
@@ -115,9 +114,7 @@ class DiscordLinkingMixin:
         on the view so `on_timeout` (which has no interaction of its own to
         respond through) can still disable the panel in place."""
         view = await LinkEditorView.create(editor, invoker_id=interaction.user.id, content=content) if editor else None
-        if deferred and went_slow:
-            sent = await self._send_deferred(interaction, content, view=view)
-        elif deferred:
+        if deferred:
             sent = await self._replace_placeholder(interaction, content, view=view)
         else:
             kwargs: dict[str, Any] = {"ephemeral": True}
@@ -148,8 +145,8 @@ class DiscordLinkingMixin:
         linker call can outrun Discord's 3s window): `deferred` says the
         handler already called `interaction.response.defer()`, otherwise
         it's done here, before `coro` starts. Past `SLOW_AFTER_SECONDS` the
-        placeholder is flipped to a "still working" note and the result is
-        posted as a new followup. `empty_fallback` (the mirror handlers'
+        placeholder is flipped to a "still working" note; the result still
+        replaces it, so the command leaves one message (issue #197). `empty_fallback` (the mirror handlers'
         "Nothing to mirror.") is substituted for a falsy `summary`, matching
         each handler's own `summary or "..."` it used to write inline (issue
         #106). `editor`, when given, attaches the in-line link editor (issue
@@ -160,7 +157,6 @@ class DiscordLinkingMixin:
         for the commands that can run for a long time."""
         if not deferred:
             await interaction.response.defer(ephemeral=True, thinking=True)
-        went_slow = False
         task = asyncio.ensure_future(coro)
         cancel_view = None
         if cancelable:
@@ -171,31 +167,25 @@ class DiscordLinkingMixin:
                 logger.warning("[discord:%s] couldn't add the Cancel button", self.connector_id, exc_info=True)
 
         async def on_slow() -> None:
-            nonlocal went_slow
-            went_slow = True
             await interaction.edit_original_response(content=STILL_WORKING_TEXT)
 
         try:
             summary = await watch_long_running(task, on_slow=on_slow)
         except CommandCanceled:
             logger.info("[discord:%s] %s canceled by %s", self.connector_id, log_context, interaction.user.id)
-            await self._send_linker_reply(interaction, CANCELED_TEXT, deferred=True, went_slow=went_slow)
+            await self._send_linker_reply(interaction, CANCELED_TEXT, deferred=True)
             return
         except LinkError as exc:
             logger.info("[discord:%s] %s rejected: %s", self.connector_id, log_context, exc)
-            await self._send_linker_reply(interaction, str(exc), deferred=True, went_slow=went_slow)
+            await self._send_linker_reply(interaction, str(exc), deferred=True)
             return
         finally:
+            # The reply's own edit replaces the Cancel button.
             if cancel_view is not None:
                 cancel_view.stop()
-                if went_slow:
-                    # The result goes out as a new message, so drop the
-                    # button from the old "still working" placeholder.
-                    with contextlib.suppress(discord.HTTPException):
-                        await interaction.edit_original_response(view=None)
         content = summary if empty_fallback is None else (summary or empty_fallback)
         await self._send_linker_reply(
-            interaction, content, deferred=True, went_slow=went_slow, editor=editor if summary else None
+            interaction, content, deferred=True, editor=editor if summary else None
         )
 
     async def _listing_editor(

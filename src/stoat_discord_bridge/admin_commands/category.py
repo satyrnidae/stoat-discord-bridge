@@ -34,6 +34,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_id,
     _resolve_entity_title,
     _run_bulk_mirror,
+    _unlink_all_destinations,
     _unlink_all_groups,
     collect_linked_members,
     format_linked_listing,
@@ -224,22 +225,7 @@ class CategoryLinker:
         same rules as `/unlink channel all` - see `_unlink_all_groups`. A
         Category literally named `all` has to be addressed by id."""
         if _is_all_token(local_category):
-            groups: dict[str, str] = {}
-            for m in await self._category_mappings.get_all_for_connector(local_connector):
-                groups.setdefault(m.bridge_group, m.category_name)
-            return await _unlink_all_groups(
-                local_connector=local_connector,
-                destination=destination,
-                connectors=self._connectors,
-                kind="Category",
-                kind_plural="Categories",
-                name_attr="category_name",
-                group_word="bridge group",
-                groups=groups,
-                load_group=self._category_mappings.get_mapped_categories,
-                dissolve_group=lambda group, _mapped: self._category_mappings.delete_bridge_group(group),
-                kick_member=lambda _group, mapped, dest: self._kick_from_group(mapped, dest),
-            )
+            return await self._unlink_all_categories(local_connector=local_connector, destination=destination)
         if local_category is not None:
             local_category_id = await self._resolve_to_id(local_connector, local_category)
         if local_category_id is None:
@@ -256,6 +242,26 @@ class CategoryLinker:
         target = await self._kick_from_group(mapped, destination)
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} Category '{target.category_name}' ({target.category_id}) from this bridge group."
+
+    @_guards_mirror(_unlink_all_destinations)
+    async def _unlink_all_categories(self, *, local_connector: str, destination: str | None) -> str:
+        """`/unlink category all <service|all>` (issue #181) - see `_unlink_all_groups`."""
+        groups: dict[str, str] = {}
+        for m in await self._category_mappings.get_all_for_connector(local_connector):
+            groups.setdefault(m.bridge_group, m.category_name)
+        return await _unlink_all_groups(
+            local_connector=local_connector,
+            destination=destination,
+            connectors=self._connectors,
+            kind="Category",
+            kind_plural="Categories",
+            name_attr="category_name",
+            group_word="bridge group",
+            groups=groups,
+            load_group=self._category_mappings.get_mapped_categories,
+            dissolve_group=lambda group, _mapped: self._category_mappings.delete_bridge_group(group),
+            kick_member=lambda _group, mapped, dest: self._kick_from_group(mapped, dest),
+        )
 
     async def _kick_from_group(self, mapped: list[CategoryMapping], destination: str) -> CategoryMapping:
         """Kick `destination`'s member out of the group `mapped` describes.

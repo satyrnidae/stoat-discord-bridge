@@ -80,8 +80,9 @@ class StoatLinkingMixin:
 
         Posts a `WORKING_TEXT` placeholder first and edits the result into
         it; a command still running after a minute flips the placeholder to
-        `STILL_WORKING_TEXT` and posts the result as a new message instead
-        (issue #201).
+        `STILL_WORKING_TEXT` first (issue #201). Either way the result lands
+        in that one message (issue #197) - a new message only if the edit
+        fails.
 
         `cancelable` (issue #200) reacts `CANCEL_EMOJI` on the placeholder
         and registers it, so the invoker reacting the same cancels the
@@ -95,7 +96,6 @@ class StoatLinkingMixin:
             placeholder = None
         else:
             self._note_command_message(str(getattr(placeholder, "id", "")))
-        went_slow = placeholder is None
         task = asyncio.ensure_future(coro)
         placeholder_id = str(getattr(placeholder, "id", ""))
         registered = cancelable and bool(placeholder_id)
@@ -107,11 +107,8 @@ class StoatLinkingMixin:
                 logger.warning("[stoat:%s] couldn't add the cancel reaction", self.connector_id, exc_info=True)
 
         async def on_slow() -> None:
-            nonlocal went_slow
-            if went_slow:
-                return
-            went_slow = True
-            await placeholder.edit(content=STILL_WORKING_TEXT + hint)
+            if placeholder is not None:
+                await placeholder.edit(content=STILL_WORKING_TEXT + hint)
 
         try:
             summary = await watch_long_running(task, on_slow=on_slow)
@@ -131,7 +128,7 @@ class StoatLinkingMixin:
                 await placeholder.unreact(CANCEL_EMOJI)
             except Exception:
                 logger.debug("[stoat:%s] couldn't remove the cancel reaction", self.connector_id, exc_info=True)
-        if went_slow:
+        if placeholder is None:
             await self._reply(ctx, text)
             return
         try:

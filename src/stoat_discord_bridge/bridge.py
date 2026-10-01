@@ -987,8 +987,8 @@ async def run(config: BridgeConfig) -> None:
     # ChannelLinker only reads this once a command fires (well after `run()`
     # finishes wiring), so construction order doesn't matter.
     connector_infos: dict[str, ConnectorInfo] = {}
-    # One guard shared by every linker so concurrent `/mirror` runs into the
-    # same destination connector (of any entity kind) are serialized (issue #79).
+    # One guard shared by every linker so concurrent `/mirror` runs and bulk
+    # unlinks touching the same connector are serialized (issues #79, #197).
     mirror_guard = MirrorGuard()
     linker = ChannelLinker(
         channel_mappings,
@@ -998,7 +998,7 @@ async def run(config: BridgeConfig) -> None:
         backfill_history=coordinator.backfill_history,
     )
     emote_linker = EmoteLinker(emoji_mappings, connector_infos, guard=mirror_guard)
-    user_linker = UserLinker(user_mappings, connector_infos)
+    user_linker = UserLinker(user_mappings, connector_infos, guard=mirror_guard)
     category_linker = CategoryLinker(
         category_mappings, thread_categories, linker, connector_infos, guard=mirror_guard
     )

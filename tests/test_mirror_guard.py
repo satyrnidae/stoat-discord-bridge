@@ -7,14 +7,22 @@ import asyncio
 import pytest
 
 from stoat_discord_bridge.admin_commands import (
+    CategoryLinker,
     ChannelLinker,
     ConnectorInfo,
+    EmoteLinker,
     MirrorGuard,
     MirrorInProgressError,
+    NothingLinkedError,
     RoleLinker,
+    UserLinker,
+    unlink_all,
 )
+from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 
 def _connectors(**overrides):
@@ -264,3 +272,207 @@ async def test_one_shared_guard_makes_channel_and_role_mirror_exclude_each_other
 
     gate.set()
     await first
+
+
+# ---- bulk `/unlink <noun> all` (issue #197)
+
+
+async def _link_channel_pair(linker, discord_id, stoat_id):
+    await linker.link_channel(
+        local_connector="discord",
+        local_channel_id=discord_id,
+        local_channel_name=discord_id,
+        source="stoat",
+        source_id=stoat_id,
+        destination_id=None,
+    )
+
+
+async def _blocked_unlink_hooks():
+    """An `on_channel_unlinked` that parks until released - stands in for
+    IRC's network PART, the slow part of a bulk channel unlink."""
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def on_channel_unlinked(channel_id, unlinked_from):
+        started.set()
+        await gate.wait()
+
+    return started, gate, on_channel_unlinked
+
+
+async def test_bulk_unlink_channels_blocks_a_mirror_into_the_same_connector(fake_db):
+    started, gate, hook = await _blocked_unlink_hooks()
+
+    async def ensure_channel(name, *args, **kwargs):
+        return f"stoat_{name}"
+
+    connectors = _connectors(
+        stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel, on_channel_unlinked=hook)
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await _link_channel_pair(linker, "d1", "s1")
+
+    unlink = asyncio.create_task(
+        linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="stoat")
+    )
+    await started.wait()
+
+    with pytest.raises(MirrorInProgressError, match="Stoat"):
+        await linker.mirror_channel(
+            local_connector="discord", local_channel_id="d2", local_channel_name="other", destination="stoat"
+        )
+
+    gate.set()
+    assert "Unlinked" in await unlink
+
+
+async def test_bulk_unlink_channels_is_rejected_while_a_mirror_runs(fake_db):
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def ensure_channel(name, *args, **kwargs):
+        started.set()
+        await gate.wait()
+        return "s9"
+
+    connectors = _connectors(stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel))
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await _link_channel_pair(linker, "d1", "s1")
+
+    mirror = asyncio.create_task(
+        linker.mirror_channel(
+            local_connector="discord", local_channel_id="d2", local_channel_name="other", destination="stoat"
+        )
+    )
+    await started.wait()
+
+    with pytest.raises(MirrorInProgressError, match="Stoat"):
+        await linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="stoat")
+
+    gate.set()
+    await mirror
+
+
+async def test_bulk_unlink_leaves_an_unrelated_connector_free(fake_db):
+    started, gate, hook = await _blocked_unlink_hooks()
+
+    async def ensure_channel(name, *args, **kwargs):
+        return f"irc_{name}"
+
+    connectors = _connectors(
+        stoat=ConnectorInfo(id="stoat", label="Stoat", on_channel_unlinked=hook),
+        irc=ConnectorInfo(id="irc", label="IRC", ensure_channel=ensure_channel),
+    )
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await _link_channel_pair(linker, "d1", "s1")
+
+    unlink = asyncio.create_task(
+        linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="stoat")
+    )
+    await started.wait()
+
+    # a mirror into IRC, which the unlink doesn't touch, still runs
+    assert "Linked" in await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d2", local_channel_name="other", destination="irc"
+    )
+
+    gate.set()
+    await unlink
+
+
+async def test_bulk_unlink_dissolving_everything_reserves_every_connector(fake_db):
+    started, gate, hook = await _blocked_unlink_hooks()
+    connectors = _connectors(stoat=ConnectorInfo(id="stoat", label="Stoat", on_channel_unlinked=hook))
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await _link_channel_pair(linker, "d1", "s1")
+
+    unlink = asyncio.create_task(
+        linker.unlink_channel(local_connector="discord", local_channel_id="all", destination="all")
+    )
+    await started.wait()
+
+    with pytest.raises(MirrorInProgressError, match="IRC"):
+        with linker._guard.reserve(["irc"], connectors):
+            pass
+
+    gate.set()
+    await unlink
+
+
+def _category_linker(db, connectors, guard):
+    channels = ChannelLinker(ChannelMappingRepository(db), connectors, guard=guard)
+    return CategoryLinker(
+        CategoryMappingRepository(db), ThreadCategoryRepository(db), channels, connectors, guard=guard
+    )
+
+
+_BULK_UNLINKS = {
+    "category": (
+        _category_linker,
+        lambda linker: linker.unlink_category(local_connector="discord", local_category="all", destination="stoat"),
+    ),
+    "role": (
+        lambda db, c, g: RoleLinker(RoleMappingRepository(db), c, guard=g),
+        lambda linker: linker.unlink_role(local_connector="discord", local_role="all", destination="stoat"),
+    ),
+    "emote": (
+        lambda db, c, g: EmoteLinker(EmojiMappingRepository(db), c, guard=g),
+        lambda linker: linker.unlink_emote(local_connector="discord", local_emote="all", destination="stoat"),
+    ),
+    "user": (
+        lambda db, c, g: UserLinker(UserMappingRepository(db), c, guard=g),
+        lambda linker: linker.unlink_user(local_connector="discord", local_user_id="all", destination="stoat"),
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_BULK_UNLINKS))
+async def test_every_bulk_unlink_is_guarded(fake_db, kind):
+    make_linker, bulk_unlink = _BULK_UNLINKS[kind]
+    guard = MirrorGuard()
+    connectors = _connectors()
+    linker = make_linker(fake_db, connectors, guard)
+    entered, release = asyncio.Event(), asyncio.Event()
+    busy = asyncio.create_task(_hold(guard, ["stoat"], connectors, entered, release))
+    await entered.wait()
+
+    with pytest.raises(MirrorInProgressError, match="Stoat"):
+        await bulk_unlink(linker)
+
+    release.set()
+    await busy
+    # free again once the other operation finishes - nothing is linked, so
+    # the unguarded body runs and reports that
+    with pytest.raises(NothingLinkedError):
+        await bulk_unlink(linker)
+
+
+async def test_unlink_all_inherits_the_guard_through_its_linkers(fake_db):
+    guard = MirrorGuard()
+    connectors = _connectors()
+    linkers = {
+        "channel_linker": ChannelLinker(ChannelMappingRepository(fake_db), connectors, guard=guard),
+        "user_linker": UserLinker(UserMappingRepository(fake_db), connectors, guard=guard),
+    }
+    await _link_channel_pair(linkers["channel_linker"], "d1", "s1")
+    entered, release = asyncio.Event(), asyncio.Event()
+    busy = asyncio.create_task(_hold(guard, ["stoat"], connectors, entered, release))
+    await entered.wait()
+
+    summary = await unlink_all(local_connector="discord", destination="stoat", connectors=connectors, **linkers)
+    assert "still running" in summary
+    assert await ChannelMappingRepository(fake_db).get_bridge_group("discord", "d1") is not None
+
+    release.set()
+    await busy
+
+
+async def test_single_channel_unlink_is_not_guarded(fake_db):
+    connectors = _connectors()
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
+    await _link_channel_pair(linker, "d1", "s1")
+
+    with linker._guard.reserve(["stoat"], connectors):
+        out = await asyncio.create_task(
+            linker.unlink_channel(local_connector="discord", local_channel_id="d1", destination="stoat")
+        )
+    assert "Unlinked" in out
