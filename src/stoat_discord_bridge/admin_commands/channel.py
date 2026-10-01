@@ -32,6 +32,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_title,
     _run_bulk_mirror,
     _transfer_both_connectors,
+    _unlink_all_destinations,
     _unlink_all_groups,
     collect_linked_members,
     format_linked_listing,
@@ -1051,7 +1052,7 @@ class ChannelLinker:
         "this channel was unlinked from ..." notice and PART); a channel that
         still has other links stays untouched and unannounced."""
         if _is_all_token(local_channel_id):
-            return await self._unlink_all_channels(local_connector, destination)
+            return await self._unlink_all_channels(local_connector=local_connector, destination=destination)
         local_channel_id = await self._resolve_to_id(local_connector, local_channel_id)
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is None:
@@ -1068,7 +1069,8 @@ class ChannelLinker:
             "from this bridge group."
         )
 
-    async def _unlink_all_channels(self, local_connector: str, destination: str | None) -> str:
+    @_guards_mirror(_unlink_all_destinations)
+    async def _unlink_all_channels(self, *, local_connector: str, destination: str | None) -> str:
         """`/unlink channel all <service|all>` (issue #160). For every bridge
         group `local_connector` has a stored mapping in, kick `destination`'s
         member out (skipping groups without one), or dissolve the group when

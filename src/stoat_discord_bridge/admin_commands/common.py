@@ -197,7 +197,8 @@ class MirrorInProgressError(LinkError):
     """A `/mirror <x>` (or `/import` / `/export`, issue #161) command whose
     connector is still being written to by another such run - rejected up front rather than
     left to race the first one into duplicate channels/Categories/roles/
-    emoji (issue #79). A LinkError subclass, so every existing
+    emoji (issue #79). A bulk `/unlink <noun> all` is guarded the same way
+    (issue #197). A LinkError subclass, so every existing
     `except LinkError` / "relay str(exc) to the admin" path handles it."""
 
 
@@ -207,8 +208,9 @@ class MirrorGuard:
     each other's work (issue #79 - `/mirror channel` especially is slow, and
     a second one firing mid-run re-does the not-yet-linked channels). One
     instance is shared by every linker (ChannelLinker / CategoryLinker /
-    EmoteLinker / RoleLinker), so `/mirror channel to stoat` and
-    `/mirror role to stoat` exclude each other too.
+    EmoteLinker / RoleLinker / UserLinker), so `/mirror channel to stoat`
+    and `/mirror role to stoat` exclude each other too. Bulk `/unlink <noun>
+    all` takes the same reservations (issue #197).
 
     A reservation is keyed to the running asyncio task: one mirror operation
     that fans out across several linker methods in the same task (e.g.
@@ -238,8 +240,8 @@ class MirrorGuard:
                 sorted((connectors[d].label if d in connectors else d) for d in clash)
             )
             raise MirrorInProgressError(
-                f"another mirror/import/export into {names} is still running - wait for it to finish "
-                "before starting another, or its results may be duplicated."
+                f"another mirror/import/export or bulk unlink touching {names} is still running - "
+                "wait for it to finish before starting another."
             )
         claimed = [d for d in wanted if d not in self._held]
         for d in claimed:
@@ -309,6 +311,16 @@ def _transfer_both_connectors(self: object, kw: dict[str, object]) -> Iterable[s
     so a transfer and a `/mirror` touching either one exclude each other.
     `MirrorGuard.reserve` collapses a same-connector transfer to one."""
     return (kw["local_connector"], kw["service"])  # type: ignore[return-value]
+
+
+def _unlink_all_destinations(self: object, kw: dict[str, object]) -> Iterable[str]:
+    """`/unlink <noun> all <service|all>` (issue #197) - reserve the invoking
+    connector and the one it's unlinking from. Dissolving everything can
+    touch any connector's mappings, so `all` reserves every connector."""
+    destination = kw["destination"]
+    if _is_all_token(destination):  # type: ignore[arg-type]
+        return list(self._connectors)  # type: ignore[attr-defined]
+    return (kw["local_connector"], destination)  # type: ignore[return-value]
 
 
 # --------------------------------------------------------------------------
