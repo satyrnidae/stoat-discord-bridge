@@ -705,6 +705,11 @@ class ConnectorInfo:
     # matched same-named role once it's linked, since only create_role
     # carries metadata otherwise (issue #195).
     apply_role_metadata: Callable[[str, "RoleMetadata"], Awaitable[None]] | None = None
+    # Puts the given role ids in that order, highest first, by shuffling
+    # them among the positions they already hold - no other role moves. A
+    # no-op if they're already in order. `/mirror role` calls it so linked
+    # roles match the source's order (issue #199).
+    reorder_roles: Callable[[list[str]], Awaitable[None]] | None = None
     # Rename the role `role_id` to `new_name` on this connector - used to keep
     # linked copies coherent when a linked role is renamed on one side.
     rename_role: Callable[[str, str], Awaitable[None]] | None = None
