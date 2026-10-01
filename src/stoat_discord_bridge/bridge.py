@@ -24,6 +24,7 @@ from stoat_discord_bridge.admin_commands import (
     MirrorGuard,
     RoleLinker,
     UserLinker,
+    entity_gone,
 )
 from stoat_discord_bridge.config import BridgeConfig
 from stoat_discord_bridge.health_server import start_health_server
@@ -864,7 +865,7 @@ class RoleSyncCoordinator:
             target_role_id = await self._role_mappings.find_linked_role_id(
                 origin_connector_id, role_id, m.connector_id
             )
-            if target_role_id is None:
+            if target_role_id is None or await self._drop_if_role_gone(m.connector_id, target_role_id):
                 continue
             current = None
             if info.get_channel_role_permission is not None:
@@ -907,6 +908,14 @@ class RoleSyncCoordinator:
         if bridge_group is None:
             return
         mapped = await self._role_mappings.get_mapped_roles(bridge_group)
+        # Drop deleted copies before renaming any, so a dissolve isn't undone
+        # by a later upsert into the same group.
+        dropped = False
+        for m in mapped:
+            if m.connector_id != origin_connector_id:
+                dropped = await self._drop_if_role_gone(m.connector_id, m.role_id) or dropped
+        if dropped:
+            mapped = await self._role_mappings.get_mapped_roles(bridge_group)
         for m in mapped:
             if m.role_name == new_name:
                 continue
@@ -946,6 +955,17 @@ class RoleSyncCoordinator:
                 await self._role_mappings.delete_mapping(m.connector_id, m.role_id)
         logger.info("[role-sync] role %s deleted on %s - dropped from its bridge group", role_id, origin_connector_id)
 
+    async def _drop_if_role_gone(self, connector_id: str, role_id: str) -> bool:
+        """Whether linked role `role_id` was deleted on `connector_id` without
+        `/unlink role` - a delete event the bridge missed (issue #217). If so,
+        it's dropped the way `handle_role_deleted` would have, and the caller
+        skips it."""
+        if not await entity_gone(self._connectors, connector_id, "role", role_id):
+            return False
+        logger.warning("[role-sync] role %s on %s was deleted - dropping its stale link", role_id, connector_id)
+        await self.handle_role_deleted(connector_id, role_id)
+        return True
+
     async def handle(
         self,
         origin_connector_id: str,
@@ -972,6 +992,15 @@ class RoleSyncCoordinator:
                 continue
             target_role_id = await self._role_mappings.find_linked_role_id(origin, role_id, target_id)
             if target_role_id is None:
+                continue
+            if await self._drop_if_role_gone(target_id, target_role_id):
+                continue
+            if await entity_gone(self._connectors, target_id, "user", target_user_id):
+                # Unlike roles, a user link group keeps a lone survivor.
+                logger.warning(
+                    "[role-grant] user %s on %s was deleted - dropping its stale link", target_user_id, target_id
+                )
+                await self._user_mappings.delete_mapping(target_id, target_user_id)
                 continue
             self._remember(target_id, target_user_id, target_role_id, added)
             try:
