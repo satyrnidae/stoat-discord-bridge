@@ -679,6 +679,8 @@ class BridgeCoordinator:
         )
         if ref is None:
             return None  # never mirrored to this connector (or mirroring failed) - caller should skip
+        if await self._forget_if_emoji_gone(ref):
+            return None
         # Use the target ref's own stored name, not the origin emoji's: a
         # reaction event's emoji often carries no name (Stoat's `_parse_stoat_emoji`
         # leaves it blank), and a target that needs `name:id` (Discord) rejects
@@ -689,6 +691,16 @@ class BridgeCoordinator:
             image_url=emoji.image_url,
             animated=emoji.animated,
         )
+
+    async def _forget_if_emoji_gone(self, ref: EmojiRef) -> bool:
+        """Whether linked emoji copy `ref` was deleted on its connector - a
+        delete event the bridge missed (issue #217). If so it's forgotten the
+        way `handle_emoji_deleted` would have, and the caller skips it."""
+        if not await entity_gone(self._connectors, ref.connector_id, "emoji", ref.emoji_id):
+            return False
+        logger.warning("emoji %s on %s was deleted - dropping its stale link", ref.emoji_id, ref.connector_id)
+        await self._emoji_mappings.forget(ref.connector_id, ref.emoji_id)
+        return True
 
     async def handle_emoji_created(self, created: StandardEmojiCreated) -> None:
         """Mirror a newly created custom emoji onto every other connector
@@ -764,6 +776,8 @@ class BridgeCoordinator:
             if (ref.connector_id, ref.emoji_id) != (origin_connector_id, emoji_id):
                 receiver = self._receivers.get(ref.connector_id)
                 if receiver is None or not receiver.supports_emoji_rename:
+                    continue
+                if await self._forget_if_emoji_gone(ref):
                     continue
                 try:
                     applied_name = await receiver.rename_emoji(target_emoji_id=ref.emoji_id, new_name=new_name)
