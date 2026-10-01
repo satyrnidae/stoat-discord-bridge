@@ -704,7 +704,7 @@ async def test_mirror_category_reuses_an_existing_linked_category(fake_db):
     )
 
     assert created == []  # existing d-cat reused, no new Category created
-    assert "reusing" in summary
+    assert summary == "Discord: 'Team' already linked - reusing 'd-cat'."
 
 
 def _stale_link_connectors(resolve_category_name, ensure_channel=None, children=()):
@@ -862,7 +862,7 @@ async def test_mirror_category_reports_when_every_title_is_taken(fake_db):
     )
 
     assert len(created) == 5
-    assert summary.startswith("Discord: failed to create/find a Category")
+    assert summary.startswith("Discord: 'Team' failed to create/find a Category")
     assert "already linked elsewhere" in summary
     assert await category_mappings.get_bridge_group("stoat", "s-cat") is None
 
@@ -889,7 +889,7 @@ async def test_mirror_category_reports_a_destination_that_cant_create_categories
         local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
     )
 
-    assert "doesn't support Category creation" in summary
+    assert summary == "Discord: 'Team' doesn't support Category creation - link it manually with /link category."
 
 
 # ---------------------------------------------------------------- CategoryLinker.mirror_category_from

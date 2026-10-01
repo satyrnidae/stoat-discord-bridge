@@ -179,7 +179,7 @@ class EmoteLinker:
         if group_id is not None:
             refs = await self._emoji_mappings.get_refs(group_id)
             if any(r.connector_id == destination for r in refs):
-                return f"{dest_info.label}: already synced - skipped."
+                return f"{dest_info.label}: '{source_name}' already synced - skipped."
 
         # Prefer linking to a same-named emote that already exists on the
         # destination over creating a duplicate (mirrors /mirror role's
@@ -203,15 +203,15 @@ class EmoteLinker:
 
         source_info = self._connectors.get(local_connector)
         if source_info is None or source_info.resolve_emoji is None:
-            return f"{dest_info.label}: can't read {local_connector}'s emoji to copy it."
+            return f"{dest_info.label}: '{source_name}' can't read {local_connector}'s emoji to copy it."
         if dest_info.ensure_emoji is None:
-            return f"{dest_info.label}: doesn't support emoji creation - link it manually with /link emote."
+            return f"{dest_info.label}: '{source_name}' doesn't support emoji creation - link it manually with /link emote."
 
         try:
             custom_emoji = await source_info.resolve_emoji(source_id)
         except Exception as exc:
             logger.warning("mirror-emote: %s.resolve_emoji(%r) failed: %s", local_connector, source_id, exc)
-            return f"{dest_info.label}: couldn't read the source emoji: {exc}"
+            return f"{dest_info.label}: '{source_name}' couldn't read the source emoji: {exc}"
         if custom_emoji is None:
             return f"{dest_info.label}: source emoji '{source_name}' not found."
         if target_name != custom_emoji.name:
@@ -234,15 +234,18 @@ class EmoteLinker:
                 pool_kind = "animated" if custom_emoji.animated else "static"
                 free_slots = capacity.free_animated if custom_emoji.animated else capacity.free_static
                 if free_slots <= 0:
-                    return f"{dest_info.label}: no {pool_kind} emoji slots left - skipped."
+                    return f"{dest_info.label}: '{source_name}' no {pool_kind} emoji slots left - skipped."
 
         try:
             created = await dest_info.ensure_emoji(custom_emoji)
         except Exception as exc:
             logger.warning("mirror-emote: %s.ensure_emoji(%r) failed: %s", destination, target_name, exc)
-            return f"{dest_info.label}: failed to create the emoji: {exc}"
+            return f"{dest_info.label}: '{source_name}' failed to create the emoji: {exc}"
         if created is None:
-            return f"{dest_info.label}: couldn't create the emoji (slots full, name rejected, image too large?)."
+            return (
+                f"{dest_info.label}: '{source_name}' couldn't create the emoji "
+                "(slots full, name rejected, image too large?)."
+            )
 
         try:
             return await self.link_emote(

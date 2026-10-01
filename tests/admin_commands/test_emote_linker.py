@@ -232,7 +232,7 @@ async def test_mirror_emote_skips_the_create_when_the_matching_slot_pool_is_full
 
     summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
 
-    assert "no static emoji slots left" in summary
+    assert summary == "Stoat: 'dsrc' no static emoji slots left - skipped."
     assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") is None
 
 
@@ -373,7 +373,40 @@ async def test_mirror_emote_already_synced_is_skipped(fake_db, emote_connectors)
 
     summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
 
-    assert "already synced" in summary
+    assert summary == "Stoat: 'dsrc' already synced - skipped."
+
+
+async def test_mirror_emote_failure_lines_name_the_emote(fake_db, emote_connectors):
+    async def d_name(emoji_id):
+        return "blob"
+
+    async def failing_ensure(emoji):
+        raise RuntimeError("bad image")
+
+    async def refusing_ensure(emoji):
+        return None
+
+    async def unreadable(emoji_id):
+        raise RuntimeError("cdn down")
+
+    emote_connectors["discord"] = dataclasses.replace(emote_connectors["discord"], resolve_emoji_name=d_name)
+    stoat = emote_connectors["stoat"]
+    linker = EmoteLinker(EmojiMappingRepository(fake_db), emote_connectors)
+
+    async def mirror():
+        return await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
+
+    emote_connectors["stoat"] = dataclasses.replace(stoat, ensure_emoji=failing_ensure)
+    assert await mirror() == "Stoat: 'blob' failed to create the emoji: bad image"
+    emote_connectors["stoat"] = dataclasses.replace(stoat, ensure_emoji=refusing_ensure)
+    assert (await mirror()).startswith("Stoat: 'blob' couldn't create the emoji")
+    emote_connectors["stoat"] = dataclasses.replace(stoat, ensure_emoji=None)
+    assert (await mirror()).startswith("Stoat: 'blob' doesn't support emoji creation")
+    emote_connectors["stoat"] = stoat
+    emote_connectors["discord"] = dataclasses.replace(emote_connectors["discord"], resolve_emoji=unreadable)
+    assert await mirror() == "Stoat: 'blob' couldn't read the source emoji: cdn down"
+    emote_connectors["discord"] = dataclasses.replace(emote_connectors["discord"], resolve_emoji=None)
+    assert await mirror() == "Stoat: 'blob' can't read discord's emoji to copy it."
 
 
 async def test_mirror_emote_missing_source_reports(fake_db, emote_connectors):

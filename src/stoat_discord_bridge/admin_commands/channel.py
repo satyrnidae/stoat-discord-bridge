@@ -457,11 +457,14 @@ class ChannelLinker:
         if bridge_group is not None:
             existing = await self._channel_mappings.get_mapped_channels(bridge_group)
             if any(m.connector_id == destination for m in existing):
-                return f"{self._connectors[destination].label}: already synced - skipped."
+                return f"{self._connectors[destination].label}: '{local_channel_name}' already synced - skipped."
 
         dest_info = self._connectors[destination]
         if dest_info.ensure_channel is None:
-            return f"{dest_info.label}: doesn't support channel creation - link it manually with /link channel."
+            return (
+                f"{dest_info.label}: '{local_channel_name}' doesn't support channel creation - "
+                "link it manually with /link channel."
+            )
 
         # Normalize (IRC's `#`-prefix + character sterilization; a no-op on
         # every other connector) then clip to the destination's channel-name
@@ -563,9 +566,12 @@ class ChannelLinker:
             )
         except Exception as exc:
             logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
-            return f"{dest_info.label}: failed to create/find a channel: {exc}"
+            return f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: {exc}"
         if ensured is None:
-            return f"{dest_info.label}: failed to create/find a channel: {_all_names_taken_message(target_name)}."
+            return (
+                f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: "
+                f"{_all_names_taken_message(target_name)}."
+            )
         destination_channel_id, target_name = ensured
 
         try:
@@ -703,12 +709,13 @@ class ChannelLinker:
         if bridge_group is not None:
             existing = await self._channel_mappings.get_mapped_channels(bridge_group)
             if any(m.connector_id == destination for m in existing):
-                return f"{self._connectors[destination].label}: already synced - skipped.", None
+                return f"{self._connectors[destination].label}: '{local_channel_name}' already synced - skipped.", None
 
         dest_info = self._connectors[destination]
         if dest_info.ensure_channel is None:
             return (
-                f"{dest_info.label}: doesn't support channel creation - link it manually with /link channel.",
+                f"{dest_info.label}: '{local_channel_name}' doesn't support channel creation - "
+                "link it manually with /link channel.",
                 None,
             )
 
@@ -750,10 +757,11 @@ class ChannelLinker:
             )
         except Exception as exc:
             logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
-            return f"{dest_info.label}: failed to create/find a channel: {exc}", None
+            return f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: {exc}", None
         if ensured is None:
             return (
-                f"{dest_info.label}: failed to create/find a channel: {_all_names_taken_message(target_name)}.",
+                f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: "
+                f"{_all_names_taken_message(target_name)}.",
                 None,
             )
         # Rebinds the name `finish_category_placement` matches by too, so it

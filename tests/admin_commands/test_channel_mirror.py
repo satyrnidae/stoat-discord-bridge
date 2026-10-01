@@ -30,7 +30,7 @@ async def test_mirror_channel_without_ensure_channel_reports_unsupported(fake_db
     summary = await linker.mirror_channel(
         local_connector="irc", local_channel_id="#general", local_channel_name="general", destination="discord"
     )
-    assert "doesn't support channel creation" in summary
+    assert summary == "Discord: 'general' doesn't support channel creation - link it manually with /link channel."
 
 
 async def test_mirror_channel_refuses_a_source_the_bot_cant_see(fake_db):
@@ -362,7 +362,7 @@ async def test_mirror_channel_skips_if_already_synced(fake_db):
     summary = await linker.mirror_channel(
         local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat"
     )
-    assert "already synced" in summary
+    assert summary == "Stoat: 'general' already synced - skipped."
     assert calls == ["general"]  # ensure_channel was NOT called again on the second, skipped attempt
 
 
@@ -495,7 +495,7 @@ async def test_mirror_channel_discriminator_gives_up_after_a_bounded_number_of_n
     )
 
     assert calls == ["general", "general-2", "general-3", "general-4", "general-5"]
-    assert summary.startswith("Stoat: failed to create/find a channel")
+    assert summary.startswith("Stoat: 'general' failed to create/find a channel")
     assert "already linked elsewhere" in summary
     assert await channel_mappings.get_bridge_group("discord", "d1") is None
 
@@ -716,7 +716,7 @@ async def test_mirror_channel_to_all_reports_a_per_channel_problem_without_abort
     )
     lines = summary.splitlines()
     assert len(lines) == 2
-    assert "failed to create/find a channel" in lines[0]
+    assert lines[0] == "Stoat: 'general' failed to create/find a channel: no room"
     assert "Linked Discord channel 'd2'" in lines[1]
 
 
@@ -946,7 +946,7 @@ async def test_mirror_channel_for_thread_skips_if_already_synced(fake_db):
         local_channel_category=None,
         category_from_channel_id="d-parent",
     )
-    assert "already synced" in summary
+    assert summary == "Stoat: 'Test Thread' already synced - skipped."
     assert finish is None
 
 
@@ -971,7 +971,7 @@ async def test_mirror_channel_all_for_thread_skips_local_connector_and_collects_
     lines = summary.splitlines()
     assert len(lines) == 2  # stoat + irc, not discord (skipped as local_connector)
     assert any("Linked" in line for line in lines)
-    assert any("doesn't support channel creation" in line for line in lines)
+    assert any("IRC: 'Test Thread' doesn't support channel creation" in line for line in lines)
     assert len(finishers) == 1  # only stoat's mirror actually created/linked a channel
 
     await finishers[0]()  # must not raise
