@@ -686,7 +686,9 @@ missing hook), drops the stale row. `/mirror category` then creates and
 links a fresh one, `/mirror channel` places the channel under the source
 Category's name and relinks the new Category by title where it can, and
 linked-Category auto-sync recreates it before mirroring the new channel.
-The `/mirror` replies add a line saying the old Category was gone. Every `/mirror` command
+The `/mirror` replies add a line saying the old Category was gone. Other
+link kinds heal the same way - see "Deleted-entity link healing" below
+(issue #217). Every `/mirror` command
 (`/mirror channel|category|role|emote`, all of `to`/`from`/`all`)
 first force-refreshes both the source and destination connector's cached
 server state via `ConnectorInfo.refresh` (`_refresh_connectors` in
@@ -1047,6 +1049,54 @@ open. **v1 scope is retarget + unlink only** — renaming the local entity or
 moving a channel to a different Category aren't in the panel (deferred to a
 follow-up); see `COMMANDS.md`'s "Editing a link in place" section for the
 user-facing description.
+
+### Deleted-entity link healing
+
+Links aren't authoritative (issue #217, generalizing #206's Category fix):
+a channel, role, user or emote deleted on its platform without `/unlink`
+is dropped from its link group the next time the bridge tries to use it,
+with one warning and no traceback. As with `/unlink`, a channel, role or
+emote group left with one member is dissolved; a user group keeps it.
+
+Only a definite "gone" counts. `ConnectorInfo.entity_exists(kind, id)`
+(Discord/Stoat) answers True, False (a 404, or missing from a cache the
+gateway keeps live) or None (can't tell), and `common.entity_gone` acts
+only on False. The best-effort `resolve_*_name` hooks can't be used for
+this, since they answer None for "couldn't check" too. Discord treats a
+Forbidden channel as existing. Stoat's cache drifts (#66), so a cache miss
+is checked against the API, and a role counts as gone only when a freshly
+fetched server lacks it. IRC wires no hook, so its links are never
+dropped.
+
+- **Channel relay** (relay, edit, delete, pin, reaction) is reactive, so
+  the per-message path pays nothing: a receiver raises
+  `RelayTargetGoneError` (`services/base.py`) only for a deleted target,
+  and `BridgeCoordinator._drop_gone_channel` drops the mapping, dissolving
+  a lone survivor and telling it (IRC PARTs). Discord's receiver turns a
+  `discord.NotFound` from its channel lookup into it. Stoat's partial
+  channel never checks existence, so on a `stoat.NotFound` from a send or
+  message fetch the receiver makes one uncached `fetch_channel`
+  (`StoatSenderService.channel_deleted`), only on that error path, to tell
+  a deleted channel from a deleted message. Once a split relay has posted
+  something, `PartialRelayError` still wins. A history backfill into a
+  deleted channel stops early.
+- **Role sync** checks the target role before grant/revoke, rename and
+  permission mirroring, dropping a deleted one the way `handle_role_deleted`
+  would have. Grant/revoke also checks the linked user. A rename drops
+  every deleted copy before renaming any, so a dissolved group isn't
+  recreated by a later upsert.
+- **Emoji**: a reaction or rename checks the target's copy and `forget()`s
+  a deleted one.
+- **`/link` and `/mirror`** (channel, role, user, emote) drop deleted
+  members of the groups involved before their conflict and "already
+  synced" checks, so re-mirroring after a deleted counterpart recreates it
+  and a relink isn't refused because of a dead row. A conflict between two
+  live groups is still refused.
+
+Linked users in mention rewriting and masquerade identity aren't checked:
+that runs on every message, and a deleted Discord account still resolves
+anyway. **Unverified against a live server**: Stoat's 404 shape for a
+deleted channel, role, user or emoji.
 
 ### Bot whitelisting
 

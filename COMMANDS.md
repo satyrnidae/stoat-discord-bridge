@@ -641,6 +641,20 @@ silent):
   set of permission bits that mean the same on Discord and Stoat; every other
   bit on the target is left untouched.
 
+## Deleting a linked channel, role, user or emote
+
+You don't need to `/unlink` something before deleting it on Discord or
+Stoat. The bridge notices the next time it tries to use the link: relaying
+a message (or an edit, delete, pin or reaction) into a deleted channel,
+syncing a deleted role, reacting with a deleted emote. It then drops that
+link and logs a warning. As with `/unlink`, a channel, role or emote group
+left with only one member is dissolved. `/link` and `/mirror` do the same
+check first, so after deleting a channel you can just run `/mirror channel`
+again to recreate it, rather than getting "already synced". Only a definite
+"deleted" counts: if the bridge merely lost access, or couldn't check, the
+link is kept. IRC links are never dropped this way. Linked Categories have
+their own version of this; see `/mirror category`.
+
 ## `/unlink channel [<local_id>|all] [<service>|all]`
 
 Removes members from `local_id`'s (or the invoking channel, if
