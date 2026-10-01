@@ -25,11 +25,16 @@ whoever is logged in - say so when you report back. `git push` is unaffected
 
 ## Progress comments
 
-Narrate the work on GitHub as you go, not just in the session - in the
-headless pipeline nobody reads the transcript, and the bot's own comments
-don't feed back into it (the harness only forwards the owner's). Short and
-factual, one comment per milestone, unwrapped paragraphs like every other
-comment here (`gh issue comment <n> --body-file <tmpfile>`):
+**Only in headless pipeline runs** - when the session's system prompt says
+you're running headless, started by a GitHub webhook (the triage-webhook
+service). Interactive runs skip these comments; the user is watching the
+session.
+
+In those runs, narrate the work on GitHub as you go - nobody reads the
+transcript, and the bot's own comments don't feed back into the pipeline
+(the harness only forwards the owner's). Short and factual, one comment per
+milestone, unwrapped paragraphs like every other comment here
+(`gh issue comment <n> --body-file <tmpfile>`):
 
 - **Start** (step 1): the phase breakdown you derived from the plan, as a
   numbered list, plus anything you're reading differently from the plan.
@@ -43,8 +48,7 @@ comment here (`gh issue comment <n> --body-file <tmpfile>`):
 - **PR open** (step 4): the PR link and a line on anything left for review.
 
 Post on the issue until the PR exists; after that, follow-up runs (owner
-feedback on the PR) reply on the PR instead. Skip the comments only when
-the user running the skill interactively asks you to.
+feedback on the PR) reply on the PR instead.
 
 ## 0. Resolve the issue and its plan
 
@@ -82,7 +86,7 @@ the user running the skill interactively asks you to.
   Do this regardless of whether a worktree/branch already existed - it's the
   signal that this issue has an active implementation session, not that a
   worktree was just created. Safe to re-run if it's already set.
-- Post the start comment (see Progress comments).
+- Headless pipeline runs: post the start comment (see Progress comments).
 
 ## 2. The per-phase loop
 
@@ -116,7 +120,8 @@ For each phase from step 0, in order:
    warrant its own commit - then split it out). Gitmoji-prefixed message per
    `CLAUDE.md`'s Contributing section (`✨`/`🐛`/`♻️`/`✅` as fits), body
    referencing the issue (`Refs #<n>` - not a closing keyword yet; that's
-   reserved for the PR). Then post the phase's progress comment.
+   reserved for the PR). In a headless pipeline run, then post the phase's
+   progress comment.
 
 Repeat until every phase from the plan is implemented.
 
@@ -142,8 +147,8 @@ whole branch is coherent, not just each phase in isolation.
   --remove-label "in development" --add-label "merge pending"`. Development
   is done at this point (an open PR is what "merge pending" means) even
   though the issue itself isn't closed until the PR merges.
-- Post the PR-open comment on the issue, and report the PR URL back to the
-  user.
+- In a headless pipeline run, post the PR-open comment on the issue. Report
+  the PR URL back to the user.
 
 ## Notes
 

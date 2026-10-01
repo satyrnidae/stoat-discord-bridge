@@ -21,6 +21,30 @@ exists, call the wrapper by its full path for every `gh` command below. If
 the wrapper doesn't exist (another machine or user), plain `gh` posts as
 whoever is logged in - say so when you report back.
 
+## Progress comments
+
+**Only in headless pipeline runs** - when the session's system prompt says
+you're running headless, started by a GitHub webhook (the triage-webhook
+service). Interactive runs skip these; the user is watching the session.
+
+In those runs, keep the owner posted on the issue as you go, on top of the
+investigation summary (step 3), which every run posts. Nobody reads the
+transcript, and the bot's own comments don't feed back into the pipeline
+(the harness only forwards the owner's). Short and factual, unwrapped
+paragraphs like every other comment here
+(`gh issue comment <n> --body-file <tmpfile>`):
+
+- **Start**: that you've picked the issue up and where you're looking first
+  (which subsystem / files, from `CLAUDE.md`'s map).
+- **Stuck or unsure**: as soon as it happens - what's unclear and what you'll
+  assume to keep going. If you need the owner's call, ask and stop (the
+  headless note explains how they reply).
+- **Done**: after step 7. Editing the issue body or title doesn't notify
+  anyone, so say what changed: the plan is now in the description (with a
+  one-line gist of the approach), the new title if you renamed it, the type
+  label, and any open question the owner should answer before
+  implementation starts.
+
 ## 1. Pick the issue(s)
 
 - If an issue number was passed as the argument, use that issue. Check
@@ -43,6 +67,8 @@ whoever is logged in - say so when you report back.
 
 For the issue at hand:
 
+- In a headless pipeline run, post the start comment (see Progress
+  comments).
 - Fetch full context: `gh issue view <n> --json number,title,body,labels,comments,url`.
 - Read the report closely - reproduction steps, error text, affected
   commands/config, and any linked images/screenshots in the body (markdown
@@ -131,6 +157,7 @@ For the issue at hand:
   Use `CLAUDE.md`'s branch-prefix categories (bug/feat/chore) as the primary
   guide; use `docs` for documentation-only issues.
 - `gh issue edit <n> --remove-label planning --add-label <type>`.
+- In a headless pipeline run, post the done comment (see Progress comments).
 
 ## 8. Report back
 
