@@ -500,6 +500,17 @@ option themselves (see `COMMANDS.md`) — reach IRC as either side of a
 backfill via Discord's or Stoat's `/mirror channel` naming it as the
 `service`/`destination` instead.
 
+A `with_history` mirror of a plain channel also brings its **active
+threads** (issue #225): `mirror_channel` lists them through the source's
+`ConnectorInfo.threads_in_channel` hook (Discord only, a `TextChannel`'s
+`.threads`; voice channels can't have threads), mirrors each one with a
+recursive history-less `mirror_channel` (so it lands in the usual `🧵 #`
+thread Category), and only then backfills the channel and every
+freshly-linked thread with the same limit, so thread mentions in the copied
+history resolve. An already-linked thread is skipped, not re-backfilled. A
+missing or raising hook, or one failed thread, never stops the rest. Never
+runs for a thread source or without `with_history`.
+
 `BridgeCoordinator.backfill_history` is the orchestration step `mirror_channel`
 calls once a fresh link succeeds (never on the "already synced - skipped"
 early return, so a repeat `with history` mirror on an already-linked pair is

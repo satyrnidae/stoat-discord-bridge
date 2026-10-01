@@ -373,6 +373,14 @@ limitation), and omitting it defaults to 50. On Discord it's the native
 `history` token (default limit) or a `history:<n|all>` token, placed anywhere
 in the argument list.
 
+On a Discord text channel that has active threads, `with history` mirrors
+each thread too (under the usual `🧵 #<channel>` Category) and backfills it
+with the same limit, all in one command (issue #225). The threads are created
+before any history is copied, so thread mentions in the copied messages point
+at the mirrored threads. A thread that's already linked is left alone.
+Archived threads aren't included. Without `with history`, only the channel
+itself is mirrored.
+
 Only the *source* needs to support fetching history — Discord and Stoat
 always do; IRC does too (issue #141), by forcing a PART and immediate
 re-JOIN and capturing whatever chanhistory-replay burst the server sends
