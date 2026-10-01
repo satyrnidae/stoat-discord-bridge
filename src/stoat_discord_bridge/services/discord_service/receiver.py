@@ -25,6 +25,7 @@ from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
 from stoat_discord_bridge.services.base import (
     PartialRelayError,
+    RelayTargetGoneError,
     ReceiverService,
     UnsupportedRelayTargetError,
 )
@@ -362,9 +363,7 @@ class DiscordReceiverService(ReceiverService):
         await message.remove_reaction(self._discord_emoji(emoji), self._client.user)
 
     async def set_pinned(self, *, target_channel_id: str, target_message_id: str, pinned: bool) -> None:
-        channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
-            int(target_channel_id)
-        )
+        channel = await self._resolve_channel(target_channel_id)
         try:
             message = await channel.fetch_message(int(target_message_id))
         except discord.HTTPException:
@@ -608,7 +607,7 @@ class DiscordReceiverService(ReceiverService):
         # into the thread itself is done by passing thread= to
         # Webhook.send() below. Cache under the parent's id so every thread
         # under it shares one webhook instead of creating a new one each.
-        channel = self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        channel = await self._resolve_channel(channel_id)
         thread = channel if isinstance(channel, discord.Thread) else None
         # A forum/media channel has no top-level message stream - every post has
         # to open a new thread (thread_name/thread_id), which the webhook API
@@ -648,10 +647,19 @@ class DiscordReceiverService(ReceiverService):
         return webhook, thread
 
     async def _get_partial_message(self, target_channel_id: str, target_message_id: str) -> discord.PartialMessage:
-        channel = self._client.get_channel(int(target_channel_id)) or await self._client.fetch_channel(
-            int(target_channel_id)
-        )
+        channel = await self._resolve_channel(target_channel_id)
         return channel.get_partial_message(int(target_message_id))
+
+    async def _resolve_channel(self, channel_id: str):
+        """The relay target channel, from cache or a fetch. A 404 means it was
+        deleted, so it's raised as `RelayTargetGoneError` and the stale link
+        dropped (issue #217); a Forbidden or any other failure passes through
+        unchanged. The cache needs no check of its own - discord.py drops a
+        deleted channel from it."""
+        try:
+            return self._client.get_channel(int(channel_id)) or await self._client.fetch_channel(int(channel_id))
+        except discord.NotFound as exc:
+            raise RelayTargetGoneError(f"Discord channel {channel_id} was deleted") from exc
 
     async def close(self) -> None:
         if self._session is not None:
