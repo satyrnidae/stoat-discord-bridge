@@ -784,7 +784,7 @@ via those commands.
 Every `mirror_*` entry point on those linkers is wrapped by
 `_guards_mirror`, which reserves the operation's **destination
 connector(s)** on a single shared `MirrorGuard` for the duration
-(`bridge.run()` hands the one instance to all four linkers) — `… to` /
+(`bridge.run()` hands the one instance to every linker) — `… to` /
 `… from` reserve the one destination, the `… all` fan-outs reserve *every*
 other connector (`_mirror_all_other_connectors`). A `/mirror` — of any
 entity kind — into a connector another `/mirror` is still writing to fails
@@ -805,6 +805,15 @@ up if it's a child of the mirrored Category); `_handle_thread_create`'s
 auto-mirror (via `mirror_channel_all`) catches it and logs a deferral —
 the thread is re-tried on nothing, so it just isn't mirrored until the
 operator re-runs.
+
+Bulk `/unlink <noun> all` takes the same guard (issue #197): each linker's
+`_unlink_all_*` method is wrapped with `_unlink_all_destinations`, which
+reserves the invoking connector and the named service, or every connector
+when the service is `all` (a dissolve can touch any of them). So a bulk
+unlink and a `/mirror` / `/import` / `/export` touching the same connector
+exclude each other, and `/unlink all` inherits this through the linkers it
+calls. `UserLinker` takes the shared guard for this alone. Single-entity
+`/link` and `/unlink` stay unguarded, since they're one quick write.
 
 When `/mirror channel` (or `/mirror channel from`, thread auto-mirror, or
 linked-Category auto-sync) **creates** a counterpart channel, it carries the
@@ -967,8 +976,11 @@ Discord and Stoat, which shows a placeholder and edits the result into it
 `edit_original_response`; every linker command now defers), on Stoat a
 posted `WORKING_TEXT` message. If the command is still running after
 `SLOW_AFTER_SECONDS` (60s), `services/long_running.watch_long_running`
-flips the placeholder to `STILL_WORKING_TEXT` and the result is posted as a
-new message instead. IRC has no placeholder.
+flips the placeholder to `STILL_WORKING_TEXT` so the operator knows it
+hasn't stalled. The result still replaces that same placeholder, so a
+command leaves one message (issue #197). A new message is sent only if the
+edit fails, such as a Discord interaction token expired after 15 minutes or
+a deleted placeholder. IRC has no placeholder.
 
 The commands that can run long (`with history` mirrors, `/import` /
 `/export`, `/mirror category`, any `all` mirror or unlink, `/unlink all`)
