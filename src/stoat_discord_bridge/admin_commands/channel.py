@@ -345,7 +345,9 @@ class ChannelLinker:
         history, anything else is a positive integer clamped to
         `_MAX_HISTORY_LIMIT`. Not combinable with `local_channel_id == "all"`
         (below) - one backfill request can't fan out across a whole
-        connector's channels.
+        connector's channels. A Discord forum source is the exception: it
+        redirects to `mirror_category`, which backfills each active thread
+        it mirrors (issue #202).
 
         `local_channel_id == "all"` (case-insensitive, and only that literal
         token - never inferred from an omitted argument) mirrors every
@@ -419,20 +421,16 @@ class ChannelLinker:
             and self._connectors[destination].ensure_category is not None
             and await _is_forum_channel(self._connectors, local_connector, local_channel_id)
         ):
-            if with_history:
-                # A forum redirects to CategoryLinker.mirror_category - there's
-                # no single channel here for backfill_history to fetch/relay
-                # into, so silently dropping the request would be misleading.
-                raise LinkError(
-                    "'with history' isn't supported when mirroring a Discord forum channel "
-                    "(it's mirrored as a Category, not a single channel)."
-                )
+            # `with_history` backfills each mirrored thread with its own
+            # history (issue #202).
             return await self._category_linker.mirror_category(
                 local_connector=local_connector,
                 local_category_id=local_channel_id,
                 local_category_name=local_channel_name,
                 destination=destination,
                 new_name=new_name,
+                with_history=with_history,
+                history_limit=history_limit,
             )
 
         if await self._channel_is_hidden(local_connector, local_channel_id):

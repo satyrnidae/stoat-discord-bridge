@@ -547,6 +547,62 @@ async def test_mirror_category_creates_links_and_mirrors_child_channels(fake_db)
     assert lines[2] == "Discord: moved 'linked-one' into the Category."
 
 
+async def test_mirror_category_with_history_backfills_only_freshly_mirrored_children(fake_db):
+    # issue #202: a moved child is already linked, so its history is already
+    # there - only a child mirror_category creates gets a backfill.
+    ensure_category, _ = _ensure_category_fake()
+    backfills = []
+
+    async def fetch_history(channel_id, limit):
+        return []
+
+    async def backfill(*, fetch_history, source_channel_id, destination_connector, destination_channel_id, limit):
+        backfills.append((source_channel_id, destination_connector, destination_channel_id, limit))
+        return "relayed 2 message(s)."
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"dest-chan-{name}", True
+
+    async def channels_in_category(cid):
+        return [("s-chan-1", "general"), ("s-chan-2", "linked-one")]
+
+    async def move_channel_to_category(channel_id, category_id):
+        pass
+
+    connectors = {
+        "stoat": ConnectorInfo(
+            id="stoat", label="Stoat", channels_in_category=channels_in_category, fetch_history=fetch_history
+        ),
+        "discord": ConnectorInfo(
+            id="discord",
+            label="Discord",
+            ensure_category=ensure_category,
+            ensure_channel=ensure_channel,
+            move_channel_to_category=move_channel_to_category,
+        ),
+    }
+    channel_linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, backfill_history=backfill)
+    linker = CategoryLinker(
+        CategoryMappingRepository(fake_db), ThreadCategoryRepository(fake_db), channel_linker, connectors
+    )
+    await channel_linker.link_channel(
+        local_connector="stoat", local_channel_id="s-chan-2", local_channel_name="linked-one",
+        source="discord", source_id="d-chan-2", destination_id=None,
+    )
+
+    summary = await linker.mirror_category(
+        local_connector="stoat",
+        local_category_id="s-cat",
+        local_category_name="Team",
+        destination="discord",
+        with_history=True,
+        history_limit="all",
+    )
+
+    assert backfills == [("s-chan-1", "discord", "dest-chan-general", None)]
+    assert "relayed 2 message(s)." in summary
+
+
 async def test_mirror_category_says_it_matched_an_existing_category(fake_db):
     async def ensure_category(name):
         return f"dest-{name}", False

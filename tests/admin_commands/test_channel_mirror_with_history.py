@@ -172,43 +172,87 @@ async def test_mirror_channel_with_history_survives_a_raising_backfill_hook(fake
     assert await channel_mappings.get_bridge_group("stoat", "stoat_general") is not None
 
 
-async def test_mirror_channel_with_history_rejects_a_forum_source(fake_db):
-    # issue #122 code-review catch: a Discord forum redirects mirror_channel
-    # to CategoryLinker.mirror_category - there's no single channel there for
-    # backfill_history to target, so with_history must raise rather than
-    # silently drop the request.
+def _forum_linker(fake_db, backfill, *, ensure_channel=_ensure_channel):
+    """A Discord forum `f1` with two active threads, mirrored to Stoat."""
     from stoat_discord_bridge.admin_commands.category import CategoryLinker
-    from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository
+    from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 
-    async def backfill(**kwargs):
-        raise AssertionError("must not run - forums don't support with_history")
+    async def is_forum_channel(channel_id):
+        return channel_id == "f1"
 
-    async def is_forum_channel(_channel_id):
-        return True
+    async def channels_in_category(category_id):
+        assert category_id == "f1"
+        return [("t1", "first-post"), ("t2", "second-post")]
 
     connectors = _history_connectors()
     connectors["discord"] = ConnectorInfo(
-        id="discord", label="Discord", fetch_history=_fetch_history, is_forum_channel=is_forum_channel
+        id="discord",
+        label="Discord",
+        fetch_history=_fetch_history,
+        is_forum_channel=is_forum_channel,
+        channels_in_category=channels_in_category,
     )
     connectors["stoat"] = ConnectorInfo(
         id="stoat",
         label="Stoat",
-        ensure_channel=_ensure_channel,
+        ensure_channel=ensure_channel,
         ensure_category=_ensure_channel,
         fetch_history=_fetch_history,
     )
-    channel_mappings = ChannelMappingRepository(fake_db)
-    linker = ChannelLinker(channel_mappings, connectors, backfill_history=backfill)
-    CategoryLinker(CategoryMappingRepository(fake_db), None, linker, connectors)
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors, backfill_history=backfill)
+    CategoryLinker(CategoryMappingRepository(fake_db), ThreadCategoryRepository(fake_db), linker, connectors)
+    return linker
 
-    with pytest.raises(LinkError, match="Discord forum channel"):
-        await linker.mirror_channel(
-            local_connector="discord",
-            local_channel_id="f1",
-            local_channel_name="general",
-            destination="stoat",
-            with_history=True,
-        )
+
+async def test_mirror_channel_with_history_on_a_forum_backfills_each_thread(fake_db):
+    # issue #202: one `/mirror channel ... with history` naming the forum's
+    # own id backfills every active thread into its new counterpart.
+    calls = []
+
+    async def backfill(*, fetch_history, source_channel_id, destination_connector, destination_channel_id, limit):
+        calls.append((source_channel_id, destination_channel_id, limit))
+        return f"relayed history of {source_channel_id}."
+
+    linker = _forum_linker(fake_db, backfill)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="f1",
+        local_channel_name="forum",
+        destination="stoat",
+        with_history=True,
+        history_limit=10,
+    )
+
+    assert calls == [("t1", "stoat_first-post", 10), ("t2", "stoat_second-post", 10)]
+    assert "relayed history of t1." in summary
+    assert "relayed history of t2." in summary
+
+
+async def test_mirror_channel_with_history_on_a_forum_carries_on_past_a_failed_thread(fake_db):
+    calls = []
+
+    async def backfill(*, fetch_history, source_channel_id, destination_connector, destination_channel_id, limit):
+        calls.append(source_channel_id)
+        return "relayed."
+
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        if name == "first-post":
+            raise LinkError("no room for it")
+        return f"stoat_{name}", True
+
+    linker = _forum_linker(fake_db, backfill, ensure_channel=ensure_channel)
+
+    summary = await linker.mirror_channel(
+        local_connector="discord",
+        local_channel_id="f1",
+        local_channel_name="forum",
+        destination="stoat",
+        with_history=True,
+    )
+
+    assert calls == ["t2"]
+    assert "'first-post' failed to create/find a channel: no room for it" in summary
 
 
 async def test_mirror_channel_with_history_allows_irc_destination_with_no_extra_check_wired(fake_db):
