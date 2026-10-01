@@ -407,6 +407,13 @@ is reported per-connector rather than aborting the rest when `all` is used.
 (issue #97) and leads, matching `from`'s shape — `all` is a valid explicit
 value but no longer assumed on omission.
 
+Each line of the reply names the channel it's about, and a successful one
+ends by saying whether the counterpart was created or an existing channel
+matched, and which Category it went under (when the destination has
+Categories). For example: `... - created a new channel, under Category
+'Games'.` or `Stoat: 'general' already synced - skipped.` Every `/mirror`
+command words its lines this way (issue #198).
+
 `<local_id>` also accepts the literal `all` (issue #123): mirrors every
 channel the connector can enumerate (its `list_channels` hook) to `<service>`
 instead of just one — one line of summary/skip/error per channel, paced and

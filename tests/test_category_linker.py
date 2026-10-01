@@ -540,7 +540,24 @@ async def test_mirror_category_creates_links_and_mirrors_child_channels(fake_db)
     assert moved == [("d-chan-2", "dest-Team")]
     # child channels are placed by Category *name*, not the raw id (issue #64)
     assert ("general", "Team") in ensure_channel_calls
-    assert "Linked" in summary
+    lines = summary.splitlines()
+    assert lines[0].endswith(" - created a new Category.")
+    # the mirrored child names its own placement (issue #198)
+    assert lines[1].endswith(" - created a new channel, under Category 'Team'.")
+    assert lines[2] == "Discord: moved 'linked-one' into the Category."
+
+
+async def test_mirror_category_says_it_matched_an_existing_category(fake_db):
+    async def ensure_category(name):
+        return f"dest-{name}", False
+
+    linker, _, _, _ = _make_linker(fake_db, _same_title_connectors(ensure_category))
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert summary.endswith(" - matched an existing Category.")
 
 
 async def test_mirror_category_new_name_titles_the_counterpart_only(fake_db):

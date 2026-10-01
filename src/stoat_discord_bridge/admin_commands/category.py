@@ -27,6 +27,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
+    _mirror_outcome,
     _mirror_to_destination,
     _refresh_connectors,
     _reject_self_link,
@@ -662,7 +663,7 @@ class CategoryLinker:
             raise LinkError(
                 f"'{source_name}' failed to create/find a Category: {_all_names_taken_message(target_name)}."
             )
-        category_id, target_name, _created = ensured
+        category_id, target_name, created = ensured
         title = await self._dest_name(destination, category_id, target_name)
         summary = await self.link_category(
             local_connector=destination,
@@ -672,7 +673,7 @@ class CategoryLinker:
             source_id=local_category_id,
             destination_id=None,
         )
-        return category_id, title, summary
+        return category_id, title, _mirror_outcome(summary, "Category", created=created)
 
     async def _dest_name(self, destination: str, category_id: str, fallback: str) -> str:
         """Resolve `category_id`'s title on `destination`, but fall back to a

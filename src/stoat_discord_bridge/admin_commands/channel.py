@@ -25,6 +25,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
+    _mirror_outcome,
     _mirror_to_destination,
     _refresh_connectors,
     _require_known_connector,
@@ -106,6 +107,15 @@ class _CategoryLookup(NamedTuple):
 def _hash(channel_name: str) -> str:
     """`#name` for a transfer summary - IRC names already carry the `#`."""
     return "#" + channel_name.lstrip("#")
+
+
+def _placement(dest_info: ConnectorInfo, category: str | None) -> str:
+    """The `, under Category '<name>'` clause of a `/mirror channel` line
+    (issue #198) - empty when there's no Category, or when the destination
+    can't hold Categories (IRC takes the argument but ignores it)."""
+    if category is None or dest_info.ensure_category is None:
+        return ""
+    return f", under Category '{category}'"
 
 
 class ChannelLinker:
@@ -572,7 +582,7 @@ class ChannelLinker:
                 f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: "
                 f"{_all_names_taken_message(target_name)}."
             )
-        destination_channel_id, target_name, _created = ensured
+        destination_channel_id, target_name, created = ensured
 
         try:
             summary = await self.link_channel(
@@ -586,6 +596,7 @@ class ChannelLinker:
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
+        summary = _mirror_outcome(summary, "channel", created=created, where=_placement(dest_info, category))
 
         await self._apply_metadata(destination, destination_channel_id, metadata)
 
@@ -766,7 +777,7 @@ class ChannelLinker:
             )
         # Rebinds the name `finish_category_placement` matches by too, so it
         # places the channel just linked, not a same-named one (issue #184).
-        destination_channel_id, target_name, _created = ensured
+        destination_channel_id, target_name, created = ensured
 
         try:
             summary = await self.link_channel(
@@ -780,6 +791,8 @@ class ChannelLinker:
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}", None
+        # Placement itself is deferred to `finish`, but `category` is where it goes.
+        summary = _mirror_outcome(summary, "channel", created=created, where=_placement(dest_info, category))
 
         await self._apply_metadata(destination, destination_channel_id, metadata)
 

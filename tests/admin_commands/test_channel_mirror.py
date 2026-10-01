@@ -555,6 +555,85 @@ async def test_mirror_channel_forwards_category_to_ensure_channel(fake_db):
     assert calls == [("general", "Team Alpha")]
 
 
+# ---------------------------------------------------------------- what was created and where (issue #198)
+
+
+def _outcome_connectors(*, created, with_categories=True):
+    async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
+        return f"stoat_{name}", created
+
+    async def ensure_category(name):
+        return f"cat_{name}", True
+
+    return {
+        "discord": ConnectorInfo(id="discord", label="Discord"),
+        "stoat": ConnectorInfo(
+            id="stoat",
+            label="Stoat",
+            ensure_channel=ensure_channel,
+            ensure_category=ensure_category if with_categories else None,
+        ),
+    }
+
+
+async def _mirror_general(linker, **kwargs):
+    return await linker.mirror_channel(
+        local_connector="discord", local_channel_id="d1", local_channel_name="general", destination="stoat", **kwargs
+    )
+
+
+async def test_mirror_channel_says_it_created_a_new_channel(fake_db):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), _outcome_connectors(created=True))
+
+    summary = await _mirror_general(linker)
+
+    assert summary.startswith("Linked Discord channel")
+    assert summary.endswith("(stoat_general) - created a new channel.")
+
+
+async def test_mirror_channel_says_it_matched_an_existing_channel(fake_db):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), _outcome_connectors(created=False))
+
+    summary = await _mirror_general(linker)
+
+    assert summary.endswith(" - matched an existing channel.")
+
+
+async def test_mirror_channel_names_the_category_it_landed_under(fake_db):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), _outcome_connectors(created=True))
+
+    summary = await _mirror_general(linker, local_channel_category="Team Alpha")
+
+    assert summary.endswith(" - created a new channel, under Category 'Team Alpha'.")
+
+
+async def test_mirror_channel_omits_the_category_on_a_destination_without_categories(fake_db):
+    # IRC takes a category argument but ignores it - don't claim a placement
+    linker = ChannelLinker(
+        ChannelMappingRepository(fake_db), _outcome_connectors(created=True, with_categories=False)
+    )
+
+    summary = await _mirror_general(linker, local_channel_category="Team Alpha")
+
+    assert summary.endswith(" - created a new channel.")
+
+
+async def test_mirror_channel_for_thread_says_what_it_created_and_where(fake_db):
+    linker = ChannelLinker(ChannelMappingRepository(fake_db), _outcome_connectors(created=True))
+
+    summary, finish = await linker.mirror_channel_for_thread(
+        local_connector="discord",
+        local_channel_id="d1",
+        local_channel_name="Test Thread",
+        destination="stoat",
+        local_channel_category="general",
+        category_from_channel_id="d-parent",
+    )
+
+    assert summary.endswith(" - created a new channel, under Category '🧵 #general'.")
+    assert finish is not None
+
+
 async def test_mirror_channel_to_uses_the_linked_destination_category(fake_db):
     # The source channel's Category is linked to a *differently-named*
     # Category on the destination - the mirrored channel must land in that
