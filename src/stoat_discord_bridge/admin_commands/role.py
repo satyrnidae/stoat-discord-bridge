@@ -142,7 +142,11 @@ class RoleLinker:
         (nothing to enumerate with - e.g. IRC, which has no role concept at
         all), if it can't be listed, if there are too many roles to mirror at
         once, or if `new_name` is also given (one name can't apply to every
-        mirrored role)."""
+        mirrored role).
+
+        Either way, the destination's linked roles are then put in the same
+        order as their source counterparts (issue #199) - once, after the
+        whole batch for `all`. See `_sync_role_order`."""
         _require_known_connector(self._connectors, destination)
         if destination == local_connector:
             raise LinkError("can't mirror a role to its own connector.")
@@ -155,13 +159,23 @@ class RoleLinker:
             _require_known_connector(self._connectors, local_connector)
             info = self._connectors[local_connector]
             entities = await _list_entities_for_all(self._connectors, local_connector, info.list_roles, kind="role")
-            return await _run_bulk_mirror(
+            result = await _run_bulk_mirror(
                 entities,
-                lambda rid, rname: self.mirror_role(
+                lambda rid, rname: self._mirror_one_role(
                     local_connector=local_connector, local_role=rid, destination=destination
                 ),
             )
+        else:
+            result = await self._mirror_one_role(
+                local_connector=local_connector, local_role=local_role, destination=destination, new_name=new_name
+            )
+        await self._sync_role_order(local_connector, destination)
+        return result
 
+    async def _mirror_one_role(
+        self, *, local_connector: str, local_role: str, destination: str, new_name: str | None = None
+    ) -> str:
+        """`mirror_role` for one role, minus the order sync."""
         local_id = await self._resolve_to_id(local_connector, local_role)
         local_name = await self._resolve_name(local_connector, local_id)
         target_name = _clean_new_name(new_name) or local_name
@@ -400,6 +414,35 @@ class RoleLinker:
             await hook(role_id, metadata)
         except Exception as exc:
             logger.warning("mirror-role: %s.apply_role_metadata(%r) failed: %s", destination, role_id, exc)
+
+    async def _sync_role_order(self, source: str, destination: str) -> None:
+        """Put `destination`'s roles that are linked to `source` in the same
+        relative order as their `source` counterparts (issue #199). Reads the
+        source's order from `list_roles` (highest first) and the pairs from
+        the link table, so matched and created roles are treated alike.
+        Unlinked roles are left alone. Best-effort: a missing or raising
+        hook, or fewer than two linked roles, just skips it."""
+        list_roles = self._connectors[source].list_roles
+        reorder = self._connectors[destination].reorder_roles
+        if list_roles is None or reorder is None:
+            return
+        try:
+            source_roles = await list_roles()
+            source_groups = {
+                m.role_id: m.bridge_group for m in await self._role_mappings.get_all_for_connector(source)
+            }
+            dest_by_group = {
+                m.bridge_group: m.role_id for m in await self._role_mappings.get_all_for_connector(destination)
+            }
+            ordered = [
+                dest_by_group[source_groups[rid]]
+                for rid, _name in source_roles
+                if source_groups.get(rid) in dest_by_group
+            ]
+            if len(ordered) >= 2:
+                await reorder(ordered)
+        except Exception as exc:
+            logger.warning("mirror-role: couldn't sync %s's role order from %s: %s", destination, source, exc)
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         info = self._connectors.get(connector)
