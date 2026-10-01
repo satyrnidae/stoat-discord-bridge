@@ -10,6 +10,17 @@ Runs one or more issues through this repo's investigation → planning pipeline
 end to end. Uses the `gh` CLI against the current repo (origin) - no need to
 pass `--repo` unless the user names a different one.
 
+## Posting identity
+
+Everything this skill writes to GitHub (comments, labels, title and body
+edits) goes out as the **satyrnidaebot** GitHub App, not the repo owner's
+account. In the headless pipeline runs, `gh` already is the app's wrapper
+(`/home/claude/triage-webhook/bin/gh`, first on PATH). In an interactive
+session, check `command -v gh`: if it isn't that wrapper but the wrapper
+exists, call the wrapper by its full path for every `gh` command below. If
+the wrapper doesn't exist (another machine or user), plain `gh` posts as
+whoever is logged in - say so when you report back.
+
 ## 1. Pick the issue(s)
 
 - If an issue number was passed as the argument, use that issue. Check
