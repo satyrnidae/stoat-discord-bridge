@@ -9,12 +9,15 @@ from stoat_discord_bridge.admin_commands.common import (
     ConnectorInfo,
     LinkedMember,
     LinkError,
+    MirrorGuard,
+    _guards_mirror,
     _is_all_token,
     _kick_group_member,
     _link_conflict_check,
     _require_known_connector,
     _resolve_entity_id,
     _resolve_entity_title,
+    _unlink_all_destinations,
     _unlink_all_groups,
     collect_linked_members,
     format_linked_listing,
@@ -48,9 +51,16 @@ class UserLinker:
     (IRC has no such hook: a user_id there already IS the nick).
     """
 
-    def __init__(self, user_mappings: UserMappingRepository, connectors: dict[str, ConnectorInfo]) -> None:
+    def __init__(
+        self,
+        user_mappings: UserMappingRepository,
+        connectors: dict[str, ConnectorInfo],
+        guard: MirrorGuard | None = None,
+    ) -> None:
         self._user_mappings = user_mappings
         self._connectors = connectors
+        # Only the bulk `/unlink user all` takes it (issue #197).
+        self._guard = guard or MirrorGuard()
 
     @property
     def connectors(self) -> dict[str, ConnectorInfo]:
@@ -151,21 +161,7 @@ class UserLinker:
         rules as `/unlink channel all` - see `_unlink_all_groups`. A user
         literally named `all` has to be addressed by id."""
         if _is_all_token(local_user_id):
-            groups: dict[str, str] = {}
-            for m in await self._user_mappings.get_all_for_connector(local_connector):
-                groups.setdefault(m.link_group, m.display_name)
-            return await _unlink_all_groups(
-                local_connector=local_connector,
-                destination=destination,
-                connectors=self._connectors,
-                kind="user",
-                name_attr="display_name",
-                group_word="link group",
-                groups=groups,
-                load_group=self._user_mappings.get_mapped_users,
-                dissolve_group=lambda group, _mapped: self._user_mappings.delete_link_group(group),
-                kick_member=lambda _group, mapped, dest: self._kick_from_group(mapped, dest),
-            )
+            return await self._unlink_all_users(local_connector=local_connector, destination=destination)
         local_user_id = await self._resolve_to_id(local_connector, _strip_discord_mention(local_user_id))
         link_group = await self._user_mappings.get_link_group(local_connector, local_user_id)
         if link_group is None:
@@ -179,6 +175,25 @@ class UserLinker:
         target = await self._kick_from_group(mapped, destination)
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} user '{target.user_id}' from this user's link group."
+
+    @_guards_mirror(_unlink_all_destinations)
+    async def _unlink_all_users(self, *, local_connector: str, destination: str | None) -> str:
+        """`/unlink user all <service|all>` (issue #181) - see `_unlink_all_groups`."""
+        groups: dict[str, str] = {}
+        for m in await self._user_mappings.get_all_for_connector(local_connector):
+            groups.setdefault(m.link_group, m.display_name)
+        return await _unlink_all_groups(
+            local_connector=local_connector,
+            destination=destination,
+            connectors=self._connectors,
+            kind="user",
+            name_attr="display_name",
+            group_word="link group",
+            groups=groups,
+            load_group=self._user_mappings.get_mapped_users,
+            dissolve_group=lambda group, _mapped: self._user_mappings.delete_link_group(group),
+            kick_member=lambda _group, mapped, dest: self._kick_from_group(mapped, dest),
+        )
 
     async def _kick_from_group(self, mapped: list[UserMapping], destination: str) -> UserMapping:
         """Kick `destination`'s identity out of the group `mapped` describes.

@@ -7,14 +7,22 @@ import asyncio
 import pytest
 
 from stoat_discord_bridge.admin_commands import (
+    CategoryLinker,
     ChannelLinker,
     ConnectorInfo,
+    EmoteLinker,
     MirrorGuard,
     MirrorInProgressError,
+    NothingLinkedError,
     RoleLinker,
+    UserLinker,
+    unlink_all,
 )
+from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import ChannelMappingRepository
+from stoat_discord_bridge.storage.emoji_mappings import EmojiMappingRepository
 from stoat_discord_bridge.storage.role_mappings import RoleMappingRepository
+from stoat_discord_bridge.storage.user_mappings import UserMappingRepository
 
 
 def _connectors(**overrides):
@@ -388,6 +396,74 @@ async def test_bulk_unlink_dissolving_everything_reserves_every_connector(fake_d
 
     gate.set()
     await unlink
+
+
+def _category_linker(db, connectors, guard):
+    channels = ChannelLinker(ChannelMappingRepository(db), connectors, guard=guard)
+    return CategoryLinker(
+        CategoryMappingRepository(db), ThreadCategoryRepository(db), channels, connectors, guard=guard
+    )
+
+
+_BULK_UNLINKS = {
+    "category": (
+        _category_linker,
+        lambda linker: linker.unlink_category(local_connector="discord", local_category="all", destination="stoat"),
+    ),
+    "role": (
+        lambda db, c, g: RoleLinker(RoleMappingRepository(db), c, guard=g),
+        lambda linker: linker.unlink_role(local_connector="discord", local_role="all", destination="stoat"),
+    ),
+    "emote": (
+        lambda db, c, g: EmoteLinker(EmojiMappingRepository(db), c, guard=g),
+        lambda linker: linker.unlink_emote(local_connector="discord", local_emote="all", destination="stoat"),
+    ),
+    "user": (
+        lambda db, c, g: UserLinker(UserMappingRepository(db), c, guard=g),
+        lambda linker: linker.unlink_user(local_connector="discord", local_user_id="all", destination="stoat"),
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_BULK_UNLINKS))
+async def test_every_bulk_unlink_is_guarded(fake_db, kind):
+    make_linker, bulk_unlink = _BULK_UNLINKS[kind]
+    guard = MirrorGuard()
+    connectors = _connectors()
+    linker = make_linker(fake_db, connectors, guard)
+    entered, release = asyncio.Event(), asyncio.Event()
+    busy = asyncio.create_task(_hold(guard, ["stoat"], connectors, entered, release))
+    await entered.wait()
+
+    with pytest.raises(MirrorInProgressError, match="Stoat"):
+        await bulk_unlink(linker)
+
+    release.set()
+    await busy
+    # free again once the other operation finishes - nothing is linked, so
+    # the unguarded body runs and reports that
+    with pytest.raises(NothingLinkedError):
+        await bulk_unlink(linker)
+
+
+async def test_unlink_all_inherits_the_guard_through_its_linkers(fake_db):
+    guard = MirrorGuard()
+    connectors = _connectors()
+    linkers = {
+        "channel_linker": ChannelLinker(ChannelMappingRepository(fake_db), connectors, guard=guard),
+        "user_linker": UserLinker(UserMappingRepository(fake_db), connectors, guard=guard),
+    }
+    await _link_channel_pair(linkers["channel_linker"], "d1", "s1")
+    entered, release = asyncio.Event(), asyncio.Event()
+    busy = asyncio.create_task(_hold(guard, ["stoat"], connectors, entered, release))
+    await entered.wait()
+
+    summary = await unlink_all(local_connector="discord", destination="stoat", connectors=connectors, **linkers)
+    assert "still running" in summary
+    assert await ChannelMappingRepository(fake_db).get_bridge_group("discord", "d1") is not None
+
+    release.set()
+    await busy
 
 
 async def test_single_channel_unlink_is_not_guarded(fake_db):

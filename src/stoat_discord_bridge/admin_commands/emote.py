@@ -26,6 +26,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _resolve_entity_id,
     _resolve_entity_title,
     _run_bulk_mirror,
+    _unlink_all_destinations,
     _unlink_all_groups,
     collect_linked_members,
     format_linked_listing,
@@ -332,21 +333,7 @@ class EmoteLinker:
         same rules as `/unlink channel all` - see `_unlink_all_groups`. An
         emote literally named `all` has to be addressed by id."""
         if _is_all_token(local_emote):
-            groups: dict[str, str] = {}
-            for group_id, refs in (await self._emoji_mappings.get_groups_for_connector(local_connector)).items():
-                groups[group_id] = next(r.name for r in refs if r.connector_id == local_connector)
-            return await _unlink_all_groups(
-                local_connector=local_connector,
-                destination=destination,
-                connectors=self._connectors,
-                kind="emote",
-                name_attr="name",
-                group_word="mapping group",
-                groups=groups,
-                load_group=self._emoji_mappings.get_refs,
-                dissolve_group=lambda group, _refs: self._emoji_mappings.delete_group(group),
-                kick_member=self._kick_from_group,
-            )
+            return await self._unlink_all_emotes(local_connector=local_connector, destination=destination)
         local_id = await self._resolve_to_id(local_connector, local_emote)
         group_id = await self._emoji_mappings.get_group_id(local_connector, local_id)
         if group_id is None:
@@ -360,6 +347,25 @@ class EmoteLinker:
         target = await self._kick_from_group(group_id, refs, destination)
         label = self._connectors[destination].label if destination in self._connectors else destination
         return f"Unlinked {label} emote '{target.name}' ({target.emoji_id}) from this mapping group."
+
+    @_guards_mirror(_unlink_all_destinations)
+    async def _unlink_all_emotes(self, *, local_connector: str, destination: str | None) -> str:
+        """`/unlink emote all <service|all>` (issue #181) - see `_unlink_all_groups`."""
+        groups: dict[str, str] = {}
+        for group_id, refs in (await self._emoji_mappings.get_groups_for_connector(local_connector)).items():
+            groups[group_id] = next(r.name for r in refs if r.connector_id == local_connector)
+        return await _unlink_all_groups(
+            local_connector=local_connector,
+            destination=destination,
+            connectors=self._connectors,
+            kind="emote",
+            name_attr="name",
+            group_word="mapping group",
+            groups=groups,
+            load_group=self._emoji_mappings.get_refs,
+            dissolve_group=lambda group, _refs: self._emoji_mappings.delete_group(group),
+            kick_member=self._kick_from_group,
+        )
 
     async def _kick_from_group(self, group_id: str, refs: list[EmojiRef], destination: str) -> EmojiRef:
         """Kick `destination`'s ref out of `group_id`, dissolving a lone
