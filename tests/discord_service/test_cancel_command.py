@@ -156,7 +156,7 @@ async def test_normal_completion_edits_the_same_placeholder():
     assert interaction.sent_views == [None]
 
 
-async def test_slow_completion_clears_the_button_and_posts_a_new_message(monkeypatch):
+async def test_slow_completion_replaces_the_placeholder_and_its_button(monkeypatch):
     monkeypatch.setattr(long_running, "SLOW_AFTER_SECONDS", 0.01)
 
     class _Slow(_Universal):
@@ -172,9 +172,11 @@ async def test_slow_completion_clears_the_button_and_posts_a_new_message(monkeyp
 
     await sender._handle_transfer_history(interaction, "import", "stoat", "01ABC", None, None)
 
-    assert interaction.original_edits == [STILL_WORKING_TEXT]
-    assert interaction.sent == [STILL_WORKING_TEXT, "ok"]
-    assert interaction.placeholder_edits[-1] == (None, None)
+    # one message throughout (issue #197): the result is edited in, and that
+    # edit's view=None drops the Cancel button
+    assert interaction.original_edits == [STILL_WORKING_TEXT, "ok"]
+    assert interaction.sent == interaction.original_edits
+    assert interaction.sent_views[-1] is None
 
 
 async def test_a_quick_command_gets_no_cancel_button():

@@ -2,8 +2,9 @@
 
 A command reply starts as a placeholder that's edited in place with the result.
 Past `SLOW_AFTER_SECONDS` the placeholder is flipped once to `STILL_WORKING_TEXT`
-and the result is posted as a fresh message instead, since an old placeholder
-isn't reliably editable (and a fresh message notifies the operator).
+so the operator knows the bot hasn't stalled; the result still replaces it, so
+a command leaves one message (issue #197). A new message goes out only if that
+edit fails.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ T = TypeVar("T")
 
 SLOW_AFTER_SECONDS = 60.0
 WORKING_TEXT = "Working on it..."
-STILL_WORKING_TEXT = "Still working on this - I'll post the result in a new message once it's done."
+STILL_WORKING_TEXT = "Still working on this - I'll update this message once it's done."
 CANCELED_TEXT = "Canceled. Anything already done before the cancel stays in place."
 
 

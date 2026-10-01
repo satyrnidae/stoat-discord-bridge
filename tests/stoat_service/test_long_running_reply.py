@@ -1,6 +1,7 @@
 """A Stoat command posts a placeholder up front and edits it into the result;
-past a minute the placeholder says the command is still working and the
-result arrives as a new message (issue #201)."""
+past a minute the placeholder says the command is still working (issue #201),
+and the result is still edited into that same message rather than sent as a
+second one (issue #197)."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import pytest
 from stoat_discord_bridge.admin_commands import LinkError
 from stoat_discord_bridge.services import long_running
 from stoat_discord_bridge.services.long_running import STILL_WORKING_TEXT
-from tests.fakes.fake_stoat import FakeChannel
+from tests.fakes.fake_stoat import FakeChannel, FakeSentMessage
 from tests.stoat_service.conftest import FakeLinker, _make_ctx, _make_sender
 
 
@@ -46,22 +47,44 @@ async def test_fast_reply_edits_the_placeholder_in_place():
     assert ctx.channel.sent[0]["edits"] == ["mirrored ok"]
 
 
-async def test_slow_reply_flags_the_placeholder_then_posts_a_new_message(fast_threshold):
+async def test_slow_reply_flags_the_placeholder_then_edits_the_result_into_it(fast_threshold):
+    sender = _make_sender(linker=_SlowLinker())
+    ctx = _ctx()
+
+    await sender._mirror_channel(ctx, "discord", "general")
+
+    # one message throughout (issue #197)
+    assert [m["content"] for m in ctx.channel.sent] == ["mirrored ok"]
+    assert ctx.channel.sent[0]["edits"] == [STILL_WORKING_TEXT, "mirrored ok"]
+
+
+async def test_slow_link_error_is_edited_into_the_placeholder(fast_threshold):
+    sender = _make_sender(linker=_SlowRejectingLinker())
+    ctx = _ctx()
+
+    await sender._mirror_channel(ctx, "discord", "general")
+
+    assert [m["content"] for m in ctx.channel.sent] == ["Discord is busy."]
+    assert ctx.channel.sent[0]["edits"] == [STILL_WORKING_TEXT, "Discord is busy."]
+
+
+async def test_slow_reply_falls_back_to_a_new_message_if_the_placeholder_is_gone(fast_threshold, monkeypatch):
+    real_edit = FakeSentMessage.edit
+
+    async def edit(self, *, content=None, **kwargs):
+        if content != STILL_WORKING_TEXT:
+            raise RuntimeError("message deleted")
+        return await real_edit(self, content=content, **kwargs)
+
+    monkeypatch.setattr(FakeSentMessage, "edit", edit)
     sender = _make_sender(linker=_SlowLinker())
     ctx = _ctx()
 
     await sender._mirror_channel(ctx, "discord", "general")
 
     assert [m["content"] for m in ctx.channel.sent] == [STILL_WORKING_TEXT, "mirrored ok"]
-
-
-async def test_slow_link_error_is_posted_as_a_new_message(fast_threshold):
-    sender = _make_sender(linker=_SlowRejectingLinker())
-    ctx = _ctx()
-
-    await sender._mirror_channel(ctx, "discord", "general")
-
-    assert [m["content"] for m in ctx.channel.sent] == [STILL_WORKING_TEXT, "Discord is busy."]
+    # the fallback reply is kept out of the relay too
+    assert {"1", "2"} <= set(sender._command_message_ids)
 
 
 async def test_failed_placeholder_still_runs_the_command():
@@ -85,10 +108,10 @@ async def test_failed_placeholder_still_runs_the_command():
     assert [m["content"] for m in ctx.channel.sent] == ["mirrored ok"]
 
 
-async def test_placeholder_and_result_are_never_relayed(fast_threshold):
+async def test_placeholder_is_never_relayed(fast_threshold):
     sender = _make_sender(linker=_SlowLinker())
     ctx = _ctx()
 
     await sender._mirror_channel(ctx, "discord", "general")
 
-    assert {"1", "2"} <= set(sender._command_message_ids)
+    assert "1" in sender._command_message_ids
