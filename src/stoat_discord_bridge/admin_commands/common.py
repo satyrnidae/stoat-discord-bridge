@@ -1146,6 +1146,33 @@ async def _kick_group_member(
     return target, survivors
 
 
+async def _drop_gone_members(
+    connectors: "dict[str, ConnectorInfo]",
+    mapped: list,
+    *,
+    kind: str,
+    id_attr: str,
+    delete_mapping: Callable[[str, str], Awaitable[None]],
+    dissolve_survivors: Callable[[list], Awaitable[None]] | None = None,
+) -> list:
+    """Drop every member of a link group (`mapped`) whose entity was deleted
+    on its platform without `/unlink` (issue #217), so a `/link` or `/mirror`
+    that repoints it isn't refused, or told "already synced", because of a
+    dead link. Only a definite `entity_gone` counts. Like `_kick_group_member`,
+    `dissolve_survivors` (channels, roles, emotes) also drops a lone survivor.
+    Returns the dropped members."""
+    gone = [m for m in mapped if await entity_gone(connectors, m.connector_id, kind, getattr(m, id_attr))]
+    if not gone:
+        return []
+    for m in gone:
+        logger.warning("%s %s on %s was deleted - dropping its stale link", kind, getattr(m, id_attr), m.connector_id)
+        await delete_mapping(m.connector_id, getattr(m, id_attr))
+    survivors = [m for m in mapped if m not in gone]
+    if dissolve_survivors is not None and len(survivors) <= 1:
+        await dissolve_survivors(survivors)
+    return gone
+
+
 async def _unlink_all_groups(
     *,
     local_connector: str,

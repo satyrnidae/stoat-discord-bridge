@@ -12,6 +12,7 @@ from stoat_discord_bridge.admin_commands.common import (
     LinkError,
     MirrorGuard,
     _clean_new_name,
+    _drop_gone_members,
     _guards_mirror,
     _is_all_token,
     _kick_group_member,
@@ -85,6 +86,8 @@ class RoleLinker:
         source_id = await self._resolve_to_id(source, source_role)
         local_id = await self._resolve_to_id(local_connector, destination_role or local_role)
 
+        await self._drop_gone_links(source, source_id)
+        await self._drop_gone_links(local_connector, local_id)
         source_group, local_group = await _link_conflict_check(
             self._role_mappings.get_bridge_group,
             source=source,
@@ -180,6 +183,7 @@ class RoleLinker:
         local_name = await self._resolve_name(local_connector, local_id)
         target_name = _clean_new_name(new_name) or local_name
 
+        await self._drop_gone_links(local_connector, local_id)
         bridge_group = await self._role_mappings.get_bridge_group(local_connector, local_id)
         if bridge_group is not None:
             existing = await self._role_mappings.get_mapped_roles(bridge_group)
@@ -351,20 +355,35 @@ class RoleLinker:
     async def _kick_from_group(self, mapped: list[RoleMapping], destination: str) -> RoleMapping:
         """Kick `destination`'s member out of the group `mapped` describes,
         dissolving a lone survivor. Returns the kicked mapping."""
-
-        async def _dissolve(survivors: list[RoleMapping]) -> None:
-            for m in survivors:
-                await self._role_mappings.delete_mapping(m.connector_id, m.role_id)
-
         target, _survivors = await _kick_group_member(
             mapped,
             destination,
             id_attr="role_id",
             not_a_member_message=f"'{destination}' isn't linked in this role's bridge group.",
             delete_mapping=self._role_mappings.delete_mapping,
-            dissolve_survivors=_dissolve,
+            dissolve_survivors=self._dissolve,
         )
         return target
+
+    async def _dissolve(self, survivors: list[RoleMapping]) -> None:
+        for m in survivors:
+            await self._role_mappings.delete_mapping(m.connector_id, m.role_id)
+
+    async def _drop_gone_links(self, connector_id: str, role_id: str) -> None:
+        """Drop members of `role_id`'s bridge group deleted on their platform
+        without `/unlink role` (issue #217), dissolving a lone survivor, so a
+        `/link` or `/mirror` repointing one isn't refused or skipped."""
+        bridge_group = await self._role_mappings.get_bridge_group(connector_id, role_id)
+        if bridge_group is None:
+            return
+        await _drop_gone_members(
+            self._connectors,
+            await self._role_mappings.get_mapped_roles(bridge_group),
+            kind="role",
+            id_attr="role_id",
+            delete_mapping=self._role_mappings.delete_mapping,
+            dissolve_survivors=self._dissolve,
+        )
 
     async def _find_role_by_name(self, destination: str, name: str) -> str | None:
         """A same-named role already on `destination` for `mirror_role` to

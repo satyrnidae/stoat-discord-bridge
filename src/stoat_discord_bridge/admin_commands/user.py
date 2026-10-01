@@ -10,6 +10,7 @@ from stoat_discord_bridge.admin_commands.common import (
     LinkedMember,
     LinkError,
     MirrorGuard,
+    _drop_gone_members,
     _guards_mirror,
     _is_all_token,
     _kick_group_member,
@@ -73,6 +74,8 @@ class UserLinker:
         _require_known_connector(self._connectors, source)
         source_user_id = await self._resolve_to_id(source, _strip_discord_mention(source_user_id))
         local_user_id = await self._resolve_to_id(local_connector, _strip_discord_mention(local_user_id))
+        await self._drop_gone_links(source, source_user_id)
+        await self._drop_gone_links(local_connector, local_user_id)
         source_group, local_group = await _link_conflict_check(
             self._user_mappings.get_link_group,
             source=source,
@@ -207,6 +210,21 @@ class UserLinker:
             delete_mapping=self._user_mappings.delete_mapping,
         )
         return target
+
+    async def _drop_gone_links(self, connector_id: str, user_id: str) -> None:
+        """Drop members of `user_id`'s link group deleted on their platform
+        without `/unlink user` (issue #217). Like `/unlink user`, a lone
+        survivor stays."""
+        link_group = await self._user_mappings.get_link_group(connector_id, user_id)
+        if link_group is None:
+            return
+        await _drop_gone_members(
+            self._connectors,
+            await self._user_mappings.get_mapped_users(link_group),
+            kind="user",
+            id_attr="user_id",
+            delete_mapping=self._user_mappings.delete_mapping,
+        )
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         """A bare display name / username -> its id via the connector's

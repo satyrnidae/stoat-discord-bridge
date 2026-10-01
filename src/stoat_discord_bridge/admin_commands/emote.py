@@ -13,6 +13,7 @@ from stoat_discord_bridge.admin_commands.common import (
     LinkError,
     MirrorGuard,
     _clean_new_name,
+    _drop_gone_members,
     _guards_mirror,
     _is_all_token,
     _kick_group_member,
@@ -92,6 +93,8 @@ class EmoteLinker:
 
         source_id = await self._resolve_to_id(source, source_id)
         local_id = await self._resolve_to_id(local_connector, local_id)
+        await self._drop_gone_links(source, source_id)
+        await self._drop_gone_links(local_connector, local_id)
         source_group, local_group = await _link_conflict_check(
             self._emoji_mappings.get_group_id,
             source=source,
@@ -176,6 +179,7 @@ class EmoteLinker:
         target_name = _clean_new_name(new_name) or source_name
         dest_info = self._connectors[destination]
 
+        await self._drop_gone_links(local_connector, source_id)
         group_id = await self._emoji_mappings.get_group_id(local_connector, source_id)
         if group_id is not None:
             refs = await self._emoji_mappings.get_refs(group_id)
@@ -389,6 +393,26 @@ class EmoteLinker:
             dissolve_survivors=_dissolve,
         )
         return target
+
+    async def _drop_gone_links(self, connector_id: str, emoji_id: str) -> None:
+        """Drop copies in `emoji_id`'s mapping group deleted on their platform
+        without the bridge seeing it (issue #217), dissolving a lone survivor,
+        so a `/link` or `/mirror` repointing one isn't refused or skipped."""
+        group_id = await self._emoji_mappings.get_group_id(connector_id, emoji_id)
+        if group_id is None:
+            return
+
+        async def _dissolve(_survivors: list[EmojiRef]) -> None:
+            await self._emoji_mappings.delete_group(group_id)
+
+        await _drop_gone_members(
+            self._connectors,
+            await self._emoji_mappings.get_refs(group_id),
+            kind="emoji",
+            id_attr="emoji_id",
+            delete_mapping=self._emoji_mappings.delete_ref,
+            dissolve_survivors=_dissolve,
+        )
 
     async def _resolve_to_id(self, connector: str, token: str) -> str:
         token = _strip_emote_token(token)

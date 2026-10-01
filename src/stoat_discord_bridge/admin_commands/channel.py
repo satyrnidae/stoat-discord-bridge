@@ -16,6 +16,7 @@ from stoat_discord_bridge.admin_commands.common import (
     MirrorGuard,
     _all_names_taken_message,
     _clean_new_name,
+    _drop_gone_members,
     _ensure_unclaimed_by_name,
     _guards_mirror,
     _is_all_token,
@@ -216,6 +217,8 @@ class ChannelLinker:
             if redirect is not None:
                 return redirect
 
+        await self._drop_gone_links(source, source_id)
+        await self._drop_gone_links(local_connector, destination_channel_id)
         source_group, destination_group = await _link_conflict_check(
             self._channel_mappings.get_bridge_group,
             source=source,
@@ -461,6 +464,7 @@ class ChannelLinker:
                     category_from_channel_id = thread_parent[0]
                     local_channel_category = thread_parent[1]
 
+        await self._drop_gone_links(local_connector, local_channel_id)
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is not None:
             existing = await self._channel_mappings.get_mapped_channels(bridge_group)
@@ -714,6 +718,7 @@ class ChannelLinker:
                 None,
             )
 
+        await self._drop_gone_links(local_connector, local_channel_id)
         bridge_group = await self._channel_mappings.get_bridge_group(local_connector, local_channel_id)
         if bridge_group is not None:
             existing = await self._channel_mappings.get_mapped_channels(bridge_group)
@@ -1145,6 +1150,32 @@ class ChannelLinker:
         # announce every former member on a dissolve, just the kicked one otherwise
         await self._announce_unlinked(mapped, removed=mapped if len(survivors) <= 1 else [target])
         return target
+
+    async def _drop_gone_links(self, connector_id: str, channel_id: str) -> None:
+        """Drop members of `channel_id`'s bridge group that were deleted on
+        their platform without `/unlink channel` (issue #217), so a `/link` or
+        `/mirror` repointing one isn't refused or skipped because of it. A
+        lone survivor is dissolved and told, as `/unlink channel` does."""
+        bridge_group = await self._channel_mappings.get_bridge_group(connector_id, channel_id)
+        if bridge_group is None:
+            return
+        mapped = await self._channel_mappings.get_mapped_channels(bridge_group)
+        dissolved: list[ChannelMapping] = []
+
+        async def _dissolve(survivors: list[ChannelMapping]) -> None:
+            dissolved.extend(survivors)
+            for m in survivors:
+                await self._channel_mappings.delete_mapping(m.connector_id, m.channel_id)
+
+        await _drop_gone_members(
+            self._connectors,
+            mapped,
+            kind="channel",
+            id_attr="channel_id",
+            delete_mapping=self._channel_mappings.delete_mapping,
+            dissolve_survivors=_dissolve,
+        )
+        await self._announce_unlinked(mapped, removed=dissolved)
 
     def _label(self, connector_id: str) -> str:
         return self._connectors[connector_id].label if connector_id in self._connectors else connector_id
