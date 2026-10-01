@@ -125,7 +125,7 @@ async def test_mirror_role_matches_a_same_named_role_instead_of_creating(fake_db
     )
     linker = _linker(fake_db, connectors)
     summary = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
-    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (s_existing)."
+    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (s_existing) - matched an existing role."
     assert created == []
 
 
@@ -211,11 +211,11 @@ async def test_mirror_role_creates_then_links(fake_db):
     )
     linker = _linker(fake_db, connectors)
     summary = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
-    assert "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods)." == summary
+    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods) - created a new role."
     assert created == {"Mods": "stoat_Mods"}
     # already synced -> skipped
     again = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
-    assert again == "Stoat: already synced - skipped."
+    assert again == "Stoat: 'Mods' already synced - skipped."
 
 
 def _metadata_connectors(describe_role, ensure_calls):
@@ -396,7 +396,23 @@ async def test_mirror_role_from_new_name_names_the_new_local_role(fake_db):
 async def test_mirror_role_unsupported_destination(fake_db):
     linker = _linker(fake_db)
     out = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
-    assert "doesn't support role creation" in out
+    assert "Stoat: 'd1' doesn't support role creation" in out
+
+
+async def test_mirror_role_create_failure_names_the_role(fake_db):
+    async def create_role(name):
+        raise RuntimeError("no room")
+
+    async def d_name(role_id):
+        return {"d1": "Mods"}.get(role_id)
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", resolve_role_name=d_name),
+        stoat=ConnectorInfo(id="stoat", label="Stoat", create_role=create_role),
+    )
+    linker = _linker(fake_db, connectors)
+    out = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+    assert out == "Stoat: 'Mods' failed to create a role: no room"
 
 
 async def test_mirror_role_all_one_line_per_connector(fake_db):
@@ -409,7 +425,7 @@ async def test_mirror_role_all_one_line_per_connector(fake_db):
     lines = out.splitlines()
     assert len(lines) == 2  # stoat + irc
     assert any("Stoat" in line and "Linked" in line for line in lines)
-    assert any("IRC: doesn't support role creation" in line for line in lines)
+    assert any("IRC: 'd1' doesn't support role creation" in line for line in lines)
 
 
 async def test_mirror_role_clips_the_name_to_the_destination_limit(fake_db):
@@ -497,7 +513,7 @@ async def test_mirror_role_from_creates_the_local_role(fake_db):
     # run "on stoat", pulling discord's role d1 in
     summary = await linker.mirror_role_from(local_connector="stoat", source="discord", source_role="d1")
 
-    assert "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods)." == summary
+    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods) - created a new role."
     assert created == {"Mods": "stoat_Mods"}
 
 

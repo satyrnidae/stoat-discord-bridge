@@ -188,7 +188,7 @@ async def test_mirror_role_still_allows_a_different_destination_concurrently(fak
 
 async def test_mirror_channel_all_does_not_block_itself(fake_db):
     async def ensure_channel(name, *args, **kwargs):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = _connectors(
         stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel)
@@ -243,7 +243,7 @@ async def test_one_shared_guard_makes_channel_and_role_mirror_exclude_each_other
     async def ensure_channel(name, *args, **kwargs):
         started.set()
         await gate.wait()
-        return "c1"
+        return "c1", True
 
     async def create_role(name):
         return "r1"
@@ -304,7 +304,7 @@ async def test_bulk_unlink_channels_blocks_a_mirror_into_the_same_connector(fake
     started, gate, hook = await _blocked_unlink_hooks()
 
     async def ensure_channel(name, *args, **kwargs):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = _connectors(
         stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel, on_channel_unlinked=hook)
@@ -332,7 +332,7 @@ async def test_bulk_unlink_channels_is_rejected_while_a_mirror_runs(fake_db):
     async def ensure_channel(name, *args, **kwargs):
         started.set()
         await gate.wait()
-        return "s9"
+        return "s9", True
 
     connectors = _connectors(stoat=ConnectorInfo(id="stoat", label="Stoat", ensure_channel=ensure_channel))
     linker = ChannelLinker(ChannelMappingRepository(fake_db), connectors)
@@ -356,7 +356,7 @@ async def test_bulk_unlink_leaves_an_unrelated_connector_free(fake_db):
     started, gate, hook = await _blocked_unlink_hooks()
 
     async def ensure_channel(name, *args, **kwargs):
-        return f"irc_{name}"
+        return f"irc_{name}", True
 
     connectors = _connectors(
         stoat=ConnectorInfo(id="stoat", label="Stoat", on_channel_unlinked=hook),

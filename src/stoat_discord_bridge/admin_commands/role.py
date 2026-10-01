@@ -19,6 +19,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
+    _mirror_outcome,
     _mirror_to_destination,
     _refresh_connectors,
     _require_known_connector,
@@ -169,11 +170,11 @@ class RoleLinker:
         if bridge_group is not None:
             existing = await self._role_mappings.get_mapped_roles(bridge_group)
             if any(m.connector_id == destination for m in existing):
-                return f"{self._connectors[destination].label}: already synced - skipped."
+                return f"{self._connectors[destination].label}: '{local_name}' already synced - skipped."
 
         dest_info = self._connectors[destination]
         if dest_info.create_role is None:
-            return f"{dest_info.label}: doesn't support role creation - link it manually with /link role."
+            return f"{dest_info.label}: '{local_name}' doesn't support role creation - link it manually with /link role."
 
         # Clip to the destination's role-name limit so a name that fits the
         # source platform isn't rejected/mangled by the destination's API
@@ -197,7 +198,7 @@ class RoleLinker:
                 destination_role_id = await self._create_role(local_connector, local_id, destination, target_name)
             except Exception as exc:
                 logger.warning("mirror-role: %s.create_role(%r) failed: %s", destination, target_name, exc)
-                return f"{dest_info.label}: failed to create a role: {exc}"
+                return f"{dest_info.label}: '{local_name}' failed to create a role: {exc}"
 
         try:
             summary = await self.link_role(
@@ -210,7 +211,7 @@ class RoleLinker:
             return f"{dest_info.label}: {exc}"
         if matched:
             await self._apply_metadata(local_connector, local_id, destination, destination_role_id)
-        return summary
+        return _mirror_outcome(summary, "role", created=not matched)
 
     @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_role_all(self, *, local_connector: str, local_role: str) -> str:

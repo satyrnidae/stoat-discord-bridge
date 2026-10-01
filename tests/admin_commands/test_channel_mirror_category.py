@@ -14,7 +14,7 @@ from stoat_discord_bridge.storage.channel_mappings import ChannelMappingReposito
 
 async def test_mirror_channel_destination_category_rejects_an_unresolvable_bare_id(fake_db):
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_category_name(_cid):
         return None  # a stale/typo'd id that matches nothing
@@ -45,7 +45,7 @@ async def test_mirror_channel_destination_category_overrides_the_linked_category
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_category(cid):
         return ("dcat", "Discord Team")
@@ -84,7 +84,7 @@ async def test_mirror_channel_destination_category_passes_an_unresolvable_name_t
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
@@ -107,7 +107,7 @@ async def test_mirror_channel_from_local_category_overrides_the_linked_category(
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_name(channel_id):
         return "remote-general" if channel_id == "d1" else None
@@ -142,7 +142,7 @@ async def test_mirror_channel_all_uses_each_destinations_linked_category(fake_db
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_category(cid):
         return ("dcat", "Discord Team")
@@ -183,7 +183,7 @@ async def _stale_category_setup(fake_db, *, stoat_categories, backfill=None):
         calls.append((name, category))
         if category is not None and category not in stoat_categories.values():
             stoat_categories[f"new-{category}"] = category
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_category(cid):
         return ("dcat", "Discord Team")
@@ -292,7 +292,7 @@ async def test_mirror_channel_reads_source_metadata_and_forwards_it_to_ensure_ch
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, *, metadata=None):
         ensure_calls.append(metadata)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", describe_channel=describe_channel),
@@ -313,7 +313,7 @@ async def test_mirror_channel_omits_the_metadata_kwarg_when_the_source_has_no_de
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         seen.append(name)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),  # no describe_channel
@@ -332,7 +332,7 @@ async def test_mirror_channel_survives_a_raising_describe_channel(fake_db):
         raise RuntimeError("boom")
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, *, metadata=None):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", describe_channel=describe_channel),
@@ -357,7 +357,7 @@ async def test_mirror_channel_forwards_is_voice_when_source_is_a_voice_channel(f
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None, *, is_voice=False):
         ensure_calls.append(is_voice)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", channel_is_voice=channel_is_voice),
@@ -381,7 +381,7 @@ async def test_mirror_channel_omits_is_voice_kwarg_when_the_source_is_not_voice(
         # no is_voice keyword accepted at all - must still work, since
         # mirror_channel only passes it on when the source is actually voice.
         seen.append(name)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", channel_is_voice=channel_is_voice),
@@ -400,7 +400,7 @@ async def test_mirror_channel_omits_is_voice_kwarg_when_the_source_has_no_channe
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         seen.append(name)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),  # no channel_is_voice - e.g. voice_bridging off
@@ -419,7 +419,7 @@ async def test_mirror_channel_survives_a_raising_channel_is_voice(fake_db):
         raise RuntimeError("boom")
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", channel_is_voice=channel_is_voice),
@@ -438,7 +438,7 @@ async def test_mirror_channel_forwards_is_thread_category_to_ensure_channel(fake
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category, is_thread_category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
@@ -465,7 +465,7 @@ async def test_mirror_channel_thread_category_prefix_is_not_doubled_on_a_second_
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append(category)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
@@ -490,7 +490,7 @@ async def test_mirror_channel_defaults_is_thread_category_to_false(fake_db):
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append(is_thread_category)
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
@@ -509,7 +509,7 @@ async def test_mirror_channel_names_category_after_the_destinations_linked_paren
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_name(channel_id):
         return {"s-parent": "Bot Config"}.get(channel_id)
@@ -540,7 +540,7 @@ async def test_mirror_channel_forwards_parent_channel_id_to_ensure_channel(fake_
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category, category_parent_channel_id))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_name(channel_id):
         return {"s-parent": "Bot Config"}.get(channel_id)
@@ -572,7 +572,7 @@ async def test_mirror_channel_category_falls_back_when_parent_isnt_linked_to_des
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),
@@ -596,7 +596,7 @@ async def test_mirror_channel_infers_thread_category_from_resolve_thread_parent(
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category, is_thread_category, category_parent_channel_id))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_channel_name(channel_id):
         return {"s-parent": "Bot Config"}.get(channel_id)
@@ -632,7 +632,7 @@ async def test_mirror_channel_thread_parent_falls_back_to_source_name_when_unlin
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category, is_thread_category, category_parent_channel_id))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_thread_parent(channel_id):
         return ("d-parent", "bot-config")
@@ -658,7 +658,7 @@ async def test_mirror_channel_non_thread_ignores_resolve_thread_parent(fake_db):
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category, is_thread_category))
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     async def resolve_thread_parent(channel_id):
         return None  # not a thread

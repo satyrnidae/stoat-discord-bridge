@@ -259,7 +259,7 @@ async def test_sync_new_channel_mirrors_onto_every_other_linked_category_by_its_
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
@@ -291,7 +291,7 @@ async def test_sync_new_channel_skips_the_local_connector(fake_db):
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
@@ -318,7 +318,7 @@ async def test_sync_new_channel_uses_destination_own_category_name_not_source_na
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", ensure_channel=ensure_channel),
@@ -347,7 +347,7 @@ async def test_sync_new_channel_recreates_a_linked_category_deleted_on_the_desti
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     async def resolve_category_name(cid):
         return {"dest-Team": "Team"}.get(cid)
@@ -384,7 +384,7 @@ async def test_sync_new_channel_skips_a_deleted_category_it_cant_recreate(fake_d
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         calls.append((name, category))
-        return f"created-{name}"
+        return f"created-{name}", True
 
     async def resolve_category_name(cid):
         return None
@@ -494,7 +494,7 @@ def _ensure_category_fake():
 
     async def ensure_category(name):
         created.append(name)
-        return f"dest-{name}"
+        return f"dest-{name}", True
 
     return ensure_category, created
 
@@ -506,7 +506,7 @@ async def test_mirror_category_creates_links_and_mirrors_child_channels(fake_db)
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def channels_in_category(cid):
         assert cid == "s-cat"
@@ -540,7 +540,24 @@ async def test_mirror_category_creates_links_and_mirrors_child_channels(fake_db)
     assert moved == [("d-chan-2", "dest-Team")]
     # child channels are placed by Category *name*, not the raw id (issue #64)
     assert ("general", "Team") in ensure_channel_calls
-    assert "Linked" in summary
+    lines = summary.splitlines()
+    assert lines[0].endswith(" - created a new Category.")
+    # the mirrored child names its own placement (issue #198)
+    assert lines[1].endswith(" - created a new channel, under Category 'Team'.")
+    assert lines[2] == "Discord: moved 'linked-one' into the Category."
+
+
+async def test_mirror_category_says_it_matched_an_existing_category(fake_db):
+    async def ensure_category(name):
+        return f"dest-{name}", False
+
+    linker, _, _, _ = _make_linker(fake_db, _same_title_connectors(ensure_category))
+
+    summary = await linker.mirror_category(
+        local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
+    )
+
+    assert summary.endswith(" - matched an existing Category.")
 
 
 async def test_mirror_category_new_name_titles_the_counterpart_only(fake_db):
@@ -551,7 +568,7 @@ async def test_mirror_category_new_name_titles_the_counterpart_only(fake_db):
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def channels_in_category(cid):
         return [("s-chan-1", "general")]
@@ -624,7 +641,7 @@ async def test_mirror_category_stores_the_name_not_the_id_when_the_cache_is_stal
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def channels_in_category(cid):
         return [("s-chan-1", "general")]
@@ -704,7 +721,7 @@ async def test_mirror_category_reuses_an_existing_linked_category(fake_db):
     )
 
     assert created == []  # existing d-cat reused, no new Category created
-    assert "reusing" in summary
+    assert summary == "Discord: 'Team' already linked - reusing 'd-cat'."
 
 
 def _stale_link_connectors(resolve_category_name, ensure_channel=None, children=()):
@@ -733,7 +750,7 @@ async def test_mirror_category_recreates_a_linked_category_deleted_on_the_destin
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     async def resolve_category_name(cid):
         return None  # d-cat is gone
@@ -832,7 +849,7 @@ async def test_mirror_category_skips_a_same_titled_category_linked_elsewhere(fak
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         ensure_channel_calls.append((name, category))
-        return f"dest-chan-{name}"
+        return f"dest-chan-{name}", True
 
     connectors = _same_title_connectors(ensure_category, ensure_channel, children=[("s-chan-1", "general")])
     linker, category_mappings, _, _ = _make_linker(fake_db, connectors)
@@ -862,7 +879,7 @@ async def test_mirror_category_reports_when_every_title_is_taken(fake_db):
     )
 
     assert len(created) == 5
-    assert summary.startswith("Discord: failed to create/find a Category")
+    assert summary.startswith("Discord: 'Team' failed to create/find a Category")
     assert "already linked elsewhere" in summary
     assert await category_mappings.get_bridge_group("stoat", "s-cat") is None
 
@@ -889,7 +906,7 @@ async def test_mirror_category_reports_a_destination_that_cant_create_categories
         local_connector="stoat", local_category_id="s-cat", local_category_name="Team", destination="discord"
     )
 
-    assert "doesn't support Category creation" in summary
+    assert summary == "Discord: 'Team' doesn't support Category creation - link it manually with /link category."
 
 
 # ---------------------------------------------------------------- CategoryLinker.mirror_category_from

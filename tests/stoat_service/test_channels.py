@@ -18,7 +18,7 @@ async def test_ensure_channel_creates_a_new_category_when_none_matches():
 
     channel_id = await sender.ensure_channel("general", "Team Alpha")
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", True)
     assert server.created_categories == [{"name": "Team Alpha", "channels": ["chan-general"]}]
     [category] = server.categories
     assert category.title == "Team Alpha"
@@ -34,7 +34,7 @@ async def test_ensure_channel_adds_to_an_existing_category_by_title():
 
     channel_id = await sender.ensure_channel("general", "Team Alpha")
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", True)
     assert server.created_categories == []  # matched the existing one - no new Category created
     [category] = server.categories
     assert category.channels == ["chan-other", "chan-general"]
@@ -63,7 +63,7 @@ async def test_ensure_channel_without_a_category_leaves_categories_untouched():
 
     channel_id = await sender.ensure_channel("general")
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", True)
     assert server.categories == []
     assert server.created_categories == []
 
@@ -76,7 +76,7 @@ async def test_ensure_channel_creates_a_voice_channel_when_is_voice():
 
     channel_id = await sender.ensure_channel("Lounge", is_voice=True)
 
-    assert channel_id == "chan-Lounge"
+    assert channel_id == ("chan-Lounge", True)
     [call] = server.created_channel_calls
     assert isinstance(call["voice"], stoat.ChannelVoiceMetadata)
     [channel] = server.channels
@@ -93,7 +93,7 @@ async def test_ensure_channel_matches_an_existing_voice_channel_by_name():
 
     channel_id = await sender.ensure_channel("Lounge", is_voice=True)
 
-    assert channel_id == "chan-existing"
+    assert channel_id == ("chan-existing", False)
     assert server.created_channels == []  # matched, nothing created
 
 
@@ -109,7 +109,7 @@ async def test_ensure_channel_voice_flag_ignores_a_same_named_text_channel():
 
     channel_id = await sender.ensure_channel("Lounge", is_voice=True)
 
-    assert channel_id != "chan-existing"
+    assert channel_id[0] != "chan-existing" and channel_id[1]
     assert server.created_channels == ["Lounge"]
 
 
@@ -123,7 +123,7 @@ async def test_ensure_channel_without_is_voice_ignores_a_same_named_voice_channe
 
     channel_id = await sender.ensure_channel("general")
 
-    assert channel_id != "chan-existing"
+    assert channel_id[0] != "chan-existing" and channel_id[1]
     assert server.created_channels == ["general"]
 
 
@@ -139,7 +139,7 @@ async def test_ensure_channel_reports_channel_even_if_category_placement_fails()
 
     channel_id = await sender.ensure_channel("general", "Team Alpha")
 
-    assert channel_id == "chan-general"  # channel creation itself still succeeded
+    assert channel_id == ("chan-general", True)  # channel creation itself still succeeded
 
 
 # ---------------------------------------------------------------- ensure_channel metadata (issue #32)
@@ -193,7 +193,7 @@ async def test_ensure_channel_leaves_an_existing_channels_metadata_alone():
         "general", metadata=ChannelMetadata(description="from the source", nsfw=True)
     )
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", False)
     assert server.created_channel_calls == []  # nothing created
     assert existing.description == "hand-written"  # and the match wasn't edited
     assert existing.edits == []
@@ -327,7 +327,7 @@ async def test_ensure_channel_applies_slowmode_via_a_raw_patch_when_it_creates_t
         "general", metadata=ChannelMetadata(slowmode_delay=30)
     )
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", True)
     assert server.server_edits == [{"slowmode": 30}]
 
 
@@ -342,7 +342,7 @@ async def test_ensure_channel_leaves_an_existing_channels_slowmode_alone():
         "general", metadata=ChannelMetadata(slowmode_delay=30)
     )
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", False)
     assert server.server_edits == []  # matched, no PATCH issued
 
 
@@ -360,7 +360,7 @@ async def test_ensure_channel_slowmode_patch_failure_does_not_block_channel_crea
         "general", metadata=ChannelMetadata(slowmode_delay=30)
     )
 
-    assert channel_id == "chan-general"  # channel creation itself still succeeded
+    assert channel_id == ("chan-general", True)  # channel creation itself still succeeded
 
 
 async def test_describe_channel_returns_none_for_an_unresolvable_channel():
@@ -383,7 +383,7 @@ async def test_ensure_channel_falls_back_to_server_edit_when_the_category_endpoi
 
     channel_id = await sender.ensure_channel("general", "Team Alpha")
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", True)
     assert server.created_categories == []
     [payload] = server.server_edits
     [category] = payload["categories"]
@@ -431,7 +431,7 @@ async def test_ensure_channel_retries_category_placement_against_a_refetched_ser
 
     channel_id = await sender.ensure_channel("general", "Team Alpha")
 
-    assert channel_id == "chan-general"
+    assert channel_id == ("chan-general", True)
     assert attempts == ["Team Alpha", "Team Alpha"]  # failed once, retried after re-fetch
     assert [c.title for c in server.categories] == ["Team Alpha"]
 

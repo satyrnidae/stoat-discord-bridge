@@ -25,6 +25,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
+    _mirror_outcome,
     _mirror_to_destination,
     _refresh_connectors,
     _require_known_connector,
@@ -106,6 +107,15 @@ class _CategoryLookup(NamedTuple):
 def _hash(channel_name: str) -> str:
     """`#name` for a transfer summary - IRC names already carry the `#`."""
     return "#" + channel_name.lstrip("#")
+
+
+def _placement(dest_info: ConnectorInfo, category: str | None) -> str:
+    """The `, under Category '<name>'` clause of a `/mirror channel` line
+    (issue #198) - empty when there's no Category, or when the destination
+    can't hold Categories (IRC takes the argument but ignores it)."""
+    if category is None or dest_info.ensure_category is None:
+        return ""
+    return f", under Category '{category}'"
 
 
 class ChannelLinker:
@@ -457,11 +467,14 @@ class ChannelLinker:
         if bridge_group is not None:
             existing = await self._channel_mappings.get_mapped_channels(bridge_group)
             if any(m.connector_id == destination for m in existing):
-                return f"{self._connectors[destination].label}: already synced - skipped."
+                return f"{self._connectors[destination].label}: '{local_channel_name}' already synced - skipped."
 
         dest_info = self._connectors[destination]
         if dest_info.ensure_channel is None:
-            return f"{dest_info.label}: doesn't support channel creation - link it manually with /link channel."
+            return (
+                f"{dest_info.label}: '{local_channel_name}' doesn't support channel creation - "
+                "link it manually with /link channel."
+            )
 
         # Normalize (IRC's `#`-prefix + character sterilization; a no-op on
         # every other connector) then clip to the destination's channel-name
@@ -563,10 +576,13 @@ class ChannelLinker:
             )
         except Exception as exc:
             logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
-            return f"{dest_info.label}: failed to create/find a channel: {exc}"
+            return f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: {exc}"
         if ensured is None:
-            return f"{dest_info.label}: failed to create/find a channel: {_all_names_taken_message(target_name)}."
-        destination_channel_id, target_name = ensured
+            return (
+                f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: "
+                f"{_all_names_taken_message(target_name)}."
+            )
+        destination_channel_id, target_name, created = ensured
 
         try:
             summary = await self.link_channel(
@@ -580,6 +596,7 @@ class ChannelLinker:
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
+        summary = _mirror_outcome(summary, "channel", created=created, where=_placement(dest_info, category))
 
         await self._apply_metadata(destination, destination_channel_id, metadata)
 
@@ -703,12 +720,13 @@ class ChannelLinker:
         if bridge_group is not None:
             existing = await self._channel_mappings.get_mapped_channels(bridge_group)
             if any(m.connector_id == destination for m in existing):
-                return f"{self._connectors[destination].label}: already synced - skipped.", None
+                return f"{self._connectors[destination].label}: '{local_channel_name}' already synced - skipped.", None
 
         dest_info = self._connectors[destination]
         if dest_info.ensure_channel is None:
             return (
-                f"{dest_info.label}: doesn't support channel creation - link it manually with /link channel.",
+                f"{dest_info.label}: '{local_channel_name}' doesn't support channel creation - "
+                "link it manually with /link channel.",
                 None,
             )
 
@@ -750,15 +768,16 @@ class ChannelLinker:
             )
         except Exception as exc:
             logger.warning("mirror channel: %s.ensure_channel(%r) failed: %s", destination, target_name, exc)
-            return f"{dest_info.label}: failed to create/find a channel: {exc}", None
+            return f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: {exc}", None
         if ensured is None:
             return (
-                f"{dest_info.label}: failed to create/find a channel: {_all_names_taken_message(target_name)}.",
+                f"{dest_info.label}: '{local_channel_name}' failed to create/find a channel: "
+                f"{_all_names_taken_message(target_name)}.",
                 None,
             )
         # Rebinds the name `finish_category_placement` matches by too, so it
         # places the channel just linked, not a same-named one (issue #184).
-        destination_channel_id, target_name = ensured
+        destination_channel_id, target_name, created = ensured
 
         try:
             summary = await self.link_channel(
@@ -772,6 +791,8 @@ class ChannelLinker:
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}", None
+        # Placement itself is deferred to `finish`, but `category` is where it goes.
+        summary = _mirror_outcome(summary, "channel", created=created, where=_placement(dest_info, category))
 
         await self._apply_metadata(destination, destination_channel_id, metadata)
 
@@ -1307,8 +1328,8 @@ class ChannelLinker:
         destination: str,
         name: str,
         own_group: str | None,
-        ensure: Callable[[str], Awaitable[str]],
-    ) -> tuple[str, str] | None:
+        ensure: Callable[[str], Awaitable[tuple[str, bool]]],
+    ) -> tuple[str, str, bool] | None:
         """`ensure` (a bound `ensure_channel` call) by name on `destination`,
         skipping a same-named channel already linked into another bridge
         group - see `_ensure_unclaimed_by_name`."""

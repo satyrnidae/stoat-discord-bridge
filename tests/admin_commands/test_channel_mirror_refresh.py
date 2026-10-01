@@ -37,7 +37,7 @@ async def test_mirror_channel_refreshes_both_connectors_before_resolving(fake_db
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
         # by the time ensure runs, both sides must already have been refreshed
         assert calls == ["discord", "stoat"]
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", refresh=make("discord")),
@@ -55,7 +55,7 @@ async def test_mirror_channel_survives_a_raising_refresh(fake_db):
     calls, make = _refresh_recorder()
 
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord", refresh=make("discord", raises=True)),
@@ -72,7 +72,7 @@ async def test_mirror_channel_survives_a_raising_refresh(fake_db):
 
 async def test_mirror_channel_tolerates_a_connector_with_no_refresh_hook(fake_db):
     async def ensure_channel(name, category=None, is_thread_category=False, category_parent_channel_id=None):
-        return f"stoat_{name}"
+        return f"stoat_{name}", True
 
     connectors = {
         "discord": ConnectorInfo(id="discord", label="Discord"),  # no refresh

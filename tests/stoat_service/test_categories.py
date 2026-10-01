@@ -109,12 +109,13 @@ async def test_ensure_category_server_edit_fallback_builds_from_a_fresh_fetch():
     client.set_fetched_server(fresh)
     sender = _make_sender(client=client)
 
-    new_id = await sender.ensure_category("Gamma")
+    new_id, created = await sender.ensure_category("Gamma")
 
     [payload] = fresh.server_edits
     by_title = {c["title"]: c["id"] for c in payload["categories"]}
     assert by_title["Beta"] == "cat-b"  # the post-startup Category isn't dropped
     assert by_title["Gamma"] == new_id
+    assert created
 
 
 async def test_ensure_category_reuses_an_existing_match_from_the_fresh_fetch():
@@ -125,7 +126,7 @@ async def test_ensure_category_reuses_an_existing_match_from_the_fresh_fetch():
     client.set_fetched_server(fresh)
     sender = _make_sender(client=client)
 
-    assert await sender.ensure_category("team") == "cat-real"  # case-insensitive reuse
+    assert await sender.ensure_category("team") == ("cat-real", False)  # case-insensitive reuse
     assert fresh.server_edits == []  # nothing recreated
 
 

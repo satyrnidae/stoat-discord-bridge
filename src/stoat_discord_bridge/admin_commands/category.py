@@ -27,6 +27,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
+    _mirror_outcome,
     _mirror_to_destination,
     _refresh_connectors,
     _reject_self_link,
@@ -385,13 +386,14 @@ class CategoryLinker:
                     destination=destination,
                     target_name=target_name,
                     bridge_group=bridge_group,
+                    source_name=source_name,
                 )
             except LinkError as exc:
                 # Keeps a self-heal line (above) in front of the failure.
                 return "\n".join([*lines, f"{dest_label}: {exc}"])
             lines.append(summary)
         else:
-            lines.append(f"{dest_label}: already linked - reusing '{dest_category_id}'.")
+            lines.append(f"{dest_label}: '{source_name}' already linked - reusing '{dest_category_id}'.")
             dest_category_name = await self._dest_name(
                 destination, dest_category_id, match.category_name or target_name
             )
@@ -545,6 +547,7 @@ class CategoryLinker:
                 destination=destination,
                 target_name=target_name,
                 bridge_group=bridge_group,
+                source_name=target_name,
             )
         except LinkError as exc:
             logger.warning("[category-sync] couldn't recreate the linked Category on %s: %s", destination, exc)
@@ -635,14 +638,16 @@ class CategoryLinker:
         destination: str,
         target_name: str,
         bridge_group: str | None,
+        source_name: str,
     ) -> tuple[str, str, str]:
         """Get-or-create a Category titled `target_name` on `destination` (one
         not already linked elsewhere) and link `local_category_id` to it.
-        Returns (id, title, link summary). Raises LinkError, unprefixed, when
-        `destination` can't create Categories or the create/link fails."""
+        Returns (id, title, link summary). Raises LinkError, without the
+        destination label, when `destination` can't create Categories or the
+        create/link fails; a create failure names `source_name` (issue #198)."""
         dest_info = self._connectors[destination]
         if dest_info.ensure_category is None:
-            raise LinkError("doesn't support Category creation - link it manually with /link category.")
+            raise LinkError(f"'{source_name}' doesn't support Category creation - link it manually with /link category.")
         try:
             ensured = await _ensure_unclaimed_by_name(
                 dest_info.ensure_category,
@@ -653,10 +658,12 @@ class CategoryLinker:
             )
         except Exception as exc:
             logger.warning("mirror-category: %s.ensure_category(%r) failed: %s", destination, target_name, exc)
-            raise LinkError(f"failed to create/find a Category: {exc}") from exc
+            raise LinkError(f"'{source_name}' failed to create/find a Category: {exc}") from exc
         if ensured is None:
-            raise LinkError(f"failed to create/find a Category: {_all_names_taken_message(target_name)}.")
-        category_id, target_name = ensured
+            raise LinkError(
+                f"'{source_name}' failed to create/find a Category: {_all_names_taken_message(target_name)}."
+            )
+        category_id, target_name, created = ensured
         title = await self._dest_name(destination, category_id, target_name)
         summary = await self.link_category(
             local_connector=destination,
@@ -666,7 +673,7 @@ class CategoryLinker:
             source_id=local_category_id,
             destination_id=None,
         )
-        return category_id, title, summary
+        return category_id, title, _mirror_outcome(summary, "Category", created=created)
 
     async def _dest_name(self, destination: str, category_id: str, fallback: str) -> str:
         """Resolve `category_id`'s title on `destination`, but fall back to a

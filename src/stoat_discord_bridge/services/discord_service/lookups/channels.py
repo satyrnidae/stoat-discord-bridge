@@ -82,11 +82,12 @@ class _ChannelsMixin:
         *,
         metadata: ChannelMetadata | None = None,
         is_voice: bool = False,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Idempotent get-or-create text (or, with `is_voice`, voice) channel
         by name, this connector's `ConnectorInfo.ensure_channel` for
-        `/mirror channel`. Matches an existing channel of the requested kind
-        by name (case-insensitive), else creates one; if `category` is
+        `/mirror channel`. Returns `(channel id, created)`. Matches an existing
+        channel of the requested kind by name (case-insensitive), else
+        creates one; if `category` is
         given, the channel ends up under a same-named Category (created if
         needed). `is_thread_category` / `category_parent_channel_id` bind
         that Category as thread-only (`CategoryLinker.bind_thread_category`),
@@ -109,6 +110,7 @@ class _ChannelsMixin:
         lowered = name.casefold()
         existing_channels = guild.voice_channels if is_voice else guild.text_channels
         channel = next((c for c in existing_channels if c.name.casefold() == lowered), None)
+        created = channel is None
 
         parent: discord.CategoryChannel | None = None
         if category is not None:
@@ -160,4 +162,4 @@ class _ChannelsMixin:
                     category_parent_channel_id,
                 )
 
-        return str(channel.id)
+        return str(channel.id), created
