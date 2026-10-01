@@ -991,6 +991,16 @@ def _all_names_taken_message(name: str) -> str:
     return f"'{name}' through '{name}-{_MAX_NAME_CANDIDATES}' are all already linked elsewhere"
 
 
+def _mirror_outcome(summary: str, kind: str, *, created: bool, where: str = "") -> str:
+    """Append to a `/mirror` link summary whether the destination `kind` was
+    created or an existing one matched, plus an optional `where` clause, so a
+    bulk reply shows what each line actually did (issue #198). The summary
+    itself comes from `link_*`, shared with plain `/link`, so it's appended
+    here rather than worded there."""
+    outcome = f"created a new {kind}" if created else f"matched an existing {kind}"
+    return f"{summary.rstrip('.')} - {outcome}{where}."
+
+
 @dataclass(frozen=True)
 class LinkedMember:
     """One connector's side of a bridge/link/mapping group - the structured

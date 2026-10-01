@@ -20,6 +20,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
+    _mirror_outcome,
     _mirror_to_destination,
     _refresh_connectors,
     _require_known_connector,
@@ -195,11 +196,12 @@ class EmoteLinker:
                 existing_id = None
             if existing_id and await self._emoji_mappings.get_group_id(destination, existing_id) is None:
                 try:
-                    return await self.link_emote(
+                    summary = await self.link_emote(
                         local_connector=destination, local_id=existing_id, source=local_connector, source_id=source_id
                     )
                 except LinkError as exc:
                     return f"{dest_info.label}: {exc}"
+                return _mirror_outcome(summary, "emote", created=False)
 
         source_info = self._connectors.get(local_connector)
         if source_info is None or source_info.resolve_emoji is None:
@@ -248,11 +250,12 @@ class EmoteLinker:
             )
 
         try:
-            return await self.link_emote(
+            summary = await self.link_emote(
                 local_connector=destination, local_id=created.native_id, source=local_connector, source_id=source_id
             )
         except LinkError as exc:
             return f"{dest_info.label}: {exc}"
+        return _mirror_outcome(summary, "emote", created=True)
 
     @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_emote_all(self, *, local_connector: str, local_emote: str) -> str:

@@ -125,7 +125,7 @@ async def test_mirror_role_matches_a_same_named_role_instead_of_creating(fake_db
     )
     linker = _linker(fake_db, connectors)
     summary = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
-    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (s_existing)."
+    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (s_existing) - matched an existing role."
     assert created == []
 
 
@@ -211,7 +211,7 @@ async def test_mirror_role_creates_then_links(fake_db):
     )
     linker = _linker(fake_db, connectors)
     summary = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
-    assert "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods)." == summary
+    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods) - created a new role."
     assert created == {"Mods": "stoat_Mods"}
     # already synced -> skipped
     again = await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
@@ -513,7 +513,7 @@ async def test_mirror_role_from_creates_the_local_role(fake_db):
     # run "on stoat", pulling discord's role d1 in
     summary = await linker.mirror_role_from(local_connector="stoat", source="discord", source_role="d1")
 
-    assert "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods)." == summary
+    assert summary == "Linked Discord role 'Mods' (d1) to Stoat role 'Mods' (stoat_Mods) - created a new role."
     assert created == {"Mods": "stoat_Mods"}
 
 

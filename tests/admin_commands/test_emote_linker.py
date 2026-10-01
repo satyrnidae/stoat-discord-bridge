@@ -334,7 +334,8 @@ async def test_mirror_emote_links_to_an_existing_same_named_emote_instead_of_dup
 
     summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
 
-    assert "Linked" in summary
+    assert summary.startswith("Linked")
+    assert summary.endswith(" - matched an existing emote.")
     assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "s-existing"
 
 
@@ -360,7 +361,8 @@ async def test_mirror_emote_does_not_reuse_a_same_named_emote_linked_elsewhere(f
 
     summary = await linker.mirror_emote(local_connector="discord", local_emote="dsrc", destination="stoat")
 
-    assert "Linked" in summary
+    assert summary.startswith("Linked")
+    assert summary.endswith(" - created a new emote.")
     assert await emoji_mappings.find_equivalent("discord", "dsrc", "stoat") == "snew"
     assert await emoji_mappings.get_group_id("discord", "dsrc") != other_group
     assert {r.emoji_id for r in await emoji_mappings.get_refs(other_group)} == {"s-existing", "d-other"}

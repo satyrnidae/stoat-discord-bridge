@@ -19,6 +19,7 @@ from stoat_discord_bridge.admin_commands.common import (
     _list_entities_for_all,
     _mirror_all_other_connectors,
     _mirror_from_local,
+    _mirror_outcome,
     _mirror_to_destination,
     _refresh_connectors,
     _require_known_connector,
@@ -210,7 +211,7 @@ class RoleLinker:
             return f"{dest_info.label}: {exc}"
         if matched:
             await self._apply_metadata(local_connector, local_id, destination, destination_role_id)
-        return summary
+        return _mirror_outcome(summary, "role", created=not matched)
 
     @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_role_all(self, *, local_connector: str, local_role: str) -> str:
