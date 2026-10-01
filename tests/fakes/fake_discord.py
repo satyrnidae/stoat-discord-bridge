@@ -28,6 +28,16 @@ class _FakeHttpResponse:
         self.reason = reason
 
 
+def discord_not_found(message: str = "not found") -> discord.NotFound:
+    """A real discord.NotFound (404), for faking a deleted entity."""
+    return discord.NotFound(_FakeHttpResponse(status=404, reason="Not Found"), message)
+
+
+def discord_forbidden(message: str = "forbidden") -> discord.Forbidden:
+    """A real discord.Forbidden (403) - the entity exists, the bot can't see it."""
+    return discord.Forbidden(_FakeHttpResponse(status=403, reason="Forbidden"), message)
+
+
 class FakeAsset:
     """Stands in for discord.Asset. Unlike stoat.py's Asset, discord.py
     exposes the URL as a plain `.url` attribute, not a `.url()` method."""
@@ -518,6 +528,22 @@ class FakeGuild:
         self.created_text_channels: list[dict] = []
         self.created_voice_channels: list[dict] = []
         self.created_categories: list[str] = []
+        self._roles: dict[int, Any] = {}
+        self._guild_emojis: dict[int, Any] = {}
+
+    def add_role(self, role: Any) -> Any:
+        self._roles[role.id] = role
+        return role
+
+    def get_role(self, role_id: int) -> Any | None:
+        return self._roles.get(role_id)
+
+    def add_emoji(self, emoji: Any) -> Any:
+        self._guild_emojis[emoji.id] = emoji
+        return emoji
+
+    def get_emoji(self, emoji_id: int) -> Any | None:
+        return self._guild_emojis.get(emoji_id)
 
     async def create_text_channel(self, name: str, *, reason: str | None = None, **kwargs) -> FakeGuildChannel:
         self.created_text_channels.append({"name": name, **kwargs})

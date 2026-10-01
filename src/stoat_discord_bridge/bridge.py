@@ -1123,6 +1123,7 @@ async def run(config: BridgeConfig) -> None:
             channel_is_voice=sender.channel_is_voice if discord_voice_capable else None,
             voice_occupants=sender.voice_occupants if discord_voice_capable else None,
             fetch_history=sender.fetch_history,
+            entity_exists=sender.entity_exists,
         )
         if discord_voice_capable:
             voice_connectors[dc.id] = DiscordVoiceConnector(dc.id, sender.client, voice_bridging=dc.voice_bridging)
@@ -1217,6 +1218,7 @@ async def run(config: BridgeConfig) -> None:
             channel_is_voice=sender.channel_is_voice if stoat_voice_capable else None,
             voice_occupants=sender.voice_occupants if stoat_voice_capable else None,
             fetch_history=sender.fetch_history,
+            entity_exists=sender.entity_exists,
         )
         if stoat_voice_capable:
             voice_connectors[sc.id] = StoatVoiceConnector(

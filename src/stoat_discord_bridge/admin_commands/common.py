@@ -802,6 +802,16 @@ class ConnectorInfo:
     # one network round-trip.
     refresh: Callable[[], Awaitable[None]] | None = None
 
+    # Strict "does this entity still exist here?" check, `(kind, entity_id)`
+    # with kind one of "channel" / "role" / "user" / "emoji". True if it
+    # exists, False only when it's definitely gone (a 404, or missing from a
+    # cache the gateway keeps live), None when it can't tell (no cache yet, a
+    # network error, a kind it doesn't know). Unlike the best-effort
+    # `resolve_*_name` hooks, which answer None for both "gone" and "couldn't
+    # check", a False here is safe to prune a link on (issue #217). Discord
+    # and Stoat wire it; IRC leaves it unset, so its links are never pruned.
+    entity_exists: Callable[[str, str], Awaitable[bool | None]] | None = None
+
     # --- Capability flags, derived from which hooks are wired ---------------
     # Whether this connector kind has the concept a given command family
     # operates on. IRC has none of roles/Categories/custom emoji, so it wires
@@ -876,6 +886,23 @@ async def _resolve_entity_title(
         logger.debug("couldn't resolve %s id %r on %s", kind, entity_id, connector, exc_info=True)
         return None
     return name or None
+
+
+async def entity_gone(
+    connectors: "dict[str, ConnectorInfo]", connector_id: str, kind: str, entity_id: str
+) -> bool:
+    """True only when `connector_id`'s `entity_exists` hook says, for certain,
+    that `kind` `entity_id` no longer exists there - the one answer a stale
+    link is pruned on (issue #217). No hook (IRC), a raising one, or a None
+    ("can't tell") all return False, so a blip never costs a live link."""
+    info = connectors.get(connector_id)
+    if info is None or info.entity_exists is None:
+        return False
+    try:
+        return await info.entity_exists(kind, entity_id) is False
+    except Exception:
+        logger.debug("entity_exists(%s, %s) failed on %s", kind, entity_id, connector_id, exc_info=True)
+        return False
 
 
 async def _is_forum_channel(

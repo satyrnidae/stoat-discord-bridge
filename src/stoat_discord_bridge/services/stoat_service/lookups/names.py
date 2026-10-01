@@ -240,6 +240,35 @@ class _NamesMixin:
             return None
         return getattr(role, "name", None) if role is not None else None
 
+    async def entity_exists(self, kind: str, entity_id: str) -> bool | None:
+        """`ConnectorInfo.entity_exists` (issue #217): whether `kind`
+        ("channel"/"role"/"user"/"emoji") `entity_id` still exists. The cache
+        drifts (issue #66), so a cache miss is checked against the API: a
+        `stoat.NotFound` is gone, as is a role missing from a freshly fetched
+        server. Any other failure is None. Unverified against a live server."""
+        try:
+            if kind == "channel":
+                if self._client.get_channel(entity_id, partial=False) is None:
+                    await self._client.fetch_channel(entity_id)
+            elif kind == "user":
+                await self._client.fetch_user(entity_id)
+            elif kind == "role":
+                if self._role_by_id(entity_id) is None:
+                    server = await self._client.fetch_server(self.server_id)
+                    return any(str(getattr(r, "id", "")) == entity_id for r in self._roles_of(server))
+            elif kind == "emoji":
+                server = self._client.get_server(self.server_id, partial=True)
+                if server.get_emoji(entity_id) is None:
+                    await self._client.fetch_emoji(entity_id)
+            else:
+                return None
+        except stoat.NotFound:
+            return False
+        except Exception:
+            logger.debug("[stoat:%s] couldn't check %s %s", self.connector_id, kind, entity_id, exc_info=True)
+            return None
+        return True
+
     async def resolve_role_id_by_name(self, token: str) -> str | None:
         """Resolve a bare role name to its id (case-insensitive, first match);
         a token that's already a role id is returned as-is, an unknown token
