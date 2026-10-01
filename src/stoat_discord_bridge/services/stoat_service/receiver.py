@@ -25,7 +25,7 @@ import stoat_discord_bridge.services.stoat_service as _stoat_pkg
 
 from stoat_discord_bridge.channel_structure import clip_name
 from stoat_discord_bridge.models import CustomEmoji, StandardEdit, StandardMessage
-from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService
+from stoat_discord_bridge.services.base import PartialRelayError, ReceiverService, RelayTargetGoneError
 from stoat_discord_bridge.services.formatting import (
     LinkPreviewPreferences,
     chunk_content,
@@ -201,6 +201,8 @@ class StoatReceiverService(ReceiverService):
             try:
                 sent = await channel.send(chunk, masquerade=masquerade, **attach_kw, **reply_kw)
             except Exception as exc:
+                if not ids:  # once something's posted, PartialRelayError keeps its ids
+                    await self._raise_if_channel_gone(target_channel_id, exc)
                 sent = None
                 if reply_kw:
                     # A rejected reply shouldn't sink the whole relay - retry
@@ -338,6 +340,7 @@ class StoatReceiverService(ReceiverService):
             content = inline_attachment_urls(content, undownloadable)
         chunks = chunk_content(content, _stoat_pkg._CONTENT_LIMIT) if content else []
         last = len(target_message_ids) - 1
+        checked = False
         for index, message_id in enumerate(target_message_ids):
             body = chunks[index] if index < len(chunks) else "​"
             embeds_kw = (
@@ -348,7 +351,10 @@ class StoatReceiverService(ReceiverService):
             try:
                 message = await channel.fetch_message(message_id)
                 await message.edit(content=body, **embeds_kw)
-            except Exception:
+            except Exception as exc:
+                if not checked and isinstance(exc, stoat.NotFound):
+                    checked = True
+                    await self._raise_if_channel_gone(target_channel_id, exc)
                 logger.warning(
                     "[stoat:%s] couldn't edit relayed message %s in channel %s",
                     self.connector_id,
@@ -365,11 +371,15 @@ class StoatReceiverService(ReceiverService):
         if not target_message_ids:
             return
         channel = self._sender.get_channel(target_channel_id, partial=True)
+        checked = False
         for message_id in target_message_ids:
             try:
                 message = await channel.fetch_message(message_id)
                 await message.delete()
-            except Exception:
+            except Exception as exc:
+                if not checked and isinstance(exc, stoat.NotFound):
+                    checked = True
+                    await self._raise_if_channel_gone(target_channel_id, exc)
                 logger.warning(
                     "[stoat:%s] couldn't delete relayed message %s in channel %s",
                     self.connector_id,
@@ -387,7 +397,8 @@ class StoatReceiverService(ReceiverService):
         channel = self._sender.get_channel(target_channel_id, partial=True)
         try:
             message = await channel.fetch_message(target_message_id)
-        except Exception:
+        except Exception as exc:
+            await self._raise_if_channel_gone(target_channel_id, exc)
             return  # message gone, or we can't see it - best-effort
         await message.react(native)
 
@@ -404,9 +415,18 @@ class StoatReceiverService(ReceiverService):
         channel = self._sender.get_channel(target_channel_id, partial=True)
         try:
             message = await channel.fetch_message(target_message_id)
-        except Exception:
+        except Exception as exc:
+            await self._raise_if_channel_gone(target_channel_id, exc)
             return  # message gone, or we can't see it - best-effort
         await message.unreact(native)
+
+    async def _raise_if_channel_gone(self, channel_id: str, exc: BaseException) -> None:
+        """Raise `RelayTargetGoneError` if `exc` is a 404 because `channel_id`
+        itself was deleted (issue #217), confirmed by one fresh fetch made only
+        on this error path. A 404 for just the message, or any other failure,
+        returns so the caller handles it as before."""
+        if isinstance(exc, stoat.NotFound) and await self._sender.channel_deleted(channel_id):
+            raise RelayTargetGoneError(f"Stoat channel {channel_id} was deleted") from exc
 
     async def _bot_already_reacted(
         self, channel_id: str, message_id: str, native_emoji: str
@@ -430,7 +450,8 @@ class StoatReceiverService(ReceiverService):
         channel = self._sender.get_channel(target_channel_id, partial=True)
         try:
             message = await channel.fetch_message(target_message_id)
-        except Exception:
+        except Exception as exc:
+            await self._raise_if_channel_gone(target_channel_id, exc)
             return  # message gone, or we can't see it - best-effort
         if getattr(message, "pinned", None) == pinned:
             return  # already in the desired state - avoids a needless API call and echo

@@ -269,6 +269,20 @@ class _NamesMixin:
             return None
         return True
 
+    async def channel_deleted(self, channel_id: str) -> bool:
+        """Whether a live fetch of `channel_id` 404s. The receiver asks only
+        after a send or message fetch there failed with `stoat.NotFound`, to
+        tell a deleted channel from a deleted message (issue #217). Skips the
+        cache, which may still hold a just-deleted channel; any other failure
+        is False (can't tell)."""
+        try:
+            await self._client.fetch_channel(channel_id)
+        except stoat.NotFound:
+            return True
+        except Exception:
+            logger.debug("[stoat:%s] couldn't re-check channel %s", self.connector_id, channel_id, exc_info=True)
+        return False
+
     async def resolve_role_id_by_name(self, token: str) -> str | None:
         """Resolve a bare role name to its id (case-insensitive, first match);
         a token that's already a role id is returned as-is, an unknown token
