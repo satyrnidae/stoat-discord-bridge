@@ -23,6 +23,33 @@ the wrapper doesn't exist (another machine or user), plain `gh` posts as
 whoever is logged in - say so when you report back. `git push` is unaffected
 (it uses the SSH key, not `gh`).
 
+## Progress comments
+
+**Only in headless pipeline runs** - when the session's system prompt says
+you're running headless, started by a GitHub webhook (the triage-webhook
+service). Interactive runs skip these comments; the user is watching the
+session.
+
+In those runs, narrate the work on GitHub as you go - nobody reads the
+transcript, and the bot's own comments don't feed back into the pipeline
+(the harness only forwards the owner's). Short and factual, one comment per
+milestone, unwrapped paragraphs like every other comment here
+(`gh issue comment <n> --body-file <tmpfile>`):
+
+- **Start** (step 1): the phase breakdown you derived from the plan, as a
+  numbered list, plus anything you're reading differently from the plan.
+- **Each phase committed** (step 2.6): which phase, the commit (short SHA +
+  subject), the test it added, and anything worth knowing - a review
+  finding you applied or deliberately skipped, a surprise in the code, a
+  change to a later phase's plan.
+- **Blocked or deviating**: as soon as it happens, not at the end - what's
+  in the way and what you're doing about it. If you need the owner's call,
+  ask and stop (the headless note explains how they reply).
+- **PR open** (step 4): the PR link and a line on anything left for review.
+
+Post on the issue until the PR exists; after that, follow-up runs (owner
+feedback on the PR) reply on the PR instead.
+
 ## 0. Resolve the issue and its plan
 
 - Issue number comes from the argument. If omitted, try to infer it from the
@@ -59,6 +86,7 @@ whoever is logged in - say so when you report back. `git push` is unaffected
   Do this regardless of whether a worktree/branch already existed - it's the
   signal that this issue has an active implementation session, not that a
   worktree was just created. Safe to re-run if it's already set.
+- Headless pipeline runs: post the start comment (see Progress comments).
 
 ## 2. The per-phase loop
 
@@ -92,7 +120,8 @@ For each phase from step 0, in order:
    warrant its own commit - then split it out). Gitmoji-prefixed message per
    `CLAUDE.md`'s Contributing section (`✨`/`🐛`/`♻️`/`✅` as fits), body
    referencing the issue (`Refs #<n>` - not a closing keyword yet; that's
-   reserved for the PR).
+   reserved for the PR). In a headless pipeline run, then post the phase's
+   progress comment.
 
 Repeat until every phase from the plan is implemented.
 
@@ -118,14 +147,15 @@ whole branch is coherent, not just each phase in isolation.
   --remove-label "in development" --add-label "merge pending"`. Development
   is done at this point (an open PR is what "merge pending" means) even
   though the issue itself isn't closed until the PR merges.
-- Report the PR URL back to the user.
+- In a headless pipeline run, post the PR-open comment on the issue. Report
+  the PR URL back to the user.
 
 ## Notes
 
 - Narrate progress between phases (which phase, red/green status, review
-  findings) even though each individual step is "silent, best-effort" work -
-  this is a long-running loop, not a single tool call, and the user should
-  be able to tell where it is without reading the transcript.
+  findings) in the session too, not only in the GitHub comments - this is a
+  long-running loop, and an interactive user should be able to tell where it
+  is without opening the issue.
 - Don't skip the regression run to save time - interleaving it every phase
   is what catches cross-phase breakage while it's still cheap to localize.
 - If a `/code-review low` checkpoint surfaces something that invalidates a
