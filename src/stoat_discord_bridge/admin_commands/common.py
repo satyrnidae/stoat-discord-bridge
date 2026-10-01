@@ -771,6 +771,9 @@ class ConnectorInfo:
     # their hook families. ---
     list_channels: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     list_categories: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
+    # Unlike the others, list_roles is ordered: highest-ranked role first,
+    # the way each platform's own role list shows it. `/mirror role` reads
+    # the source's role order from it (issue #199).
     list_roles: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     list_users: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     list_emotes: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None

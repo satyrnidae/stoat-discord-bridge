@@ -21,6 +21,23 @@ async def test_list_roles_skips_the_default_everyone_role(monkeypatch):
     assert await sender.list_roles() == [("2", "Admins")]
 
 
+async def test_list_roles_is_highest_rank_first(monkeypatch):
+    # guild.roles is lowest-position-first; list_roles promises the
+    # opposite, matching Discord's own role list (issue #199).
+    sender = _make_sender(FakeLinker())
+    guild = SimpleNamespace(
+        roles=[
+            SimpleNamespace(id=1, name="@everyone", is_default=lambda: True),
+            SimpleNamespace(id=2, name="Members", is_default=lambda: False),
+            SimpleNamespace(id=3, name="Mods", is_default=lambda: False),
+            SimpleNamespace(id=4, name="Admins", is_default=lambda: False),
+        ]
+    )
+    monkeypatch.setattr(sender, "_guild_or_none", lambda: guild)
+
+    assert await sender.list_roles() == [("4", "Admins"), ("3", "Mods"), ("2", "Members")]
+
+
 async def test_list_channels_covers_text_and_voice(monkeypatch):
     sender = _make_sender(FakeLinker())
     guild = SimpleNamespace(

@@ -28,7 +28,9 @@ class _ListingMixin:
         guild = self._guild_or_none()
         if guild is None:
             return []
-        return [(str(r.id), r.name) for r in guild.roles if not r.is_default()]
+        # guild.roles is lowest-position-first; reverse it so the top role
+        # comes first, as ConnectorInfo.list_roles promises (issue #199).
+        return [(str(r.id), r.name) for r in reversed(guild.roles) if not r.is_default()]
 
     async def list_users(self) -> list[tuple[str, str]]:
         guild = self._guild_or_none()
