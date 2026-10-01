@@ -49,6 +49,19 @@ async def test_list_roles_reads_the_server_roles():
     assert await _sender(server).list_roles() == [("r1", "Admins"), ("r2", "Mods")]
 
 
+async def test_list_roles_is_highest_rank_first():
+    # A smaller Stoat rank is higher priority, so ascending rank is the
+    # top-of-the-list-first order list_roles promises (issue #199).
+    server = FakeServer("s1")
+    server.roles = {
+        "r1": SimpleNamespace(id="r1", name="Members", rank=5),
+        "r2": SimpleNamespace(id="r2", name="Admins", rank=0),
+        "r3": SimpleNamespace(id="r3", name="Mods", rank=2),
+    }
+
+    assert await _sender(server).list_roles() == [("r2", "Admins"), ("r3", "Mods"), ("r1", "Members")]
+
+
 async def test_list_users_prefers_nick_then_display_name_then_username():
     server = FakeServer("s1")
     server.add_member("u1", FakeAuthor("u1", name="corvid", display_name="Corvid Jay", nick="CJ"))

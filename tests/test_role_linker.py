@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 
 from stoat_discord_bridge.admin_commands import (
@@ -598,6 +600,141 @@ async def test_mirror_role_from_all_pulls_in_every_source_role(fake_db):
     assert created == ["Mods", "VIPs"]
     assert "Linked Stoat role 'Mods'" in summary
     assert "Linked Stoat role 'VIPs'" in summary
+
+
+# ---- role order sync (issue #199)
+
+
+def _ordered_connectors(source_roles, *, reorder=True, reorder_raises=None):
+    """Discord lists `source_roles` (highest first); Stoat creates roles as
+    `s_<name>` and records every reorder_roles call."""
+    calls = []
+
+    async def list_roles():
+        return list(source_roles)
+
+    async def d_name(role_id):
+        return dict(source_roles).get(role_id)
+
+    async def create_role(name):
+        return f"s_{name}"
+
+    async def reorder_roles(role_ids):
+        calls.append(list(role_ids))
+        if reorder_raises is not None:
+            raise reorder_raises
+
+    connectors = _connectors(
+        discord=ConnectorInfo(id="discord", label="Discord", list_roles=list_roles, resolve_role_name=d_name),
+        stoat=ConnectorInfo(
+            id="stoat",
+            label="Stoat",
+            create_role=create_role,
+            reorder_roles=reorder_roles if reorder else None,
+        ),
+    )
+    return connectors, calls
+
+
+async def test_mirror_role_reorders_linked_roles_to_match_the_source(fake_db):
+    connectors, calls = _ordered_connectors([("d1", "Admins"), ("d2", "Mods"), ("d3", "Members")])
+    linker = _linker(fake_db, connectors)
+    await linker.link_role(local_connector="stoat", local_role="s_Members", source="discord", source_role="d3")
+    await linker.link_role(local_connector="stoat", local_role="s_Admins", source="discord", source_role="d1")
+
+    await linker.mirror_role(local_connector="discord", local_role="d2", destination="stoat")
+
+    # d2 is new; the unlinked-on-Stoat roles don't matter, only rank order.
+    assert calls == [["s_Admins", "s_Mods", "s_Members"]]
+
+
+async def test_mirror_role_ignores_roles_not_linked_to_the_destination(fake_db):
+    connectors, calls = _ordered_connectors([("d1", "Admins"), ("d2", "Mods"), ("d3", "Members")])
+    linker = _linker(fake_db, connectors)
+    await linker.link_role(local_connector="stoat", local_role="s_Admins", source="discord", source_role="d1")
+    # d3 is linked, but to IRC, not Stoat.
+    await linker.link_role(local_connector="irc", local_role="i3", source="discord", source_role="d3")
+
+    await linker.mirror_role(local_connector="discord", local_role="d2", destination="stoat")
+
+    assert calls == [["s_Admins", "s_Mods"]]
+
+
+async def test_mirror_role_reorders_a_matched_role_too(fake_db):
+    connectors, calls = _ordered_connectors([("d1", "Admins"), ("d2", "Mods")])
+
+    async def s_by_name(token):
+        return {"Mods": "existing-mods"}.get(token)
+
+    connectors["stoat"] = dataclasses.replace(connectors["stoat"], resolve_role_id_by_name=s_by_name)
+    linker = _linker(fake_db, connectors)
+    await linker.link_role(local_connector="stoat", local_role="s_Admins", source="discord", source_role="d1")
+
+    await linker.mirror_role(local_connector="discord", local_role="d2", destination="stoat")
+
+    assert calls == [["s_Admins", "existing-mods"]]
+
+
+async def test_mirror_role_all_reorders_once_after_the_batch(fake_db):
+    connectors, calls = _ordered_connectors([("d1", "Admins"), ("d2", "Mods"), ("d3", "Members")])
+    linker = _linker(fake_db, connectors)
+
+    await linker.mirror_role(local_connector="discord", local_role="all", destination="stoat")
+
+    assert calls == [["s_Admins", "s_Mods", "s_Members"]]
+
+
+async def test_mirror_role_skips_the_reorder_with_fewer_than_two_linked_roles(fake_db):
+    connectors, calls = _ordered_connectors([("d1", "Admins"), ("d2", "Mods")])
+    linker = _linker(fake_db, connectors)
+
+    await linker.mirror_role(local_connector="discord", local_role="d1", destination="stoat")
+
+    assert calls == []
+
+
+async def test_mirror_role_without_a_reorder_hook_still_links(fake_db):
+    connectors, _calls = _ordered_connectors([("d1", "Admins"), ("d2", "Mods")], reorder=False)
+    linker = _linker(fake_db, connectors)
+    await linker.link_role(local_connector="stoat", local_role="s_Admins", source="discord", source_role="d1")
+
+    summary = await linker.mirror_role(local_connector="discord", local_role="d2", destination="stoat")
+
+    assert "Linked Discord role 'Mods'" in summary
+
+
+async def test_mirror_role_survives_a_failing_reorder(fake_db):
+    connectors, calls = _ordered_connectors(
+        [("d1", "Admins"), ("d2", "Mods")], reorder_raises=RuntimeError("NotElevated")
+    )
+    linker = _linker(fake_db, connectors)
+    await linker.link_role(local_connector="stoat", local_role="s_Admins", source="discord", source_role="d1")
+
+    summary = await linker.mirror_role(local_connector="discord", local_role="d2", destination="stoat")
+
+    assert calls == [["s_Admins", "s_Mods"]]
+    assert "Linked Discord role 'Mods'" in summary
+
+
+async def test_mirror_role_all_destinations_reorders_each_destination(fake_db):
+    connectors, stoat_calls = _ordered_connectors([("d1", "Admins"), ("d2", "Mods")])
+    irc_calls = []
+
+    async def irc_create(name):
+        return f"i_{name}"
+
+    async def irc_reorder(role_ids):
+        irc_calls.append(list(role_ids))
+
+    connectors["irc"] = ConnectorInfo(id="irc", label="IRC", create_role=irc_create, reorder_roles=irc_reorder)
+    linker = _linker(fake_db, connectors)
+    await linker.link_role(local_connector="stoat", local_role="s_Admins", source="discord", source_role="d1")
+    await linker.link_role(local_connector="irc", local_role="i_Admins", source="discord", source_role="d1")
+
+    await linker.mirror_role_all(local_connector="discord", local_role="d2")
+
+    assert stoat_calls == [["s_Admins", "s_Mods"]]
+    assert irc_calls == [["i_Admins", "i_Mods"]]
 
 
 # ---- list_linked_roles / unlink_role

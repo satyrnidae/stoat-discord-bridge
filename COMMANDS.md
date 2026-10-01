@@ -588,6 +588,12 @@ counterpart of `<service>`'s role is created-or-matched **here** and linked
 (reusing an existing bridge group). A connector that can't create roles is
 reported per-connector. Manage Server.
 
+Afterward, the destination's linked roles are reordered to match their
+source counterparts' order (issue #199). Only linked roles move, and only
+among the positions they already hold. The bridge bot's own top role has to
+sit above them for the platform to allow this; if it can't, the roles stay
+linked in their old order.
+
 `<local_id>` (on `to`) / `<external_id>` (on `from`) also accepts the literal
 `all` (issue #123): mirrors every role the connector can enumerate (its
 `list_roles` hook - Discord/Stoat only, so IRC can't be the `all` source)

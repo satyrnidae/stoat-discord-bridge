@@ -61,6 +61,21 @@ class _RolesEmojiMixin:
         if changes:
             await role.edit(reason="bridge role mirror", **changes)
 
+    async def reorder_roles(self, role_ids: list[str]) -> None:
+        """Put the given roles in this order, highest first - this
+        connector's `ConnectorInfo.reorder_roles` (issue #199). They're
+        shuffled among the positions they already hold, so no other role
+        moves. Uncached ids are skipped and only moved roles are sent.
+        Raises if the guild isn't cached or the edit fails."""
+        guild = self._guild_or_none()
+        if guild is None:
+            raise RuntimeError("Discord guild isn't cached yet - the bridge may still be connecting")
+        roles = [r for r in (guild.get_role(int(rid)) for rid in role_ids if rid.isdigit()) if r is not None]
+        slots = sorted((r.position for r in roles), reverse=True)
+        moves = {discord.Object(id=r.id): pos for r, pos in zip(roles, slots) if r.position != pos}
+        if moves:
+            await guild.edit_role_positions(positions=moves, reason="bridge role mirror")
+
     async def describe_role(self, role_id: str) -> "RoleMetadata | None":
         """A role's color/hoist, this connector's `ConnectorInfo.describe_role`
         (issue #179). A zero color value means "no color". None if the role

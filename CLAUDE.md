@@ -854,7 +854,16 @@ edits only differing fields and clears a color the source lacks.
 Discord passes both to `create_role`, skipping a color `Color.from_str` can't
 parse (a Stoat gradient); Stoat sets them with a best-effort follow-up
 `Role.edit`, since stoat.py's `create_role` takes only a name. Permissions
-aren't copied. Linked-role `<@&id>` / `<%id>` mentions are rewritten into the
+aren't copied. After linking, `RoleLinker._sync_role_order` puts the
+destination's linked roles in the source's order (issue #199) - once per
+`/mirror role`, after the whole batch for `all`. `list_roles` is ordered
+highest-ranked first on both connectors for this. The destination's
+`reorder_roles` hook shuffles the named roles among the positions they
+already hold, so unlinked roles never move: Discord via
+`Guild.edit_role_positions` (moved roles only), Stoat via
+`Server.bulk_edit_role_ranks` (which needs every server role, so the full
+list is sent). Best-effort; whether either succeeds for the bot's own rank
+is **unverified against a live server**. Linked-role `<@&id>` / `<%id>` mentions are rewritten into the
 target's linked role (`@Name` on IRC) alongside the user/channel mention
 rewrites; an *unlinked* role mention is expanded to a plain `@Role Name`
 (the role's name on the origin, carried on `StandardMessage.mentioned_roles` /

@@ -60,6 +60,22 @@ class _RolesEmojiMixin:
         if changes:
             await role.edit(**changes)
 
+    async def reorder_roles(self, role_ids: list[str]) -> None:
+        """Put the given roles in this order, highest first - this
+        connector's `ConnectorInfo.reorder_roles` (issue #199). They're
+        shuffled among the ranks they already hold, so no other role moves.
+        Stoat's bulk rank edit needs every server role, so the whole list
+        is sent; uncached ids are skipped. Raises if the edit fails."""
+        current = [str(r.id) for r in self._all_roles()]
+        wanted = [rid for rid in role_ids if rid in current]
+        slots = sorted(current.index(rid) for rid in wanted)
+        ranks = list(current)
+        for slot, rid in zip(slots, wanted):
+            ranks[slot] = rid
+        if ranks != current:
+            server = await self._full_server()
+            await server.bulk_edit_role_ranks(ranks)
+
     async def describe_role(self, role_id: str) -> "RoleMetadata | None":
         """A role's color/hoist, this connector's `ConnectorInfo.describe_role`
         (issue #179). `Role.color` is already a CSS string, passed as-is.

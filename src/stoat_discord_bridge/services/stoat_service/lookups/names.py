@@ -263,8 +263,12 @@ class _NamesMixin:
         return list(roles.values()) if isinstance(roles, dict) else list(roles)
 
     def _all_roles(self):
+        """The server's roles, highest-priority first (smallest `rank`), as
+        `ConnectorInfo.list_roles` promises (issue #199). A role without a
+        rank sorts last."""
         server = self._client.get_server(self.server_id, partial=True)
-        return self._roles_of(server)
+        roles = self._roles_of(server)
+        return sorted(roles, key=lambda r: (getattr(r, "rank", None) is None, getattr(r, "rank", None) or 0))
 
     def _role_by_id(self, role_id: str):
         return next((r for r in self._all_roles() if str(getattr(r, "id", "")) == role_id), None)
