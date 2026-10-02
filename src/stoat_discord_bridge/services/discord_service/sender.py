@@ -458,6 +458,10 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             return
         data = payload.data or {}
         cached = getattr(payload, "cached_message", None)
+        logger.debug(
+            "MESSAGE_UPDATE %s (cached=%s): %s",
+            payload.message_id, cached is not None, ", ".join(sorted(data)),
+        )
         if "pinned" in data and self._on_pin is not None:
             pinned = bool(data["pinned"])
             if cached is None or cached.pinned != pinned:

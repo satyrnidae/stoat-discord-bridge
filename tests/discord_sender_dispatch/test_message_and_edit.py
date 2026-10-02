@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import discord
@@ -870,6 +871,20 @@ async def test_handle_raw_message_edit_full_payload_pin_of_an_uncached_message_i
 
     assert [p.pinned for p in recorder.pins] == [True]
     assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_logs_the_payload_keys_at_debug(caplog):
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    with caplog.at_level(logging.DEBUG, logger="stoat_discord_bridge.services.discord_service.sender"):
+        await sender._handle_raw_message_edit(_full_payload(pinned=True, cached=_cached()))
+
+    assert any(
+        "author, content, edited_timestamp, embeds, pinned" in record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+    )
 
 
 async def test_handle_raw_message_edit_full_payload_late_unfurl_backfills_the_preview():
