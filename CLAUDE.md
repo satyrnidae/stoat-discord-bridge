@@ -305,11 +305,17 @@ other connector's copy of that message (`BridgeCoordinator.handle_edit` →
 same `MessageSyncRepository` group reaction/pin sync use). Discord ⇄ Stoat
 only — **IRC has no edit-in-place** (`supports_edits` stays `False`), so an
 edit never routes to it (issue #62). Each sender emits a `StandardEdit`:
-Discord from `on_raw_message_edit` when the payload carries a fresh `content`
-*and* an `edited_timestamp` (the latter distinguishes a real user edit from
-an auto-embed unfurl — and from a pin toggle, which carries `pinned`
-instead; an unfurl only becomes an edit when it backfills a late link
-preview, see the link-preview section above); Stoat from `on_message_update` (`stoat.events.MessageUpdateEvent`,
+Discord from `on_raw_message_edit` when the payload's `edited_timestamp` is
+new. Discord sends the whole message on every `MESSAGE_UPDATE` (discord.py
+2.5+ builds a full `Message` from it), so every payload carries `content`,
+`pinned` and `edited_timestamp` whether it's an edit, a pin toggle or an
+unfurl (issue #227). The sender diffs it against `payload.cached_message`:
+a changed `edited_timestamp` is an edit, a changed `pinned` a pin. For an
+uncached message a pin is always emitted (pin sync is idempotent) and an
+edit only when `edited_timestamp` is within 5 minutes of now, so a pin or
+unfurl on a message edited long ago doesn't re-send it. Anything else is an
+unfurl, which only becomes an edit when it backfills a late link preview
+(see the link-preview section above). Stoat from `on_message_update` (`stoat.events.MessageUpdateEvent`,
 preferring `event.after` over the partial `event.message`). The original
 relay may have been split across several native posts in one channel —
 `edit_message` gets the whole ordered list and re-renders the new text

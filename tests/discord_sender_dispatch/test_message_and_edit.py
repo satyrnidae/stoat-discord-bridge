@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import discord
@@ -554,6 +555,11 @@ async def test_handle_message_suppresses_the_pins_add_system_message():
 # ---------------------------------------------------------------- _handle_raw_message_edit
 
 
+# An uncached edit only counts when its timestamp is recent, so fixtures use the real clock.
+_JUST_NOW = discord.utils.utcnow().isoformat()
+_LONG_AGO = "2026-01-01T00:00:00+00:00"
+
+
 def _edit_payload(**overrides):
     defaults = dict(guild_id=123, channel_id=42, message_id=7, data={})
     defaults.update(overrides)
@@ -602,7 +608,7 @@ async def test_handle_raw_message_edit_emits_an_edit_on_a_real_content_edit():
         _edit_payload(
             data={
                 "content": "fixed typo",
-                "edited_timestamp": "2026-09-03T00:00:00+00:00",
+                "edited_timestamp": _JUST_NOW,
                 "author": {"id": "5", "bot": False},
             },
             message=SimpleNamespace(
@@ -633,7 +639,7 @@ async def test_handle_raw_message_edit_drops_our_own_webhook_copy_being_edited()
     # cache-free detection: webhook_id in the raw payload, message uncached
     await sender._handle_raw_message_edit(
         _edit_payload(
-            data={"content": "x", "edited_timestamp": "2026-09-03T00:00:00+00:00", "webhook_id": "123"}
+            data={"content": "x", "edited_timestamp": _JUST_NOW, "webhook_id": "123"}
         )
     )
 
@@ -648,7 +654,7 @@ async def test_handle_raw_message_edit_ignores_a_non_whitelisted_bot_authored_ed
         _edit_payload(
             data={
                 "content": "x",
-                "edited_timestamp": "2026-09-03T00:00:00+00:00",
+                "edited_timestamp": _JUST_NOW,
                 "author": {"id": "5", "bot": True},
             }
         )
@@ -665,7 +671,7 @@ async def test_handle_raw_message_edit_relays_a_whitelisted_bot_authored_edit():
         _edit_payload(
             data={
                 "content": "fixed typo",
-                "edited_timestamp": "2026-09-03T00:00:00+00:00",
+                "edited_timestamp": _JUST_NOW,
                 "author": {"id": "5", "bot": True},
             }
         )
@@ -771,11 +777,129 @@ async def test_handle_raw_message_edit_real_edit_carries_no_new_attachments():
     await _relay_bare_klipy_link(sender)
 
     await sender._handle_raw_message_edit(
-        _late_embed_payload([_embed(**_KLIPY_EMBED)], edited_timestamp="2026-09-03T00:00:00+00:00")
+        _late_embed_payload([_embed(**_KLIPY_EMBED)], edited_timestamp=_JUST_NOW)
     )
 
     [edit] = recorder.edits
     assert edit.new_attachments == []
+
+
+# Discord sends the whole message on every MESSAGE_UPDATE (discord.py 2.5+
+# builds a full Message from it), so `pinned`, `content` and
+# `edited_timestamp` are on every payload (issue #227).
+
+
+def _full_payload(*, pinned=False, edited_timestamp=None, content="fixed typo", cached=None, embeds=None):
+    return _edit_payload(
+        data={
+            "content": content,
+            "pinned": pinned,
+            "edited_timestamp": edited_timestamp,
+            "author": {"id": "1", "bot": False},
+            "embeds": [],
+        },
+        message=SimpleNamespace(
+            content=content, embeds=embeds or [], mentions=[], role_mentions=[], channel_mentions=[]
+        ),
+        cached_message=cached,
+    )
+
+
+def _cached(*, pinned=False, edited_timestamp=None):
+    return SimpleNamespace(pinned=pinned, edited_at=discord.utils.parse_time(edited_timestamp))
+
+
+async def test_handle_raw_message_edit_full_payload_edit_of_an_uncached_message_is_an_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_full_payload(edited_timestamp=_JUST_NOW))
+
+    assert [e.new_content_markdown for e in recorder.edits] == ["fixed typo"]
+
+
+async def test_handle_raw_message_edit_old_edited_timestamp_on_an_uncached_message_is_not_an_edit():
+    # A pin or unfurl on a message edited long ago, which isn't cached.
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_full_payload(pinned=True, edited_timestamp=_LONG_AGO))
+
+    assert [p.pinned for p in recorder.pins] == [True]
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_full_payload_edit_of_a_cached_message_is_only_an_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(
+        _full_payload(edited_timestamp=_JUST_NOW, cached=_cached(edited_timestamp=_LONG_AGO))
+    )
+
+    assert [e.new_content_markdown for e in recorder.edits] == ["fixed typo"]
+    assert recorder.pins == []
+
+
+async def test_handle_raw_message_edit_full_payload_pin_of_a_cached_message_is_only_a_pin():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_full_payload(pinned=True, cached=_cached()))
+
+    assert [p.pinned for p in recorder.pins] == [True]
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_pin_of_an_already_edited_message_is_not_an_edit():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(
+        _full_payload(pinned=True, edited_timestamp=_JUST_NOW, cached=_cached(edited_timestamp=_JUST_NOW))
+    )
+
+    assert [p.pinned for p in recorder.pins] == [True]
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_full_payload_pin_of_an_uncached_message_is_a_pin():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    await sender._handle_raw_message_edit(_full_payload(pinned=True))
+
+    assert [p.pinned for p in recorder.pins] == [True]
+    assert recorder.edits == []
+
+
+async def test_handle_raw_message_edit_logs_the_payload_keys_at_debug(caplog):
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+
+    with caplog.at_level(logging.DEBUG, logger="stoat_discord_bridge.services.discord_service.sender"):
+        await sender._handle_raw_message_edit(_full_payload(pinned=True, cached=_cached()))
+
+    assert any(
+        "author, content, edited_timestamp, embeds, pinned" in record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+    )
+
+
+async def test_handle_raw_message_edit_full_payload_late_unfurl_backfills_the_preview():
+    recorder = _Recorder()
+    sender = _make_sender(recorder, FakeClient())
+    await _relay_bare_klipy_link(sender)
+
+    await sender._handle_raw_message_edit(
+        _full_payload(content="https://klipy.com/view/xyz", embeds=[_embed(**_KLIPY_EMBED)], cached=_cached())
+    )
+
+    [edit] = recorder.edits
+    [attachment] = edit.new_attachments
+    assert attachment.url == "https://c.klipy.com/xyz/klipy.mp4"
+    assert recorder.pins == []
 
 
 # -------------------------------------------------------- _handle_raw_message_delete

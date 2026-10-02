@@ -13,6 +13,7 @@ discord.Client/command tree.
 
 from __future__ import annotations
 
+import datetime
 import logging
 from dataclasses import replace
 
@@ -80,6 +81,11 @@ logger = logging.getLogger(__name__)
 # How long after relaying a message a late link-preview unfurl is still
 # backfilled onto the relayed copies (issue #207).
 _LATE_LINK_PREVIEW_WINDOW = 300.0
+
+# For an uncached message, how recent `edited_timestamp` must be for an update
+# to count as a fresh edit rather than a pin or unfurl on a message edited
+# earlier (issue #227). Long enough to cover a gateway resume replaying it.
+_UNCACHED_EDIT_WINDOW = datetime.timedelta(minutes=5)
 
 
 class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSyncMixin, SenderService):
@@ -423,20 +429,24 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
     #     return None
 
     async def _handle_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
-        """MESSAGE_UPDATE covers three cases the bridge cares about:
+        """MESSAGE_UPDATE covers three cases the bridge cares about. Discord
+        sends the whole message on every update, so `pinned`, `content` and
+        `edited_timestamp` are on all of them (issue #227); what changed is
+        read off `payload.cached_message` where it's cached.
 
-        - a **pin toggle** - a minimal payload (`{id, channel_id, guild_id,
-          pinned}`); Discord has a `pins_add` system message but no
+        - a **pin toggle** - Discord has a `pins_add` system message but no
           `pins_remove` one, so this is the only event covering both
-          directions. Emitted as a `StandardPin` whenever `pinned` is present.
-        - a **content edit** by the message's author - the payload carries a
-          fresh `content` and an `edited_timestamp`. Emitted as a
-          `StandardEdit` so `BridgeCoordinator` can sync every relayed copy.
-        - an **auto-embed** update (a link Discord just unfurled) - carries
-          `embeds` but no `edited_timestamp`. Ignored unless it brings
-          link-preview media the relay didn't have yet (a GIF-picker pick
-          often unfurls only after MESSAGE_CREATE, issue #207); then it's a
-          `StandardEdit` carrying that media as `new_attachments`.
+          directions. Emitted as a `StandardPin` when `pinned` differs from
+          the cached copy, or always when uncached (pin sync is idempotent).
+        - a **content edit** by the message's author - `edited_timestamp` is
+          set and differs from the cached copy's, or, when uncached, is within
+          `_UNCACHED_EDIT_WINDOW` of now. Emitted as a `StandardEdit` so
+          `BridgeCoordinator` can sync every relayed copy.
+        - an **auto-embed** update (a link Discord just unfurled) - anything
+          else. Ignored unless it brings link-preview media the relay didn't
+          have yet (a GIF-picker pick often unfurls only after
+          MESSAGE_CREATE, issue #207); then it's a `StandardEdit` carrying
+          that media as `new_attachments`.
 
         A webhook-authored edit (our own relayed copy being synced) is dropped
         here - detected cache-free via the payload's `webhook_id`, so it holds
@@ -447,25 +457,34 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         if payload.guild_id != self._config.guild_id:
             return
         data = payload.data or {}
-        if "pinned" in data:
-            if self._on_pin is not None:
+        cached = getattr(payload, "cached_message", None)
+        logger.debug(
+            "MESSAGE_UPDATE %s (cached=%s): %s",
+            payload.message_id, cached is not None, ", ".join(sorted(data)),
+        )
+        if "pinned" in data and self._on_pin is not None:
+            pinned = bool(data["pinned"])
+            if cached is None or cached.pinned != pinned:
                 await self._on_pin(
                     StandardPin(
                         origin_connector_id=self.connector_id,
                         origin_channel_id=str(payload.channel_id),
                         origin_message_id=str(payload.message_id),
-                        pinned=bool(data["pinned"]),
+                        pinned=pinned,
                     )
                 )
-            return
         if self._on_edit is None:
             return
         message = getattr(payload, "message", None)
         new_attachments = []
-        if data.get("edited_timestamp"):
-            if "content" not in data:
-                return
+        edited_at = discord.utils.parse_time(data.get("edited_timestamp"))
+        if edited_at is None or "content" not in data:
+            is_new_edit = False
+        elif cached is not None:
+            is_new_edit = cached.edited_at != edited_at
         else:
+            is_new_edit = discord.utils.utcnow() - edited_at < _UNCACHED_EDIT_WINDOW
+        if not is_new_edit:
             # Checked before the author gates below: the tracker only knows
             # messages _handle_message already let through.
             new_attachments = self._link_previews.unseen(
