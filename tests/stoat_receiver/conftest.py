@@ -69,6 +69,7 @@ class _FakeSender:
         return self._client.get_server(server_id, partial=partial)
 
     get_masquerade_identity = StoatSenderService.get_masquerade_identity
+    channel_deleted = StoatSenderService.channel_deleted
     group_parent_channel_with_threads = StoatSenderService.group_parent_channel_with_threads
     _move_channel_to_category_top = StoatSenderService._move_channel_to_category_top
     _full_category_list = StoatSenderService._full_category_list

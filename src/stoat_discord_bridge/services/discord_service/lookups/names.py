@@ -223,6 +223,43 @@ class _NamesMixin:
             return None
         return role.name if role is not None else None
 
+    async def entity_exists(self, kind: str, entity_id: str) -> bool | None:
+        """`ConnectorInfo.entity_exists` (issue #217): whether `kind`
+        ("channel"/"role"/"user"/"emoji") `entity_id` still exists. False
+        only on a 404, or for a role/emoji missing from the guild cache (the
+        gateway keeps it live). A Forbidden channel exists; no guild yet, a
+        bad id, or any other error is None."""
+        try:
+            native_id = int(entity_id)
+        except (TypeError, ValueError):
+            return None
+        if kind in ("channel", "user"):
+            get, fetch = (
+                (self._client.get_channel, self._client.fetch_channel)
+                if kind == "channel"
+                else (self._client.get_user, self._client.fetch_user)
+            )
+            if get(native_id) is not None:
+                return True
+            try:
+                await fetch(native_id)
+            except discord.NotFound:
+                return False
+            except discord.Forbidden:
+                return True
+            except Exception:
+                logger.debug("[discord:%s] couldn't check %s %s", self.connector_id, kind, entity_id, exc_info=True)
+                return None
+            return True
+        guild = self._guild_or_none()
+        if guild is None:
+            return None
+        if kind == "role":
+            return guild.get_role(native_id) is not None
+        if kind == "emoji":
+            return guild.get_emoji(native_id) is not None
+        return None
+
     async def resolve_role_id_by_name(self, token: str) -> str | None:
         """Resolve a bare role name to its id so `/link-role` etc. accept
         either. A token that's already a real role id is returned as-is; an

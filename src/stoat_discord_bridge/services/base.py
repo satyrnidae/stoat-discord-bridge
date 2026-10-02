@@ -237,3 +237,11 @@ class UnsupportedRelayTargetError(Exception):
     (`thread_name`/`thread_id`), which the bridge has no sensible mapping for.
     Unlike a transient failure this will never succeed on retry, so
     `BridgeCoordinator` logs it once (no traceback) and drops the relay."""
+
+
+class RelayTargetGoneError(Exception):
+    """Raised by a `ReceiverService` when the target channel is confirmed
+    deleted on its platform (a definite 404), as opposed to any other failure
+    - a permission error or a network blip never raises this. The link is
+    stale, so `BridgeCoordinator` drops that channel's mapping instead of
+    failing the same way on every later message (issue #217)."""

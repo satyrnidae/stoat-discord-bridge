@@ -17,6 +17,16 @@ from typing import Any
 import stoat
 
 
+def stoat_not_found() -> stoat.NotFound:
+    """A real stoat.NotFound (404), for faking a deleted entity."""
+    return stoat.NotFound(SimpleNamespace(status=404), {"type": "NotFound"})
+
+
+def stoat_forbidden() -> stoat.Forbidden:
+    """A real stoat.Forbidden (403) - the entity exists, the bot can't reach it."""
+    return stoat.Forbidden(SimpleNamespace(status=403), {"type": "MissingPermission"})
+
+
 def _paginate_fake_stoat_history(
     history: list[Any], *, limit: int | None, before: Any, after: Any, sort: Any
 ) -> list[Any]:
@@ -476,6 +486,8 @@ class FakeServer:
         # id -> FakeEmoji; `Server.emojis` is a Mapping in stoat.py
         self._emojis: dict[str, Any] = {}
         self.fetch_emojis_calls = 0
+        # id -> role; `Server.roles` is a Mapping in stoat.py
+        self.roles: dict[str, Any] = {}
 
     @property
     def emojis(self):
@@ -657,3 +669,10 @@ class FakeClient:
         if channel is None:
             raise LookupError(f"no such channel: {channel_id}")
         return channel
+
+    async def fetch_emoji(self, emoji_id: str):
+        for server in self._servers.values():
+            emoji = server.get_emoji(emoji_id)
+            if emoji is not None:
+                return emoji
+        raise LookupError(f"no such emoji: {emoji_id}")
