@@ -496,6 +496,11 @@ class ConnectorInfo:
     # automatic thread-create mirror does, rather than dropping the thread
     # into the parent's own linked Category (issue #72).
     resolve_thread_parent: Callable[[str], Awaitable[tuple[str, str] | None]] | None = None
+    # native-channel-id -> [(thread_id, thread_name), ...] for that channel's
+    # active threads; `[]` for a channel with none or that can't have any.
+    # Only Discord wires this. `mirror_channel ... with_history` uses it to
+    # mirror and backfill a channel's existing threads too (issue #225).
+    threads_in_channel: Callable[[str], Awaitable[list[tuple[str, str]]]] | None = None
     # Best-effort "is this native channel id a Discord forum/media channel?"
     # check -> True (it's a forum), False (it isn't), or None (can't tell -
     # bad id, uncached, an error, or a connector kind with no forum concept).

@@ -350,7 +350,11 @@ class ChannelLinker:
         (below) - one backfill request can't fan out across a whole
         connector's channels. A Discord forum source is the exception: it
         redirects to `mirror_category`, which backfills each active thread
-        it mirrors (issue #202).
+        it mirrors (issue #202). A plain channel with active threads (the
+        source's `threads_in_channel` hook) mirrors each thread too, then
+        backfills the channel and every freshly-linked thread with the same
+        limit - all threads are created first, so thread mentions in the
+        copied history resolve (issue #225).
 
         `local_channel_id == "all"` (case-insensitive, and only that literal
         token - never inferred from an omitted argument) mirrors every
@@ -610,25 +614,93 @@ class ChannelLinker:
             summary = f"{heal_line}\n{summary}"
 
         if with_history:
-            assert self._backfill_history is not None  # checked above
-            try:
-                backfill_summary = await self._backfill_history(
-                    fetch_history=local_info.fetch_history,
-                    source_channel_id=local_channel_id,
-                    destination_connector=destination,
-                    destination_channel_id=destination_channel_id,
-                    limit=resolved_history_limit,
+            # A plain channel's active threads come along too (issue #225).
+            # Every thread is created before any history is copied, so a
+            # thread mention in the main channel's history already resolves.
+            thread_lines: list[str] = []
+            thread_targets: list[tuple[str, str, str]] = []
+            if not is_thread_category:
+                thread_lines, thread_targets = await self._mirror_child_threads(
+                    local_connector, local_channel_id, destination
                 )
-            except Exception as exc:
-                # mirror_channel reports rather than raises for every other
-                # failure past this point (ensure_channel, link_channel) - the
-                # channel was already successfully created and linked here, so
-                # a raising backfill_history shouldn't blow up the whole call.
-                logger.warning("mirror channel: with_history backfill failed: %s", exc, exc_info=True)
-                backfill_summary = f"history backfill failed unexpectedly: {exc}"
+            backfill_summary = await self._backfill_one(
+                local_info, local_channel_id, destination, destination_channel_id, resolved_history_limit
+            )
             summary = f"{summary} {backfill_summary}"
+            for thread_name, thread_id, thread_destination_id in thread_targets:
+                thread_backfill = await self._backfill_one(
+                    local_info, thread_id, destination, thread_destination_id, resolved_history_limit
+                )
+                thread_lines.append(f"'{thread_name}': {thread_backfill}")
+            if thread_lines:
+                summary = "\n".join([summary, *thread_lines])
 
         return summary
+
+    async def _backfill_one(
+        self,
+        local_info: ConnectorInfo,
+        source_channel_id: str,
+        destination: str,
+        destination_channel_id: str,
+        limit: int | None,
+    ) -> str:
+        assert self._backfill_history is not None  # checked by the caller
+        try:
+            return await self._backfill_history(
+                fetch_history=local_info.fetch_history,
+                source_channel_id=source_channel_id,
+                destination_connector=destination,
+                destination_channel_id=destination_channel_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            # mirror_channel reports rather than raises for every other
+            # failure past this point (ensure_channel, link_channel) - the
+            # channel was already successfully created and linked here, so
+            # a raising backfill_history shouldn't blow up the whole call.
+            logger.warning("mirror channel: with_history backfill failed: %s", exc, exc_info=True)
+            return f"history backfill failed unexpectedly: {exc}"
+
+    async def _mirror_child_threads(
+        self, local_connector: str, local_channel_id: str, destination: str
+    ) -> tuple[list[str], list[tuple[str, str, str]]]:
+        """Mirrors `local_channel_id`'s active threads to `destination`
+        (issue #225). Returns one summary line per thread, plus
+        `(name, thread_id, destination_channel_id)` for each thread this
+        call freshly linked - an already-linked thread isn't backfilled
+        again. Best-effort: a missing or raising `threads_in_channel` hook
+        mirrors nothing, and one failed thread doesn't stop the rest."""
+        info = self._connectors[local_connector]
+        if info.threads_in_channel is None:
+            return [], []
+        try:
+            threads = await info.threads_in_channel(local_channel_id)
+        except Exception as exc:
+            logger.warning("mirror channel: %s.threads_in_channel(%r) failed: %s", local_connector, local_channel_id, exc)
+            return [], []
+
+        lines: list[str] = []
+        targets: list[tuple[str, str, str]] = []
+        for thread_id, thread_name in threads:
+            already_linked = await self._linked_channel(local_connector, thread_id, destination) is not None
+            try:
+                line = await self.mirror_channel(
+                    local_connector=local_connector,
+                    local_channel_id=thread_id,
+                    local_channel_name=thread_name,
+                    destination=destination,
+                )
+            except Exception as exc:
+                logger.warning("mirror channel: thread %r failed: %s", thread_id, exc, exc_info=True)
+                line = f"{self._connectors[destination].label}: '{thread_name}' failed: {exc}"
+            lines.append(line)
+            if already_linked:
+                continue
+            linked = await self._linked_channel(local_connector, thread_id, destination)
+            if linked is not None:
+                targets.append((thread_name, thread_id, linked.channel_id))
+        return lines, targets
 
     @_guards_mirror(_mirror_all_other_connectors)
     async def mirror_channel_all(
