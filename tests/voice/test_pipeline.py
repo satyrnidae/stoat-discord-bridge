@@ -89,6 +89,20 @@ def test_jitter_buffer_drops_oldest_frame_on_overflow():
     assert buf.pop() is None
 
 
+def test_jitter_buffer_default_maxlen_is_the_module_default():
+    # MixerClock threads this through to SpeakerRegistry, so the default must
+    # be a single source of truth (issue #231 - raise it above 10). A fresh
+    # default buffer holds _DEFAULT_JITTER_FRAMES frames and only underruns
+    # once they're all drained.
+    buf = pipeline.JitterBuffer(maxlen=pipeline._DEFAULT_JITTER_FRAMES)
+    for _ in range(pipeline._DEFAULT_JITTER_FRAMES):
+        buf.push(_frame(1))
+    assert len(buf) == pipeline._DEFAULT_JITTER_FRAMES  # full, no drop yet
+    for _ in range(pipeline._DEFAULT_JITTER_FRAMES):
+        assert buf.pop() == _frame(1)
+    assert buf.pop() is None  # drained -> underrun
+
+
 def test_jitter_buffer_len_reflects_queued_frames():
     buf = pipeline.JitterBuffer()
     assert len(buf) == 0
@@ -139,6 +153,36 @@ def test_registry_push_frame_creates_buffer_lazily_and_reuses_it():
     registry.push_frame("discord", "u1", _frame(2))
     assert registry.tick() == {("discord", "u1"): _frame(1)}
     assert registry.tick() == {("discord", "u1"): _frame(2)}
+
+
+def test_registry_buffer_size_is_threaded_through_from_mixer_clock():
+    # MixerClock must hand its configured buffer size to the SpeakerRegistry it
+    # owns (issue #231 - configurable jitter-buffer depth).
+    clock = pipeline.MixerClock(buffer_size=5)
+    assert clock.registry._buffer_size == 5
+
+
+def test_registry_large_buffer_absorbs_late_frames_without_underrun():
+    # The whole point of raising the default: a speaker that pushes fewer frames
+    # than the buffer depth never underruns, so every tick yields a complete
+    # snapshot instead of dropping it (issue #231 - no crackle). Pushing exactly
+    # `buffer_size` frames means the queue is full and stays drained one frame at
+    # a time for that many ticks with no gap.
+    registry = pipeline.SpeakerRegistry(buffer_size=4)
+    for value in range(1, 5):
+        registry.push_frame("discord", "u1", _frame(value))
+
+    for tick_no in range(4):
+        snapshot = registry.tick()
+        assert ("discord", "u1") in snapshot  # never dropped by an underrun
+        assert snapshot[("discord", "u1")] == _frame(tick_no + 1)
+
+
+def test_registry_small_buffer_underruns_after_the_queue_is_drained():
+    registry = pipeline.SpeakerRegistry(buffer_size=1)
+    registry.push_frame("discord", "u1", _frame(1))
+    assert registry.tick() == {("discord", "u1"): _frame(1)}
+    assert registry.tick() == {}  # drained, now an underrun drops the speaker
 
 
 def test_registry_push_frame_normalizes_length_before_buffering():
@@ -274,6 +318,39 @@ async def test_mixer_clock_run_stops_cleanly_on_close():
     clock.add_connector("discord")
     await clock.start()
     await clock.close()  # must not raise or hang
+
+
+def test_mixer_clock_uses_the_module_default_buffer_size_when_unset():
+    assert pipeline.MixerClock().registry._buffer_size == pipeline._DEFAULT_JITTER_FRAMES
+
+
+async def test_mixer_clock_full_buffer_yields_a_complete_mix_every_tick():
+    # With a full jitter buffer, no speaker ever underruns, so every connector's
+    # mix is built from both speakers' frames (issue #231 - the crackle fix).
+    # Pushing more than one frame per tick keeps each queue non-empty across ticks;
+    # overflow drops older values so the popped frame is always the current one.
+    clock = pipeline.MixerClock(buffer_size=4)
+    d_holder = clock.add_connector("discord")
+    s_holder = clock.add_connector("stoat")
+
+    for value in range(1, 6):
+        # Push several frames per queue slot so neither can underrun on the next
+        # tick (overflow keeps only recent frames).
+        for _ in range(clock.registry._buffer_size + 2):
+            clock.registry.push_frame("discord", "d1", _tone(value * 10, value * 20))
+            clock.registry.push_frame("stoat", "s1", _tone(value * 30, value * 40))
+
+        snapshot = clock.registry.tick()
+        # Both speakers are present every tick - never dropped by an underrun.
+        assert ("discord", "d1") in snapshot
+        assert ("stoat", "s1") in snapshot
+        # discord hears only stoat's frame; stoat hears only discord's.
+        d_holder.set(snapshot[("stoat", "s1")])
+        s_holder.set(snapshot[("discord", "d1")])
+
+    # Final tick: still both present, and it's the last value pushed (no gap).
+    snapshot = clock.registry.tick()
+    assert ("discord", "d1") in snapshot and ("stoat", "s1") in snapshot
 
 
 async def test_mixer_clock_restart_awaits_the_old_loop_before_starting_a_new_one():
