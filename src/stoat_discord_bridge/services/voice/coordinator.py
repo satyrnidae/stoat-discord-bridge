@@ -80,6 +80,7 @@ class VoiceBridgeCoordinator:
         *,
         voice_connectors: "dict[str, VoiceConnector] | None" = None,
         follow_on_empty: bool = False,
+        jitter_buffer_frames: int = pipeline._DEFAULT_JITTER_FRAMES,
     ) -> None:
         self._channel_mappings = channel_mappings
         self._connectors = connectors
@@ -97,6 +98,10 @@ class VoiceBridgeCoordinator:
         # joining anything.
         self._voice_connectors = voice_connectors if voice_connectors is not None else {}
         self._follow_on_empty = follow_on_empty
+        # Per-speaker jitter-buffer depth (frames) for the session's shared
+        # MixerClock - raised above the default to absorb late frames so a
+        # speaker that misses a tick doesn't surface as an underrun/pop.
+        self._jitter_buffer_frames = jitter_buffer_frames
         # bridge_group -> {connector_id: channel_id} - every currently
         # voice-bridgeable group and its voice-capable member channels.
         self._voice_groups: dict[str, dict[str, str]] = {}
@@ -501,7 +506,7 @@ class VoiceBridgeCoordinator:
         included) - `_close_session`/`_open_session`'s rollback are what
         tear it down as a whole."""
         if self._mixer_clock is None:
-            self._mixer_clock = pipeline.MixerClock()
+            self._mixer_clock = pipeline.MixerClock(buffer_size=self._jitter_buffer_frames)
             await self._mixer_clock.start()
         holder = self._mixer_clock.add_connector(connector_id)
         transport.set_output(holder)

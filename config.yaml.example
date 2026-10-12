@@ -197,3 +197,11 @@ irc:
 #   # group that already qualifies rather than staying idle until a fresh join
 #   # re-qualifies one. Defaults to false. Env: VOICE__FOLLOW_ON_EMPTY.
 #   follow_on_empty: false
+#   # Per-speaker jitter-buffer depth in frames (each frame is one 20ms slot).
+#   # A larger value absorbs more late/jittered frames before the per-tick pop
+#   # pops an underrun, so every connector's mix is built from a complete,
+#   # current snapshot instead of a stale/shorter one - fewer dropped speakers
+#   # means no audio crackle. The tradeoff is real playout latency (~20ms per
+#   # frame), so tune it down if the added lag isn't worth the crackle for your
+#   # setup. Defaults to 30 (600ms). Env: VOICE__JITTER_BUFFER_FRAMES.
+#   jitter_buffer_frames: 30

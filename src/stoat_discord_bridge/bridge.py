@@ -1113,6 +1113,7 @@ async def run(config: BridgeConfig) -> None:
         connector_infos,
         voice_connectors=voice_connectors,
         follow_on_empty=config.voice.follow_on_empty,
+        jitter_buffer_frames=config.voice.jitter_buffer_frames,
     )
 
     senders: list = []

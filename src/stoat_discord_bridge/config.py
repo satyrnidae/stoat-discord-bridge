@@ -203,6 +203,13 @@ class VoiceConfig:
     # for another group that already qualifies, rather than just leaving
     # idle until a fresh join re-qualifies one. Defaults off.
     follow_on_empty: bool = False
+    # Per-speaker jitter-buffer depth in frames (each frame is one 20ms slot).
+    # A larger value absorbs more late/jittered frames before SpeakerRegistry's
+    # per-tick pop pops an underrun, so every connector's mix is built from a
+    # complete, current snapshot instead of a stale/shorter one - fewer dropped
+    # speakers means no audio crackle. The tradeoff is real playout latency (~20ms
+    # per frame), so it's ops-tunable via config.yaml or VOICE__JITTER_BUFFER_FRAMES.
+    jitter_buffer_frames: int = 30
 
 
 @dataclass(frozen=True)
@@ -533,6 +540,11 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
     voice_raw = raw.get("voice") or {}
     voice_enabled_env = _resolve_env("VOICE__ENABLED")
     voice_follow_env = _resolve_env("VOICE__FOLLOW_ON_EMPTY")
+    voice_jitter_env = _resolve_env("VOICE__JITTER_BUFFER_FRAMES")
+    try:
+        jitter_buffer_frames = int(voice_jitter_env) if voice_jitter_env is not None else voice_raw.get("jitter_buffer_frames", 30)
+    except ValueError:
+        raise ConfigError(f"config.voice.jitter_buffer_frames must be an integer, got {voice_jitter_env!r}")
     voice = VoiceConfig(
         enabled=_as_bool(
             voice_enabled_env if voice_enabled_env is not None else voice_raw.get("enabled"), default=True
@@ -540,6 +552,7 @@ def load_config(path: str | Path | None = None) -> BridgeConfig:
         follow_on_empty=_as_bool(
             voice_follow_env if voice_follow_env is not None else voice_raw.get("follow_on_empty"), default=False
         ),
+        jitter_buffer_frames=jitter_buffer_frames,
     )
 
     return BridgeConfig(

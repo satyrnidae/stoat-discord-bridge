@@ -50,7 +50,14 @@ SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000  # 960
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * SAMPLE_WIDTH  # 3840
 SILENCE_FRAME = b"\x00" * FRAME_BYTES
 
-_DEFAULT_JITTER_FRAMES = 10  # ~200ms of buffering per speaker
+# Per-speaker jitter-buffer depth. Each queued frame is one 20ms slot, so a
+# larger value absorbs more late/jittered frames before `SpeakerRegistry.tick`
+# pops an underrun (None) - fewer dropped speakers means every connector's mix
+# is built from a complete, current snapshot instead of a stale/shorter one.
+# The tradeoff is real playout latency (~20ms per frame), so it's configurable
+# via config.voice.jitter_buffer_frames / VOICE__JITTER_BUFFER_FRAMES; ops tune
+# it down if the added lag isn't worth the crackle reduction for their setup.
+_DEFAULT_JITTER_FRAMES = 30  # ~600ms of buffering per speaker
 
 
 def pad_or_trim(frame: bytes) -> bytes:
@@ -182,8 +189,8 @@ class MixerClock:
     coordinator) call as connectors come and go mid-session - dynamic,
     no restart needed."""
 
-    def __init__(self, *, interval: float = FRAME_MS / 1000) -> None:
-        self.registry = SpeakerRegistry()
+    def __init__(self, *, interval: float = FRAME_MS / 1000, buffer_size: int = _DEFAULT_JITTER_FRAMES) -> None:
+        self.registry = SpeakerRegistry(buffer_size=buffer_size)
         self._interval = interval
         self._connectors: "dict[str, tuple[MixSource, LatestFrameHolder]]" = {}
         self._task: "asyncio.Task | None" = None

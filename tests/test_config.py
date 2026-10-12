@@ -581,11 +581,51 @@ def test_voice_block_read_from_yaml(tmp_path, isolated_env, monkeypatch):
         voice:
           enabled: false
           follow_on_empty: true
+          jitter_buffer_frames: 45
         """,
     )
     config = load_config(path)
     assert config.voice.enabled is False
     assert config.voice.follow_on_empty is True
+    assert config.voice.jitter_buffer_frames == 45
+
+
+def test_voice_block_env_overrides(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    monkeypatch.setenv("VOICE__ENABLED", "false")
+    monkeypatch.setenv("VOICE__FOLLOW_ON_EMPTY", "true")
+    monkeypatch.setenv("VOICE__JITTER_BUFFER_FRAMES", "60")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+    config = load_config(path)
+    assert config.voice.enabled is False
+    assert config.voice.follow_on_empty is True
+    assert config.voice.jitter_buffer_frames == 60
+
+
+def test_voice_block_jitter_buffer_frames_defaults_to_30(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    path = _write_config(tmp_path, "discord:\n  - id: discord\n    guild_id: 123\n")
+    config = load_config(path)
+    assert config.voice.jitter_buffer_frames == 30
+
+
+def test_voice_block_jitter_buffer_frames_rejects_non_integer(tmp_path, isolated_env, monkeypatch):
+    monkeypatch.setenv("DISCORD__0__TOKEN", "t")
+    monkeypatch.setenv("VOICE__JITTER_BUFFER_FRAMES", "not-a-number")
+    path = _write_config(
+        tmp_path,
+        """
+        discord:
+          - id: discord
+            guild_id: 123
+        voice:
+          jitter_buffer_frames: nope
+        """,
+    )
+    from stoat_discord_bridge.config import ConfigError
+
+    with pytest.raises(ConfigError):
+        load_config(path)
 
 
 def test_voice_block_env_overrides(tmp_path, isolated_env, monkeypatch):

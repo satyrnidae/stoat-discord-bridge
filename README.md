@@ -71,10 +71,15 @@ Per-connector `voice_bridging` (default on, `DiscordConnectorConfig`/
 `StoatConnectorConfig`) opts a single connector's voice channels out of the
 bridge entirely (its channels never count toward the >= 2 threshold and are
 never joined) without touching the other connectors in a group. The
-top-level `voice:` block (`VoiceConfig`) has `enabled` (master switch) and
+top-level `voice:` block (`VoiceConfig`) has `enabled` (master switch),
 `follow_on_empty` (default off - when the active group's session ends, jump
 straight into another group that's already eligible instead of just going
-idle).
+idle), and `jitter_buffer_frames` (default 30 - per-speaker jitter-buffer
+depth in frames; a larger value absorbs late/jittered frames so a speaker
+that misses a tick doesn't surface as an underrun, which is what causes the
+audio crackle. Each frame is one 20ms slot, so this trades off crackle against
+real playout latency - tune it down if the added lag isn't worth it for your
+setup).
 
 Only one voice-bridgeable group is ever live at a time (first group to reach
 two populated connectors wins; the bot doesn't switch groups mid-session) -
