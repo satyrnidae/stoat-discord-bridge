@@ -321,7 +321,7 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             sender_user_id=str(message.author.id),
             content_markdown=message.content,
             message_id=str(message.id),
-            attachments=_map_attachments(message) + _link_preview_embed_attachments(message),
+            attachments=_map_attachments(message),
             **identity,
             mentioned_users=_map_mentioned_users(message),
             mentioned_roles=_map_mentioned_roles(message),
@@ -497,41 +497,6 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
                 mentioned_roles=_map_mentioned_roles(after) if after is not None else {},
                 mentioned_channels=await self._map_mentioned_channels(new_content or ""),
                 mentioned_emoji=await self._map_mentioned_emoji(new_content or ""),
-            )
-        )
-
-    async def _handle_message_append(self, event) -> None:
-        """`on_message_append` (stoat.events.MessageAppendEvent): Stoat
-        appended embeds to a message - how it delivers a link unfurl that
-        resolved after the message was sent. If that brings link-preview
-        media the relay didn't have yet, emit a `StandardEdit` carrying it as
-        `new_attachments` (issue #207), once per preview and only for a
-        message `_handle_message` relayed recently (so the author was
-        already vetted there).
-
-        `event.data` holds only the appended embeds; the text comes from
-        `event.message`, the cached copy - skipped when uncached, since the
-        relayed copies can't be re-rendered without it."""
-        if self._on_edit is None:
-            return
-        data = event.data
-        message = getattr(event, "message", None)
-        if message is None or message.content is None:
-            return
-        new_attachments = self._link_previews.unseen(str(data.id), _link_preview_embed_attachments(data))
-        if not new_attachments:
-            return
-        await self._on_edit(
-            StandardEdit(
-                origin_connector_id=self.connector_id,
-                origin_channel_id=str(data.channel_id),
-                origin_message_id=str(data.id),
-                new_content_markdown=message.content,
-                mentioned_users=_map_mentioned_users(message),
-                mentioned_roles=_map_mentioned_roles(message),
-                mentioned_channels=await self._map_mentioned_channels(message.content),
-                mentioned_emoji=await self._map_mentioned_emoji(message.content),
-                new_attachments=new_attachments,
             )
         )
 
