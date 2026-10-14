@@ -14,7 +14,6 @@ import re
 import discord
 
 from stoat_discord_bridge.models import Attachment, CustomEmoji, StandardMessage, StandardReaction
-from stoat_discord_bridge.services.formatting import format_preview_quote, guess_media_type, is_video_file_url
 from stoat_discord_bridge.services.role_sync import NEUTRAL_PERMISSIONS
 
 # Discord webhook hard limits: 2000 chars per message, 1-80 char usernames,
@@ -150,8 +149,7 @@ def _to_standard_message(
                 description=a.description,
             )
             for a in attachments
-        ]
-        + _link_preview_attachments(message),
+        ],
         mentioned_users=_map_mentioned_users(message),
         mentioned_roles=_map_mentioned_roles(message),
         mentioned_channels=_map_mentioned_channels(message),
@@ -175,49 +173,6 @@ def _reply_to_message_id(message: discord.Message) -> str | None:
     if message_id is None:
         return None
     return str(message_id)
-
-
-def _link_preview_attachments(message: discord.Message) -> list[Attachment]:
-    """Turn each link-preview embed on `message` that carries fetchable media
-    into an `Attachment` pointing at that media, with `source_page_url` set
-    to the previewed page (issues #102, #164). Each receiver then decides
-    whether to re-upload it (stripping the link) or leave the link for its
-    own platform to unfurl - see `formatting.partition_link_preview_attachments`.
-    The embed's title and description ride along, quoted, as `preview_text`
-    (issues #209, #212). An embed with no media (a plain text/author embed) is skipped. `getattr`
-    for the same defensiveness `_map_mentioned_users` etc. use against a bare
-    fake in tests / an edit payload with no `embeds`."""
-    attachments = []
-    for embed in getattr(message, "embeds", None) or []:
-        asset_url = _embed_asset_url(embed)
-        if asset_url is None:
-            continue
-        filename, content_type = guess_media_type(asset_url, is_gif=embed.type == "gifv")
-        attachments.append(
-            Attachment(
-                url=asset_url,
-                filename=filename,
-                content_type=content_type,
-                source_page_url=embed.url,
-                preview_text=format_preview_quote(embed.title, embed.description),
-            )
-        )
-    return attachments
-
-
-def _embed_asset_url(embed: discord.Embed) -> str | None:
-    """The directly-fetchable media URL for an embed: the video first (a
-    GIF-picker `gifv` embed's real media is usually an .mp4), then the full
-    image, then the thumbnail. A video is only used when it's a `gifv` or
-    looks like a media file - a YouTube-style `video.url` is a player page."""
-    video_url = getattr(embed.video, "url", None)
-    if video_url and (embed.type == "gifv" or is_video_file_url(video_url)):
-        return video_url
-    for media in (embed.image, embed.thumbnail):
-        url = getattr(media, "url", None)
-        if url:
-            return url
-    return None
 
 
 def _to_standard_reaction(

@@ -50,11 +50,9 @@ from stoat_discord_bridge.services.base import (
     SenderService,
 )
 # from stoat_discord_bridge.services.caching import AsyncTTLCache  # noqa: ERA001 - re-enable with _resolve_sender_pronouns (issue #58)
-from stoat_discord_bridge.services.caching import LinkPreviewTracker
 from stoat_discord_bridge.services.discord_service.client import _DiscordClient
 from stoat_discord_bridge.services.discord_service.commands import build_command_tree
 from stoat_discord_bridge.services.discord_service.formatting import (
-    _link_preview_attachments,
     _map_mentioned_channels,
     _map_mentioned_roles,
     _map_mentioned_users,
@@ -77,10 +75,6 @@ logger = logging.getLogger(__name__)
 # profile endpoint is consulted again - long enough to keep a busy channel
 # from hammering it, short enough that a pronoun set later shows up soon.
 # _PRONOUN_CACHE_TTL = 600.0  # noqa: ERA001 - re-enable with _resolve_sender_pronouns (issue #58)
-
-# How long after relaying a message a late link-preview unfurl is still
-# backfilled onto the relayed copies (issue #207).
-_LATE_LINK_PREVIEW_WINDOW = 300.0
 
 # For an uncached message, how recent `edited_timestamp` must be for an update
 # to count as a fresh edit rather than a pin or unfurl on a message edited
@@ -159,7 +153,6 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         # message relays normally instead of being buffered.
         self._pending_thread_starter: dict[int, "discord.Message | None"] = {}
         self._thread_ready: set[int] = set()
-        self._link_previews = LinkPreviewTracker(_LATE_LINK_PREVIEW_WINDOW)
         # Discord pronoun resolution is disabled (issue #58) - no bot-accessible
         # source exists. Restore this cache alongside `_resolve_sender_pronouns`
         # if that ever changes:
@@ -294,7 +287,6 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             sender_pronouns=await self._resolve_sender_pronouns(message.author.id),
             sender_color=self._resolve_sender_color(message.author),
         )
-        self._link_previews.record(standard.message_id, standard.attachments)
         await self._on_message(standard)
 
     async def fetch_history(
@@ -442,11 +434,6 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
           set and differs from the cached copy's, or, when uncached, is within
           `_UNCACHED_EDIT_WINDOW` of now. Emitted as a `StandardEdit` so
           `BridgeCoordinator` can sync every relayed copy.
-        - an **auto-embed** update (a link Discord just unfurled) - anything
-          else. Ignored unless it brings link-preview media the relay didn't
-          have yet (a GIF-picker pick often unfurls only after
-          MESSAGE_CREATE, issue #207); then it's a `StandardEdit` carrying
-          that media as `new_attachments`.
 
         A webhook-authored edit (our own relayed copy being synced) is dropped
         here - detected cache-free via the payload's `webhook_id`, so it holds
@@ -476,25 +463,9 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
         if self._on_edit is None:
             return
         message = getattr(payload, "message", None)
-        new_attachments = []
-        edited_at = discord.utils.parse_time(data.get("edited_timestamp"))
-        if edited_at is None or "content" not in data:
-            is_new_edit = False
-        elif cached is not None:
-            is_new_edit = cached.edited_at != edited_at
-        else:
-            is_new_edit = discord.utils.utcnow() - edited_at < _UNCACHED_EDIT_WINDOW
-        if not is_new_edit:
-            # Checked before the author gates below: the tracker only knows
-            # messages _handle_message already let through.
-            new_attachments = self._link_previews.unseen(
-                str(payload.message_id), _link_preview_attachments(message)
-            )
-            if not new_attachments:
-                return
+        author = data.get("author") or {}
         if data.get("webhook_id"):
             return  # our own relayed webhook copy being edited - echo, always dropped
-        author = data.get("author") or {}
         if author.get("bot") and not await self._bot_is_whitelisted(str(author.get("id") or "")):
             return
         await self._on_edit(
@@ -506,7 +477,6 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
                 mentioned_users=_map_mentioned_users(message),
                 mentioned_roles=_map_mentioned_roles(message),
                 mentioned_channels=_map_mentioned_channels(message),
-                new_attachments=new_attachments,
             )
         )
 

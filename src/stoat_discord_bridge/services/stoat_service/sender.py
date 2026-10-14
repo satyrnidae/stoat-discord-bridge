@@ -44,14 +44,13 @@ from stoat_discord_bridge.services.base import (
     OnTyping,
     SenderService,
 )
-from stoat_discord_bridge.services.caching import AsyncTTLCache, LinkPreviewTracker
+from stoat_discord_bridge.services.caching import AsyncTTLCache
 from stoat_discord_bridge.services.stoat_service.client import _StoatClient
 from stoat_discord_bridge.services.stoat_service.formatting import (
     _avatar_url,
     _channel_server_id,
     _display_name,
     _extract_pronouns,
-    _link_preview_embed_attachments,
     _map_attachments,
     _map_mentioned_roles,
     _map_mentioned_users,
@@ -71,10 +70,6 @@ logger = logging.getLogger(__name__)
 # How long a resolved (or absent) pronoun value is cached per user before the
 # profile is fetched again - see `_resolve_sender_pronouns`.
 _PRONOUN_CACHE_TTL = 600.0
-
-# How long after relaying a message a late link-preview unfurl is still
-# backfilled onto the relayed copies (issue #207).
-_LATE_LINK_PREVIEW_WINDOW = 300.0
 
 # stoat.py caps a single `TextChannel.history()` call at 100 messages -
 # `fetch_history` (issue #122) hand-rolls pagination past that.
@@ -162,7 +157,6 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
         # user id -> pronouns (or None); keeps the profile fetch off the hot
         # relay path - see `_resolve_sender_pronouns`.
         self._pronoun_cache: AsyncTTLCache[str | None] = AsyncTTLCache(_PRONOUN_CACHE_TTL)
-        self._link_previews = LinkPreviewTracker(_LATE_LINK_PREVIEW_WINDOW)
 
     async def _handle_ready(self, event) -> None:
         self._health.mark_connected(self.connector_id)
@@ -258,7 +252,6 @@ class StoatSenderService(StoatLinkingMixin, StoatLookupsMixin, StoatSyncMixin, S
             message.author.id,
         )
         standard = await self._to_standard_message(message)
-        self._link_previews.record(standard.message_id, standard.attachments)
         await self._on_message(standard)
 
     async def _relay_call_started_notice(self, message, system_event) -> None:
