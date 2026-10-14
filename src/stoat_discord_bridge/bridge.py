@@ -15,7 +15,6 @@ import time
 from typing import TYPE_CHECKING
 
 from stoat_discord_bridge.admin_commands import (
-    AttachmentPreferenceManager,
     BotWhitelistManager,
     CategoryLinker,
     ChannelLinker,
@@ -62,7 +61,6 @@ from stoat_discord_bridge.services.stoat_service import (
 from stoat_discord_bridge.services.stoat_service.voice import StoatVoiceConnector
 from stoat_discord_bridge.services.voice import VoiceBridgeCoordinator, VoiceConnector
 from stoat_discord_bridge.status import HealthTracker
-from stoat_discord_bridge.storage.attachment_preferences import AttachmentPreferenceRepository
 from stoat_discord_bridge.storage.bot_whitelist import BotWhitelistRepository
 from stoat_discord_bridge.storage.category_mappings import CategoryMappingRepository, ThreadCategoryRepository
 from stoat_discord_bridge.storage.channel_mappings import (
@@ -1059,8 +1057,6 @@ async def run(config: BridgeConfig) -> None:
     role_mappings = RoleMappingRepository(mongo.db)
     bot_whitelist_repo = BotWhitelistRepository(mongo.db)
     await bot_whitelist_repo.ensure_indexes()
-    attachment_preferences_repo = AttachmentPreferenceRepository(mongo.db)
-    await attachment_preferences_repo.ensure_indexes()
 
     all_connectors = (*config.discord, *config.stoat, *config.irc)
     logger.info(
@@ -1095,8 +1091,6 @@ async def run(config: BridgeConfig) -> None:
     bot_whitelist = BotWhitelistManager(
         bot_whitelist_repo, user_mappings, connector_infos, seed=frozenset(config.whitelisted_bots)
     )
-    # Shared by the Discord/Stoat `/attachments` commands and receivers (issue #164).
-    attachment_preferences = AttachmentPreferenceManager(attachment_preferences_repo)
     role_grants = RoleSyncCoordinator(
         role_mappings, user_mappings, connector_infos, channel_mappings, category_mappings
     )
@@ -1139,7 +1133,6 @@ async def run(config: BridgeConfig) -> None:
             category_linker=category_linker,
             role_linker=role_linker,
             bot_whitelist=bot_whitelist,
-            attachment_preferences=attachment_preferences,
             on_member_roles_changed=role_grants.handle,
             on_role_renamed=role_grants.handle_role_renamed,
             on_role_deleted=role_grants.handle_role_deleted,
@@ -1158,7 +1151,6 @@ async def run(config: BridgeConfig) -> None:
             emoji_mappings=emoji_mappings,
             source_forwarding=dc.source_forwarding,
             pronoun_forwarding=dc.pronoun_forwarding,
-            attachment_preferences=attachment_preferences,
         )
         coordinator.register_receiver(receiver)
         # A connector counts toward voice-bridging eligibility only if both
@@ -1240,7 +1232,6 @@ async def run(config: BridgeConfig) -> None:
             category_linker=category_linker,
             role_linker=role_linker,
             bot_whitelist=bot_whitelist,
-            attachment_preferences=attachment_preferences,
             on_member_roles_changed=role_grants.handle,
             on_role_renamed=role_grants.handle_role_renamed,
             on_role_deleted=role_grants.handle_role_deleted,
@@ -1255,7 +1246,6 @@ async def run(config: BridgeConfig) -> None:
             source_forwarding=sc.source_forwarding,
             pronoun_forwarding=sc.pronoun_forwarding,
             color_forwarding=sc.color_forwarding,
-            attachment_preferences=attachment_preferences,
         )
         coordinator.register_receiver(receiver)
         stoat_voice_capable = config.voice.enabled and sc.voice_bridging

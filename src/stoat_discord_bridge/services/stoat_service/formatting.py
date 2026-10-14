@@ -161,8 +161,8 @@ def _link_preview_embed_attachments(message) -> list[Attachment]:
     else its image, keyed by the link as posted (`original_url`); a bare
     `ImageEmbed`/`VideoEmbed` (a direct media link) points at itself. A
     `WebsiteEmbed`'s title and description ride along, quoted, as
-    `preview_text` (issues #209, #212). Text and media-less embeds are skipped. Unverified against a live server,
-    like the rest of this module."""
+    `preview_text` (issues #209, #212). Text and media-less embeds are skipped.
+    Unverified against a live server, like the rest of this module."""
     out: list[Attachment] = []
     for embed in getattr(message, "embeds", None) or []:
         try:

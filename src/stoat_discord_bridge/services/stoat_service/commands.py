@@ -248,6 +248,29 @@ def build_command_tree(bot, owner, prefix: str) -> None:
             (service, external_id), new_name = parsed
             await owner._mirror_emote_from(ctx, service, external_id, new_name)
 
+    # `/attachments <prefer|unprefer|preferences>` (issue #164) - Stoat's own
+    # resolved link-preview rules. `prefer`/`unprefer` take a `<kind>` of
+    # `<discord|stoat>` and a url substring; `preferences` lists them. The
+    # rules live in the storage layer, which this forwards to via owner methods.
+    @bot.group(name="attachments", invoke_without_command=True)
+    async def attachments(ctx):
+        await owner._reply(
+            ctx,
+            f"Usage: {p}attachments <prefer <discord|stoat> <url-substr>|unprefer <url-substr>|preferences>",
+        )
+
+    @attachments.command(name="prefer")
+    async def attachments_prefer(ctx, kind: str, url_substring: str):
+        await owner._attachments_prefer(ctx, kind, url_substring)
+
+    @attachments.command(name="unprefer")
+    async def attachments_unprefer(ctx, url_substring: str):
+        await owner._attachments_unprefer(ctx, url_substring)
+
+    @attachments.command(name="preferences")
+    async def attachments_preferences(ctx):
+        await owner._attachments_preferences(ctx)
+
     @bot.command(name="status")
     async def status(ctx):
         await owner._reply(ctx, owner._health.render())
@@ -291,25 +314,6 @@ def build_command_tree(bot, owner, prefix: str) -> None:
     @bot.command(name="whitelisted")
     async def whitelisted(ctx, service: typing.Optional[str] = None):
         await owner._whitelisted(ctx, service or "local")
-
-    # `/attachments` (issue #164) - which platform rebuilds a link's preview.
-    @bot.group(name="attachments", invoke_without_command=True)
-    async def attachments(ctx):
-        await owner._reply(
-            ctx, f"Usage: {p}attachments <prefer <discord|stoat> <url-substr>|unprefer <url-substr>|preferences>"
-        )
-
-    @attachments.command(name="prefer")
-    async def attachments_prefer(ctx, kind: str, url_substring: str):
-        await owner._attachments_prefer(ctx, kind, url_substring)
-
-    @attachments.command(name="unprefer")
-    async def attachments_unprefer(ctx, url_substring: str):
-        await owner._attachments_unprefer(ctx, url_substring)
-
-    @attachments.command(name="preferences")
-    async def attachments_preferences(ctx):
-        await owner._attachments_preferences(ctx)
 
     @bot.command(name="bridge-help")
     async def bridge_help(
