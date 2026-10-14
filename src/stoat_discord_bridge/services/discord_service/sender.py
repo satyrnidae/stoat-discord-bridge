@@ -467,6 +467,30 @@ class DiscordSenderService(DiscordLinkingMixin, DiscordLookupsMixin, DiscordSync
             return  # our own relayed webhook copy being edited - echo, always dropped
         if author.get("bot") and not await self._bot_is_whitelisted(str(author.get("id") or "")):
             return
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # A content edit only counts when the message's `edited_timestamp` is
+        # recent: either cached (we've seen this exact copy) or, when uncached,
+        # within `_UNCACHED_EDIT_WINDOW` of now. An auto-embed unfurl sets no
+        # timestamp and must not tag the relayed copies "(edited)".
+        edited_at = discord.utils.parse_time(data.get("edited_timestamp")) if data.get("edited_timestamp") else None
+        if edited_at is None:
+            return
+        if cached is not None:
+            # `cached.edited_at` may be a parsed datetime (discord.py's own cache,
+            # as built by discord.utils.parse_time) or an ISO string (as the
+            # gateway relays it back); check both so an unchanged message isn't
+            # tagged "(edited)".
+            cached_edited = getattr(cached, "edited_at", None) or getattr(cached, "edited_timestamp", None)
+            if isinstance(cached_edited, datetime.datetime):
+                unchanged = cached_edited == edited_at
+            elif isinstance(cached_edited, str):
+                unchanged = cached_edited in (edited_at.isoformat(), edited_at.isoformat().replace("+00:00", "Z"))
+            else:
+                unchanged = False
+            if unchanged:
+                return  # unchanged since we relayed it - no edit to sync
+        elif now - edited_at > _UNCACHED_EDIT_WINDOW:
+            return  # stale uncached edit - ignore it
         await self._on_edit(
             StandardEdit(
                 origin_connector_id=self.connector_id,
