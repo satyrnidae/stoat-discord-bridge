@@ -19,7 +19,6 @@ from collections import deque
 import stoat
 
 from stoat_discord_bridge.admin_commands import (
-    AttachmentPreferenceManager,
     BotWhitelistManager,
     CategoryLinker,
     ChannelLinker,

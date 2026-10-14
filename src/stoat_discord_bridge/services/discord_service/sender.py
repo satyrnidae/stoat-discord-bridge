@@ -20,7 +20,6 @@ from dataclasses import replace
 import discord
 
 from stoat_discord_bridge.admin_commands import (
-    AttachmentPreferenceManager,
     BotWhitelistManager,
     CategoryLinker,
     ChannelLinker,
