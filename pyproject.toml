@@ -51,8 +51,15 @@ test = [
 # requires it. Re-check `apply_voice_recv_patches` against upstream's own
 # fix (PR #58, or whatever supersedes it - #54/#56 cover similar ground)
 # before ever bumping discord-ext-voice-recv off this pin.
+#
+# `davey` is pinned below 0.2: 0.2.0 requires `prepare_transition()` /
+# `execute_transition()` after a DAVE commit/welcome, which discord.py 2.7.1
+# never calls, so the session never becomes `ready` and our patch above
+# skips decryption (garbled audio again). Lift the cap once discord.py
+# supports davey 0.2.
 voice = [
     "discord.py[voice]>=2.5",
+    "davey>=0.1.6,<0.2",
     "discord-ext-voice-recv==0.5.2a179",
     "livekit==1.1.18",
 ]
