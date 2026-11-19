@@ -174,6 +174,23 @@ def test_on_track_subscribed_skips_non_audio_tracks():
     assert transport._consume_tasks == {}
 
 
+def test_on_track_subscribed_skips_screenshare_audio():
+    """A Go Live / stream's audio is a second audio track from the same
+    participant (SOURCE_SCREENSHARE_AUDIO) - it must not be bridged, and
+    must not displace that participant's microphone consume task."""
+    room = FakeStoatRoom()
+    from stoat_discord_bridge.services.stoat_service.voice import StoatVoiceTransport
+
+    transport = StoatVoiceTransport("stoat", room)
+    track = SimpleNamespace(kind=rtc.TrackKind.KIND_AUDIO)
+    publication = SimpleNamespace(source=rtc.TrackSource.SOURCE_SCREENSHARE_AUDIO)
+    participant = SimpleNamespace(identity="remote-user")
+
+    transport._on_track_subscribed(track, publication, participant)
+
+    assert transport._consume_tasks == {}
+
+
 def test_on_track_subscribed_skips_local_participants_own_track():
     room = FakeStoatRoom()
     from stoat_discord_bridge.services.stoat_service.voice import StoatVoiceTransport
