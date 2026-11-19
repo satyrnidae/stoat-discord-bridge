@@ -1,0 +1,28 @@
+---
+name: Feature request
+about: Request a new feature for this project
+title: "feat: "
+labels: feature
+---
+
+**Is your feature request related to a problem? Please describe.**
+*A clear and concise description of what the problem is. Ex. I'm always frustrated when...*
+
+**Describe the solution you'd like**
+*A clear and concise description of what you want to happen.*
+
+**How would you benefit from this feature?**
+*Explain who benefits from the requested feature, why it is useful, and how it should behave.*
+
+**Expected behavior**
+*What you expect to happen once the feature is implemented.*
+
+**Logs, screenshots or other evidence**
+*If relevant, link any logs, screenshots or other evidence that help explain your request.*
+
+**Environment / version**
+*The project version and environment you are using (e.g. commit, OS).*
+
+---
+
+_This issue template reminds contributors to prefix the title with `feat:`._
