@@ -97,6 +97,11 @@ class StoatVoiceTransport(VoiceTransport):
 
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return
+        # A Go Live / stream's audio is a second audio track from the same
+        # participant. It isn't their voice, so don't bridge it - and don't
+        # let it displace their microphone task in _consume_tasks below.
+        if getattr(_publication, "source", None) == rtc.TrackSource.SOURCE_SCREENSHARE_AUDIO:
+            return
         # Second-line echo guard (belt and braces on top of the mix-minus
         # filter itself): never buffer this connector's own published track
         # as if it were a remote speaker. LiveKit only fires
