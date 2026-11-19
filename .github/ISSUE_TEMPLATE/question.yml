@@ -1,0 +1,22 @@
+---
+name: Question
+about: Ask a general question about this project
+title: "investigation: "
+labels: question
+---
+
+**Is your feature request related to a problem? Please describe.**
+*A clear and concise description of the context behind your question.*
+
+**Describe your question in detail**
+*Explain what you are asking.*
+
+**Relevant context**
+*Add any background, examples or details that help explain the question (code snippets, links, etc.).*
+
+**Repository / version**
+*The project repository and version you are asking about.*
+
+---
+
+_This issue template reminds contributors to prefix the title with `investigation:`._
