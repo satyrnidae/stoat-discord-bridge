@@ -1,45 +1,28 @@
+---
 name: Feature request
-title: Feature request
 about: Request a new feature for this project
-labels: [feature]
-body:
-  - type: input
-    attributes:
-      label: Title
-      description: "Prefix your title so it starts with the word feat, for example \"feat add new command\"."
-    validations:
-      required: true
-  - type: textarea
-    attributes:
-      label: Description
-      description: A clear and concise description of the feature request.
-    validations:
-      required: true
-  - type: textarea
-    attributes:
-      label: How would you benefit from this feature?
-      description: |
-        Explain who benefits from the requested feature, why it is useful, and how it should behave.
-      placeholder: Describe your use case here...
-    validations:
-      required: false
-  - type: textarea
-    attributes:
-      label: Expected behavior
-      description: What you expect to happen once the feature is implemented.
-    validations:
-      required: true
-  - type: textarea
-    attributes:
-      label: Logs, screenshots or other evidence
-      description: |
-        If relevant, link any logs, screenshots or other evidence that help explain your request.
-      placeholder: Paste a log snippet or add image links here...
-    validations:
-      required: false
-  - type: input
-    attributes:
-      label: Environment / version
-      description: The project version and environment you are using (e.g. commit, OS).
-    validations:
-      required: true
+title: "feat: "
+labels: feature
+---
+
+**Is your feature request related to a problem? Please describe.**
+*A clear and concise description of what the problem is. Ex. I'm always frustrated when...*
+
+**Describe the solution you'd like**
+*A clear and concise description of what you want to happen.*
+
+**How would you benefit from this feature?**
+*Explain who benefits from the requested feature, why it is useful, and how it should behave.*
+
+**Expected behavior**
+*What you expect to happen once the feature is implemented.*
+
+**Logs, screenshots or other evidence**
+*If relevant, link any logs, screenshots or other evidence that help explain your request.*
+
+**Environment / version**
+*The project version and environment you are using (e.g. commit, OS).*
+
+---
+
+_This issue template reminds contributors to prefix the title with `feat:`._
